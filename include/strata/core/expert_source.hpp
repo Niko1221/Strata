@@ -147,6 +147,18 @@ public:
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
 
+    /// The prompt path is about to use GPU cache slots as its buffers, which destroys the experts in them.  A source
+    /// with a resident RAM copy moves those experts into the space it holds for them (`FileExpertSource`), so the
+    /// refill reads RAM instead of the drive and the byte stays in one tier.  A source without one does nothing and
+    /// the refill reads the files, as it always did.  `lent` is (layer*n_expert + expert, slot).
+    virtual bool lend_save(const ExpertCache& cache, int device,
+                           const std::vector<std::pair<int32_t, int32_t>>& lent, std::string& err) {
+        (void) cache; (void) device; (void) lent; (void) err;
+        return true;
+    }
+    /// The refill landed: release what `lend_save` took.  Only the listed pairs, so a pipelined stage frees its own.
+    virtual void lend_release(const std::vector<std::pair<int32_t, int32_t>>& lent) { (void) lent; }
+
     /// Blobs touched, for the driver to report.  A source that does not count returns 0.
     virtual int64_t reads() const { return 0; }
 
@@ -497,7 +509,9 @@ public:
         const ExpertCache& cache, std::string& err, bool pin = true,
         const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,
         uint64_t headroom_bytes = 8ull << 30, uint64_t budget_bytes = 0,
-        const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
+        const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr,
+        const std::vector<int32_t>& additional_pair_slots = {},
+        const std::vector<int64_t>& additional_lend_from = {});
     void close();
 
     bool mapped() const { return base_ != nullptr; }
@@ -509,6 +523,35 @@ public:
     uint64_t locked_bytes() const { return complement_locked_; }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
     int64_t resident_lent_slots() const { return complement_lent_slots_; }
+
+    /// File reads whose expert a GPU cache holds: what a VRAM->host read-back would have taken off the drive.
+    int64_t file_reads_cached() const { return file_reads_cached_.load(std::memory_order_relaxed); }
+    uint64_t file_bytes_cached() const { return file_bytes_cached_.load(std::memory_order_relaxed); }
+    /// The adaptive tier landed: `in` went into a GPU slot, `out` came down to the copy.  The diagnostic bitmap
+    /// has to follow the swaps, or it says "the caches hold this" for an expert the tier moved out hours ago.
+    void note_cache_move(size_t in, size_t out) {
+        if (cached_pairs_.empty()) return;
+        if (in < cached_pairs_.size()) cached_pairs_[in] = 1;
+        if (out < cached_pairs_.size()) cached_pairs_[out] = 0;
+    }
+
+    /// Hold space in the RAM copy for the experts in the slots a prompt lends (off by default: that space is a RAM
+    /// copy of an expert that is in a GPU slot, which is what put a 62.7 GiB box into swap).  With it on, the loan's
+    /// refill reads RAM; with it off, it reads the files.
+    void lend_keeps_ram(bool on) { lend_keeps_ram_ = on; }
+    /// The prompt path is about to use these cache slots as its buffers, which destroys the experts in them.  Move
+    /// each one DeviceToHost into the space the RAM copy holds for it and answer for it from there until
+    /// `lend_release`: the byte then lives in one tier, which is what keeps RAM plus VRAM from exceeding the model.
+    /// `lent` is (layer*n_expert + expert, slot), the same pairs the caller lends.  False with `err` when the copy
+    /// is not running or a copy failed; experts with no reserved space are simply left to the files.
+    bool lend_save(const ExpertCache& cache, int device,
+                   const std::vector<std::pair<int32_t, int32_t>>& lent, std::string& err);
+    /// The refill landed: those experts are back in their slots, so their space in the copy is free for the next
+    /// prompt.  Release only the pairs listed, so a pipelined stage can free its own.
+    void lend_release(const std::vector<std::pair<int32_t, int32_t>>& lent);
+    /// Slots whose space the copy holds empty between prompts, and how many experts have moved through it.
+    int64_t lend_reserved() const { return lend_reserved_; }
+    int64_t lend_saves() const { return lend_saved_; }
 
     // ---- the resident RAM mode and the adaptive tier.  A swap puts `in` (held here) into a GPU slot and evicts
     // `out` (held only by that slot).  Before the slot is overwritten the caller copies it back into an exchange
@@ -732,6 +775,21 @@ private:
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
+    /// Space the copy holds for the experts in the slots a prompt lends: an offset per expert with space held, empty
+    /// of content until `lend_save` fills it (see `lend_release`).  Kept out of `complement_offsets_` so nothing can
+    /// read a byte that is still sitting in a VRAM slot.
+    std::vector<uint64_t> lend_offsets_;
+    int64_t lend_reserved_ = 0;
+    int64_t lend_saved_ = 0;
+    /// `--lend-keeps-ram`: hold the space (and after a save, the bytes) for experts that sit in a GPU slot.  Off by
+    /// default - that space is a second copy of a byte the card already holds.
+    bool lend_keeps_ram_ = false;
+    /// Diagnostic for the VRAM read-back idea: which experts a GPU cache holds (set with the complement plan, so
+    /// it costs one byte per expert).  A file read of one of these is a read a PCIe copy from the cache slot
+    /// could have served - counted here rather than guessed at.
+    std::vector<uint8_t> cached_pairs_;
+    std::atomic<int64_t> file_reads_cached_{0};
+    std::atomic<uint64_t> file_bytes_cached_{0};
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered

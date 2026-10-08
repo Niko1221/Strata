@@ -432,6 +432,13 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    /// Read an expert the GPU caches hold back over PCIe instead of reading it from the files.  Off by default:
+    /// The prompt path's lendable slots keep their experts in the RAM copy beside a layer split too (on by default;
+    /// `--no-lend-keeps-ram` restores the form that leaves the loan to the files).
+    /// Hold space in the RAM copy for the experts in the slots a prompt lends, so its refill reads RAM instead of
+    /// the files.  Off by default: that space is a RAM copy of an expert sitting in a GPU slot, and on a 62.7 GiB
+    /// box the complement plus both stages' loans does not fit.
+    bool lend_keeps_ram = false;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -1706,9 +1713,21 @@ int main(int argc, char** argv) {
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
-        else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
-        else if (a == "--vram-reserve-later-mib")
-            o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
+        else if (a == "--vram-reserve-mib" || a == "--vram-reserve-later-mib") {
+            // A value that is not a number read as 0 here, and 0 means "reserve nothing": the expert cache then
+            // takes every free MiB and the run dies later in cublasCreate at the first prompt, with no hint of the
+            // cause (seen on this box from a config written with the literal "$VRAM_RESERVE", a shell that did not
+            // expand it).  Refuse at the flag, where the mistake is.
+            const std::string v = next(a.c_str());
+            bool digits = !v.empty();
+            for (const char c : v) if (c < '0' || c > '9') digits = false;
+            if (!digits) {
+                std::fprintf(stderr, "strata generate: %s needs a whole number of MiB, got '%s'\n", a.c_str(), v.c_str());
+                return 2;
+            }
+            if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(v.c_str()); o.vram_reserve_given = true; }
+            else o.vram_reserve_later_mib = std::atoi(v.c_str());
+        }
         else if (a == "--prefill") {
             const std::string v = next("--prefill");
             o.prefill_auto = v == "auto" || v.rfind("auto:", 0) == 0;
@@ -1720,6 +1739,7 @@ int main(int argc, char** argv) {
             o.prefill_chunk = o.prefill_auto ? o.prefill_auto_max : std::atoll(v.c_str());
         }
         else if (a == "--no-split-rows") o.no_split_rows = true;
+        else if (a == "--lend-keeps-ram") o.lend_keeps_ram = true;
         else if (a == "--no-prefill-borrow") o.no_prefill_borrow = true;
         else if (a == "--vram-elastic") o.vram_elastic = true;
         else if (a == "--vram-segment-mib") o.vram_segment_mib = std::atoll(next("--vram-segment-mib"));
@@ -5984,16 +6004,34 @@ int main(int argc, char** argv) {
             const int64_t k = plan_lend(chunk);
             if (k > 0) lend_from = xcache.slots() - k;
         }
-        // a layer split: the experts every later stage's cache holds are left out of the RAM copy, as CUDA0's are
-        // (with them the copy keeps no lend region: pin_cache_complement turns the loan off)
+        // a layer split: the experts every later stage's cache holds are left out of the RAM copy, as CUDA0's are.
+        // Their slots come along too, because a stage lends from its own cache as well (measured on UD-IQ4_XS:
+        // CUDA1 borrows 2074 of its 3468 slots, 4.68 GiB a prompt) and those experts need space here or the drive.
         std::vector<std::pair<int32_t, int32_t>> stage_pairs;
-        for (auto& st : stages)
+        std::vector<int32_t> stage_pair_slots;
+        std::vector<int64_t> stage_lend_from;
+        const int64_t stage_k = o.prefill_chunk > 0 && !o.no_prefill_borrow ? plan_lend(o.prefill_chunk) : 0;
+        for (auto& st : stages) {
+            const int64_t st_lend_from = stage_k > 0 && st->cache.slots() > stage_k ? st->cache.slots() - stage_k : -1;
             for (int64_t l = st->lb; l < st->le; ++l)
-                for (int64_t e = 0; e < g.n_expert; ++e)
-                    if (st->cache.slot_of(l, e) >= 0) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+                for (int64_t e = 0; e < g.n_expert; ++e) {
+                    const int32_t s = st->cache.slot_of(l, e);
+                    if (s < 0) continue;
+                    stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+                    stage_pair_slots.push_back(s);
+                    stage_lend_from.push_back(st_lend_from);
+                }
+        }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
+        // The headroom applies with or without a budget: what the engine pins after the copy (the K/V streaming's
+        // host region, the exchange buffers, the image encoder's process) comes out of the same RAM, and a copy
+        // sized to `available - 8 GiB` still puts a 62 GB box into swap when those land.
+        if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
+            o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
+        src.lend_keeps_ram(o.lend_keeps_ram);
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
-                                                    o.resident_headroom, o.resident_budget, &rank_all);
+                                                    o.resident_headroom, o.resident_budget, &rank_all,
+                                                    stage_pair_slots, stage_lend_from);
         std::string whole_err;
         if (!resident_ok && o.resident_soft) {
             // #467: the whole complement does not fit - keep what does, the hottest by the profile, through the #403
@@ -6023,26 +6061,39 @@ int main(int argc, char** argv) {
                          (long long) o.prefill_chunk, (long long) (xcache.slots() - lend_from),
                          (long long) src.resident_lent_slots());
         if (resident_ok) {
+            // The batch: `--adapt-swaps` experts per round, each one a copy down and a copy up through a page-locked
+            // exchange buffer of the largest blob (3.48 MB on UD-IQ4_XS).  It was capped at 96 in three places, so
+            // asking for more did nothing; the cap is 256 now, which costs 256 x 3.48 MB pinned (double that with
+            // --adapt-async, whose second half bounces the copies) and a round that takes N x 2.34 MB / the PCIe
+            // rate - about 56 ms per 96 experts at the 4 GB/s measured here.
+            const int64_t adapt_batch = std::min<int64_t>(o.adapt_swaps, 256);
             // --adapt-async: twice the exchange buffers - the second half bounces the copies in whose source is not
             // page-locked (an asynchronous copy instead of the driver's staged, synchronous one)
-            if (o.adapt_async && !src.reserve_exchanges(2 * std::min<int64_t>(o.adapt_swaps, 96), err))
+            if (o.adapt_async && !src.reserve_exchanges(2 * adapt_batch, err))
                 adapt_async_off(err.c_str());
             // pageable buffers would make every copy of a round synchronous (the driver stages them): that is the
             // blocking tier's cost, so the asynchronous tier is not worth running - said, and the blocking tier stays
             if (o.adapt_async && !src.exchange_pinned())
                 adapt_async_off("the exchange buffers could not be page-locked");
             if (o.adapt_every > 0 && o.adapt_swaps > 0 &&
-                !src.reserve_exchanges(std::min<int64_t>(o.adapt_swaps, 96), err)) {
+                !src.reserve_exchanges(adapt_batch, err)) {
                 std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
                 return 1;
             }
+            if (o.adapt_swaps > 96)
+                std::fprintf(stderr, "strata generate: adaptive batch %lld of %d experts a round: %.2f GiB of pinned "
+                                     "exchange buffers%s\n",                             (long long) adapt_batch, o.adapt_swaps,
+                             (double) adapt_batch * 3.0 * 1048576.0 / 1073741824.0 * (o.adapt_async ? 2 : 1),
+                             o.adapt_swaps > adapt_batch ? " (asked for more than 256: capped)" : "");
             std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
-                                 "cache; adaptive swaps %s\n",
+                                 "cache; adaptive swaps %s%s\n",
                          (double) src.resident_bytes() / 1073741824.0,
                          src.complement_pinned() ? "page-locked" : src.locked_bytes() > 0 ? "locked" : "pageable",
                          (long long) xcache.resident(),
                          o.adapt_every > 0 && o.adapt_swaps > 0 ? "exchange them with the GPU cache (no file reads)"
-                                                                : "off");
+                                                                : "off",
+                         src.lend_reserved() > 0
+                             ? "; the space of the prompt's lendable slots is held empty until the loan goes out" : "");
         } else if (o.resident_soft) {
             std::fprintf(stderr, "strata generate: WARNING: the resident RAM mode does not fit (%s); the experts the "
                                  "GPU does not hold are read from the model folder through the OS file cache "
@@ -7450,7 +7501,7 @@ int main(int argc, char** argv) {
         std::atomic<bool> a_err{false};
         std::vector<AHome> ahomes;   // [0] = CUDA0's cache, [k] = layer split stage k's
         std::unique_ptr<JobThread> ajob;
-        const int64_t a_cap = std::min<int64_t>(o.adapt_swaps, 96);   // as the blocking tier's exchange buffers
+        const int64_t a_cap = std::min<int64_t>(o.adapt_swaps, 256);   // as the blocking tier's exchange buffers
         if (o.adapt_async && !drive.d.usage.empty() && src.complement_ready() && src.exchange_capacity() >= 2 * a_cap) {
             ahomes.push_back({&xcache, adapt_stream, adapt_ev, 0, false});
             for (auto& st : stages) ahomes.push_back({&st->cache, st->adapt_stream, st->adapt_ev, st->dev, false});
@@ -9401,6 +9452,7 @@ int main(int argc, char** argv) {
                 for (const auto& [i, slot] : p.lent)
                     srcp->release(i / g.n_expert, i % g.n_expert);
 #endif
+                srcp->lend_release(p.lent);   // the copies landed in their slots: the space in the copy is free again
                 p.lent.clear();
                 p.lent_chunk = 0;
                 return true;
@@ -9478,6 +9530,9 @@ int main(int argc, char** argv) {
                             }
                         }
                     p.lent_chunk = want;
+                    // The slots are about to hold prompt bytes: move the experts out of them into the space the RAM
+                    // copy holds for exactly this, so each byte is in one tier and the refill never reads a drive.
+                    if (!p.lent.empty() && !srcp->lend_save(*p.cache, p.dev, p.lent, e)) return false;
                 }
                 if (any) res_upload();
                 if (trace) {
@@ -10960,6 +11015,12 @@ int main(int argc, char** argv) {
                                                      : (uint64_t) k * (uint64_t) blob;
                 std::fprintf(stderr, "strata generate: prompt path borrows %lld cache slots (%.2f GiB)\n", (long long) k,
                              (double) borrow_bytes / 1073741824.0);
+                // The slots are about to hold prompt bytes: move the experts out of them into the space the RAM copy
+                // holds for exactly this, so each byte is in one tier and the refill never reads a drive.
+                if (!lent.empty() && !srcp->lend_save(xcache, 0, lent, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
             }
         }
         if (borrow == nullptr)
@@ -11011,6 +11072,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
                 return 1;
             }
+            srcp->lend_release(lent);   // the copies landed in their slots: the space in the copy is free again
 #if defined(_WIN32)
             for (const auto& [i, slot] : lent)
                 srcp->release(i / g.n_expert, i % g.n_expert);
