@@ -150,8 +150,9 @@ __device__ __forceinline__ float warp_max(float x) {
 }
 
 __launch_bounds__(QUANT_THREADS, 1)
-__global__ void native_quantize_q8_1_kernel(const float* STRATA_PDL_RESTRICT x,
-                                           Q81Block* STRATA_PDL_RESTRICT y, int n_in) {
+__global__ void native_quantize_q8_1_kernel(const float* x_, Q81Block* y_, int n_in) {
+    const float* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
+    Q81Block* STRATA_PDL_RESTRICT y = y_;
     pdl_trigger();   // PDL (pdl.hpp): the projection after this one may start loading its weights
     pdl_wait();
     const int i = int(blockIdx.x) * QUANT_THREADS + int(threadIdx.x);
@@ -1162,10 +1163,11 @@ static bool s26_tsum_on() {
 // input in one launch; each output's code is the single matrix's)
 template<typename F, int NCOLS, int NW, int ROWS, bool TS = false, bool PAIR = false>
 __launch_bounds__(NW * WARP, (ROWS <= 2 ? 4 : 1))
-__global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w,
-                                         const Q81Block* STRATA_PDL_RESTRICT x,
-                                         float* STRATA_PDL_RESTRICT y, int n_in, int n_out,
+__global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w, const Q81Block* x_, float* y_,
+                                         int n_in, int n_out,
                                          const typename F::Block* __restrict__ w2 = nullptr, float* __restrict__ y2 = nullptr) {
+    const Q81Block* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
+    float* STRATA_PDL_RESTRICT y = y_;
     constexpr int BPI = F::BPI * NW / WARPS;           // blocks per iteration scale with the warp count
     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
     int bxi = int(blockIdx.x);
