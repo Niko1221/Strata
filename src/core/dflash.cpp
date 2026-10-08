@@ -99,9 +99,10 @@ bool DFlashArtifact::require(const char* canon, std::vector<const char*> aliases
         err += " in " + path_ + ")";
         return false;
     }
-    if (found->type != 30) {   // GGML_TYPE_BF16
+    if (found->type != 30 && !(shape.size() == 2 && shape[0] % 32 == 0 &&
+                              (found->type == 2 || found->type == 6 || found->type == 8))) {
         err = std::string("dflash: tensor '") + found->name + "' is " + found->type_name() +
-              "; this implementation reads BF16 DFlash GGUFs only";
+              "; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices";
         return false;
     }
     if (!shape_is(*found, shape)) {
@@ -120,6 +121,8 @@ bool DFlashArtifact::require(const char* canon, std::vector<const char*> aliases
     // 1-D norms ride as one row of `cols` values; matrices are [cols, rows] (ne0 fastest)
     out->rows = (int64_t) found->shape.size() > 1 ? (int64_t) found->shape[1] : 1;
     out->cols = (int64_t) found->shape[0];
+    out->type = found->type;
+    out->bytes = bytes;
     out->d = nullptr;
     tensors_.push_back(*out);
     return true;
@@ -295,7 +298,7 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     // The 58-tensor inventory, each resolved under either naming family and shape-checked.
     tensors_.clear();
     weight_bytes_ = 0;
-    auto add = [&](uint64_t bytes) { weight_bytes_ += bytes; };
+    auto add = [&](uint64_t) { weight_bytes_ += (tensors_.back().bytes + 31) & ~uint64_t(31); };
     DFlashTensor t;
     const int64_t H = g.hidden, D = g.head_dim, I = g.intermediate;
     const int64_t Q = g.n_head * D, KV = g.n_head_kv * D, F = g.fusion_in();

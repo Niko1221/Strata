@@ -118,13 +118,13 @@ int main() {
         check(a.tensor("fc") != nullptr && a.tensor("layers.0.mlp.down_proj") != nullptr &&
                   a.tensor("hidden_norm") != nullptr && a.tensor("norm") != nullptr,
               "canonical names resolve");
-        uint64_t elems = 0;
+        uint64_t aligned_bytes = 0;
         for (const auto& t : ts) {
             uint64_t n = 1;
             for (auto d : t.shape) n *= d;
-            elems += n;
+            aligned_bytes += (n * 2 + 31) & ~uint64_t(31);
         }
-        check(a.weight_bytes() == elems * 2, "weight_bytes is the bf16 payload of the inventory");
+        check(a.weight_bytes() == aligned_bytes, "weight_bytes counts the aligned device inventory");
     }
     {   // the same artifact in the raw-HF naming family resolves to the same canonical inventory
         const fs::path p = dir / "valid_hf.gguf";
@@ -191,6 +191,21 @@ int main() {
         check(refuses([&] { fixture::write(dir / "shape.gguf", meta(), ts); return dir / "shape.gguf"; }(),
                       "wrong shape"),
               "wrong shape refused");
+    }
+    for (const uint32_t type : {2u, 6u, 8u}) {
+        auto ts = tensors_llama();
+        ts[0].type = type;   // the fusion matrix has a width divisible by 32
+        const fs::path path = dir / ("quant-" + std::to_string(type) + ".gguf");
+        fixture::write(path, meta(), ts);
+        check(loads(path), "quantized matrix loaded");
+        DFlashArtifact a;
+        std::string e;
+        check(a.open(path.string(), e), "quantized payload parsed");
+        check(a.tensor("fc") && a.tensor("fc")->type == (int) type, "matrix type preserved");
+        check(a.tensor("fc") && a.tensor("fc")->bytes < (uint64_t) kF * kH * 2, "quantized weight bytes counted");
+        ts[1].type = type;   // norms must retain BF16
+        fixture::write(path, meta(), ts);
+        check(refuses(path, "quantized norm"), "quantized norm refused");
     }
     {   // a non-BF16 tensor
         auto ts = tensors_llama();
