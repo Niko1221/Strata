@@ -29,7 +29,7 @@ answers, no questions), --setup (install another model / change settings instead
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto, --drafter mtp|dflash, --dflash [GGUF], --dflash-quant original|q8|q5|q4.
+--kv-streaming on|off|auto, --drafter mtp|dflash|none, --dflash [GGUF], --dflash-quant original|q8|q5|q4.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -6420,9 +6420,16 @@ def choices_from_config(cfg_path: Path) -> dict:
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
-    return {"drafter": "dflash" if val("--dflash") else "mtp",
-            "dflash": cfg.get("dflash_source") or (val("--dflash") if cfg.get("dflash_quant", "original") == "original" else "auto"),
-            "dflash_quant": cfg.get("dflash_quant", "original"),
+    drafter = cfg.get("drafter")
+    if drafter not in ("mtp", "dflash", "none"):
+        drafter = "dflash" if val("--dflash") else "mtp"
+    dflash_source = None
+    if drafter == "dflash":
+        dflash_source = cfg.get("dflash_source") or (
+            val("--dflash") if cfg.get("dflash_quant", "original") == "original" else "auto")
+    return {"drafter": drafter,
+            "dflash": dflash_source,
+            "dflash_quant": cfg.get("dflash_quant", "original") if drafter == "dflash" else None,
             "family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
@@ -6898,15 +6905,16 @@ DFLASH_QUANTS = {"original": None, "q8": "Q8_0", "q5": "Q5_0", "q4": "Q4_0"}
 
 def choose_drafter(method, path, quant, yes):
     """The same numbered menus and --yes defaults as the other setup choices."""
-    if method == "mtp" and (path or quant):
-        fail("--drafter mtp cannot be combined with --dflash or --dflash-quant")
+    if method in ("mtp", "none") and (path or quant):
+        fail(f"--drafter {method} cannot be combined with --dflash or --dflash-quant")
     method = method or ("dflash" if path or quant else None)
     if method is None:
         say()
         say("  Speculative decoding = a small drafter proposes tokens which the target checks.")
         say("  1) MTP (default)")
         say("  2) DFlash (experimental; greedy decoding, one request at a time)")
-        method = {"1": "mtp", "2": "dflash"}[ask("Drafter?", ["1", "2"], "1", yes)]
+        say("  3) Off (no speculative decoding)")
+        method = {"1": "mtp", "2": "dflash", "3": "none"}[ask("Drafter?", ["1", "2", "3"], "1", yes)]
     if method == "dflash" and quant is None:
         say()
         say("  DFlash weights (the target model keeps its selected quantization):")
@@ -6921,7 +6929,11 @@ def choose_drafter(method, path, quant, yes):
 def drafter_args(dflash, rt):
     if dflash:
         return ["--spec", "8", "--dflash", str(dflash), "--dflash-window", "0"]
-    return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
+    if rt:
+        return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
+    # --serve needs a verifier capacity >= 2; with no model drafter it runs one
+    # token per window. Disable both lookup methods so it never proposes tokens.
+    return ["--spec", "2", "--suffix-draft", "0", "--lookup-chain", "0"]
 
 
 def prepare_dflash(data, roots, source, quant, env):
@@ -8612,8 +8624,8 @@ def main() -> int:
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
-    ap.add_argument("--drafter", choices=["mtp", "dflash"],
-                    help="speculative decoding: MTP (default) or the standalone DFlash drafter")
+    ap.add_argument("--drafter", choices=["mtp", "dflash", "none"],
+                    help="speculative decoding: MTP (default), DFlash or none (disabled)")
     ap.add_argument("--dflash", metavar="GGUF", nargs="?", const="auto",
                     help="select DFlash; omit GGUF to download the pinned drafter automatically")
     ap.add_argument("--dflash-quant", choices=["original", "q8", "q5", "q4"],
@@ -8736,7 +8748,7 @@ def main() -> int:
             a.layer_split = a.layer_split or ch.get("layer_split")
         else:
             a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
-        if a.drafter != "mtp" and not a.dflash and ch["drafter"] == "dflash":
+        if a.drafter in (None, "dflash") and not a.dflash and ch["drafter"] == "dflash":
             a.dflash = ch["dflash"]
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
@@ -9182,7 +9194,7 @@ def main() -> int:
             fail("DFlash is currently supported by the CUDA/HIP engine; choose MTP for SYCL")
         ok(f"drafter: DFlash ({DFLASH_QUANTS[a.dflash_quant] or 'original BF16'})")
     else:
-        ok("drafter: MTP")
+        ok("speculative decoding: off" if a.drafter == "none" else "drafter: MTP")
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -9377,8 +9389,13 @@ def main() -> int:
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
     prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
         not prepared_done(model, models_dir) else 0.0
-    margin = 3 if a.dflash else (2 if mtp_have else 8)                      # working room: a guess, not bytes that will be written
-    mtp_fetch = 5.2 if (not a.dflash and not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
+    if a.drafter == "none":
+        margin = 0
+    elif a.dflash:
+        margin = 3                                # DFlash conversion needs temporary space, not MTP download space
+    else:
+        margin = 2 if mtp_have else 8
+    mtp_fetch = 5.2 if (a.drafter != "none" and not a.dflash and not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
     real = to_fetch + prep_gb + mtp_fetch + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
@@ -9525,6 +9542,7 @@ def main() -> int:
     ok(f"model prepared: {pack}")
     dflash = prepare_dflash(data, roots, a.dflash, a.dflash_quant, env) if a.dflash else None
     draft_vocab = None
+    rt = None
     if dflash is not None:
         try:
             note = dflash_artifact_note(dflash)
@@ -9533,7 +9551,7 @@ def main() -> int:
         ok(f"DFlash block drafter: {note}")
         if a.draft_vocab:
             warn("--draft-vocab applies to the MTP draft layer's token subset; ignored with --dflash")
-    else:
+    elif a.drafter == "mtp":
         mtp = ready_paths(model, models_dir)["mtp"] if prepared else \
             (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
         rt = mtp / "rt"
@@ -9556,6 +9574,11 @@ def main() -> int:
         for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):
             say("  " + line)
 
+    else:
+        ok("speculative decoding off: no draft model to download or load")
+        if a.draft_vocab:
+            warn("--draft-vocab applies to MTP; ignored with speculative decoding off")
+
     # ---- 7. the start script
     step(7, "writing the start script")
     sys.path.insert(0, str(ROOT / "tools"))
@@ -9574,10 +9597,10 @@ def main() -> int:
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     args = [*model_args,
 
+
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto",
-            *(drafter_args(dflash, None) if dflash else
-              drafter_args(None, rt)),
+            *drafter_args(dflash, rt),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
