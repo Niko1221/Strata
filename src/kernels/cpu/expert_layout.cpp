@@ -419,8 +419,31 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         L.bytes[(size_t) l] = blob;
         if (blob > L.max_blob) L.max_blob = blob;
     }
+    // **A LAYER WITH NO LINE IS AN EMPTY SLOT, NOT A MALFORMED FILE, AND ONLY A TRAILING RUN OF THEM IS.**  The
+    // caller asks for ONE LAYER MORE than `g.n_layers` whenever the model declares a draft block past its trunk
+    // (`generate.cpp`'s `lay_n`), and the row at that index exists only in a pack built with
+    // `tools/iq_pack.py --mtp`.  A pack built without it - which is every pack that existed before the block was
+    // packed, including `/home/gopi/glm-packs/full` - has no line for it, and the walk below used to refuse the
+    // whole file: the model would not start at all, over a block the run was not going to use.
+    //
+    // `bytes` is already 0 and `fmt` is already the default `NativeFmt`, which is exactly what the dense-lead
+    // blocks are written as (a line with a zero blob), so stamping `offset = at` makes the absent row
+    // indistinguishable from theirs and the walk advances by nothing over it.  A missing row in the MIDDLE is
+    // still an error: it would zero a trunk layer's experts silently, and the file is written in order, so a
+    // row after a gap means the file is damaged rather than a block being absent.
     uint64_t at = 0;
+    int64_t first_missing = -1;
     for (int64_t l = 0; l < n_layers; ++l) {
+        if (L.offset[(size_t) l] == ~0ull) {
+            if (first_missing < 0) first_missing = l;
+            L.offset[(size_t) l] = at;
+            continue;
+        }
+        if (first_missing >= 0) {
+            err = "native_experts.txt: layer " + std::to_string(first_missing) + " has no row but layer " +
+                  std::to_string(l) + " does; only a trailing run of rows may be absent";
+            return false;
+        }
         if (L.offset[(size_t) l] != at) {
             err = "native_experts.txt: layer " + std::to_string(l) + " is missing or not contiguous";
             return false;
