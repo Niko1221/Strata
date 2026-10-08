@@ -97,6 +97,43 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     return s;
 }
 
+// F16 (GGML type 1) -> F32, exact: the single-file third-party GGUFs (Huihui) hold the draft layer's routers and
+// norms at F16 where this repo's own repacked draft dirs hold BF16/F32.  Every half value - subnormals included -
+// has an exact float image (the general case is the same shift the hardware does: exp re-bias + mantissa << 13).
+inline float f16_bits_to_f32(uint16_t h) {
+    const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
+    const uint32_t exp = (uint32_t) (h >> 10) & 0x1fu, man = h & 0x3ffu;
+    uint32_t bits;
+    if (exp == 0) {
+        if (man == 0) {
+            bits = sign;   // +-0
+        } else {           // subnormal: shift the leading 1 up to bit 10 (value = 2^(-14 - e) * (1 + f))
+            uint32_t m = man;
+            uint32_t e = 0;
+            while ((m & 0x400u) == 0) { m <<= 1; ++e; }
+            bits = sign | ((113u - e) << 23) | ((m & 0x3ffu) << 13);
+        }
+    } else if (exp == 0x1fu) {
+        bits = sign | 0x7f800000u | (man << 13);   // +-inf / NaN
+    } else {
+        bits = sign | ((exp + (127u - 15u)) << 23) | (man << 13);
+    }
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+
+// float bits -> BF16, round to nearest even: the rounding the F32 -> BF16 path has always used.  F16 -> BF16 goes
+// through F32 (exact) and keeps 3 bits fewer of the mantissa, exactly as the F32 -> BF16 copy of an F32 router does;
+// the F16 range (max 65504) cannot overflow BF16 (max ~3.39e38) and its subnormals stay normal in BF16.
+inline uint16_t f32_bits_to_bf16(uint32_t u) { return (uint16_t) ((u + 0x7fffu + ((u >> 16) & 1u)) >> 16); }
+inline uint16_t f16_bits_to_bf16(uint16_t h) {
+    uint32_t u;
+    const float f = f16_bits_to_f32(h);
+    std::memcpy(&u, &f, 4);
+    return f32_bits_to_bf16(u);
+}
+
 // 64-bit seek/tell on a `FILE*`: `fseek`/`ftell` take a 32-bit `long` on Windows and would wrap past 2 GiB.
 #if defined(_WIN32)
 #define STRATA_FILE_SEEK64(f, o, w) _fseeki64((f), (long long) (o), (w))
@@ -250,7 +287,7 @@ bool MtpDrafter::make_q4_head(std::string& err) {
 
 bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g, std::vector<uint8_t>& dense,
                                  std::string& err) {
-    constexpr uint32_t kF32 = 0, kQ8_0 = 8, kBF16 = 30;
+    constexpr uint32_t kF32 = 0, kF16 = 1, kQ8_0 = 8, kBF16 = 30;
     try {
         const strata::GgufModel model = strata::GgufModel::open(gguf);
         const std::string pfx = "blk." + std::to_string(g.n_layers) + ".";
@@ -285,8 +322,21 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
         for (const auto& n : norms) {
             const uint8_t* src = tensor(n[0], t);
             if (src == nullptr) return false;
-            if (t->type != kF32) { err = std::string("mtp: ") + pfx + n[0] + " is not F32"; return false; }
-            std::memcpy(put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4), src, t->elements() * 4);
+            // F32 as stored (the shipped draft dirs), or F16 widened exactly (the single-file GGUFs): the consumer
+            // is an F32 norm either way
+            if (t->type == kF32) {
+                std::memcpy(put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4), src, t->elements() * 4);
+            } else if (t->type == kF16) {
+                float* dst = (float*) put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4);
+                for (uint64_t i = 0; i < t->elements(); ++i) {
+                    uint16_t h;
+                    std::memcpy(&h, src + 2 * i, 2);
+                    dst[i] = f16_bits_to_f32(h);
+                }
+            } else {
+                err = std::string("mtp: ") + pfx + n[0] + " is " + t->type_name() + ", not F32 (or F16)";
+                return false;
+            }
         }
         // the router and the shared expert's gate, read as BF16 (an F32 copy is rounded to nearest-even)
         const char* routers[][2] = {{"ffn_gate_inp.weight", "mlp.gate.weight"},
@@ -302,10 +352,16 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
                 for (uint64_t i = 0; i < n; ++i) {
                     uint32_t u;
                     std::memcpy(&u, src + 4 * i, 4);
-                    dst[i] = (uint16_t) ((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+                    dst[i] = f32_bits_to_bf16(u);
+                }
+            } else if (t->type == kF16) {
+                for (uint64_t i = 0; i < n; ++i) {
+                    uint16_t h;
+                    std::memcpy(&h, src + 2 * i, 2);
+                    dst[i] = f16_bits_to_bf16(h);
                 }
             } else {
-                err = std::string("mtp: ") + pfx + r[0] + " is neither BF16 nor F32";
+                err = std::string("mtp: ") + pfx + r[0] + " is neither BF16, F32 nor F16";
                 return false;
             }
         }
