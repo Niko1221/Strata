@@ -6,7 +6,7 @@ as a **standalone draft model** next to Strata's own MTP layer:
 
 ```text
 Qwen3.8-Flash-Next target (any supported quant)
-        +  standalone DFlash artifact (GGUF, BF16, 498M params, no embed / no LM head)
+        +  standalone DFlash artifact (GGUF, BF16 or quantized matrices, 498M params, no embed / no LM head)
         ↓
 one parallel draft pass per cycle  →  existing Strata Verifier
 ```
@@ -110,15 +110,52 @@ acceptance under sampling semantics is not proven for this checkpoint; coupled s
 a later milestone. `--mtp` and `--dflash` are mutually exclusive; the flag combination is
 rejected at startup.
 
+## One-click setup and server
+
+Run `./setup.sh --setup` (Windows: `START-HERE.bat --setup`) and select MTP or
+DFlash in the numbered menu. DFlash then offers original BF16, Q8_0, Q5_0 and
+Q4_0. The choice applies to the drafter's matrices. Norm vectors keep their
+original BF16 bits; the target's weights, embedding and output head stay as selected.
+
+For a non-interactive install, keeping the same target model:
+
+```sh
+./setup.sh --setup --yes --model IQ3_XXS --drafter dflash --dflash-quant q8
+```
+
+Setup downloads the pinned PixelML checkpoint (~1 GB), checks its SHA-256,
+exports GGUF and optionally quantizes it with llama.cpp's GGML quantizers.
+It reuses prepared files on later runs. `--dflash /path/to/drafter.gguf` also
+accepts a local artifact; an additional quantization requires an original BF16
+source. Selecting DFlash skips the MTP download, preparation and load. Selecting
+MTP again writes an MTP-only configuration.
+
+The selected drafter is passed to the server. Setup defaults DFlash requests to
+`temperature: 0`; clients can still request sampling, which uses target-only
+decoding and logs that DFlash was skipped. Subsequent starts use the saved choice.
+DFlash currently supports one GPU and serial requests. The server rereads the
+full prompt for each request because target-only snapshots do not contain the
+DFlash pools. Elastic target KV growth is disabled with DFlash. Setup uses
+`--dflash-window 0`, allocating the drafter's pools for the configured context
+(20 KiB per token); large contexts therefore need additional VRAM even when
+the target's KV is streamed to RAM.
+
+This branch's CUDA and Linux HIP engines are built from source for DFlash;
+released engines may lack its server and quantization support. Windows HIP needs
+a compatible build via `--prebuilt`. Setup checks support before writing the
+configuration. Quantized drafter weights are experimental; the target still
+verifies every proposal. Validation on IQ3_XXS is recorded in
+[the setup test results](../bench/results/2026-10-08-dflash-setup/REPORT.md).
+
 ## Strata integration
 
 | Piece | Where |
 |---|---|
 | CLI: `--dflash FILE.gguf`, `--dflash-block K`, `--dflash-window N` | `src/program/generate.cpp` |
-| Artifact: GGUF v3 reader (existing `strata::GgufFile`), metadata + tensor validation, BF16 → device | `include/strata/core/dflash.hpp`, `src/core/dflash.cpp` |
+| Artifact: GGUF v3 reader (existing `strata::GgufFile`), metadata + tensor validation, BF16/quantized → device | `include/strata/core/dflash.hpp`, `src/core/dflash.cpp` |
 | Taps: verify window writes the 5 contracted residuals per row | `src/core/verify.cpp` (`pre` lambda, attn-half HC read) |
 | Taps: prefill writes them for the anchor (and prompt rows for context cells) | `src/prefill/prefill.cpp` |
-| Drafter runtime: fusion, context KV (own QsaState pools), block forward, argmax | `src/core/dflash.cpp` |
+| Drafter runtime: fusion, context KV (own QsaState pools), block forward, argmax | `src/core/dflash_runtime.cpp` |
 | Decode loop wiring, prefill wiring, VRAM reservation, metrics | `src/program/generate.cpp` |
 
 Memory (16 GB card, measured at startup): drafter weights ≈ 950 MiB BF16, context/block
