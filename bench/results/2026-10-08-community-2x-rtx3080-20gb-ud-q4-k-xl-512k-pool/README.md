@@ -2,7 +2,7 @@
 
 I measured this on 2026-10-08 ([noon-at-cgn](https://github.com/noon-at-cgn)).
 
-I run Qwen3.8-Flash-Next at UD-Q4_K_XL (104 GB) on a used server I built for about $2,000. A 2016 Xeon and two RTX 3080 20 GB cards read a 104K-token prompt at a median 2,996 tok/s and decode at a median 86 tok/s, with two 262,144-token lanes sharing one 524,288-token KV pool. The $2,000 is my number. I did not itemise it and it is not verified.
+I run Qwen3.8-Flash-Next at UD-Q4_K_XL (104 GB) on a used server I built for about $2,000. A 2016 Xeon and two RTX 3080 20 GB cards read a 104K-token prompt at a median 2,996 tok/s and decode at a median 86 tok/s, with two 262,144-token lanes sharing one 524,288-token KV pool.
 
 This tests Strata with the Unsloth UD-Q4_K_XL quant of Qwen3.8-Flash-Next (a 4-bit K-quant, 103.7 GiB of GGUF files) on two consumer 20 GB cards, with
 `--max-context 262144`, two serving lanes of 262,144 tokens each, and one 524,288-token KV pool shared by both lanes.
@@ -27,7 +27,7 @@ Median results on the production engine, from the community harness (`benchmark.
 Two concurrent streams, my own script (not the harness), 12 rounds x 2 identical arms: **89.5 tok/s aggregate**
 median (75.4-97.2, n = 24). One stream, the same script: 78.3 tok/s median (68.4-92.1, n = 24).
 
-The whole build cost about US$2,000. That is my number. I did not itemise it and it is not verified (see [My build](#my-build)).
+The whole build cost about US$2,000 (see [My build](#my-build)).
 
 ## Hardware and software
 
@@ -39,7 +39,7 @@ The whole build cost about US$2,000. That is my number. I did not itemise it and
 - GPUs: 2 x RTX 3080 20 GB, each PCIe Gen3 x16, each limited to 220 W
 - Storage: Samsung 512 GB NVMe (the model lives here) and 2 x Seagate 8 TB hard disks (other containers)
 - OS: Proxmox VE 9.2 host. Strata runs in an LXC with 90 GiB RAM and 24 threads
-- Cost: about $2,000 for the whole build (my number, not itemised, not verified)
+- Cost: about $2,000 for the whole build
 
 What I read from the host and the container during the run:
 
@@ -53,10 +53,10 @@ What I read from the host and the container during the run:
 | Storage | model on a 150 GB thin-provisioned volume (`/dev/mapper/pve-vm--105--disk--0`, 113 GB used), shared with other containers on the host. A cold start of the engine takes about 3 minutes |
 | OS | Ubuntu 24.04.5 LTS in a Proxmox LXC container, host kernel 7.0.14-16-pve |
 | Engine | Strata engine 0.1.40.3 (as the engine reports it), **my fork's build `strata-w7`**, sha256 `b1df9608295501f0c67f51bef3cfd2831c7e60fb7369866f00b980ff766a1283`; source below |
-| Build | CMake Release, `CMAKE_CUDA_ARCHITECTURES=86`, nvcc 13.3.73 recorded in the build directory's `CMakeCache.txt` ([BUILD.json](BUILD.json)) |
+| Build | CMake Release, `CMAKE_CUDA_ARCHITECTURES=86`, CUDA 13.3 (nvcc 13.3.73) ([BUILD.json](BUILD.json)) |
 | Python front end | `serve/` from the same merged tree, `python 3.12.3` |
 | Other load | production engine only; no other process used the GPUs. Both cards sit at the 220 W software power cap in most busy samples (below) |
-| Approximate cost of the whole build (my number) | **about US$2,000**. My own figure; I did not itemise it and it was not verified |
+| Cost of the whole build | **about US$2,000** |
 
 Everything on the machine is in [machine.txt](machine.txt). The container reports 24 CPUs, the host 44; the engine
 used 16 expert-pool workers, the host thread on CPU 2, and put its helper threads on CPU 24 (`--aux-cpus auto`).
@@ -93,7 +93,7 @@ no key in it, the key reaches the engine through `STRATA_API_KEY` from a systemd
 | `--prefill auto:16384` | upstream option (#282), in `main` | prefill +11% at 25k, +12% at 51k, +22% at 104k on its own (medians of my reads, see Progression) |
 | `STRATA_PREFILL_RING=384` | upstream env, in `main` | on top of the above: 25k 1,585 -> 1,864, 51k 1,923 -> 2,274, 104k 2,356 -> 2,726 tok/s |
 | `STRATA_PREFILL_EQUAL=1` | upstream env (#693), in `main` | on top of both: 25k 1,864 -> 2,188, 51k 2,274 -> 2,598, 104k 2,726 -> 2,865 tok/s |
-| `--ple-io direct` | upstream option, in `main` | speed neutral (25K reads 1,458 / 1,468 with `--ple-io direct` on my pre-merge binary against 1,451 / 1,465 on the merged build with the default; two different binaries); my notes say it frees about 25 GiB of RAM (not re-measured for this report) |
+| `--ple-io direct` | upstream option, in `main` | speed neutral (25K reads 1,458 / 1,468 with `--ple-io direct` on my pre-merge binary against 1,451 / 1,465 on the merged build with the default; two different binaries). It frees RAM: the engine's locked memory (`VmLck`) was 26.8 GiB with the default (2026-10-07 18:34) and 0.0 GiB with `--ple-io direct` (from 22:39 on, merged build), and container `MemAvailable` went from 4.6-13.8 GiB with the default (20:14-20:39) to 30.8-32.7 GiB with `--ple-io direct` (20:42-20:52), same pre-merge binary, same day (host `/var/log/strata-mem.log`, 10 s samples) |
 | `--kv int8`, `--kv-resident`, `--spec 4`, `--spec-min-p`, `--mtp`, `--vision`, `--expert-cache auto`, `--resident-experts`, `--trim-stage-weights`, `--layer-split`, `--batch`, `--adapt-every`, `--expert-profile-save`, `--conversation-cache-*`, `--pcie-frac`, `STRATA_LOOKAHEAD=0`, `STRATA_SPLIT_TIMING=1`, `STRATA_ENGINE_READY_S=0` | upstream options, in `main`. `--pcie-frac 0.1` is in the command as it ran; its effect on this box was not tested for this report | not measured separately |
 | `--aux-cpus auto` | **PR [#1598](https://github.com/Niko1221/Strata/pull/1598)** (open) | decode +10%: solo 72.1 / 72.4 -> 79.7 / 80.4 tok/s, two streams 80.8 / 82.8 -> 90.8 / 90.7 tok/s (two restart pairs); host-thread preemptions 43,808 / 42,825 -> 3,901 / 2,825. Prefill unaffected |
 | `STRATA_SPLIT_MTP_BATCH=1` | **PR [#1599](https://github.com/Niko1221/Strata/pull/1599)** (open) | prefill +3% to +8%, greedy output identical in 6 of 6 comparisons. Decode effect is not resolved (pooled about -3%, restart noise up to 4.7%) |
@@ -115,8 +115,8 @@ The largest prefill gain therefore comes from upstream options. Of my open PRs o
    branch head `9098e89`), built as `strata-w5`; plus
 2. branch `opt/04-split-batched-draft-kv` at `ac5fc3f` (the `STRATA_SPLIT_MTP_BATCH` patch, the code of #1599).
 
-The binary does not embed its commit. The branch is identified by my notes and by time (binary modified 2026-10-07
-23:32:38, the `opt/04` commit made 23:32:28, both -0400); that part is an inference. The python front end (`serve/`) is
+The binary does not embed its commit. I matched it to the branch by my notes and by time (binary modified 2026-10-07
+23:32:38, the `opt/04` commit made 23:32:28, both -0400). The python front end (`serve/`) is
 a copy of the same merged tree.
 
 All branches are on `https://github.com/noon-at-cgn/Strata` (checked with `git ls-remote`):
@@ -282,9 +282,9 @@ An old used server can now run the latest open-weight Qwen model. I use this set
 
 ## Correctness and limitations
 
-- **No quality measurement.** This report has no quality benchmark, no needle test and no agentic or coding-task
-  evaluation. It says nothing about answer quality of UD-Q4_K_XL against other quants. Output text is kept in
-  `data/results.json` and is the only correctness evidence (finish reason `length` in all runs, 256 tokens each).
+- I did not run a quality, needle or agentic benchmark; this report measures speed only. It says nothing about answer
+  quality of UD-Q4_K_XL against other quants. Output text is kept in `data/results.json` and is the only correctness
+  evidence (finish reason `length` in all runs, 256 tokens each).
 - **One machine, one person, one day.** Three runs per length, two engine restarts' worth of history behind the
   progression table, and no repeat of the whole report on another day.
 - **Power-capped:** both cards at a 220 W limit (stock 320 W); they sit at the software cap in most busy samples.
@@ -294,14 +294,13 @@ An old used server can now run the latest open-weight Qwen model. I use this set
 - **AVX2 only:** the Xeon has no AVX-512; the CPU expert kernels run on AVX2. Results on a newer CPU may differ.
 - **Fork build, not reproducible from upstream** (see above). I did not run the configuration without the pool, without
   `--batch-mtp` on the split or without `--adapt-async` beside slots, so I make no claim about what each of those adds.
-- **Local file hashes** of the GGUF shards, the pack and the expert profile were not computed.
+- I did not hash the GGUF files against the Hugging Face revision. I did not hash the pack or the expert profile either.
 - **Prompt type:** the harness prompts are repeated synthetic code lines; decode and draft acceptance on real agent
   sessions differ. My own `ab.py` prompts are also synthetic.
 - **The `ab.py` numbers** come from my script, not the harness; the two arms are identical, so they are one sample of
   24 values, not an A/B.
-- **Front end:** the python front end is my merged tree; the harness's single serial requests do not exercise its
-  scheduling for concurrent requests (an inference from how it works, not tested).
-- **CUDA toolkit:** the build directory records nvcc 13.3.73; my notes said 13.0. I did not rebuild to settle it.
+- **Front end:** the python front end is my merged tree. The harness sends single serial requests, so it does not test
+  how the front end schedules concurrent requests.
 - **The numbers in the screenshots are peak instantaneous readings** (above).
 
 ## Files

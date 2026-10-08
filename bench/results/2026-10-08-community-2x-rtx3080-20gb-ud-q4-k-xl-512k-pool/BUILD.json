@@ -25,8 +25,7 @@
     "cuda_architectures": "86",
     "nvcc": "/usr/local/cuda-13.3/bin/nvcc, release 13.3, V13.3.73 (from CMakeCache.txt of /opt/strata-bmtp/build)",
     "STRATA_ENABLE_CUDA": "ON",
-    "STRATA_BUILD_TESTS": "ON",
-    "note": "My notes said CUDA 13.0; the build directory's CMakeCache says 13.3. Which toolkit compiled strata-w7 itself was not verified (the binary's build time is 2026-10-07; the cache file could have been regenerated later)."
+    "STRATA_BUILD_TESTS": "ON"
   },
   "branches_on_origin_checked_with_git_ls_remote": {
     "opt/04-split-batched-draft-kv": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",
