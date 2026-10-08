@@ -15,7 +15,12 @@
     "STRATA_DEBUG",
     "STRATA_DBG_NAN",
     "STRATA_VERIFY_EAGER",
-    "STRATA_QFUSE"
+    "STRATA_QFUSE",
+    "STRATA_PREFILL_CPU_SHARE",
+    "STRATA_ARENA_ALIAS_CHECK",
+    "STRATA_SPIN_MAX",
+    "STRATA_STAGE_PIN",
+    "STRATA_EMB_REUSE_ACCOUNT"
   ],
   "alias_check": "upstream default enabled",
   "public_fixture_additional_variable": {

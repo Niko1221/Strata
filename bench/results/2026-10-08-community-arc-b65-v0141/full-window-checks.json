@@ -3,9 +3,9 @@
   "native_MTP4": {
     "prompt_tokens": 262016,
     "output_tokens": 128,
-    "ttft_s": 910.7536279289998,
-    "prompt_tps": 287.7139481024282,
-    "decode_tps": 35.76318068788243,
+    "ttft_s": 793.5431629770028,
+    "prompt_tps": 330.21442588481034,
+    "decode_tps": 33.14259081846664,
     "reused": 0,
     "exact_matches_target_only": true
   },
@@ -24,12 +24,12 @@
           "cached_tokens": 0
         }
       },
-      "output_sha256": "c47479579e97aeb53463222f06d2734ec184ea2353a17f003465a5e65fb615a5",
+      "output_sha256": "8feeb0b869360364349d5c62b3cd75fb0c1cf05755b51866722b0eba509447f5",
       "finish_reason": "length",
-      "elapsed_s": 914.6785091749989,
-      "ttft_s": 911.3639053750012,
-      "output_span_s": 3.3137420220009517,
-      "post_first_tps": 38.32525258659484
+      "elapsed_s": 807.708848986993,
+      "ttft_s": 804.3631405419874,
+      "output_span_s": 3.3447474220010918,
+      "post_first_tps": 37.9699821770155
     },
     {
       "label": "facts-full-repeat",
@@ -45,12 +45,12 @@
           "cached_tokens": 0
         }
       },
-      "output_sha256": "e6c370273de79edf4cb6b606e2638af665a91455610efc15a4e320cb65d2d96f",
+      "output_sha256": "4bfdcd9bfe36db5d7badd5062cefcbc7c2128c10eef9a1a081aa9e0cff388b3a",
       "finish_reason": "length",
-      "elapsed_s": 915.2546048380027,
-      "ttft_s": 911.3067076360021,
-      "output_span_s": 3.9470189030034817,
-      "post_first_tps": 32.176182359643484
+      "elapsed_s": 806.9768667969911,
+      "ttft_s": 803.4681978930021,
+      "output_span_s": 3.5086182009981712,
+      "post_first_tps": 36.196585870719595
     }
   ],
   "private_routed_capacity_checks": {
@@ -67,9 +67,9 @@
           }
         },
         "max_tokens": 640,
-        "ttft_s": 910.225896431999,
-        "elapsed_s": 928.2507263190055,
-        "post_first_tps": 35.45286830099677,
+        "ttft_s": 792.2858867909963,
+        "elapsed_s": 811.3502217019995,
+        "post_first_tps": 33.51967105214362,
         "valid": true
       },
       "decode_metric": "SSE output tokens after first emitted token divided by output span, distinct from native timing"
@@ -87,9 +87,9 @@
           }
         },
         "max_tokens": 128,
-        "ttft_s": 958.1560878180001,
-        "elapsed_s": 961.9383172559999,
-        "post_first_tps": 33.58340494798331,
+        "ttft_s": 818.79065969,
+        "elapsed_s": 822.294382589,
+        "post_first_tps": 36.2578470638678,
         "valid": true
       },
       "decode_metric": "SSE output tokens after first emitted token divided by output span, distinct from native timing"

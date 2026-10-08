@@ -14,8 +14,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 5019.9,
-        "decode_ms": 2840.8,
+        "prompt_ms": 333.9,
+        "decode_ms": 312.4,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -28,15 +28,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 5019.9 2840.8 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 4.5817645769836055,
-      "decode_tps": 2.8161081385525204,
-      "ttft_s": 7.6207230189975235,
-      "total_s": 7.861229956994066,
+      "native_done_line": "DONE 8 23 333.9 312.4 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 68.88289907157832,
+      "decode_tps": 25.608194622279132,
+      "ttft_s": 0.3964883139997255,
+      "total_s": 0.6467324429977452,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 5020 ms (4.6 tok/s), 8 generated in 2841 ms (2.8 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 334 ms (68.9 tok/s), 8 generated in 312 ms (25.6 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -55,8 +55,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 382.4,
-        "decode_ms": 274.8,
+        "prompt_ms": 307.6,
+        "decode_ms": 286.4,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -69,15 +69,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 382.4 274.8 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 60.14644351464435,
-      "decode_tps": 29.112081513828237,
-      "ttft_s": 0.4161869929957902,
-      "total_s": 0.6576473530003568,
+      "native_done_line": "DONE 8 23 307.6 286.4 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 74.77243172951886,
+      "decode_tps": 27.93296089385475,
+      "ttft_s": 0.34149431800324237,
+      "total_s": 0.5943869230031851,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 382 ms (60.1 tok/s), 8 generated in 275 ms (29.1 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 308 ms (74.8 tok/s), 8 generated in 286 ms (27.9 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -96,8 +96,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1479.8,
-        "decode_ms": 5411.5,
+        "prompt_ms": 1217.2,
+        "decode_ms": 5543.1,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -110,15 +110,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1479.8 5411.5 length 0 0 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 345.99270171644815,
-      "decode_tps": 29.566663586805877,
-      "ttft_s": 1.5135396639961982,
-      "total_s": 6.891951753998001,
+      "native_done_line": "DONE 160 512 1217.2 5543.1 length 0 0 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 420.63752875451854,
+      "decode_tps": 28.86471469033573,
+      "ttft_s": 1.2509946639984264,
+      "total_s": 6.7608198009984335,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1480 ms (346.0 tok/s), 160 generated in 5412 ms (29.6 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1217 ms (420.6 tok/s), 160 generated in 5543 ms (28.9 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2
@@ -137,8 +137,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1438.6,
-        "decode_ms": 8526.3,
+        "prompt_ms": 1170.4,
+        "decode_ms": 8621.8,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -151,15 +151,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1438.6 8526.3 length 0 0 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 355.90157097177814,
-      "decode_tps": 30.024746959407953,
-      "ttft_s": 1.4721439950008062,
-      "total_s": 9.965586245998566,
+      "native_done_line": "DONE 256 512 1170.4 8621.8 length 0 0 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 437.4572795625427,
+      "decode_tps": 29.69217564777657,
+      "ttft_s": 1.204004826999153,
+      "total_s": 9.79286314699857,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1439 ms (355.9 tok/s), 256 generated in 8526 ms (30.0 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1170 ms (437.4 tok/s), 256 generated in 8622 ms (29.7 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1
@@ -178,8 +178,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 6612.0,
-        "decode_ms": 8625.0,
+        "prompt_ms": 5308.5,
+        "decode_ms": 8668.5,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -192,15 +192,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 6612.0 8625.0 length 0 0 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 330.4597701149425,
-      "decode_tps": 29.681159420289855,
-      "ttft_s": 6.646076212004118,
-      "total_s": 15.237904530004016,
+      "native_done_line": "DONE 256 2185 5308.5 8668.5 length 0 0 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 411.60403127060374,
+      "decode_tps": 29.532214339274383,
+      "ttft_s": 5.342506709996087,
+      "total_s": 13.977851343996008,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6612 ms (330.5 tok/s), 256 generated in 8625 ms (29.7 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 5308 ms (411.6 tok/s), 256 generated in 8668 ms (29.5 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 148,
       "longest_identical_token_run": 2
@@ -219,8 +219,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 21896.5,
-        "decode_ms": 9676.3,
+        "prompt_ms": 18644.7,
+        "decode_ms": 10693.0,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -233,15 +233,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 21896.5 9676.3 length 0 0 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 319.6857945333729,
-      "decode_tps": 26.456393456176432,
-      "ttft_s": 21.931989395001438,
-      "total_s": 31.57412300100259,
+      "native_done_line": "DONE 256 7000 18644.7 10693.0 length 0 0 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 375.4418145639243,
+      "decode_tps": 23.940895913214252,
+      "ttft_s": 18.680505532000097,
+      "total_s": 29.338982601999305,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 21896 ms (319.7 tok/s), 256 generated in 9676 ms (26.5 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 18645 ms (375.4 tok/s), 256 generated in 10693 ms (23.9 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 150,
       "longest_identical_token_run": 1
@@ -260,8 +260,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 380.4,
-        "decode_ms": 273.3,
+        "prompt_ms": 306.2,
+        "decode_ms": 283.5,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -274,15 +274,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 380.4 273.3 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 60.462670872765514,
-      "decode_tps": 29.271862422246613,
-      "ttft_s": 0.41401333900284953,
-      "total_s": 0.6540790209983243,
+      "native_done_line": "DONE 8 23 306.2 283.5 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 75.1143043762247,
+      "decode_tps": 28.21869488536155,
+      "ttft_s": 0.3398018250009045,
+      "total_s": 0.5899784860012005,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 380 ms (60.5 tok/s), 8 generated in 273 ms (29.3 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 306 ms (75.1 tok/s), 8 generated in 284 ms (28.2 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -301,8 +301,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 418.7,
-        "decode_ms": 1515.6,
+        "prompt_ms": 334.6,
+        "decode_ms": 262.4,
         "finish": "stop",
         "drafts_accepted": 4,
         "drafts_offered": 4,
@@ -315,15 +315,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 418.7 1515.6 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 54.93193217100549,
-      "decode_tps": 5.278437582475587,
-      "ttft_s": 0.5042537519984762,
-      "total_s": 1.935396386004868,
+      "native_done_line": "DONE 8 23 334.6 262.4 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 68.73879258816497,
+      "decode_tps": 30.487804878048784,
+      "ttft_s": 0.3970881580025889,
+      "total_s": 0.5980352410042542,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 419 ms (54.9 tok/s), 8 generated in 1516 ms (5.3 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 335 ms (68.7 tok/s), 8 generated in 262 ms (30.5 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -344,7 +344,7 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 383.5,
+        "prompt_ms": 304.1,
         "decode_ms": 212.8,
         "finish": "stop",
         "drafts_accepted": 4,
@@ -358,15 +358,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 383.5 212.8 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 59.97392438070404,
+      "native_done_line": "DONE 8 23 304.1 212.8 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 75.63301545544228,
       "decode_tps": 37.59398496240601,
-      "ttft_s": 0.417102363993763,
-      "total_s": 0.5973521799969603,
+      "ttft_s": 0.33758983299776446,
+      "total_s": 0.5179359309986467,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 384 ms (60.0 tok/s), 8 generated in 213 ms (37.6 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 304 ms (75.6 tok/s), 8 generated in 213 ms (37.6 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -387,8 +387,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1481.9,
-        "decode_ms": 4389.3,
+        "prompt_ms": 1198.4,
+        "decode_ms": 4388.3,
         "finish": "length",
         "drafts_accepted": 52,
         "drafts_offered": 71,
@@ -401,15 +401,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1481.9 4389.3 length 52 71 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 345.5023955732505,
-      "decode_tps": 36.45228168500672,
-      "ttft_s": 1.5154895980012952,
-      "total_s": 5.872463449995848,
+      "native_done_line": "DONE 160 512 1198.4 4388.3 length 52 71 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 427.2363150867823,
+      "decode_tps": 36.46058838274502,
+      "ttft_s": 1.2318891629984137,
+      "total_s": 5.58784950900008,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1482 ms (345.5 tok/s), 160 generated in 4389 ms (36.5 tok/s), drafts accepted 52 of 71, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1198 ms (427.2 tok/s), 160 generated in 4388 ms (36.5 tok/s), drafts accepted 52 of 71, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2,
@@ -430,8 +430,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1447.2,
-        "decode_ms": 6211.5,
+        "prompt_ms": 1143.1,
+        "decode_ms": 6209.7,
         "finish": "length",
         "drafts_accepted": 103,
         "drafts_offered": 119,
@@ -444,15 +444,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1447.2 6211.5 length 103 119 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 353.78662244333884,
-      "decode_tps": 41.21387748530951,
-      "ttft_s": 1.4808253849987523,
-      "total_s": 7.660060694994172,
+      "native_done_line": "DONE 256 512 1143.1 6209.7 length 103 119 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 447.90482022570205,
+      "decode_tps": 41.22582411388634,
+      "ttft_s": 1.1765566399990348,
+      "total_s": 7.354084653998143,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1447 ms (353.8 tok/s), 256 generated in 6211 ms (41.2 tok/s), drafts accepted 103 of 119, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1143 ms (447.9 tok/s), 256 generated in 6210 ms (41.2 tok/s), drafts accepted 103 of 119, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1,
@@ -473,8 +473,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 6638.1,
-        "decode_ms": 5894.1,
+        "prompt_ms": 5252.3,
+        "decode_ms": 5893.6,
         "finish": "length",
         "drafts_accepted": 117,
         "drafts_offered": 133,
@@ -487,15 +487,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 6638.1 5894.1 length 117 133 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 329.1604525391302,
-      "decode_tps": 43.43326377224682,
-      "ttft_s": 6.672183478003717,
-      "total_s": 12.533684832997096,
+      "native_done_line": "DONE 256 2185 5252.3 5893.6 length 117 133 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 416.0082249681092,
+      "decode_tps": 43.43694855436405,
+      "ttft_s": 5.286333504998765,
+      "total_s": 11.147408060998714,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6638 ms (329.2 tok/s), 256 generated in 5894 ms (43.4 tok/s), drafts accepted 117 of 133, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 5252 ms (416.0 tok/s), 256 generated in 5894 ms (43.4 tok/s), drafts accepted 117 of 133, 0 checkpoints"
       ],
       "unique_token_count": 148,
       "longest_identical_token_run": 2,
@@ -516,8 +516,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 22135.5,
-        "decode_ms": 7713.6,
+        "prompt_ms": 18099.2,
+        "decode_ms": 7713.0,
         "finish": "length",
         "drafts_accepted": 89,
         "drafts_offered": 115,
@@ -530,15 +530,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 22135.5 7713.6 length 89 115 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 316.2341035892571,
-      "decode_tps": 33.18813524165111,
-      "ttft_s": 22.171002815994143,
-      "total_s": 29.85014075700019,
+      "native_done_line": "DONE 256 7000 18099.2 7713.0 length 89 115 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 386.75742574257424,
+      "decode_tps": 33.19071697134708,
+      "ttft_s": 18.13439247799397,
+      "total_s": 25.813132635994407,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22135 ms (316.2 tok/s), 256 generated in 7714 ms (33.2 tok/s), drafts accepted 89 of 115, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 18099 ms (386.8 tok/s), 256 generated in 7713 ms (33.2 tok/s), drafts accepted 89 of 115, 0 checkpoints"
       ],
       "unique_token_count": 150,
       "longest_identical_token_run": 1,
@@ -559,8 +559,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 382.4,
-        "decode_ms": 210.8,
+        "prompt_ms": 303.0,
+        "decode_ms": 210.7,
         "finish": "stop",
         "drafts_accepted": 4,
         "drafts_offered": 4,
@@ -573,15 +573,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 382.4 210.8 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 60.14644351464435,
-      "decode_tps": 37.950664136622386,
-      "ttft_s": 0.4159936540017952,
-      "total_s": 0.5943712250009412,
+      "native_done_line": "DONE 8 23 303.0 210.7 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 75.9075907590759,
+      "decode_tps": 37.968675842429995,
+      "ttft_s": 0.3365348619990982,
+      "total_s": 0.5147938009977224,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 382 ms (60.1 tok/s), 8 generated in 211 ms (37.9 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 303 ms (75.9 tok/s), 8 generated in 211 ms (38.0 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -602,8 +602,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 410.9,
-        "decode_ms": 709.9,
+        "prompt_ms": 344.3,
+        "decode_ms": 225.8,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -616,15 +616,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 410.9 709.9 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 55.97468970552446,
-      "decode_tps": 11.269192844062545,
-      "ttft_s": 0.47305247300391784,
-      "total_s": 1.1220805600023596,
+      "native_done_line": "DONE 8 23 344.3 225.8 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 66.80220737728725,
+      "decode_tps": 35.4295837023915,
+      "ttft_s": 0.40639176099648466,
+      "total_s": 0.5713325869946857,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 411 ms (56.0 tok/s), 8 generated in 710 ms (11.3 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 344 ms (66.8 tok/s), 8 generated in 226 ms (35.4 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -645,8 +645,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 384.4,
-        "decode_ms": 163.9,
+        "prompt_ms": 312.6,
+        "decode_ms": 176.4,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -659,15 +659,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 384.4 163.9 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 59.833506763787724,
-      "decode_tps": 48.81025015253203,
-      "ttft_s": 0.41790778099675663,
-      "total_s": 0.5494492209982127,
+      "native_done_line": "DONE 8 23 312.6 176.4 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 73.57645553422904,
+      "decode_tps": 45.35147392290249,
+      "ttft_s": 0.34648729499895126,
+      "total_s": 0.49022610199608607,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 384 ms (59.8 tok/s), 8 generated in 164 ms (48.8 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 313 ms (73.6 tok/s), 8 generated in 176 ms (45.3 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -688,8 +688,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1489.5,
-        "decode_ms": 4761.2,
+        "prompt_ms": 1255.1,
+        "decode_ms": 4461.3,
         "finish": "length",
         "drafts_accepted": 72,
         "drafts_offered": 118,
@@ -702,15 +702,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1489.5 4761.2 length 72 118 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 343.7395099026519,
-      "decode_tps": 33.60497353608334,
-      "ttft_s": 1.5232089909986826,
-      "total_s": 6.25183937499969,
+      "native_done_line": "DONE 160 512 1255.1 4461.3 length 72 118 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 407.9356226595491,
+      "decode_tps": 35.86398583372559,
+      "ttft_s": 1.2889163350046147,
+      "total_s": 5.717636578003294,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1489 ms (343.7 tok/s), 160 generated in 4761 ms (33.6 tok/s), drafts accepted 72 of 118, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1255 ms (407.9 tok/s), 160 generated in 4461 ms (35.9 tok/s), drafts accepted 72 of 118, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2,
@@ -731,8 +731,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1455.1,
-        "decode_ms": 5635.0,
+        "prompt_ms": 1200.0,
+        "decode_ms": 5736.3,
         "finish": "length",
         "drafts_accepted": 143,
         "drafts_offered": 194,
@@ -745,15 +745,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1455.1 5635.0 length 143 194 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 351.8658511442513,
-      "decode_tps": 45.43034605146406,
-      "ttft_s": 1.4885564750002231,
-      "total_s": 7.0913842510053655,
+      "native_done_line": "DONE 256 512 1200.0 5736.3 length 143 194 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 426.6666666666667,
+      "decode_tps": 44.628070358942175,
+      "ttft_s": 1.2336917180000455,
+      "total_s": 6.937811402000079,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1455 ms (351.9 tok/s), 256 generated in 5635 ms (45.4 tok/s), drafts accepted 143 of 194, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1200 ms (426.6 tok/s), 256 generated in 5736 ms (44.6 tok/s), drafts accepted 143 of 194, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1,
@@ -774,8 +774,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 6664.8,
-        "decode_ms": 5064.6,
+        "prompt_ms": 5422.6,
+        "decode_ms": 5116.2,
         "finish": "length",
         "drafts_accepted": 170,
         "drafts_offered": 223,
@@ -788,15 +788,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 6664.8 5064.6 length 170 223 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 327.8417957027968,
-      "decode_tps": 50.54693361765983,
-      "ttft_s": 6.698767169000348,
-      "total_s": 11.730913073995907,
+      "native_done_line": "DONE 256 2185 5422.6 5116.2 length 170 223 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 402.9432375613174,
+      "decode_tps": 50.03713693757086,
+      "ttft_s": 5.456807179994939,
+      "total_s": 10.540457565999532,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6665 ms (327.8 tok/s), 256 generated in 5065 ms (50.5 tok/s), drafts accepted 170 of 223, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 5423 ms (402.9 tok/s), 256 generated in 5116 ms (50.0 tok/s), drafts accepted 170 of 223, 0 checkpoints"
       ],
       "unique_token_count": 148,
       "longest_identical_token_run": 2,
@@ -817,8 +817,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 22206.7,
-        "decode_ms": 7400.8,
+        "prompt_ms": 19113.2,
+        "decode_ms": 8405.4,
         "finish": "length",
         "drafts_accepted": 124,
         "drafts_offered": 195,
@@ -831,15 +831,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 22206.7 7400.8 length 124 195 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 315.2201812966357,
-      "decode_tps": 34.59085504269809,
-      "ttft_s": 22.242034774004424,
-      "total_s": 29.60940864800068,
+      "native_done_line": "DONE 256 7000 19113.2 8405.4 length 124 195 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 366.2390389887617,
+      "decode_tps": 30.456611226116546,
+      "ttft_s": 19.149075795998215,
+      "total_s": 27.52056232400355,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22207 ms (315.2 tok/s), 256 generated in 7401 ms (34.6 tok/s), drafts accepted 124 of 195, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 19113 ms (366.2 tok/s), 256 generated in 8405 ms (30.5 tok/s), drafts accepted 124 of 195, 0 checkpoints"
       ],
       "unique_token_count": 150,
       "longest_identical_token_run": 1,
@@ -860,8 +860,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 383.3,
-        "decode_ms": 160.5,
+        "prompt_ms": 311.4,
+        "decode_ms": 172.2,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -874,15 +874,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 383.3 160.5 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 60.00521784503,
-      "decode_tps": 49.84423676012461,
-      "ttft_s": 0.41684078400430735,
-      "total_s": 0.544993848001468,
+      "native_done_line": "DONE 8 23 311.4 172.2 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 73.85998715478485,
+      "decode_tps": 46.45760743321719,
+      "ttft_s": 0.34520319099829067,
+      "total_s": 0.4849378360013361,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 383 ms (60.0 tok/s), 8 generated in 161 ms (49.8 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 311 ms (73.9 tok/s), 8 generated in 172 ms (46.4 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -905,8 +905,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 419.4,
-        "decode_ms": 310.4,
+        "prompt_ms": 338.7,
+        "decode_ms": 309.3,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -919,15 +919,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 419.4 310.4 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 54.840247973295185,
-      "decode_tps": 25.77319587628866,
-      "ttft_s": 0.4830391349969432,
-      "total_s": 0.7302401619963348,
+      "native_done_line": "DONE 8 23 338.7 309.3 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 67.90670209625037,
+      "decode_tps": 25.864856126737795,
+      "ttft_s": 0.4016681749926647,
+      "total_s": 0.648616085993126,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 419 ms (54.8 tok/s), 8 generated in 310 ms (25.8 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 339 ms (67.9 tok/s), 8 generated in 309 ms (25.9 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -946,8 +946,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 396.2,
-        "decode_ms": 281.8,
+        "prompt_ms": 312.0,
+        "decode_ms": 281.6,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -960,15 +960,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 396.2 281.8 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 58.051489146895506,
-      "decode_tps": 28.388928317955997,
-      "ttft_s": 0.4302275119989645,
-      "total_s": 0.678381460995297,
+      "native_done_line": "DONE 8 23 312.0 281.6 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 73.71794871794872,
+      "decode_tps": 28.409090909090907,
+      "ttft_s": 0.34615697599656414,
+      "total_s": 0.5941478830063716,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 396 ms (58.0 tok/s), 8 generated in 282 ms (28.4 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 312 ms (73.7 tok/s), 8 generated in 282 ms (28.4 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -987,8 +987,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1546.3,
-        "decode_ms": 5491.2,
+        "prompt_ms": 1236.0,
+        "decode_ms": 5487.0,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -1001,15 +1001,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1546.3 5491.2 length 0 0 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 331.1129793701093,
-      "decode_tps": 29.13752913752914,
-      "ttft_s": 1.5802539640062605,
-      "total_s": 7.038070754002547,
+      "native_done_line": "DONE 160 512 1236.0 5487.0 length 0 0 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 414.2394822006473,
+      "decode_tps": 29.159832330964097,
+      "ttft_s": 1.2697473110019928,
+      "total_s": 6.723736098007066,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1546 ms (331.1 tok/s), 160 generated in 5491 ms (29.1 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1236 ms (414.2 tok/s), 160 generated in 5487 ms (29.2 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2
@@ -1028,8 +1028,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1511.9,
-        "decode_ms": 8607.2,
+        "prompt_ms": 1193.8,
+        "decode_ms": 8597.7,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -1042,15 +1042,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1511.9 8607.2 length 0 0 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 338.64673589523113,
-      "decode_tps": 29.74254112835765,
-      "ttft_s": 1.545524118002504,
-      "total_s": 10.11969226700603,
+      "native_done_line": "DONE 256 512 1193.8 8597.7 length 0 0 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 428.8825598927794,
+      "decode_tps": 29.77540505018784,
+      "ttft_s": 1.2273806949961,
+      "total_s": 9.792182923003566,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1512 ms (338.7 tok/s), 256 generated in 8607 ms (29.7 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1194 ms (428.9 tok/s), 256 generated in 8598 ms (29.8 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1
@@ -1069,8 +1069,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 2922.4,
-        "decode_ms": 8661.8,
+        "prompt_ms": 2484.0,
+        "decode_ms": 8654.1,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -1083,15 +1083,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 2922.4 8661.8 length 0 0 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 747.6731453599781,
-      "decode_tps": 29.55505784017179,
-      "ttft_s": 2.9565769670007285,
-      "total_s": 11.585387911996804,
+      "native_done_line": "DONE 256 2185 2484.0 8654.1 length 0 0 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 879.6296296296297,
+      "decode_tps": 29.581354502490147,
+      "ttft_s": 2.5180019549879944,
+      "total_s": 11.138950255990494,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2922 ms (747.7 tok/s), 256 generated in 8662 ms (29.6 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2484 ms (879.6 tok/s), 256 generated in 8654 ms (29.6 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 156,
       "longest_identical_token_run": 2
@@ -1110,8 +1110,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 8332.8,
-        "decode_ms": 10205.1,
+        "prompt_ms": 7401.9,
+        "decode_ms": 10206.7,
         "finish": "length",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -1124,15 +1124,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 8332.8 10205.1 length 0 0 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 840.0537634408603,
-      "decode_tps": 25.085496467452547,
-      "ttft_s": 8.368550211002002,
-      "total_s": 18.539195977995405,
+      "native_done_line": "DONE 256 7000 7401.9 10206.7 length 0 0 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 945.7031302773613,
+      "decode_tps": 25.081564070659468,
+      "ttft_s": 7.437656616006279,
+      "total_s": 17.610362154999166,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 8333 ms (840.0 tok/s), 256 generated in 10205 ms (25.1 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 7402 ms (945.7 tok/s), 256 generated in 10207 ms (25.1 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 145,
       "longest_identical_token_run": 1
@@ -1151,8 +1151,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 395.1,
-        "decode_ms": 280.4,
+        "prompt_ms": 311.4,
+        "decode_ms": 280.2,
         "finish": "stop",
         "drafts_accepted": 0,
         "drafts_offered": 0,
@@ -1165,15 +1165,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 395.1 280.4 stop 0 0 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 58.21311060491015,
-      "decode_tps": 28.530670470756064,
-      "ttft_s": 0.42892722800024785,
-      "total_s": 0.6757814180018613,
+      "native_done_line": "DONE 8 23 311.4 280.2 stop 0 0 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 73.85998715478485,
+      "decode_tps": 28.551034975017846,
+      "ttft_s": 0.34526353199908044,
+      "total_s": 0.5919828190089902,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 395 ms (58.2 tok/s), 8 generated in 280 ms (28.5 tok/s), drafts accepted 0 of 0, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 311 ms (73.9 tok/s), 8 generated in 280 ms (28.6 tok/s), drafts accepted 0 of 0, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1
@@ -1192,8 +1192,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 431.2,
-        "decode_ms": 271.2,
+        "prompt_ms": 352.5,
+        "decode_ms": 277.8,
         "finish": "stop",
         "drafts_accepted": 4,
         "drafts_offered": 4,
@@ -1206,15 +1206,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 431.2 271.2 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 53.33951762523191,
-      "decode_tps": 29.498525073746315,
-      "ttft_s": 0.4941051220012014,
-      "total_s": 0.7032958449999569,
+      "native_done_line": "DONE 8 23 352.5 277.8 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 65.2482269503546,
+      "decode_tps": 28.797696184305256,
+      "ttft_s": 0.41534814999613445,
+      "total_s": 0.631508341000881,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 431 ms (53.3 tok/s), 8 generated in 271 ms (29.5 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 352 ms (65.3 tok/s), 8 generated in 278 ms (28.8 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1235,8 +1235,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 405.4,
-        "decode_ms": 221.4,
+        "prompt_ms": 322.6,
+        "decode_ms": 229.4,
         "finish": "stop",
         "drafts_accepted": 4,
         "drafts_offered": 4,
@@ -1249,15 +1249,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 405.4 221.4 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 56.734089787863844,
-      "decode_tps": 36.133694670280036,
-      "ttft_s": 0.4394363409955986,
-      "total_s": 0.6278847119974671,
+      "native_done_line": "DONE 8 23 322.6 229.4 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 71.29572225666459,
+      "decode_tps": 34.873583260680036,
+      "ttft_s": 0.35693545000685845,
+      "total_s": 0.5531308260106016,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 405 ms (56.7 tok/s), 8 generated in 221 ms (36.1 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 323 ms (71.3 tok/s), 8 generated in 229 ms (34.9 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1278,8 +1278,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1567.3,
-        "decode_ms": 4487.5,
+        "prompt_ms": 1287.7,
+        "decode_ms": 4568.6,
         "finish": "length",
         "drafts_accepted": 52,
         "drafts_offered": 72,
@@ -1292,15 +1292,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1567.3 4487.5 length 52 72 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 326.6764499457666,
-      "decode_tps": 35.65459610027855,
-      "ttft_s": 1.6011566000015591,
-      "total_s": 6.056027755003015,
+      "native_done_line": "DONE 160 512 1287.7 4568.6 length 52 72 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 397.60813854158573,
+      "decode_tps": 35.02166965810095,
+      "ttft_s": 1.3216889229952358,
+      "total_s": 5.857368347991724,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1567 ms (326.7 tok/s), 160 generated in 4487 ms (35.7 tok/s), drafts accepted 52 of 72, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1288 ms (397.6 tok/s), 160 generated in 4569 ms (35.0 tok/s), drafts accepted 52 of 72, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2,
@@ -1321,8 +1321,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1534.2,
-        "decode_ms": 6279.1,
+        "prompt_ms": 1237.7,
+        "decode_ms": 6346.0,
         "finish": "length",
         "drafts_accepted": 104,
         "drafts_offered": 120,
@@ -1335,15 +1335,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1534.2 6279.1 length 104 120 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 333.72441663407636,
-      "decode_tps": 40.77017406953225,
-      "ttft_s": 1.5680690950030112,
-      "total_s": 7.814565934000711,
+      "native_done_line": "DONE 256 512 1237.7 6346.0 length 104 120 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 413.6705178960976,
+      "decode_tps": 40.34037188780334,
+      "ttft_s": 1.2716113470087294,
+      "total_s": 7.584947839000961,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1534 ms (333.7 tok/s), 256 generated in 6279 ms (40.8 tok/s), drafts accepted 104 of 120, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1238 ms (413.7 tok/s), 256 generated in 6346 ms (40.3 tok/s), drafts accepted 104 of 120, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1,
@@ -1364,8 +1364,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 2956.0,
-        "decode_ms": 6045.2,
+        "prompt_ms": 2543.8,
+        "decode_ms": 6072.4,
         "finish": "length",
         "drafts_accepted": 112,
         "drafts_offered": 126,
@@ -1378,15 +1378,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 2956.0 6045.2 length 112 126 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 739.1745602165088,
-      "decode_tps": 42.34764772050553,
-      "ttft_s": 2.9900329500014777,
-      "total_s": 9.002579769003205,
+      "native_done_line": "DONE 256 2185 2543.8 6072.4 length 112 126 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 858.9511754068716,
+      "decode_tps": 42.15796060865556,
+      "ttft_s": 2.578081204002956,
+      "total_s": 8.617759363012738,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2956 ms (739.2 tok/s), 256 generated in 6045 ms (42.3 tok/s), drafts accepted 112 of 126, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2544 ms (858.9 tok/s), 256 generated in 6072 ms (42.2 tok/s), drafts accepted 112 of 126, 0 checkpoints"
       ],
       "unique_token_count": 156,
       "longest_identical_token_run": 2,
@@ -1407,8 +1407,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 8412.0,
-        "decode_ms": 8515.5,
+        "prompt_ms": 7579.8,
+        "decode_ms": 9175.4,
         "finish": "length",
         "drafts_accepted": 81,
         "drafts_offered": 121,
@@ -1421,15 +1421,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 8412.0 8515.5 length 81 121 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 832.1445553970518,
-      "decode_tps": 30.062826610298867,
-      "ttft_s": 8.447772210005496,
-      "total_s": 16.92868093400466,
+      "native_done_line": "DONE 256 7000 7579.8 9175.4 length 81 121 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 923.5072165492493,
+      "decode_tps": 27.900690978050005,
+      "ttft_s": 7.615745217000949,
+      "total_s": 16.756320280997897,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 8412 ms (832.1 tok/s), 256 generated in 8516 ms (30.1 tok/s), drafts accepted 81 of 121, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 7580 ms (923.5 tok/s), 256 generated in 9175 ms (27.9 tok/s), drafts accepted 81 of 121, 0 checkpoints"
       ],
       "unique_token_count": 145,
       "longest_identical_token_run": 1,
@@ -1450,8 +1450,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 402.7,
-        "decode_ms": 219.3,
+        "prompt_ms": 319.6,
+        "decode_ms": 226.5,
         "finish": "stop",
         "drafts_accepted": 4,
         "drafts_offered": 4,
@@ -1464,15 +1464,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 402.7 219.3 stop 4 4 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 57.114477278371,
-      "decode_tps": 36.4797081623347,
-      "ttft_s": 0.4367280789956567,
-      "total_s": 0.6230459860016708,
+      "native_done_line": "DONE 8 23 319.6 226.5 stop 4 4 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 71.96495619524406,
+      "decode_tps": 35.32008830022075,
+      "ttft_s": 0.3538478539994685,
+      "total_s": 0.5472438130091177,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 403 ms (57.1 tok/s), 8 generated in 219 ms (36.5 tok/s), drafts accepted 4 of 4, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 320 ms (72.0 tok/s), 8 generated in 227 ms (35.3 tok/s), drafts accepted 4 of 4, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1493,8 +1493,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 435.1,
-        "decode_ms": 220.4,
+        "prompt_ms": 351.1,
+        "decode_ms": 220.1,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -1507,15 +1507,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 435.1 220.4 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 52.86141116984601,
-      "decode_tps": 36.29764065335753,
-      "ttft_s": 0.4983753960041213,
-      "total_s": 0.6566257759986911,
+      "native_done_line": "DONE 8 23 351.1 220.1 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 65.50840216462547,
+      "decode_tps": 36.347114947751024,
+      "ttft_s": 0.4140873760043178,
+      "total_s": 0.5724461520003388,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 435 ms (52.9 tok/s), 8 generated in 220 ms (36.3 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 351 ms (65.5 tok/s), 8 generated in 220 ms (36.3 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1536,8 +1536,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 408.2,
-        "decode_ms": 170.5,
+        "prompt_ms": 322.1,
+        "decode_ms": 170.4,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -1550,15 +1550,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 408.2 170.5 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 56.34492895639393,
-      "decode_tps": 46.9208211143695,
-      "ttft_s": 0.4423298600013368,
-      "total_s": 0.5799838259990793,
+      "native_done_line": "DONE 8 23 322.1 170.4 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 71.40639552933871,
+      "decode_tps": 46.948356807511736,
+      "ttft_s": 0.35605269599182066,
+      "total_s": 0.49369795600068755,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 408 ms (56.3 tok/s), 8 generated in 171 ms (46.9 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 322 ms (71.4 tok/s), 8 generated in 170 ms (46.9 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1579,8 +1579,8 @@
       "native": {
         "generated": 160,
         "prompt_tokens": 512,
-        "prompt_ms": 1580.6,
-        "decode_ms": 4386.3,
+        "prompt_ms": 1262.9,
+        "decode_ms": 4384.1,
         "finish": "length",
         "drafts_accepted": 72,
         "drafts_offered": 119,
@@ -1593,15 +1593,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 160 512 1580.6 4386.3 length 72 119 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 323.9276224218651,
-      "decode_tps": 36.477213140916035,
-      "ttft_s": 1.6146817409971845,
-      "total_s": 5.968057139994926,
+      "native_done_line": "DONE 160 512 1262.9 4384.1 length 72 119 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 405.4161057882651,
+      "decode_tps": 36.49551789420862,
+      "ttft_s": 1.2968620269966777,
+      "total_s": 5.648239914007718,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1581 ms (323.9 tok/s), 160 generated in 4386 ms (36.5 tok/s), drafts accepted 72 of 119, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1263 ms (405.4 tok/s), 160 generated in 4384 ms (36.5 tok/s), drafts accepted 72 of 119, 0 checkpoints"
       ],
       "unique_token_count": 110,
       "longest_identical_token_run": 2,
@@ -1622,8 +1622,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 512,
-        "prompt_ms": 1550.2,
-        "decode_ms": 5709.0,
+        "prompt_ms": 1218.7,
+        "decode_ms": 5706.6,
         "finish": "length",
         "drafts_accepted": 143,
         "drafts_offered": 196,
@@ -1636,15 +1636,15 @@
         "prompt_read": 512,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 512 1550.2 5709.0 length 143 196 0 0 0 0 0 0.0 512 0\n",
-      "prompt_tps": 330.27996387562894,
-      "decode_tps": 44.84147836748993,
-      "ttft_s": 1.583992716994544,
-      "total_s": 7.260427895998873,
+      "native_done_line": "DONE 256 512 1218.7 5706.6 length 143 196 0 0 0 0 0 0.0 512 0\n",
+      "prompt_tps": 420.1197997866579,
+      "decode_tps": 44.86033715347141,
+      "ttft_s": 1.252482620999217,
+      "total_s": 6.926508677992388,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1550 ms (330.3 tok/s), 256 generated in 5709 ms (44.8 tok/s), drafts accepted 143 of 196, 0 checkpoints"
+        "strata serve: prompt 512 tokens = 0 reused + 512 read in 1219 ms (420.1 tok/s), 256 generated in 5707 ms (44.9 tok/s), drafts accepted 143 of 196, 0 checkpoints"
       ],
       "unique_token_count": 137,
       "longest_identical_token_run": 1,
@@ -1665,8 +1665,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 2185,
-        "prompt_ms": 2974.3,
-        "decode_ms": 5315.7,
+        "prompt_ms": 2518.3,
+        "decode_ms": 5310.0,
         "finish": "length",
         "drafts_accepted": 161,
         "drafts_offered": 215,
@@ -1679,15 +1679,15 @@
         "prompt_read": 2185,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 2185 2974.3 5315.7 length 161 215 0 0 0 0 0 0.0 2185 0\n",
-      "prompt_tps": 734.6266348384494,
-      "decode_tps": 48.15922644242527,
-      "ttft_s": 3.008417778000876,
-      "total_s": 8.291389514000912,
+      "native_done_line": "DONE 256 2185 2518.3 5310.0 length 161 215 0 0 0 0 0 0.0 2185 0\n",
+      "prompt_tps": 867.6488107056347,
+      "decode_tps": 48.21092278719397,
+      "ttft_s": 2.552356977001182,
+      "total_s": 7.829719469998963,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2974 ms (734.6 tok/s), 256 generated in 5316 ms (48.2 tok/s), drafts accepted 161 of 215, 0 checkpoints"
+        "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 2518 ms (867.7 tok/s), 256 generated in 5310 ms (48.2 tok/s), drafts accepted 161 of 215, 0 checkpoints"
       ],
       "unique_token_count": 156,
       "longest_identical_token_run": 2,
@@ -1708,8 +1708,8 @@
       "native": {
         "generated": 256,
         "prompt_tokens": 7000,
-        "prompt_ms": 8430.7,
-        "decode_ms": 8551.5,
+        "prompt_ms": 7488.0,
+        "decode_ms": 8553.7,
         "finish": "length",
         "drafts_accepted": 111,
         "drafts_offered": 219,
@@ -1722,15 +1722,15 @@
         "prompt_read": 7000,
         "offloaded": 0
       },
-      "native_done_line": "DONE 256 7000 8430.7 8551.5 length 111 219 0 0 0 0 0 0.0 7000 0\n",
-      "prompt_tps": 830.2987889499092,
-      "decode_tps": 29.936268490908027,
-      "ttft_s": 8.466495809996559,
-      "total_s": 16.98324917699938,
+      "native_done_line": "DONE 256 7000 7488.0 8553.7 length 111 219 0 0 0 0 0 0.0 7000 0\n",
+      "prompt_tps": 934.8290598290598,
+      "decode_tps": 29.928568923389875,
+      "ttft_s": 7.5239609370037215,
+      "total_s": 16.04288722301135,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 8431 ms (830.3 tok/s), 256 generated in 8551 ms (29.9 tok/s), drafts accepted 111 of 219, 0 checkpoints"
+        "strata serve: prompt 7000 tokens = 0 reused + 7000 read in 7488 ms (934.8 tok/s), 256 generated in 8554 ms (29.9 tok/s), drafts accepted 111 of 219, 0 checkpoints"
       ],
       "unique_token_count": 145,
       "longest_identical_token_run": 1,
@@ -1751,8 +1751,8 @@
       "native": {
         "generated": 8,
         "prompt_tokens": 23,
-        "prompt_ms": 406.3,
-        "decode_ms": 167.0,
+        "prompt_ms": 319.8,
+        "decode_ms": 166.9,
         "finish": "stop",
         "drafts_accepted": 6,
         "drafts_offered": 6,
@@ -1765,15 +1765,15 @@
         "prompt_read": 23,
         "offloaded": 0
       },
-      "native_done_line": "DONE 8 23 406.3 167.0 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-      "prompt_tps": 56.60841742554762,
-      "decode_tps": 47.90419161676647,
-      "ttft_s": 0.4403260700055398,
-      "total_s": 0.5744299170037266,
+      "native_done_line": "DONE 8 23 319.8 166.9 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+      "prompt_tps": 71.91994996873045,
+      "decode_tps": 47.932893948472135,
+      "ttft_s": 0.35389225800463464,
+      "total_s": 0.4879585870075971,
       "valid": true,
       "finite_log_checks": true,
       "numeric_timing_lines": [
-        "strata serve: prompt 23 tokens = 0 reused + 23 read in 406 ms (56.6 tok/s), 8 generated in 167 ms (47.9 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+        "strata serve: prompt 23 tokens = 0 reused + 23 read in 320 ms (71.9 tok/s), 8 generated in 167 ms (47.9 tok/s), drafts accepted 6 of 6, 0 checkpoints"
       ],
       "unique_token_count": 8,
       "longest_identical_token_run": 1,
@@ -1782,7 +1782,7 @@
     }
   ],
   "262k-512": {
-    "run_id": "v01402-context-reference-512-1",
+    "run_id": "v0141-context-reference-512-2",
     "rows": [
       {
         "mode": "nodraft",
@@ -1790,18 +1790,18 @@
         "valid": true,
         "prompt_tokens": 32640,
         "output_tokens": 128,
-        "input_ids_sha256": "91b44518d843189c4a8690cd5b9534609615dd7224cfd6d3b1de9e7c31187d3d",
-        "output_ids_sha256": "7641b36d3de9fe569149efe5294cfcf4065297c4830774370931f20fa431cb1a",
-        "output_sha256": "fe93e85237de448fb8d4ddd80cfcef8dbb44b777855824c0335b7148b4a53b5e",
+        "input_ids_sha256": "703928aa70504cf00495c566a78f7e3448dfc98758aaf1fee55c31cab9e3aee6",
+        "output_ids_sha256": "1b76dde6e1d5018197eeddb77e50fcef7af981706ceeaf8c6801de2a0560dc57",
+        "output_sha256": "ad5a0ad6ac73fde570e2e81c2a1eab836dc0b56323e2fa98b9f81c167e43f731",
         "matches_nodraft": null,
         "common_prefix_tokens": null,
-        "ttft_s": 94.49277110699768,
-        "elapsed_s": 99.08737427699816,
+        "ttft_s": 79.07973932000459,
+        "elapsed_s": 83.64474856200104,
         "native": {
           "generated": 128,
           "prompt_tokens": 32640,
-          "prompt_ms": 94421.2,
-          "decode_ms": 4656.9,
+          "prompt_ms": 79008.7,
+          "decode_ms": 4626.2,
           "finish": "length",
           "drafts_accepted": 0,
           "drafts_offered": 0,
@@ -1821,18 +1821,18 @@
         "valid": true,
         "prompt_tokens": 262016,
         "output_tokens": 128,
-        "input_ids_sha256": "324254bf604d88615760daedd6faf854d60858bf3d2ac9bd8bba782d8e160483",
-        "output_ids_sha256": "93dd2be454232bbe527c51b3f2bc2583d9cb9e1a2d0bacbd6877a511270fbe84",
-        "output_sha256": "a6d6f11ad5a576a6fb440c16164803717ed2577822200320057d5960b143c704",
+        "input_ids_sha256": "4df4f35e2fa96c2935805695cba37aa2425a445ceadf754baa06c6f868d523ae",
+        "output_ids_sha256": "1f7f69d4064cb1a4606a4d86e32c907397ead7b82407315888aee729a0d83b27",
+        "output_sha256": "b2ca56f3f7a31a57e191360f363f19ca8c6c5d9d9f0aa0626c3b9977b3cb9026",
         "matches_nodraft": null,
         "common_prefix_tokens": null,
-        "ttft_s": 913.4508266760022,
-        "elapsed_s": 918.5192020210015,
+        "ttft_s": 792.1779458169913,
+        "elapsed_s": 797.2524428070028,
         "native": {
           "generated": 128,
           "prompt_tokens": 262016,
-          "prompt_ms": 913379.9,
-          "decode_ms": 5109.9,
+          "prompt_ms": 792107.3,
+          "decode_ms": 5115.0,
           "finish": "length",
           "drafts_accepted": 0,
           "drafts_offered": 0,
@@ -1852,21 +1852,21 @@
         "valid": true,
         "prompt_tokens": 32640,
         "output_tokens": 128,
-        "input_ids_sha256": "91b44518d843189c4a8690cd5b9534609615dd7224cfd6d3b1de9e7c31187d3d",
-        "output_ids_sha256": "7641b36d3de9fe569149efe5294cfcf4065297c4830774370931f20fa431cb1a",
-        "output_sha256": "fe93e85237de448fb8d4ddd80cfcef8dbb44b777855824c0335b7148b4a53b5e",
+        "input_ids_sha256": "703928aa70504cf00495c566a78f7e3448dfc98758aaf1fee55c31cab9e3aee6",
+        "output_ids_sha256": "1b76dde6e1d5018197eeddb77e50fcef7af981706ceeaf8c6801de2a0560dc57",
+        "output_sha256": "ad5a0ad6ac73fde570e2e81c2a1eab836dc0b56323e2fa98b9f81c167e43f731",
         "matches_nodraft": true,
         "common_prefix_tokens": 128,
-        "ttft_s": 93.95343291800236,
-        "elapsed_s": 97.24868140200124,
+        "ttft_s": 80.30360388399276,
+        "elapsed_s": 83.59431980199588,
         "native": {
           "generated": 128,
           "prompt_tokens": 32640,
-          "prompt_ms": 93879.5,
-          "decode_ms": 3358.6,
+          "prompt_ms": 80232.6,
+          "decode_ms": 3351.2,
           "finish": "length",
           "drafts_accepted": 56,
-          "drafts_offered": 62,
+          "drafts_offered": 63,
           "reused": 0,
           "hits": 0,
           "lookups": 0,
@@ -1883,21 +1883,21 @@
         "valid": true,
         "prompt_tokens": 32640,
         "output_tokens": 128,
-        "input_ids_sha256": "91b44518d843189c4a8690cd5b9534609615dd7224cfd6d3b1de9e7c31187d3d",
-        "output_ids_sha256": "7641b36d3de9fe569149efe5294cfcf4065297c4830774370931f20fa431cb1a",
-        "output_sha256": "fe93e85237de448fb8d4ddd80cfcef8dbb44b777855824c0335b7148b4a53b5e",
+        "input_ids_sha256": "703928aa70504cf00495c566a78f7e3448dfc98758aaf1fee55c31cab9e3aee6",
+        "output_ids_sha256": "1b76dde6e1d5018197eeddb77e50fcef7af981706ceeaf8c6801de2a0560dc57",
+        "output_sha256": "ad5a0ad6ac73fde570e2e81c2a1eab836dc0b56323e2fa98b9f81c167e43f731",
         "matches_nodraft": true,
         "common_prefix_tokens": 128,
-        "ttft_s": 93.67636902199592,
-        "elapsed_s": 96.56789107000077,
+        "ttft_s": 79.30223763499816,
+        "elapsed_s": 82.28793182500522,
         "native": {
           "generated": 128,
           "prompt_tokens": 32640,
-          "prompt_ms": 93605.2,
-          "decode_ms": 2951.8,
+          "prompt_ms": 79231.7,
+          "decode_ms": 3046.3,
           "finish": "length",
-          "drafts_accepted": 81,
-          "drafts_offered": 95,
+          "drafts_accepted": 79,
+          "drafts_offered": 105,
           "reused": 0,
           "hits": 0,
           "lookups": 0,
@@ -1914,21 +1914,21 @@
         "valid": true,
         "prompt_tokens": 262016,
         "output_tokens": 128,
-        "input_ids_sha256": "324254bf604d88615760daedd6faf854d60858bf3d2ac9bd8bba782d8e160483",
-        "output_ids_sha256": "93dd2be454232bbe527c51b3f2bc2583d9cb9e1a2d0bacbd6877a511270fbe84",
-        "output_sha256": "a6d6f11ad5a576a6fb440c16164803717ed2577822200320057d5960b143c704",
+        "input_ids_sha256": "4df4f35e2fa96c2935805695cba37aa2425a445ceadf754baa06c6f868d523ae",
+        "output_ids_sha256": "1f7f69d4064cb1a4606a4d86e32c907397ead7b82407315888aee729a0d83b27",
+        "output_sha256": "b2ca56f3f7a31a57e191360f363f19ca8c6c5d9d9f0aa0626c3b9977b3cb9026",
         "matches_nodraft": true,
         "common_prefix_tokens": 128,
-        "ttft_s": 910.7536279289998,
-        "elapsed_s": 914.2917518809991,
+        "ttft_s": 793.5431629770028,
+        "elapsed_s": 797.3652309220051,
         "native": {
           "generated": 128,
           "prompt_tokens": 262016,
-          "prompt_ms": 910682.3,
-          "decode_ms": 3579.1,
+          "prompt_ms": 793472.3,
+          "decode_ms": 3862.1,
           "finish": "length",
-          "drafts_accepted": 72,
-          "drafts_offered": 103,
+          "drafts_accepted": 70,
+          "drafts_offered": 109,
           "reused": 0,
           "hits": 0,
           "lookups": 0,
@@ -1944,7 +1944,7 @@
       {
         "mode": "nodraft",
         "info": {
-          "version": "0.1.40-sycl",
+          "version": "0.1.41",
           "context": 262152,
           "kv": "int8",
           "kv_resident": 0,
@@ -1966,15 +1966,15 @@
           "conversation_cache_min_free_mib": 2560,
           "tail_role_token": -1,
           "vram_elastic": 0,
-          "engine": "0.1.40-sycl"
+          "engine": "0.1.41"
         },
         "native_exit": 0,
-        "shutdown_s": 0.21430699399934383
+        "shutdown_s": 0.21366629499243572
       },
       {
         "mode": "draft1",
         "info": {
-          "version": "0.1.40-sycl",
+          "version": "0.1.41",
           "context": 262152,
           "kv": "int8",
           "kv_resident": 0,
@@ -1985,7 +1985,7 @@
           "spec": 2,
           "mtp_max": 2,
           "lookup": 0,
-          "vram_free_mib": 4198,
+          "vram_free_mib": 4193,
           "cvec": 0,
           "arena_mib": 33812,
           "pool_workers": 4,
@@ -1996,15 +1996,15 @@
           "conversation_cache_min_free_mib": 2560,
           "tail_role_token": -1,
           "vram_elastic": 0,
-          "engine": "0.1.40-sycl"
+          "engine": "0.1.41"
         },
         "native_exit": 0,
-        "shutdown_s": 0.11353532199427718
+        "shutdown_s": 0.11353339500783477
       },
       {
         "mode": "default",
         "info": {
-          "version": "0.1.40-sycl",
+          "version": "0.1.41",
           "context": 262152,
           "kv": "int8",
           "kv_resident": 0,
@@ -2026,10 +2026,10 @@
           "conversation_cache_min_free_mib": 2560,
           "tail_role_token": -1,
           "vram_elastic": 0,
-          "engine": "0.1.40-sycl"
+          "engine": "0.1.41"
         },
         "native_exit": 0,
-        "shutdown_s": 0.2142381209996529
+        "shutdown_s": 0.21414010399894323
       }
     ],
     "failure": null,

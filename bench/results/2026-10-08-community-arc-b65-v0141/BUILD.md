@@ -1,20 +1,22 @@
 # Build and reproduce
 
-Measured engine: official `v0.1.40.2`, commit
-`e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a`, **no local patches**.
+Measured engine: official `v0.1.41`, commit
+`fb58e0dbc8399662c0e47c76578c6e878b14f6cf`, **no local patches**.
 Native SYCL Release/SPIR-V JIT, not AOT; oneAPI DPC++ 2026.1.0, oneMKL and
 llama.cpp/ggml `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 Compiler options include `-O3 -DNDEBUG -std=c++20 -fsycl`, per-kernel device-code
 split, 32-lane subgroups, precise FP and correctly rounded FP32 divide/sqrt.
-Exact CMake options are in build.json. Measured binary SHA256:
-`8ca822304881a259412656ae7ba63fdb9d8e2c31ce18d9f3149bc8a57448f311`.
+This build sets `STRATA_SYCL_SPIN_MAX=20000` to preserve the Linux xe wait
+bound: the release's helper picks the UHD display GPU's i915 driver first on
+this host. No source patch. Other CMake options are in build.json. Binary SHA256:
+`33f04c7285cfc9e83f2a547d753f8078028b6dd5d6245d2c8b9b0251f937e652`.
 A rebuild's hash can depend on paths/toolchain.
 
 With a compatible oneAPI/compiler/MKL installation already available, in an
 isolated checkout:
 
 ```sh
-git checkout e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a
+git checkout fb58e0dbc8399662c0e47c76578c6e878b14f6cf
 export STRATA_ROOT="$PWD"
 export REPORT=/absolute/path/to/this/report
 git clone https://github.com/ggml-org/llama.cpp.git /absolute/path/to/llama.cpp
@@ -26,7 +28,7 @@ python3 -m venv .venv-b65
 export PATH="$STRATA_ROOT/.venv-b65/bin:$PATH"
 cmake -S sycl -B build-sycl -G Ninja \
   -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
-  -DSTRATA_GGML_DIR=/absolute/path/to/llama.cpp -DCMAKE_BUILD_TYPE=Release
+  -DSTRATA_GGML_DIR=/absolute/path/to/llama.cpp -DCMAKE_BUILD_TYPE=Release -DSTRATA_SYCL_SPIN_MAX=20000
 cmake --build build-sycl -j4
 ```
 
@@ -89,7 +91,9 @@ export SYCL_PROGRAM_COMPILE_OPTIONS=-cl-fp32-correctly-rounded-divide-sqrt
 export STRATA_MIRROR_MIB=16384 STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1
 export STRATA_WARM_GRAPHS=0
 export STRATA_STAGER_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
-unset STRATA_DBG_NAN STRATA_VERIFY_EAGER STRATA_QFUSE STRATA_DECODE_TIMING STRATA_PLE_TRACE
+unset STRATA_DEBUG STRATA_DBG_NAN STRATA_VERIFY_EAGER STRATA_QFUSE \
+  STRATA_PREFILL_CPU_SHARE STRATA_ARENA_ALIAS_CHECK STRATA_SPIN_MAX \
+  STRATA_STAGE_PIN STRATA_EMB_REUSE_ACCOUNT STRATA_DECODE_TIMING STRATA_PLE_TRACE STRATA_TRACE
 sudo install -d -m700 -o "$(id -un)" /run/strata-community
 python "$REPORT/benchmark.py" --source "$STRATA_ROOT" \
   --profile "$REPORT/profile-8k-512.json" --ram /run/strata-community \

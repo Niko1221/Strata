@@ -1,11 +1,11 @@
-# Arc Pro B65: Strata v0.1.40.2 on PCIe Gen4
+# Arc Pro B65: Strata v0.1.41 on PCIe Gen4
 
-Measured on 2026-10-07 by timnevits. **Official upstream release**, commit
-`e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a`, with **no local engine patches**.
+Measured on 2026-10-08 by timnevits. **Official upstream release**, commit
+`fb58e0dbc8399662c0e47c76578c6e878b14f6cf`, with **no local engine patches**.
 Codex, an OpenAI AI agent, ran the tests and drafted and submitted this report
 with my approval. The measurements come from my B65 hardware.
 
-Both memory profiles pass their bounded correctness checks. With the same 7K inputs, the 8K/prefill-512 profile delivers **43.49 decode tok/s**, versus **42.38** with the 262K/prefill-512 profile (-2.6%). The 8K/prefill-4096 profile reduces median 7K TTFT from **22.23 to 8.47 seconds**, with decode tradeoffs below.
+Both memory profiles pass their bounded correctness checks. With the same 7K inputs, the 8K/prefill-512 profile delivers **43.52 decode tok/s**, versus **42.39** with the 262K/prefill-512 profile (-2.6%). The 8K/prefill-4096 profile reduces median 7K TTFT from **18.20 to 7.62 seconds**, with decode tradeoffs below.
 
 ## Hardware and configuration
 
@@ -13,8 +13,10 @@ One Intel Arc Pro B65, 32 GiB VRAM (`8086:e222`), **Gen4 x16**, 200 W cap;
 i5-12600K, 128 GB DDR4-3200, Samsung 980 NVMe. Other model owners were stopped.
 Ubuntu 26.04.1, kernel 7.0.0-38, xe/NEO 26.22.38646.7, Level Zero 1.28.6.
 Native Release/JIT build with existing oneAPI 2026.1.0 and oneMKL, precise FP,
-correctly rounded divide/sqrt and 32-lane subgroups. The tagged engine labels
-itself `0.1.40-sycl`; the commit and binary hash identify this build.
+correctly rounded divide/sqrt and 32-lane subgroups. The documented build option
+`STRATA_SYCL_SPIN_MAX=20000` preserves the Linux xe wait bound: upstream
+driver detection picks this host's UHD display GPU (i915) before the B65. The tagged engine labels
+itself `0.1.41`; the commit and binary hash identify this build.
 Exact metadata: [system.json](system.json), [build.json](build.json).
 
 Original **full 512-expert Flash-Next IQ2_XS**, not Coder:
@@ -43,15 +45,16 @@ no-borrow policy. It reserves more KV and has fewer hot expert slots; this is
 a comparison of the complete memory profiles, not context as a single variable.
 [environment.json](environment.json) is shared.
 
-Actual startup allocations below are identical across each profile's three main
-runs. Expert slots count per-layer experts, rather than the model's 512 experts
+Hot expert slots, cache sizes and mirror sizes below are identical across each
+profile's three main runs. Free VRAM is the observed range across those runs.
+Expert slots count per-layer experts, rather than the model's 512 experts
 per MoE layer. They help explain the memory/performance tradeoff.
 
-| Profile | Hot expert slots | Hot cache MiB | Pinned missing-expert mirror GiB | Free VRAM at startup MiB |
+| Profile | Hot expert slots | Hot cache MiB | Pinned missing-expert mirror GiB | Free VRAM at startup MiB (range) |
 | --- | ---: | ---: | ---: | ---: |
-| 8K / 512 | 17881 | 24588 | 9.01 | 3197 |
-| 8K / 4096 | 16160 | 22207 | 11.33 | 4237 |
-| 262K / 512 | 14388 | 19761 | 13.72 | 4185 |
+| 8K / 512 | 17881 | 24588 | 9.01 | 3185–3197 |
+| 8K / 4096 | 16160 | 22207 | 11.33 | 4229–4237 |
+| 262K / 512 | 14388 | 19761 | 13.72 | 4180–4185 |
 
 ## Three-run results
 
@@ -71,18 +74,18 @@ from the main suite.
 
 | Native context allocation | Prefill | Input/workload | Output | Runs | Prompt tok/s | Decode tok/s | TTFT seconds |
 | ---: | ---: | --- | ---: | ---: | --- | --- | --- |
-| 8192 | 512 | 512, five tasks | 640 | 3 | 352.37 (352.28–352.81) | 45.01 (44.99–45.02) | 1.486 (1.485–1.487) |
-| 8192 | 512 | 7000, five tasks | 640 | 3 | 315.44 (315.31–315.46) | 43.49 (43.49–43.49) | 22.226 (22.225–22.236) |
-| 8192 | 512 | 20, public fixture | 256 | 3 | 54.60 (54.56–54.61) | 54.48 (54.47–54.49) | 0.400 (0.400–0.401) |
-| 8192 | 512 | 2185, public fixture | 256 | 3 | 323.36 (323.30–323.43) | 49.72 (49.72–49.72) | 6.817 (6.816–6.818) |
-| 8192 | 4096 | 512, five tasks | 640 | 3 | 330.92 (330.88–331.11) | 44.64 (44.61–44.65) | 1.581 (1.580–1.581) |
-| 8192 | 4096 | 7000, five tasks | 640 | 3 | 830.00 (829.93–830.03) | 42.92 (42.92–42.92) | 8.469 (8.469–8.469) |
-| 8192 | 4096 | 20, public fixture | 256 | 3 | 50.13 (50.11–50.19) | 53.51 (53.50–53.51) | 0.434 (0.433–0.434) |
-| 8192 | 4096 | 2185, public fixture | 256 | 3 | 722.72 (582.42–723.77) | 47.40 (47.40–47.43) | 3.085 (3.081–3.813) |
-| 262152 | 512 | 512, five tasks | 640 | 3 | 320.56 (318.13–320.72) | 43.51 (42.96–43.51) | 1.631 (1.631–1.644) |
-| 262152 | 512 | 7000, five tasks | 640 | 3 | 287.80 (285.05–287.80) | 42.38 (41.87–42.40) | 24.357 (24.357–24.593) |
-| 262152 | 512 | 20, public fixture | 256 | 3 | 49.02 (48.83–49.14) | 51.53 (50.52–51.53) | 0.444 (0.443–0.446) |
-| 262152 | 512 | 2185, public fixture | 256 | 3 | 302.43 (300.92–302.91) | 48.95 (48.52–48.95) | 7.285 (7.281–7.331) |
+| 8192 | 512 | 512, five tasks | 640 | 3 | 446.69 (427.20–446.89) | 45.02 (44.15–45.04) | 1.180 (1.179–1.232) |
+| 8192 | 512 | 7000, five tasks | 640 | 3 | 385.29 (366.67–386.01) | 43.52 (42.72–43.52) | 18.203 (18.170–19.126) |
+| 8192 | 512 | 20, public fixture | 256 | 3 | 66.84 (66.80–68.38) | 52.14 (52.14–54.49) | 0.334 (0.326–0.334) |
+| 8192 | 512 | 2185, public fixture | 256 | 3 | 396.62 (396.36–407.84) | 49.16 (49.14–49.72) | 5.570 (5.419–5.573) |
+| 8192 | 4096 | 512, five tasks | 640 | 3 | 412.97 (410.19–420.71) | 44.17 (44.15–44.67) | 1.274 (1.251–1.282) |
+| 8192 | 4096 | 7000, five tasks | 640 | 3 | 923.28 (922.98–933.83) | 42.31 (42.30–42.95) | 7.617 (7.531–7.620) |
+| 8192 | 4096 | 20, public fixture | 256 | 3 | 62.75 (62.52–62.91) | 52.79 (52.29–53.51) | 0.354 (0.353–0.355) |
+| 8192 | 4096 | 2185, public fixture | 256 | 3 | 845.49 (843.08–851.62) | 47.11 (47.11–47.42) | 2.648 (2.628–2.654) |
+| 262152 | 512 | 512, five tasks | 640 | 3 | 398.23 (392.10–398.54) | 43.53 (43.29–43.54) | 1.320 (1.319–1.340) |
+| 262152 | 512 | 7000, five tasks | 640 | 3 | 347.25 (341.26–347.27) | 42.39 (42.19–42.42) | 20.195 (20.194–20.548) |
+| 262152 | 512 | 20, public fixture | 256 | 3 | 59.93 (59.92–60.11) | 51.01 (51.01–51.56) | 0.370 (0.369–0.370) |
+| 262152 | 512 | 2185, public fixture | 256 | 3 | 374.33 (374.31–376.47) | 48.79 (48.79–48.98) | 5.905 (5.872–5.905) |
 
 Values are median (range). Loading/startup is timed separately and excluded
 from request timings; the OS weight-file cache stays warm. Fixed expert
@@ -93,7 +96,7 @@ input/output hashes and elapsed times: [results.json](results.json),
 [CSV](results.csv), [summary](summary.json), [lifecycle](lifecycle.json).
 Generated content is discarded; only numeric/hash receipts persist.
 
-Prefill 4096 cuts the 7K TTFT median by 61.9%, but all five long continuations differ from batch 512 and the largest measured 7K decode-cell regression is 16.2%. It is an optional prefill-latency tradeoff, not an overall decode improvement. We keep batch 512 for normal serving. With batch 512, the larger memory profile's 7K TTFT is 24.36s versus 22.23s; 10/10 matched main benchmark cells have identical output hashes across the two memory profiles. See raw per-workload data before generalizing the aggregate.
+Prefill 4096 cuts the 7K TTFT median by 58.2%. 5/5 long benchmark cells have different output hashes from prefill 512, so their decode differences can include changed continuations and draft acceptance. The slowest 7K decode-cell change is -17.0%. Normal serving keeps prefill 512. With prefill 512, the larger memory profile's 7K TTFT is 20.19s versus 18.20s; 10/10 matched main cells have identical output hashes across memory profiles. See per-workload data before generalizing the aggregate.
 
 ## Validation and limits
 
@@ -125,7 +128,7 @@ Failed qualification attempts are excluded from throughput. Both previously
 local mirror safety fixes are upstream: incomplete coverage refuses startup,
 and pinned mirror memory is freed before QUIT exit.
 
-The qualified installed profile uses 262144 usable API tokens, prefill 512 and a 4096 MiB reserve. Routed pre/post-reboot full-window, tool, authorization and queued-isolation checks, graceful unload/restart, retained-model recovery and actual Pi chat/read-tool checks pass. Fresh full-window prefill remains about 15–16 minutes; capacity does not imply low latency or broad long-context quality. This report is pinned to v0.1.40.2; v0.1.40.3 was released during testing and is not measured here.
+The qualified installed profile uses 262144 usable API tokens, prefill 512 and a 4096 MiB reserve. Routed pre/post-reboot full-window, tool, authorization and queued-isolation checks, graceful unload/restart and retained-model recovery pass. The actual Pi client was not rechecked. Fresh full-window prefill takes 13.2–13.6 minutes in these individual checks; capacity does not imply low latency or broad long-context quality. This report is pinned to official v0.1.41.
 
 [BUILD.md](BUILD.md) gives exact preparation and portable reproduction steps.
 [Portable fixture audit](portable-fixture-audit.json) verifies that the published

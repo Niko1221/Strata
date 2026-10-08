@@ -10,7 +10,7 @@
     "Socket(s)": "1",
     "CPU max MHz": "4900.0000"
   },
-  "memtotal": "129273108 kB",
+  "memtotal": "129273100 kB",
   "ram_dimms_allowlist": [
     "Size: 32 GB",
     "Locator: Controller0-ChannelA-DIMM0",
@@ -60,6 +60,16 @@
     ]
   },
   "ggml_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "PCIe_link": {
+    "0000:00:01.0": {
+      "current_link_speed": "16.0 GT/s PCIe",
+      "current_link_width": "16"
+    },
+    "0000:01:00.0": {
+      "current_link_speed": "16.0 GT/s PCIe",
+      "current_link_width": "16"
+    }
+  },
   "artifacts": "artifacts.json",
   "python_runtime": {
     "python": "3.14.4",
@@ -74,16 +84,6 @@
       "ninja": "1.13.2",
       "pillow": "12.3.0",
       "psutil": "7.2.2"
-    }
-  },
-  "PCIe_link": {
-    "0000:00:01.0": {
-      "current_link_speed": "16.0 GT/s PCIe",
-      "current_link_width": "16"
-    },
-    "0000:01:00.0": {
-      "current_link_speed": "16.0 GT/s PCIe",
-      "current_link_width": "16"
     }
   }
 }

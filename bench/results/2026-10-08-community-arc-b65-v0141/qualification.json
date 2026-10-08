@@ -59,152 +59,173 @@
     ],
     "classification": {
       "iq_parity": "CTest treats --selftest as a fixture directory. Subsequent actual IQ fixtures and native GGUF expert oracles across eight layers passed.",
-      "ple_parity": "Q2_0 PLE fixture missing; unqualified. Actual profile uses original IQ2_XS PLE.",
-      "gr_parity": "Only unsupported opt-in QFUSE / multi-QFUSE checks fail. Port explicitly returns false and ordinary/native GR subchecks pass; STRATA_QFUSE remains absent.",
-      "s2_expert_grouped_parity": "Old/new grouped S2 results differ bitwise in four cases. All numerical CPU oracle checks show0outside tolerance, worst<=1.03e-7 normalized. S2 grouped path used by drafter; require exact target-only vs speculative model streams before throughput."
+      "ple_parity": "Q2_0 standalone fixture unavailable; this case remains unqualified. Selected model uses original IQ2_XS native artifacts.",
+      "gr_parity": "Ordinary and native GR subchecks pass; unsupported opt-in QFUSE and multi-QFUSE return false. QFUSE stays absent.",
+      "s2_expert_grouped_parity": "Four bitwise old/new differences. All CPU oracles have zero rows outside tolerance; worst normalized error 1.03e-7. Exact target-only/one-draft/MTP4 checks are required before benchmarking."
     },
+    "qualified_selected_paths": true,
+    "selected_path_model_gates_pending": false,
+    "actual_IQ_fixtures_and_native_8layer_oracles": "passed",
+    "full_suite_xml_sha256": "324f440a37b39dd3812fb526057cf41e08857ae528f1ada7faa264659bf5c2ca",
     "native_source_patches": [],
-    "continue_scope": "Only original native IQ2_XS, default paths; no QFUSE, no other model/new format/general qualification. Preserve all failures; independent IQ fixture/native8layers then model reference/API gates before speed.",
-    "actual_IQ_fixtures_and_native_8layer_oracles": "passed"
+    "continue_scope": "Only original native IQ2_XS, retained default paths, unchanged model-reference/API/guard gates. No QFUSE, numeric tolerance changes or other-model qualification.",
+    "independent_model_gates": {
+      "8k-512": {
+        "native_checks": 21,
+        "API_checks": 24,
+        "passed": true
+      },
+      "8k-4096": {
+        "native_checks": 21,
+        "API_checks": 24,
+        "passed": true
+      },
+      "262k-512": {
+        "native_checks": 5,
+        "API_checks": 12,
+        "passed": true,
+        "limited_capacity_not_broad_quality": true
+      }
+    }
   },
   "hardware": {
-    "v01402-reference-512-1": {
-      "samples": 111,
-      "peak_resident_vram_GiB": 29.071022033691406,
-      "max_sensor_C": 66.0,
-      "min_available_GiB": 109.41112899780273,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-api-512-1": {
-      "samples": 107,
-      "peak_resident_vram_GiB": 29.064258575439453,
-      "max_sensor_C": 70.0,
-      "min_available_GiB": 109.29659271240234,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-reference-4096-1": {
-      "samples": 82,
-      "peak_resident_vram_GiB": 28.02685546875,
+    "v0141-reference-512-2": {
+      "samples": 99,
+      "peak_resident_vram_GiB": 29.08254623413086,
       "max_sensor_C": 68.0,
-      "min_available_GiB": 107.0665054321289,
+      "min_available_GiB": 109.40898895263672,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-api-4096-1": {
-      "samples": 88,
-      "peak_resident_vram_GiB": 28.025035858154297,
+    "v0141-api-512-2": {
+      "samples": 100,
+      "peak_resident_vram_GiB": 29.064186096191406,
       "max_sensor_C": 70.0,
-      "min_available_GiB": 106.90755081176758,
+      "min_available_GiB": 109.23745346069336,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-context-reference-512-1": {
-      "samples": 1074,
-      "peak_resident_vram_GiB": 29.689437866210938,
-      "max_sensor_C": 74.0,
-      "min_available_GiB": 103.89444351196289,
+    "v0141-reference-4096-2": {
+      "samples": 79,
+      "peak_resident_vram_GiB": 28.026840209960938,
+      "max_sensor_C": 68.0,
+      "min_available_GiB": 106.89009475708008,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-context-api-512-1": {
-      "samples": 1291,
-      "peak_resident_vram_GiB": 29.68869400024414,
+    "v0141-api-4096-2": {
+      "samples": 88,
+      "peak_resident_vram_GiB": 28.032604217529297,
+      "max_sensor_C": 70.0,
+      "min_available_GiB": 106.83492279052734,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-context-reference-512-2": {
+      "samples": 929,
+      "peak_resident_vram_GiB": 29.687664031982422,
       "max_sensor_C": 76.0,
-      "min_available_GiB": 103.59906768798828,
+      "min_available_GiB": 103.85416030883789,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-main-512-1": {
-      "samples": 500,
-      "peak_resident_vram_GiB": 29.071109771728516,
+    "v0141-context-api-512-2": {
+      "samples": 1123,
+      "peak_resident_vram_GiB": 29.697120666503906,
+      "max_sensor_C": 74.0,
+      "min_available_GiB": 103.54843521118164,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-main-512-2": {
+      "samples": 469,
+      "peak_resident_vram_GiB": 29.083240509033203,
       "max_sensor_C": 72.0,
-      "min_available_GiB": 109.43999862670898,
+      "min_available_GiB": 109.38833999633789,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-public-512-1": {
+    "v0141-public-512-2": {
+      "samples": 41,
+      "peak_resident_vram_GiB": 29.128284454345703,
+      "max_sensor_C": 66.0,
+      "min_available_GiB": 109.4067153930664,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-main-4096-2": {
+      "samples": 380,
+      "peak_resident_vram_GiB": 28.034446716308594,
+      "max_sensor_C": 72.0,
+      "min_available_GiB": 106.99907684326172,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-public-4096-2": {
+      "samples": 38,
+      "peak_resident_vram_GiB": 28.02832794189453,
+      "max_sensor_C": 66.0,
+      "min_available_GiB": 106.98619079589844,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-main-262k-512-2": {
+      "samples": 497,
+      "peak_resident_vram_GiB": 28.132564544677734,
+      "max_sensor_C": 72.0,
+      "min_available_GiB": 104.5971565246582,
+      "zero_swapout": true,
+      "kernel_faults": 0,
+      "zero_oom": true,
+      "zero_watched_aer": true,
+      "gpu_memory_margin_GiB": 30.5
+    },
+    "v0141-public-262k-512-2": {
       "samples": 43,
-      "peak_resident_vram_GiB": 29.03820037841797,
-      "max_sensor_C": 66.0,
-      "min_available_GiB": 109.45808792114258,
+      "peak_resident_vram_GiB": 28.082740783691406,
+      "max_sensor_C": 68.0,
+      "min_available_GiB": 104.64111709594727,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
       "zero_watched_aer": true,
       "gpu_memory_margin_GiB": 30.5
     },
-    "v01402-main-4096-1": {
-      "samples": 386,
-      "peak_resident_vram_GiB": 28.026866912841797,
-      "max_sensor_C": 72.0,
-      "min_available_GiB": 107.02038955688477,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-public-4096-1": {
-      "samples": 39,
-      "peak_resident_vram_GiB": 28.020736694335938,
-      "max_sensor_C": 66.0,
-      "min_available_GiB": 107.05953979492188,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-main-262k-512-1": {
-      "samples": 538,
-      "peak_resident_vram_GiB": 28.127731323242188,
-      "max_sensor_C": 72.0,
-      "min_available_GiB": 104.67337036132812,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-public-262k-512-1": {
-      "samples": 46,
-      "peak_resident_vram_GiB": 28.07785415649414,
-      "max_sensor_C": 66.0,
-      "min_available_GiB": 104.68272399902344,
-      "zero_swapout": true,
-      "kernel_faults": 0,
-      "zero_oom": true,
-      "zero_watched_aer": true,
-      "gpu_memory_margin_GiB": 30.5
-    },
-    "v01402-artifacts-1": {
-      "samples": 5,
-      "peak_resident_vram_GiB": 0.11595535278320312,
-      "max_sensor_C": 45.0,
-      "min_available_GiB": 120.11325454711914,
+    "v0141-artifacts-2": {
+      "samples": 3,
+      "peak_resident_vram_GiB": 0.10069656372070312,
+      "max_sensor_C": 46.0,
+      "min_available_GiB": 120.2337875366211,
       "zero_swapout": true,
       "kernel_faults": 0,
       "zero_oom": true,
