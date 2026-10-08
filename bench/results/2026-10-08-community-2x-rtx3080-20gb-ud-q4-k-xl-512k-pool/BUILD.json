@@ -1,0 +1,46 @@
+{
+  "engine_version_reported_by_engine": "0.1.40.3 (start line: 'session is up (engine 0.1.40.3)')",
+  "binary": {
+    "path": "/opt/strata-bmtp/build/strata-w7",
+    "sha256": "b1df9608295501f0c67f51bef3cfd2831c7e60fb7369866f00b980ff766a1283",
+    "bytes": 67691704,
+    "mtime": "2026-10-07 23:32:38 -0400"
+  },
+  "binary_not_a_release": "Built on lm-server from our fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches without an open PR yet'.",
+  "source_of_binary": {
+    "statement": "strata-w7 = the up-merge build (strata-w5) plus branch opt/04-split-batched-draft-kv, per our own evidence notes (pr-evidence 'w7 = merged w5 + opt/04'). The commit is not embedded in the binary; the match below is by branch contents and by time (binary mtime 23:32:38, opt/04 commit time 23:32:28, 2026-10-07, -0400).",
+    "repository": "https://github.com/noon-at-cgn/Strata",
+    "branch": "opt/04-split-batched-draft-kv",
+    "commit": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",
+    "parent_branch_up_merge": {
+      "branch": "up-merge",
+      "commit": "9098e8969c22deeb364b3ff0c1207b5e316c6b4e",
+      "merge_commit": "2c8b650 (upstream/main d5ea7133741e67743c0e886bb426c0ce8d69cf6c = v0.1.40.3, merged into w2-dense-fix c45d8548cd766d84c8789701428fa705c41f3aba)"
+    },
+    "commits_on_up_merge_not_in_upstream_main_fb58e0d": 86
+  },
+  "python_front_end": "serve/ from the same merged tree, copied to /opt/strata-bmtp/build/w5root (systemd drop-in PYTHONPATH). The checkout /opt/strata-bmtp itself is an older tree (v0.1.40.1-23-gf197c62) with uncommitted edits to serve/server.py and is not the code that served.",
+  "build": {
+    "cmake_build_type": "Release",
+    "cuda_architectures": "86",
+    "nvcc": "/usr/local/cuda-13.3/bin/nvcc, release 13.3, V13.3.73 (from CMakeCache.txt of /opt/strata-bmtp/build)",
+    "STRATA_ENABLE_CUDA": "ON",
+    "STRATA_BUILD_TESTS": "ON",
+    "note": "The operator's notes said CUDA 13.0; the build directory's CMakeCache says 13.3. Which toolkit compiled strata-w7 itself was not verified (the binary's build time is 2026-10-07; the cache file could have been regenerated later)."
+  },
+  "branches_on_origin_checked_with_git_ls_remote": {
+    "opt/04-split-batched-draft-kv": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",
+    "up-merge": "9098e8969c22deeb364b3ff0c1207b5e316c6b4e",
+    "kv-shared-pool (shared KV pool, in up-merge)": "9c533de70a3369fefe36bc98bdda87b2f95a0227",
+    "batch-mtp-split (batch MTP on a layer split, in up-merge)": "384d67ea0a2f3581e031af35ec05bf857915191f",
+    "batch-adapt (--adapt-async beside --batch slots, in up-merge)": "8d0c1068c323f3a59b0b6ae5af892b36a0d5a2e8",
+    "pr/kv-pool (PR-ready copy)": "3aefa1166047e1df1cc5b702f19600039a7fb738",
+    "pr/batch-mtp-split (PR-ready copy)": "484b49c6813c7ed8b2d3d587fa8f5795e23cc39d",
+    "pr/mtp-shared-draft-head": "08ef4a38d01cd0d051881d7ff683860064acd1f9",
+    "pr/aux-cpus (#1598)": "91f6238284f654b7ac85f3eb9d152fa31099eda1",
+    "pr/split-mtp-batch (#1599)": "69fa86156f09bbc215a7a98ca74ba14fbda943f3",
+    "pr/lend-sizing (#1600)": "7940c9327ac026fee1b7312a1fb8206b627942f2",
+    "pr/memory-guard (#1601)": "290cf3a5a1b13fc13645ebe3c60dc8ecba639adc"
+  },
+  "upstream_main_at_report_time": "fb58e0dbc8399662c0e47c76578c6e878b14f6cf"
+}
