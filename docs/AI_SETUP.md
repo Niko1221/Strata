@@ -205,6 +205,7 @@ Setup offers MTP (default), DFlash, or Off (no model drafter; prompt lookup stay
 Use `--setup --yes --drafter none` to skip both draft models and keep suffix/prompt lookup enabled. Use `--drafter dflash --dflash-quant original|q8|q5|q4`
 with `--setup --yes` for non-interactive DFlash setup. It fetches the pinned drafter automatically,
 prepares its GGUF and skips MTP. Quantization affects the drafter's matrices; norms retain BF16.
-The resulting server defaults to greedy decoding. Sampling requests use target-only decoding.
-DFlash currently needs one GPU and serial requests, rereads prompts, and allocates 20 KiB of
-extra KV per configured context token. See [DFLASH.md](DFLASH.md) for build requirements and limits.
+The resulting server defaults to greedy decoding and chooses the draft block length from measured throughput.
+On supported CUDA configurations the draft K/V and scratch grow with the used context. Sampling requests use target-only decoding.
+DFlash currently needs one GPU and serial requests and rereads prompts. Its FP16 draft KV uses
+10 KiB per mapped context token. See [DFLASH.md](DFLASH.md) for build requirements and limits.

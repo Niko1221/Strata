@@ -46,11 +46,13 @@ struct Owned {
     void* arena = nullptr;
     uint64_t bytes = 0;
     QsaState st = {};
-    bool init(const ModelGeometry& g, int64_t max_cells, std::vector<int32_t>* table_out = nullptr) {
+    bool init(const ModelGeometry& g, int64_t max_cells, std::vector<int32_t>* table_out = nullptr, int64_t elastic_init = 0) {
         QsaStateInitOptions o;
         o.force_owned_kv = true;    // the pools are carved from OUR arena, whole-resident
         o.force_f16_kv = true;      // FP16 regardless of the process KV format
-        o.disable_elastic = true;
+        o.disable_elastic = elastic_init == 0;
+        o.elastic_init_cells = elastic_init;
+        o.no_indexer = elastic_init > 0;
         o.disable_streaming = true;
         // with_rope=true: this state owns its rope tables (share_rope stays null) - bytes() and
         // init() must agree on that, or the tables' upload writes past the arena
@@ -235,6 +237,44 @@ void batch_and_attention_regression(const ModelGeometry& g) {
     cudaStreamDestroy(cs);
     cudaFree(o.arena);
 }
+void owned_elastic_regression(const ModelGeometry& g) {
+    if (!vmm_available()) return;
+    qsa_set_kv_elastic(false, 0);   // target is streamed; only this state opts into VMM
+    qsa_set_kv_resident(32768);
+    qsa_set_kv_q4(true);            // the draft remains FP16, including byte sizing
+    const int64_t cap = 32768;
+    Owned o;
+    std::vector<int32_t> table;
+    check(o.init(g, cap, &table, 512), "explicit owned elastic init");
+    check(!qsa_kv_elastic() && o.st.kv_elastic >= 0 && o.st.kv_mode == 0 && !o.st.kv_q4 && !o.st.kv_int8,
+          "draft VMM independent of target streaming and KV format");
+    check(o.st.idx_pooled_rows == 0, "no unused sparse-indexer history");
+    const auto *k = o.st.k_pool, *v = o.st.v_pool;
+    const uint64_t initial = qsa_state_elastic_bytes(o.st);
+    check(initial > 0 && initial < qsa_kv_elastic_full_bytes(), "physical allocation follows live cells");
+    check(qsa_kv_elastic_need(cap) > 0, "growth requires more chunks");
+    check(qsa_kv_elastic_grow(cap, [] { return VmmChunk{}; }), "owned elastic growth");
+    check(k == o.st.k_pool && v == o.st.v_pool, "growth preserves pool addresses");
+    append_and_readback(o, g, table);
+    std::vector<uint16_t> before(256), after(256);
+    check(cudaMemcpy(before.data(), k, 512, cudaMemcpyDeviceToHost) == cudaSuccess, "read committed prefix");
+    std::vector<VmmChunk> returned;
+    check(qsa_kv_elastic_shrink(4096, [&](VmmChunk h) { returned.push_back(h); }) > 0, "shrink returns physical chunks");
+    check(cudaMemcpy(after.data(), k, 512, cudaMemcpyDeviceToHost) == cudaSuccess && before == after,
+          "shrink preserves committed prefix");
+    check(qsa_kv_elastic_grow(cap, [&] {
+        if (returned.empty()) return VmmChunk{};
+        const auto h = returned.back(); returned.pop_back(); return h;
+    }), "regrowth reuses returned chunks");
+    append_and_readback(o, g, table);
+    check(cudaDeviceSynchronize() == cudaSuccess, "owned elastic operations completed");
+    qsa_state_release_elastic(o.st);
+    check(qsa_kv_elastic_mapped_bytes() == 0 && o.st.kv_elastic == -1, "owned elastic release");
+    for (auto h : returned) vmm_chunk_free(h);
+    cudaFreeHost(o.st.host_step); cudaFreeHost(o.st.host_pos);
+    cudaFree(o.arena);
+    qsa_set_kv_resident(0); qsa_set_kv_q4(false);
+}
 }  // namespace
 
 int main() {
@@ -245,6 +285,7 @@ int main() {
     ModelGeometry g;   // the canonical head geometry: 24Q/2KV x 256, page_size 4
     const int64_t max_cells = 4096;
     batch_and_attention_regression(g);
+    owned_elastic_regression(g);
 
     std::fprintf(stderr, "dbg: section 1 (owned+append)\n");
     {   // 1+2: one owned state, ownership + append/readback across page boundaries
