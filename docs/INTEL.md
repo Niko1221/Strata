@@ -751,6 +751,25 @@ a number that a 256-token run contradicts. Interleave the builds and take median
 **`--spec 2` is the outlier.** Without the draft layer this release decodes at 22.3 tok/s against 53.6 for the
 previous build on the same card, same flags, interleaved - the one reproducible regression in the table.
 
+**0.1.40.3 changed the device's spin bound on host flags and that is worth 46-67% of decode.** It made the bound a
+build option (`STRATA_SYCL_SPIN_MAX`) and gave 20,000 only to a `bmg` **AOT** build, 2,000,000 to everything else -
+the A-series JIT build, where the GPU really does wait on the host's slow per-layer CPU expert work. A JIT build of
+a B70 is not an AOT build, so it inherited the long bound, and on this backend the waits are the opposite kind: a
+kernel's writes to host-mapped memory are not visible while a window runs, so the waits are *expected* to run out
+and give up, and every extra read is time spent on nothing. Same binary, one `-DSTRATA_SYCL_SPIN_MAX` apart,
+128 greedy tokens, medians of two interleaved runs:
+
+| context | 2,000,000 (the 0.1.40.3 default) | 20,000 (this branch's default) | |
+|---|---|---|---|
+| 3-token prompt | 40.6 tok/s | **59.0** | +46% |
+| 2,048-token prompt | 25.6 tok/s | **42.9** | +67% |
+
+More of it the longer the context, which is what more expired waits looks like. At 20,000 this release decodes
+*faster* than 0.1.40.2 did (42.9 against 40.8 at the 2,048-token context, 59.0 against 51.0 short), so the whole of
+that release's decode regression is this default and not its kernels. The carve-out is on Windows rather than on the
+card because that is the property the bound depends on - the OpenCL backend's handshake, not which Arc is in the
+machine - and `-DSTRATA_SYCL_SPIN_MAX=...` overrides it.
+
 `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host clocks under `STRATA_VERIFY_EAGER=1`): a
 4-token window is ~65 ms and the GDN hyper-connection read is ~24 ms of it, nearly flat from T=2 (23.6 ms) to T=6
 (25.6 ms) - a per-layer *fixed* cost of ~0.5 ms over 48 layers, i.e. kernel dispatch, not arithmetic. That is the
