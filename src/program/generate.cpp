@@ -1903,6 +1903,14 @@ int main(int argc, char** argv) {
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
     }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
+    if (o.peer_device >= 1) {   // the peer's context must exist BEFORE the arena's whole-range cudaHostRegister
+        int n = -1;             // (#253's Linux default). Registered first, the peer's first device op — a
+        if (cudaGetDeviceCount(&n) == cudaSuccess && o.peer_device < n) {  // stream, in PeerExperts::open — fails
+            cudaSetDevice(o.peer_device);   // with a misleading 'out of memory' even on an empty card (the
+            cudaFree(0);                    // registration has to map into every context). Forced here, that
+            cudaSetDevice(0);               // mapping lands on the register itself, whose sliced-pin fallback
+        }                                   // (#243 / STRATA_ARENA_PIN_GIB) can already take over.
+    }
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
@@ -3693,6 +3701,7 @@ int main(int argc, char** argv) {
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
+    bool cache_vmm = false;   // the fork's elastic K/V: the primary cache's arena in VMM (set below)
     {
         const strata::core::OnDevice on0(0);
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
@@ -3706,14 +3715,15 @@ int main(int argc, char** argv) {
             const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
-                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
-                            o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range;
+                            // a peer tier is fine - its cache never enables VMM (only the K/V's own cache does)
+                            o.batch == 0 && !o.vram_elastic;
             if (asked && !on)
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+                                     "every expert in RAM, no --batch or --vram-elastic)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
-            strata::core::ExpertCache::set_vmm(on);
+            cache_vmm = on;   // the primary cache only (xcache, below): the peer tier's stays one cudaMalloc
         }
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
@@ -4174,6 +4184,7 @@ int main(int argc, char** argv) {
     // numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
     mem_mark("the weights, the session and the drafter");
     strata::core::ExpertCache xcache;
+    xcache.set_vmm(cache_vmm);
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
     bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits

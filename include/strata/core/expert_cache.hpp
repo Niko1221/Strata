@@ -202,8 +202,9 @@ public:
     int64_t fills() const { return fills_; }
 
     /// The elastic K/V (--kv-grow): the arena in a VMM range (vmm.hpp) instead of one cudaMalloc, so the K/V can take
-    /// single chunks of it and give them back. Applies to the next `open`; ignored where VMM is not available.
-    static void set_vmm(bool enabled);
+    /// single chunks of it and give them back. Applies to this cache's next `open`; ignored where VMM is not
+    /// available. Only the cache the K/V borrows from wants it (a peer tier's cache stays one cudaMalloc).
+    void set_vmm(bool enabled) { vmm_on_ = enabled; }
     /// The arena's range (null: one cudaMalloc).
     VmmRange* vmm_range() { return vmm_.get(); }
     /// Byte offset of slot `s` in the arena (s == slots(): the end).
@@ -227,6 +228,7 @@ private:
     std::vector<int64_t> seg_size_;     ///< #533: each segment's size (the last one may be shorter)
     int64_t mapped_segs_ = 0;           ///< #533: segments [0, mapped_segs_) are backed
     std::unique_ptr<VmmRange> vmm_;    ///< the arena's range when it is in VMM (set_vmm)
+    bool vmm_on_ = false;               ///< set_vmm: the next open maps the arena through VMM
     std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
     int64_t slots_ = 0;
     int64_t n_layers_ = 0;
