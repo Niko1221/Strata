@@ -203,6 +203,8 @@ class RoutingCounts(unittest.TestCase):
             self.assertIn("strata:expert_routed_total{", text)
             self.assertIn('layer="2"} 3.0', text)
             self.assertEqual(text.count("# TYPE strata:expert_entropy_bits gauge"), 1)
+            self.assertIn('strata:expert_routed_by_expert_total{model_name="strata",layer="0",expert="1"} 30', text)
+            self.assertEqual(text.count("strata:expert_routed_by_expert_total{"), 2 + 0 + 8)   # top 8 at most
             self.assertIsNone(srv.routing_summary(_os.path.join(d, "missing.json")))
 
     def test_config_key_adds_the_engine_flag(self):
