@@ -1055,6 +1055,14 @@ follows the reused prefix (or the root) is read in one run, and its session is n
 It still starts from a checkpoint it matches, and still saves the system-prompt root when that reaches
 `--prompt-cache-root`. Without the field (or with `true`) nothing changes.
 
+**A checkpoint at the live end (opt-in, `STRATA_LIVE_CKPT_MIN=N`).** A request that continues the live session after
+a long stretch the engine generated itself (a thinking budget's wrap-up continuation, a forced call's opening) first
+keeps a checkpoint where it starts, when the newest checkpoint below is at least N tokens back. A later prompt that
+leaves the session right there - a wrap-up the client's history does not carry, a call it renders differently - then
+resumes from that point instead of reading the whole reply again (about 12K tokens after a 12,288-token budget).
+Each one is a synchronous checkpoint save that takes one of the `--prompt-cache` slots, so it can push an older
+checkpoint out; unset or 0 keeps it off. 1024 is the value used on a 12 GB laptop with opencode.
+
 **Checkpoints spread back from the end (opt-in, `--prompt-cache-spread`).** Least recent use keeps the newest points:
 every turn adds a checkpoint at its start, so after a few short turns the 6 sit within the last 1-2K tokens. An agent
 client that rewrites its history a few thousand tokens back (it trims an old tool output, drops a step) then matches
