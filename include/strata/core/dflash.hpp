@@ -10,7 +10,7 @@
 //   rope theta 1e7, target taps [3, 15, 23, 35, 43].
 //
 // The geometry is PARSED from the artifact (never hardcoded at the call sites) and validated
-// twice: structurally here (metadata <-> tensor shapes agree, BF16, in bounds), and against what
+// twice: structurally here (metadata <-> tensor shapes agree, supported types, in bounds), and against what
 // the runtime fast path supports (validate_supported) when the engine wires the drafter up.
 // Semantics and the DeepSpec anchor layout: docs/DFLASH.md.
 #pragma once
@@ -53,13 +53,15 @@ struct DFlashGeometry {
     int64_t fusion_in() const { return hidden * (int64_t) target_layers.size(); }
 };
 
-/// One device weight, row-major rows of `cols` BF16 values (the GGUF file layout, ne0 varies
+/// One device weight, row-major rows of `cols` values in its GGML type (the GGUF file layout, ne0 varies
 /// fastest, is preserved: row r is output neuron r, y[r] = dot(row, x)).
 struct DFlashTensor {
     std::string name;      ///< canonical Strata-side name ("layers.3.self_attn.q_proj")
     std::string file_name; ///< the name it carries in the GGUF (either naming family)
     int64_t rows = 0, cols = 0;
-    const uint16_t* d = nullptr;   ///< device BF16, valid after upload()
+    int type = 30;        ///< GGML BF16 or quantized matrix type
+    uint64_t bytes = 0;   ///< packed payload bytes
+    const uint16_t* d = nullptr;   ///< device payload, valid after upload()
 };
 
 /// The parsed artifact: metadata, geometry and the tensor inventory of an opened GGUF.  No device
@@ -78,7 +80,7 @@ public:
     const std::string& path() const { return path_; }
     const DFlashGeometry& geom() const { return geom_; }
 
-    /// bf16 payload bytes of every required tensor together (weights VRAM before scratch).
+    /// Aligned packed payload bytes of every required tensor together (weights VRAM before scratch).
     uint64_t weight_bytes() const { return weight_bytes_; }
     /// The resolved tensor `name` (Strata-side names, e.g. "layers.0.self_attn.q_proj"), or nullptr.
     const DFlashTensor* tensor(const std::string& name) const;
@@ -110,13 +112,13 @@ public:
     /// Maximum candidates this artifact may propose per pass (its trained query count).
     int max_block() const { return (int) artifact_.geom().block_size; }
     bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
-    /// The device bytes this drafter holds right now: the BF16 weights, the widened norm vectors,
+    /// The device bytes this drafter holds right now: the packed weights, the widened norm vectors,
     /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
     /// embedding table and shared native head are not counted. An optional draft-owned head
     /// and its activation scratch are counted. 0 before upload().
     uint64_t vram_bytes() const { return vram_; }
 
-    /// Uploads the BF16 weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
+    /// Uploads the packed weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
     /// the expert cache is sized, like MtpDrafter::load.  `target_g` is the target's geometry (its
     /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` sizes the
     /// drafter's context: the attention sees cells [0, window) and the pools hold exactly those
@@ -168,6 +170,11 @@ private:
     /// then each draft layer's context K/V appended at [pos0, pos0+rows).
     bool fusion_rows(int64_t pos0, int rows, std::string& err);
 
+    void project(const uint16_t* x, const uint16_t* w, float* y, int ni, int no, int rows, void* stream);
+    std::vector<std::pair<const uint16_t*, int>> quant_types_;
+    float* proj_float_ = nullptr;
+    uint8_t* proj_q8_ = nullptr;
+
     DFlashArtifact artifact_;
     uint64_t vram_ = 0;
     int64_t mask_ = -1;
@@ -184,7 +191,7 @@ private:
     NativeHead* owned_head_ = nullptr;
     const WeightRef* emb_ref_ = nullptr;
 
-    // weights (device BF16, the GGUF layout) and the rms_norm gammas widened to F32
+    // weights (device GGML payloads, the GGUF layout) and the rms_norm gammas widened to F32
     uint16_t* w_ = nullptr;
     std::vector<std::pair<std::string, const uint16_t*>> wt_;   ///< canonical name -> device pointer
     std::vector<std::pair<std::string, const float*>> wf_;      ///< canonical name -> device f32 (norms)

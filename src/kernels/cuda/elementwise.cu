@@ -169,6 +169,18 @@ void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     sync_if_needed(stream, "f32_to_f16_bulk");
 }
 
+__global__ void from_bf16_bulk_kernel(const uint16_t* x, float* y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __uint_as_float((uint32_t) x[i] << 16);
+}
+
+void bf16_to_f32_bulk(const uint16_t* x, float* y, int64_t n, void* stream) {
+    if (n <= 0) return;
+    from_bf16_bulk_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);
+    check_launch("bf16_to_f32_bulk");
+    sync_if_needed(stream, "bf16_to_f32_bulk");
+}
+
 void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;
     to_bf16_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);

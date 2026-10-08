@@ -221,12 +221,14 @@ void DFlashDrafter::release() {
     free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
     free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
     free_dev(gate_); free_dev(up_); free_dev(logits_);
+    free_dev(proj_float_); free_dev(proj_q8_);
     free_dev(xq_); free_dev(attn_scratch_); free_dev(arg_scratch_);
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
     delete owned_head_; owned_head_ = nullptr;
     if (cs_) cudaStreamDestroy(cs_);
-    w_ = nullptr; wf_.clear(); wt_.clear();
+    w_ = nullptr; wf_.clear(); wt_.clear(); quant_types_.clear();
+    proj_float_ = nullptr; proj_q8_ = nullptr;
     st_.clear(); arenas_.clear();
     tok_ = step_ = pos_ = poskv_ = attn_step_ = nullptr;
     tapin_ = xn16_ = attn16_ = nullptr;
@@ -267,21 +269,22 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // any failure past this point leaves a partially-built drafter: release() takes it back
     auto bail = [&](const std::string& why) { release(); err = why; return false; };
 
-    // ---- the weights: one device block, the GGUF layout preserved (row-major rows of bf16).
+    // ---- the weights: one aligned device block, the packed GGUF layout preserved.
     // Earlier phases may have left a sticky error in the per-thread state: start clean.
     cudaGetLastError();
     if (cudaMalloc(&w_, artifact_.weight_bytes()) != cudaSuccess)
-        return bail("dflash: the BF16 weights do not fit in VRAM");
+        return bail("dflash: the weights do not fit in VRAM");
     vram_ += artifact_.weight_bytes();
     size_t at = 0;
     for (const auto& t : artifact_.tensors()) {
         wt_.push_back({t.name, w_ + at / 2});
-        if (cudaMemcpyAsync(w_ + at / 2, artifact_.host_data(t), (size_t) t.rows * t.cols * 2,
+        if (cudaMemcpyAsync(w_ + at / 2, artifact_.host_data(t), (size_t) t.bytes,
                             cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
             return bail(std::string("dflash: the weight upload of '") + t.name + "' failed: " +
                         cudaGetErrorString(cudaGetLastError()));
         }
-        at += (size_t) t.rows * t.cols * 2;
+        if (t.type != 30) quant_types_.push_back({w_ + at / 2, t.type});
+        at += (t.bytes + 31) & ~size_t(31);
     }
     // The rms_norm gammas run as F32 device vectors (the kernel's contract); widen the small ones
     // at upload.  Qwen3 norms apply `y * w` with NO Gemma +1.
@@ -438,6 +441,11 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take(strata::kernels::argmax_rows_scratch_bytes((int) R), (void**) &arg_scratch_) &&
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_) &&
               take((size_t) max_rows_ * (size_t) attn_scratch_floats_ * 4, (void**) &attn_scratch_);
+    if (ok && !quant_types_.empty()) {
+        const int width = (int) std::max(F, W16);
+        ok = take(R * width * sizeof(float), (void**) &proj_float_) &&
+             take(strata::kernels::native_q8_1_bytes(width, (int) R), (void**) &proj_q8_);
+    }
     if (!ok) return bail(err);
     // no selection table: the drafter's attention reads the identity cells straight from the
     // block position (dflash_attn_batch); dflash_identity_fill stays for the load test
@@ -577,6 +585,19 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     return true;
 }
 
+void DFlashDrafter::project(const uint16_t* x, const uint16_t* w, float* y,
+                            int ni, int no, int rows, void* stream) {
+    using namespace strata::kernels;
+    for (const auto& entry : quant_types_) {
+        if (entry.first != w) continue;
+        bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
+        native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
+        native_mmvq(entry.second, w, proj_q8_, y, ni, no, rows, stream);
+        return;
+    }
+    bf16_gemv_batch(x, w, y, ni, no, rows, stream);
+}
+
 bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
@@ -602,7 +623,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     // row before)
     {
         DFlashSection s("fusion.fc_gemv");
-        bf16_gemv_batch(tapin_, wp("fc"), ctx_, F, N, rows, cs_);
+        project(tapin_, wp("fc"), ctx_, F, N, rows, cs_);
     }
     {
         DFlashSection section("fusion.rmsnorm");
@@ -646,11 +667,11 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         {
             {
                 DFlashSection section("fusion.k_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
+                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
             }
             {
                 DFlashSection section("fusion.v_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
+                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
             }
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
@@ -793,15 +814,15 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         {
             {
                 DFlashSection section("L*.q_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
             }
             {
                 DFlashSection section("L*.k_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
             }
             {
                 DFlashSection section("L*.v_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
             }
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
@@ -897,7 +918,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
         {
             DFlashSection s("L*.o_proj");
-            bf16_gemv_batch(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
+            project(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
         }
         if (l == 0 && df_dbg) {
             std::vector<float> hb(4), ab(4);
@@ -924,11 +945,11 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         {
             {
                 DFlashSection section("L*.gate_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
+                project(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
             }
             {
                 DFlashSection section("L*.up_proj");
-                bf16_gemv_batch(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
+                project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
             }
         }
         {
@@ -938,7 +959,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         {
             DFlashSection s("L*.down_gemv");
-            bf16_gemv_batch(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
+            project(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
         }
         {
             DFlashSection section("L*.residual_add");
