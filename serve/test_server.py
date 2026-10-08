@@ -4709,6 +4709,25 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
         self.assertEqual(ids[1][:len(first) - 8], first[:len(first) - 8])   # all but the generation header
 
 
+class ToolOrder(unittest.TestCase):
+    """`_tool_list` returns the tools sorted by name.  The template renders the tool list before the system
+    prompt, so a client whose tools arrive in a varying order (MCP servers registering in any sequence) moves
+    the shared prefix back thousands of tokens on every turn and the conversation is read again."""
+
+    def names(self, tools, wrapper="function"):
+        from serve.frontend import _tool_list
+        return [t.get(wrapper, t)["name"] for t in _tool_list(tools, wrapper)]
+
+    def test_openai_shape_is_sorted_whatever_the_order_sent(self):
+        a = [{"type": "function", "function": {"name": n}} for n in ("read", "rbash_remote-bash", "context7_query")]
+        self.assertEqual(self.names(a), self.names(list(reversed(a))))
+        self.assertEqual(self.names(a), ["context7_query", "rbash_remote-bash", "read"])
+
+    def test_anthropic_shape_is_sorted(self):
+        a = [{"name": "read", "input_schema": {}}, {"name": "edit", "input_schema": {}}]
+        self.assertEqual(self.names(a, None), ["edit", "read"])
+
+
 class UntimedReads(unittest.TestCase):
     """#1317: a read of the engine's READY line or of the image encoder's pipe that never returns held the request
     turn for good.  Each now has a timeout; a process that stays silent is ended and the read raises."""

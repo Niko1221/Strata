@@ -342,7 +342,13 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
             # AttributeError in the request thread - after the 200 and whatever the model had said before the call
             raise ValueError(f'tools[{i}] ({fn["name"]}): "{key}" must be an object (the JSON schema of its '
                              f"parameters), not {type(schema).__name__}")
-    return tools
+    # The tools in a canonical order: clients send them in the order their MCP servers finished registering, and the
+    # template renders the tool list before the system prompt, so one swap moves the shared prefix back thousands of
+    # tokens and the whole conversation is read again.  Sorted by name, that region is the same on every request.
+    def name_of(t):
+        fn = t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t
+        return str(fn.get("name") or "")
+    return sorted(tools, key=name_of)
 
 
 def tool_arguments(raw) -> dict:
