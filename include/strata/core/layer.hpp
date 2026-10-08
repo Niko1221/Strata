@@ -278,16 +278,17 @@ struct QsaState {
 /// instead of building a copy (the session builds it once, in the first QSA layer).
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0);
 
-/// Per-state initialization policy for callers that must OWN their K/V (the DFlash drafter):
-/// the pools are carved from the caller's arena whole-resident in FP16, never in the elastic VMM
-/// registry, never streamed, never a ring.  Default options reproduce the historic behavior
-/// byte-for-byte.  `qsa_state_bytes` and `qsa_state_init` apply these identically - a mismatch
-/// between the two would mis-carve the arena.
+/// Per-state policy for independently owned K/V (the DFlash drafter). By default
+/// force_owned_kv carves whole-resident FP16 pools from the caller's arena. An
+/// explicit elastic_init_cells instead owns a VMM range, independent of the
+/// target's streaming/format policy. bytes() and init() apply the same options.
 struct QsaStateInitOptions {
-    bool force_owned_kv = false;   ///< K/V pools inside the caller's arena (never elastic/VMM)
+    bool force_owned_kv = false;   ///< independent K/V; in the arena unless explicitly elastic
     bool force_f16_kv = false;     ///< FP16 K/V regardless of the process KV format
     bool disable_streaming = false;  ///< never a ring / residency map (ring_cells forced to 0)
     bool disable_elastic = false;  ///< never in the elastic VMM registry
+    int64_t elastic_init_cells = 0; ///< explicit per-state VMM allocation, independent of the target's policy
+    bool no_indexer = false;        ///< direct attention (DFlash): no pooled sparse-indexer history
 };
 /// KV streaming: keep `cells` cells of each QSA layer in VRAM and the rest in pinned host memory (0: all in VRAM,
 /// the default). Set before sizing and initializing the session; a context that fits in `cells` is not streamed.
@@ -312,6 +313,9 @@ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(VmmChunk)>
 /// Physical bytes the elastic pools hold, and what all of them would at the full context.
 uint64_t qsa_kv_elastic_mapped_bytes();
 uint64_t qsa_kv_elastic_full_bytes();
+/// Release an explicitly owned elastic state; its registry slot is no longer used.
+void qsa_state_release_elastic(QsaState& st);
+uint64_t qsa_state_elastic_bytes(const QsaState& st);
 int64_t qsa_kv_resident();
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
 /// in whole blocks) must fit at once, with room to spare.

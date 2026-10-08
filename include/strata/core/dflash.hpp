@@ -17,8 +17,11 @@
 
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/vmm.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -116,19 +119,28 @@ public:
     /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
     /// embedding table and shared native head are not counted. An optional draft-owned head
     /// and its activation scratch are counted. 0 before upload().
-    uint64_t vram_bytes() const { return vram_; }
+    uint64_t vram_bytes() const;
+    /// Attention scratch grows alongside the owned K/V using the same cache chunks.
+    int64_t scratch_chunks_needed(int64_t cells) const;
+    bool grow_scratch(int64_t cells, const std::function<VmmChunk()>& take);
+    int64_t shrink_scratch(int64_t cells, const std::function<void(VmmChunk)>& give);
+    int64_t scratch_cells() const { return scratch_range_ ? scratch_cap_ : INT64_MAX; }
+    uint64_t scratch_mapped_bytes() const;
+    uint64_t scratch_reserved_bytes() const;
 
     /// Uploads the packed weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
     /// the expert cache is sized, like MtpDrafter::load.  `target_g` is the target's geometry (its
     /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` sizes the
     /// drafter's context: the attention sees cells [0, window) and the pools hold exactly those
     /// cells (the reference attends to every cell; 0 = every cell the session's cache could hold,
-    /// which prices five FP16 pools at 20 KiB per cell).
+    /// which prices five FP16 pools at 10 KiB per cell). On supported CUDA cache
+    /// configurations, physical K/V and attention scratch grow from 8192 cells; other
+    /// backends allocate them up front. The attention always covers the same cells.
     /// `mask_override`: the CLI's --dflash-mask-token (-1 = the artifact's metadata decides; the
     /// effective id is the override when given, else the metadata, and must sit inside the target's
     /// vocabulary - generate.cpp validates it against n_vocab).
     bool upload(const ModelGeometry& target_g, SessionState& ss, int device, int64_t window,
-                int64_t mask_override, std::string& err);
+                int64_t mask_override, std::string& err, bool elastic_kv = false);
     /// Binds the target's LM head.  The query rows' embeddings are gathered per cycle from the
     /// target's table - nothing is cached here.
     bool bind(const WeightTable& wt, const NativeHead* head, std::string& err);
@@ -221,6 +233,9 @@ private:
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory
     int32_t* h_tok_ = nullptr;       ///< host-side token ids staged to tok_
     void* attn_scratch_ = nullptr;
+    std::unique_ptr<VmmRange> scratch_range_;
+    int64_t scratch_cap_ = 0;
+    uint64_t scratch_bytes(int64_t cells) const;
     int64_t max_rows_ = 0;
     int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
     char parity_dir_[512] = {};      ///< STRATA_DF_PARITY: the stage-dump directory (empty: off)
