@@ -477,9 +477,11 @@ struct Stager {
                     // (atomic wait, and a blocking-sync event below), not a yield spin - 32 spinners took every core
                     // (Linux; see stager_sleep for Windows).
                     if (i >= kRing) {   // job i - kRing's DMA from this buffer is queued
+#if defined(__cpp_lib_atomic_wait)
                         if (stager_sleep())
                             for (int x; (x = issued.load(std::memory_order_acquire)) <= i - kRing;) issued.wait(x);
                         else
+#endif
                             while (issued.load(std::memory_order_acquire) <= i - kRing) std::this_thread::yield();
                     }
                     // and done - for a generation's first kRing jobs that is the previous generation's last DMA from
@@ -541,13 +543,17 @@ struct Stager {
     void issued_one(int j, cudaStream_t copy) {
         cudaEventRecord(dma_done[j % kRing], copy);
         issued.store(j + 1, std::memory_order_release);
+#if defined(__cpp_lib_atomic_wait)
         issued.notify_all();
+#endif
     }
     /// No job is running after this (the end of a layer, or an early return in the middle of one).
     void finish() {
         head.store((uint64_t) gen << 32, std::memory_order_release);   // n = 0: nothing more to claim
         issued.store(1 << 30, std::memory_order_release);
+#if defined(__cpp_lib_atomic_wait)
         issued.notify_all();
+#endif
         while (active.load(std::memory_order_acquire) != 0) std::this_thread::yield();
     }
 };
