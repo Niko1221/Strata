@@ -922,6 +922,25 @@ class ApiKeyForms(unittest.TestCase):
         self.assertTrue(key_matches(as_read("ключ", "utf-8"), "ключ"))
         self.assertFalse(key_matches(as_read("ключ", "utf-8"), "ключx"))
 
+    def test_several_keys_1344(self):
+        # llama.cpp's form: "k1,k2" is two keys, not one key with a comma; a config list is taken as it is
+        self.assertEqual(api_key_of("sk-aaa,sk-bbb"), "sk-aaa,sk-bbb")
+        self.assertEqual(api_key_of(["sk-aaa", " sk-bbb "]), ["sk-aaa", "sk-bbb"])
+        self.assertEqual(api_key_of(["a,b"]), ["a,b"])                # a key with a comma: as a list
+        for bad in (",", " , ", [], [""], ["a", " "]):
+            with self.assertRaises(ValueError):
+                api_key_of(bad)
+        two = "sk-aaa,sk-bbb"
+        self.assertTrue(key_matches("sk-aaa", two))
+        self.assertTrue(key_matches("sk-bbb", two))
+        self.assertTrue(key_matches("sk-bbb", "sk-aaa, sk-bbb"))
+        self.assertFalse(key_matches(two, two))                       # the joined text is no key
+        self.assertFalse(key_matches("sk-ccc", two))
+        self.assertFalse(key_matches("", two))
+        self.assertTrue(key_matches("a,b", ["a,b", "c"]))
+        self.assertFalse(key_matches("a", ["a,b", "c"]))
+        self.assertTrue(key_matches("single", "single"))
+
     def test_a_utf8_key_over_http(self):
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
@@ -1595,6 +1614,40 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_card_order(self):
+        """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
+        measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""
+        from serve.server import child_env, hip_speed_scores, ordered_gpus
+        fast_first = {0: 8448.0 * 2610, 2: 4608.0 * 2575}      # 4070 Ti SUPER (66 SMs) vs 5060 Ti (36 SMs), shaped
+        base = {"gpu": [0, 2], "args": []}
+        self.assertEqual(ordered_gpus(base, fast_first), [2, 0])
+        self.assertEqual(ordered_gpus({"gpu": [2, 0], "args": []}, fast_first), [2, 0])
+        self.assertEqual(ordered_gpus(base, {0: 5.0, 2: 5.0}), [0, 2])                       # identical cards
+        self.assertEqual(ordered_gpus({**base, "gpu_order": "as_given"}, fast_first), [0, 2])
+        self.assertEqual(ordered_gpus({**base, "layer_split": "24"}, fast_first), [0, 2])
+        self.assertEqual(ordered_gpus({**base, "args": ["--layer-split", "24"]}, fast_first), [0, 2])
+        self.assertEqual(ordered_gpus({**base, "backend": "hip"}, fast_first), [2, 0])           # AMD: same rule
+        self.assertEqual(ordered_gpus({**base, "backend": "hip"}, {0: 7.0, 2: 7.0}), [0, 2])      # identical cards (the R9700s)
+        self.assertEqual(ordered_gpus(base, {0: 1.0}), [0, 2])                               # a card unmeasured
+        self.assertEqual(ordered_gpus({"gpu": 1, "args": []}, {1: 1.0}), [1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0}), [0, 2, 1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 3.0, 2: 3.0}), [0, 1, 2])
+        self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
+        self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
+
+    def test_kfd_scores(self):
+        """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
+        import tempfile
+        from serve.server import hip_speed_scores
+        with tempfile.TemporaryDirectory() as d:
+            for n, simd, clk in ((0, 0, 0), (1, 128, 2350), (2, 64, 2000), (3, 128, 2350)):
+                os.makedirs(os.path.join(d, str(n)))
+                with open(os.path.join(d, str(n), "properties"), "w") as f:
+                    f.write(f"simd_count {simd}\nmax_engine_clk_fcompute {clk}\ngfx_target_version 120001\n")
+            sc = hip_speed_scores([0, 1, 2], root=d)
+            self.assertEqual(sc, {0: 128 * 2350.0, 1: 64 * 2000.0, 2: 128 * 2350.0})
+            self.assertIsNone(hip_speed_scores([0, 1, 2, 3], root=d))      # a card the topology does not have
+
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
         from serve.server import child_env, vision_env
@@ -1878,6 +1931,18 @@ class PcieShare(unittest.TestCase):
 class PeerDevice(unittest.TestCase):
     """#665: several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache
     tier, and the engine refuses it beside --layer-split: the server must not add one then."""
+
+    def test_a_vision_section_starts_the_engine_with_images_1322(self):
+        args = ["--native", "x"]
+        got = engine_args({"args": list(args), "vision": {"exe": "v", "gpu": True}})
+        self.assertEqual(got, args + ["--vision", "--vram-reserve-mib", "700"])
+        got = engine_args({"args": list(args), "vision": {"exe": "v", "gpu": False}})
+        self.assertEqual(got, args + ["--vision"])
+        mine = args + ["--vram-reserve-mib", "1500"]
+        self.assertEqual(engine_args({"args": list(mine), "vision": {"gpu": True}}), mine + ["--vision"])
+        done = args + ["--vision", "--vram-reserve-mib", "700"]                  # setup wrote it: unchanged
+        self.assertEqual(engine_args({"args": list(done), "vision": {"gpu": True}}), done)
+        self.assertEqual(engine_args({"args": list(args)}), args)                # no section: no images
 
     def test_split_added_for_several_gpus(self):
         self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0, 1]}),
@@ -3912,6 +3977,60 @@ class SilentEngine(unittest.TestCase):
         self.assertIn("STOP", engine.proc.stdin.getvalue())
         engine.proc.kill.assert_called_once()
         self.assertFalse(engine.alive())
+
+    def test_frozen_engine_is_ended_by_the_stall_watchdog(self):
+        # #1317 part 2: silent AND no CPU / disk work for the stall window -> ended, long before engine_silence_s
+        from serve import server
+        from serve.server import EngineSilent
+        engine = self.bare(300.0)
+        engine.lines.put("T 5")
+        engine._activity = lambda: (12.0, 4096)                  # the same reading every time: no work
+        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+            gen = engine.generate([1], 10, {}, threading.Event())
+            self.assertEqual(next(gen), 5)
+            t0 = time.monotonic()
+            with self.assertRaises(EngineSilent) as cm:
+                next(gen)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertIn("frozen", str(cm.exception))
+        engine.proc.kill.assert_called_once()
+
+    def test_a_working_silent_engine_is_not_ended_by_the_stall_watchdog(self):
+        from serve import server
+        engine = self.bare(300.0)
+        ticks = iter(range(10 ** 6))
+        engine._activity = lambda: (float(next(ticks)), 0)       # CPU time advances: it is working
+        self.later(engine, 3.0, "T 7", "DONE 1 1 1 1 length")
+        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+            self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_busy_gpu_is_not_a_frozen_engine(self):
+        # #1317: no CPU and no disk, but the GPU is at work (a long prompt chunk on a slow card): not ended
+        from serve import server
+        engine = self.bare(300.0)
+        engine._activity = lambda: (12.0, 4096)
+        engine.gpu_busy = lambda: True
+        self.later(engine, 2.5, "T 7", "DONE 1 1 1 1 length")
+        with mock.patch.object(server, "ENGINE_STALL_S", 1.0):
+            self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
+        engine.proc.kill.assert_not_called()
+
+    def test_no_reading_means_no_kill_and_zero_is_off(self):
+        from serve import server
+        for stall, act in ((1.0, lambda: None), (0, lambda: (1.0, 1))):
+            engine = self.bare(300.0)
+            engine._activity = act
+            self.later(engine, 2.5, "T 7", "DONE 1 1 1 1 length")
+            with mock.patch.object(server, "ENGINE_STALL_S", stall):
+                self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [7])
+            engine.proc.kill.assert_not_called()
+
+    def test_engine_frozen_samples(self):
+        from serve.server import engine_frozen
+        self.assertTrue(engine_frozen((10.0, 100), (10.2, 100)))
+        self.assertFalse(engine_frozen((10.0, 100), (13.0, 100)))
+        self.assertFalse(engine_frozen((10.0, 100), (10.0, 100 + (8 << 20))))
 
     def test_zero_waits_as_before(self):
         engine = self.bare(0)

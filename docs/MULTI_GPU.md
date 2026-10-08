@@ -65,6 +65,8 @@ number per card after the first, not a count of layers per card. With 4 cards an
 (or `[24, 36, 42]`) puts layers 0-23 on the first card, 24-35 on the second, 36-41 on the third and 42-47 on the last.
 The server checks it before the start and says what is wrong (0.1.39, #644).
 
+**Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Equal cards keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
+
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
 profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
@@ -224,7 +226,7 @@ Two cards, exactly two stages, `--serve`. In the config:
   rounds them differently, and a near-tie can flip (a serial run given the same caches through `--vram-reserve-mib`
   matches it exactly).
 - **Off, with one line in the log saying why**, with `--batch` slots, `--peer-device`, the helper caches
-  (`--expert-cache-device1..3`, `--remote-expert-opt`), a split into three or more stages or onto one GPU
+  (`--expert-cache-device1..3`, which `--remote-expert-opt` builds on), a split into three or more stages or onto one GPU
   (`--split-device 0`), or no draft layer. A request with repetition penalties (`penalty_last_n`) or coupled
   draft sampling decodes serially.
 - **With the resident RAM mode's asynchronous swaps** (`--adapt-async 1`, [DETAILS.md](DETAILS.md)) a round's steps
@@ -239,8 +241,35 @@ Two cards, exactly two stages, `--serve`. In the config:
   (`--mmap-experts` on that 32 GB PC) the file reads dominate and it measured no faster.
 
 The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE and the like) are read only with
-`STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows` and `--adapt-async 1` exclude each other (the engine says so and keeps the
-pipeline).
+`STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows` and `--adapt-async 1` combine: the engine turns the asynchronous tier
+off beside `--pipeline-windows 2` only when `STRATA_PIPELINE_ADAPT_ASYNC=0` is set. What switches either one off is
+printed once at start ("is off: ..."). `--remote-expert-opt` does something only with a helper cache
+(`--expert-cache-device1..3`); on a plain layer split it is inert, and setup no longer writes it there (#1447).
+
+Measured on 2x RTX 3090 (sm_86, 250 W limits; GPU0 PCIe 4.0 x16, GPU1 x4, no NVLink; Ryzen 7 9800X3D, 32 GB RAM),
+Qwen3.8-Flash-Next GSQ-RCO IQ3_S, `--resident-experts`, KV int8, `--spec 4 --mtp`, `"layer_split": "29"` for the
+`--pipeline-windows` rows (without `--remote-expert-opt`); the others are setup's config (`auto`). Decode is the mean of
+runs 2-6 of 1,500-token coding replies at temperature 0.6, prefill one cold 19.9K-token prompt; one run per arm unless
+noted (reported by adambenhassen, #1447; not repeated on our boxes):
+
+| Arm | Decode tok/s | Prefill tok/s |
+|---|---:|---:|
+| setup defaults (two runs) | 137.0 / 136.9 | 1798 |
+| `--adapt-async 1` (two runs) | 145.2 / 143.7 | 1800 / 1797 |
+| `--adapt-async 1`, no `--remote-expert-opt` | 145.0 | 1807 |
+| `STRATA_ADAPT_LAG=2` | 142.8 | 1800 |
+| `STRATA_EXCHANGE_ROTATE=1` | 139.6 | 1800 |
+| `STRATA_PF_FUSED=1` | 137.2 | 1913 |
+| `--pipeline-windows 2` | 136.7 | 2097 |
+| `STRATA_SPEC_COUPLED=1` | 137.6 | 1804 |
+| `STRATA_SPEC_PROB=1` | 137.2 | 1788 |
+| `STRATA_SPEC_COUPLED=1` + `STRATA_SPEC_GUMBEL=1` | 136.5 | 1805 |
+| async + lag 2 + rotate + pf_fused | 145.0 | 1829 |
+| pw2 + lag 2 + rotate + pf_fused | 135.9 | 2296 |
+| pw2 + async + lag 2 + rotate + pf_fused | 142.0 | 2302 |
+
+The last row keeps most of the asynchronous tier's decode gain and the pipeline's +28% prefill; no stalls in any arm.
+These are opt-in settings on one rig, not defaults.
 
 ## Several conversations at once
 
