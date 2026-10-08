@@ -1810,6 +1810,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
         for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = pos_t;
     }
     *(volatile uint32_t*) h_seq_ = 0;
+    for (int _i = 1; _i <= 8; ++_i) ((volatile uint32_t*) h_seq_)[_i] = 0;   /* + the payload tags/checksums */
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
@@ -2009,6 +2010,13 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        // the ring can arrive before its payload (elementwise.hpp): the pool must read a whole one
+        if (!strata::kernels::doorbell_wait_payload(h_seq_, h_x_ + (size_t) tb * g.n_embd, (int64_t) n * g.n_embd,
+                                                    h_ids_ + (size_t) tb * ss.k, h_w_ + (size_t) tb * ss.k,
+                                                    (int64_t) n * ss.k, want)) {
+            err = "verify: layer " + std::to_string(l) + " rang but its payload never arrived whole";
+            return false;
+        }
         progress_at("verify window: the CPU experts of layer", l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
@@ -2823,6 +2831,7 @@ bool Verifier::stage_batch(const int *rows, int S, int hbase,
             c[2 + j] = j < t - first ? (int32_t) pos[first + j] : -1;
     }
     *(volatile uint32_t*) h_seq_ = 0;
+    for (int _i = 1; _i <= 8; ++_i) ((volatile uint32_t*) h_seq_)[_i] = 0;   /* + the payload tags/checksums */
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
@@ -3521,6 +3530,13 @@ int Verifier::service(PoolMultiFn pool, void *user, std::string &err) try {
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        // the ring can arrive before its payload (elementwise.hpp): the pool must read a whole one
+        if (!strata::kernels::doorbell_wait_payload(h_seq_, h_x_ + (size_t) tb * g.n_embd, (int64_t) n * g.n_embd,
+                                                    h_ids_ + (size_t) tb * ss.k, h_w_ + (size_t) tb * ss.k,
+                                                    (int64_t) n * ss.k, want)) {
+            err = "verify: layer " + std::to_string(l) + " rang but its payload never arrived whole";
+            return -1;
+        }
         progress_at("verify window (pipelined): the CPU experts of layer", l);
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,

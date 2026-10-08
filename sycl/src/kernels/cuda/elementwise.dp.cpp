@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
 
 namespace strata::kernels {
 namespace {
@@ -566,6 +568,41 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
     check_launch("copy_from_mapped");
 }
 
+namespace {
+// The published payload's checksum: the wrapping sum of every 32-bit word mixed with its position (murmur3's
+// finalizer).  A plain sum of the words missed a reordering ([3, 7] -> [7, 3] in the expert ids) and cancelling
+// changes; mixed, a stale payload passes only with a chance near 2^-32 per read.  It detects; it does not order -
+// the host keeps reading until the payload it sees matches (doorbell_payload_ready).  Positions: x 0..n-1,
+// ids n..n+k-1, weights n+k..n+2k-1.
+inline uint32_t dbx_payload_mix(uint32_t word, uint32_t pos) {
+    uint32_t h = word ^ (pos * 0x9E3779B9u);
+    h ^= h >> 16; h *= 0x85EBCA6Bu; h ^= h >> 13; h *= 0xC2B2AE35u; h ^= h >> 16;
+    return h;
+}
+inline uint32_t dbx_payload_sum(const float* x, int64_t n, const int32_t* ids, const float* w, int64_t k,
+                                bool has_weights) {
+    uint32_t s = 0;
+    for (int64_t j = 0; j < n; ++j) s += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[j]), (uint32_t) j);
+    for (int64_t j = 0; j < k; ++j) s += dbx_payload_mix((uint32_t) ids[j], (uint32_t) (n + j));
+    if (has_weights)
+        for (int64_t j = 0; j < k; ++j) s += dbx_payload_mix(sycl::bit_cast<uint32_t>(w[j]), (uint32_t) (n + k + j));
+    return s;
+}
+// The ring, its tag and its checksum, in slot r % 4 of the sequence word (elementwise.hpp).  Written last, after a
+// system fence over the uncached payload stores.
+__dpct_inline__ void dbx_ring_commit(uint32_t* seq, uint32_t part, bool group_ok, uint32_t ring) {
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+    (void) group_ok;
+#endif
+    if (group_ok) {
+        strata::sys_store(seq + 2 + 2 * (ring % 4), part);
+        strata::sys_store(seq + 1 + 2 * (ring % 4), ring);
+        sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        strata::sys_store(seq, ring);
+    }
+}
+}  // namespace
+
 __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
                                              const int32_t *__restrict__ ids,
                                              const float *__restrict__ w, int n,
@@ -573,31 +610,31 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
                                              int32_t *ids_out, float *w_out,
                                              uint32_t *seq) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = 0;
 #pragma unroll
-    for (int i = item_ct1.get_local_id(2); i < n;
-         i += item_ct1.get_local_range(2)) x_out[i] = x[i];
-    if ((int)item_ct1.get_local_id(2) < k) {
-        ids_out[item_ct1.get_local_id(2)] = ids[item_ct1.get_local_id(2)];
-        if (w_out != nullptr) w_out[item_ct1.get_local_id(2)] =
-            w[item_ct1.get_local_id(2)];
+    for (int j = i; j < n; j += nt) {
+        const float v = x[j];
+        strata::sys_store_mapped(x_out + j, v);
+        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
-    /*
-    DPCT1078: Consider replacing memory_order::acq_rel with
-    memory_order::seq_cst for correctness if strong memory order restrictions
-    are needed.
-    */
-    sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+        if (w_out != nullptr) {
+            const float wv = w[i];
+            strata::sys_store_mapped(w_out + i, wv);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
+        }
+    }
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
     item_ct1.barrier();
-    if (item_ct1.get_local_id(2) == 0) {
-        strata::sys_store(seq, strata::sys_load(seq) + 1u);
-#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
-        __threadfence_system();
-#endif
+    if (i == 0) {
+        const uint32_t next = strata::sys_load(seq) + 1u;
+        dbx_ring_commit(seq, sum, true, next);
     }
 }
 
@@ -605,52 +642,31 @@ __dpct_inline__ void doorbell_publish_res_kernel(
     const float *__restrict__ x, const int32_t *__restrict__ ids,
     const int32_t *__restrict__ d_res, int n_expert, int n, int k, float *x_out,
     int32_t *ids_out, uint32_t *seq) {
+    // d_res/n_expert decided whether x was copied; the payload is now published whole and the checksum covers x and
+    // the ids (this variant publishes no weights), so the two are unused.
+    (void) d_res;
+    (void) n_expert;
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    int any_miss = 0;
-    if ((int)item_ct1.get_local_id(2) < k) {
-        const int32_t id = ids[item_ct1.get_local_id(2)];
-        ids_out[item_ct1.get_local_id(2)] = id;
-        if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
-    }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    if ((item_ct1.barrier(),
-         sycl::any_of_group(
-             sycl::ext::oneapi::this_work_item::get_work_group<3>(),
-             any_miss))) {
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = 0;
 #pragma unroll
-        for (int i = item_ct1.get_local_id(2); i < n;
-             i += item_ct1.get_local_range(2)) x_out[i] = x[i];
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
-    } else if ((int)item_ct1.get_local_id(2) < k) {
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
+    for (int j = i; j < n; j += nt) {
+        const float v = x[j];
+        strata::sys_store_mapped(x_out + j, v);
+        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+    }
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
     item_ct1.barrier();
-    if (item_ct1.get_local_id(2) == 0) {
-        strata::sys_store(seq, strata::sys_load(seq) + 1u);
-#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
-        __threadfence_system();
-#endif
+    if (i == 0) {
+        const uint32_t next = strata::sys_load(seq) + 1u;
+        dbx_ring_commit(seq, sum, true, next);
     }
 }
 
@@ -661,37 +677,27 @@ __dpct_inline__ void doorbell_publish_value_kernel(
     const float *__restrict__ w, int n, int k, float *x_out, int32_t *ids_out,
     float *w_out, uint32_t *seq, uint32_t value) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = 0;
 #pragma unroll
-    for (int i = item_ct1.get_local_id(2); i < n;
-         i += item_ct1.get_local_range(2)) x_out[i] = x[i];
-    if ((int)item_ct1.get_local_id(2) < k) {
-        ids_out[item_ct1.get_local_id(2)] = ids[item_ct1.get_local_id(2)];
-        w_out[item_ct1.get_local_id(2)] = w[item_ct1.get_local_id(2)];
+    for (int j = i; j < n; j += nt) {
+        const float v = x[j];
+        strata::sys_store_mapped(x_out + j, v);
+        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
-    /*
-    DPCT1078: Consider replacing memory_order::acq_rel with
-    memory_order::seq_cst for correctness if strong memory order restrictions
-    are needed.
-    */
-    sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    item_ct1.barrier(sycl::access::fence_space::local_space);
-    if (item_ct1.get_local_id(2) == 0) {
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
-        *(volatile uint32_t*) seq = value;
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+        const float wv = w[i];
+        strata::sys_store_mapped(w_out + i, wv);
+        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
     }
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+    item_ct1.barrier();
+    if (i == 0) dbx_ring_commit(seq, sum, true, value);
 }
 
 void doorbell_publish_value(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k,
@@ -768,6 +774,27 @@ void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_r
                 });
     }
     check_launch("doorbell_publish_res");
+}
+
+bool doorbell_payload_ready(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                            const float* h_weights, int64_t k, uint32_t want) {
+    const volatile uint32_t* w = h_seq + 1 + 2 * (want % 4);   // this ring's tag and checksum (elementwise.hpp)
+    if (w[0] != want) return false;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    // the two publish shapes: with the routing weights (doorbell_publish / _value) or without (doorbell_publish_res)
+    return dbx_payload_sum(h_x, n, h_ids, h_weights, k, true) == w[1] ||
+           dbx_payload_sum(h_x, n, h_ids, h_weights, k, false) == w[1];
+}
+
+bool doorbell_wait_payload(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                           const float* h_weights, int64_t k, uint32_t want, int timeout_ms) {
+    if (doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) {
+        for (int i = 0; i < 64; ++i) __builtin_ia32_pause();
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(timeout_ms)) return false;
+    }
+    return true;
 }
 
 __dpct_inline__ void copy_i32_from_mapped_kernel(int32_t *__restrict__ dst,

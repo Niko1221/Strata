@@ -57,10 +57,20 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
     // experts' ids the host reads after the ring) after the ring, the same contract the atomic store had.
     sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
 }
+// The doorbell's PAYLOAD (activations, expert ids, routing weights) is the other half of the handshake: a plain store
+// to host USM reaches the host only when the kernel ends on an Arc (xe), so the host would spin on the ring and then
+// read a stale payload. Same uncached L1+L3 hint as sys_store, for float/int32.
+template<class T> inline void sys_store_mapped(T* p, T v) {
+    sycl::ext::oneapi::experimental::annotated_ptr<T, doorbell_uncached_write> u(p);
+    u[0] = v;
+}
 #else
 inline void sys_store(volatile uint32_t* p, uint32_t v) {
     sys_atomic_u32(*const_cast<uint32_t*>(p)).store(v);
     sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
+}
+template<class T> inline void sys_store_mapped(T* p, T v) {
+    sycl::atomic_ref<T, sycl::memory_order::relaxed, sycl::memory_scope::system>(*p).store(v);
 }
 #endif
 

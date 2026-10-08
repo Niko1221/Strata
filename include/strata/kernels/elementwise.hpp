@@ -121,6 +121,21 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
                           float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
 
+/// The ring can reach the host before its payload on some GPUs: the payload stores and the ring store are not ordered
+/// by the fences alone (measured on an Arc A770: 14 of 2,832 rings in one run were stale, and the CPU pool then
+/// computed on a partly stale payload). So the publish kernels also write, next to the sequence number, the ring it
+/// belongs to and a checksum of the payload (the wrapping sum of every 32-bit word mixed with its position, murmur3's
+/// finalizer - a plain sum missed a reordering, [3,7] -> [7,3], of the expert ids) in a per-ring slot modulo 4:
+/// seq[1 + 2 (r % 4)] is the tag, seq[2 + 2 (r % 4)] the checksum (a split verify publishes two rings before the host
+/// reads the first). The sequence word therefore needs 9 words of mapped host memory.  The two publish shapes
+/// differ (doorbell_publish / doorbell_publish_value publish the routing weights, doorbell_publish_res does not),
+/// so the wait accepts either.  CUDA/HIP: always true (their ordering holds), so callers may skip the wait there.
+bool doorbell_payload_ready(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                            const float* h_weights, int64_t k, uint32_t want);
+/// Spins on doorbell_payload_ready for up to `timeout_ms`; false on timeout.
+bool doorbell_wait_payload(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                           const float* h_weights, int64_t k, uint32_t want, int timeout_ms = 2000);
+
 /// Plan v0.3 P3: copy `n` int32 from mapped pinned host memory into device memory with a kernel (the QSA
 /// per-token step and positions), instead of a host-to-device memcpy node in the middle of a layer.
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream);
