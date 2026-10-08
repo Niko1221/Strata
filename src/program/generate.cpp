@@ -6124,6 +6124,9 @@ int main(int argc, char** argv) {
             return (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
+            // counted on the part's own device, as `init` and the other `bytes_needed` callers in this block are: the
+            // count follows `init`, whose per-device choices (prompt_f16) are the stage device's, not CUDA0's
+            const strata::core::OnDevice on(p.dev);
             return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c));
         };
         auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
