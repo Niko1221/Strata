@@ -21,7 +21,6 @@
 #include <future>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace strata::core { class PeerExperts; }
 namespace strata::kernels::cpu { class ExpertPool; }
@@ -82,11 +81,17 @@ public:
     static double pinned_share();
     /// The chunk size from which a chunk streams every expert the GPU does not hold (1024; STRATA_PREFILL_STREAM_MIN).
     static int64_t stream_all_min_tokens();
-    /// STRATA_PREFILL_PIPE (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
+    /// --prefill-pipe (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
     /// stages, chunks of at most `cap` (the buffers' size) and a stage-chunk cost of b + a C with b/a = `ratio` tokens
-    /// (0: not known yet - the same chunk count as `cap` gives, evened out): the chunk count with the pipeline's
-    /// least time, see the definition. `cap` when that is today's split or not 3% better than it.
+    /// (0: unknown - the same chunk count as `cap` gives, evened out): the chunk count with the pipeline's least time,
+    /// see the definition. `cap` when that is today's split or not 3% better than it. A function of its arguments
+    /// only, so a prompt's chunks (and its output bits) never depend on timing.
     static int64_t pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio);
+    /// --prefill-pipe for this run: 0 off (the buffers' chunks), 1 today's chunk count evened out, a number > 1 the
+    /// rig's b/a in tokens (setup's --calibrate measures it). Default: STRATA_PREFILL_PIPE, else 0.
+    static void set_pipe(double value);
+    /// The same for the next prompts only (the `pipe=` request key, setup's calibration); < 0 = the run's own value.
+    static void set_pipe_request(double value);
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);
@@ -198,18 +203,6 @@ private:
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
-    /// STRATA_PREFILL_PIPE=1: one point per recent prompt (its chunk size, the median time of its full chunks on the
-    /// first stage), from which b/a is fitted
-    struct PipeFit {
-        static constexpr int kN = 16;
-        int64_t tokens[kN] = {};
-        double ms[kN] = {};
-        int n = 0, at = 0;
-        void add(int64_t t, double v) { tokens[at] = t; ms[at] = v; at = (at + 1) % kN; if (n < kN) ++n; }
-        double ratio() const;   // b/a in tokens from a Theil-Sen line; 0 while it cannot be told yet
-    } pipe_fit_;
-    std::vector<double> pipe_cur_ms_;   ///< the prompt being read: its full chunks' times (ms)
-    int64_t pipe_cur_tokens_ = 0;       ///< and their size
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
     bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens

@@ -22,8 +22,9 @@ import calibrate as CAL  # noqa: E402
 class FakeEngine:
     """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`."""
 
-    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None):
+    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None, read=None, reads=None):
         self.args = list(args)
+        self.read, self.reads = read, reads      # prompt read speed = read(prefill_pipe); the values it read with
         self.adapt_bonus = (adapt or {}).get(CAL.arg_value(args, "--adapt-swaps"), 1.0)
         w = CAL.arg_value(args, "--pool-workers")
         self.workers = int(w) if w else info_workers
@@ -41,17 +42,68 @@ class FakeEngine:
         for _ in range(max_new):
             yield 1
         self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000.0}
+        if "prefill_pipe" in tune and self.read is not None:
+            n = len(ids)
+            self.last.update(prompt_tokens=n, prompt_read=n, prompt_ms=n / self.read(tune["prefill_pipe"]) * 1000.0)
+            if self.reads is not None:
+                self.reads.append(tune["prefill_pipe"])
 
 
 BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8192"]
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE, adapt=None):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None):
         starts = []
-        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt),
-                          say=lambda *_: None)
+        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt, read, reads),
+                          say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
         return res, starts
+
+    def test_prefill_pipe_on_a_layer_split(self):
+        # two stages that read fastest with b/a 1536: kept, and only one engine start measures it
+        split = BASE + ["--layer-split", "auto"]
+        reads = []
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=split, reads=reads,
+                               read=lambda v: {1536: 600.0, 768: 560.0, 1: 520.0}.get(v, 500.0))
+        self.assertEqual(res["settings"].get("--prefill-pipe"), "1536")
+        self.assertEqual(sorted(set(reads)), sorted(set(CAL.PIPE_VALUES)))
+        self.assertIn("pipe_sweep", res["report"])
+        self.assertEqual(CAL.arg_value(CAL.apply(split, res["settings"]), "--prefill-pipe"), "1536")
+
+    def test_prefill_pipe_noise_stays_off(self):
+        # 2% faster evened out: below MIN_GAIN, so the engine default (off) stays
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=BASE + ["--layer-split", "auto"],
+                               read=lambda v: 510.0 if v == 1 else 500.0)
+        self.assertNotIn("--prefill-pipe", res["settings"])
+
+    def test_prefill_pipe_must_win_every_round(self):
+        # 1536 looks 12% faster in the sweep and the median, but one paired round reads slower: noise, it stays off
+        calls = {}
+
+        def read(v):
+            calls[v] = calls.get(v, 0) + 1
+            if v != 1536:
+                return 500.0
+            return [560.0, 560.0, 560.0, 480.0, 560.0, 560.0][min(calls[v], 6) - 1]
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=BASE + ["--layer-split", "auto"], read=read)
+        self.assertNotIn("--prefill-pipe", res["settings"])
+        self.assertEqual(len(res["report"]["pipe_confirm"]["1536"]), 3)
+
+    def test_prefill_pipe_reads_the_same_text(self):
+        # every read: the same stretch of text after a header of its own (only the chunks differ between values)
+        tok = type("T", (), {"encode": lambda s, t, **k: [ord(c) for c in t]})()
+        make = CAL.doc_prompt(tok)
+        a, b = make(1, 300), make(2, 300)
+        self.assertNotEqual(a[:40], b[:40])
+        self.assertEqual(a[-320:], b[-320:])
+
+    def test_prefill_pipe_only_on_a_layer_split(self):
+        reads = []
+        res, _ = self.run_with(lambda f, p, w: 50.0, read=lambda v: 600.0 if v == 1536 else 500.0, reads=reads)
+        self.assertEqual(reads, [])
+        self.assertNotIn("--prefill-pipe", res["settings"])
+        # an old calibration's value goes when a new one does not keep it
+        self.assertIsNone(CAL.arg_value(CAL.apply(BASE + ["--prefill-pipe", "800"], {}), "--prefill-pipe"))
 
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
@@ -157,7 +209,8 @@ class Calibrate(unittest.TestCase):
             (tok / "token_type.json").write_text(json.dumps([1, 1]))
             seen = []
             saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(): seen.append(args) or {}
+            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(), long_prompt=None: (
+                seen.append(args) or {})
             fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
             try:
                 with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):

@@ -462,7 +462,7 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
 
-**Tuning for your PC (`--calibrate`, engine 0.1.19).** Four engine settings depend on the PC more than on the model:
+**Tuning for your PC (`--calibrate`, engine 0.1.19).** These engine settings depend on the PC more than on the model:
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU
   (`--pcie-frac`: a fast PCIe link and a slower CPU want more, a laptop's narrower link less);
 - how sure the draft layer must be to add another guess to a check (`--spec-min-p`);
@@ -470,7 +470,9 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
 - how busily the VRAM expert cache follows the conversation (`--adapt-every`, `--adapt-swaps`, `--adapt-decay`): a PC
   whose CPU reads the missed experts slowly (DDR3 or DDR4 in few channels) gains from swapping more. On a Xeon
   E5-2673 v3 with DDR3 and an RTX 4060 Ti on PCIe 3.0 x8, 160 swaps every window measured +7.9% over the default
-  (Q2_0, with the swaps taking effect a window later, #764); see #906.
+  (Q2_0, with the swaps taking effect a window later, #764); see #906;
+- on two or more cards (a layer split), the prompt chunks that keep the cards reading at once (`--prefill-pipe`, the
+  prompt read speed of fresh prompts rather than the output speed; see docs/MULTI_GPU.md).
 
 The defaults were measured on a Ryzen 5 7600 with an RTX 5070. Setup offers to measure them on your PC after an
 install; `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) does it any time. It measures the output
