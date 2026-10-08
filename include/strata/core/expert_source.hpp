@@ -185,6 +185,10 @@ public:
     virtual bool advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
         (void) pairs; (void) n; return false;
     }
+    /// pp-opt: `n` blobs at once (the prompt path's stager claims runs of consecutive experts): `dst[i]` gets the
+    /// blob of (layers[i], experts[i]).  A source that reads a drive may merge neighbouring blobs into one request.
+    /// Default: copy_blob one by one.
+    virtual bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n);
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
@@ -421,6 +425,19 @@ struct ExpertDispatch {
 void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,
                           int64_t k, float* out);
 
+/// STRATA_TIER_TRACE: what the calling thread is doing while it asks a source for blobs - 'D' a decode window, 'P' the
+/// prompt path, 0 anything else (the GPU caches' fills and refills, the adaptive tier) - so each traced blob says
+/// which part of the engine read it.  A guard sets it for its scope.
+struct TierPhase {
+    explicit TierPhase(char p) : prev_(current()) { current() = p; }
+    ~TierPhase() { current() = prev_; }
+    TierPhase(const TierPhase&) = delete;
+    TierPhase& operator=(const TierPhase&) = delete;
+    static char& current() { thread_local char p = 0; return p; }
+private:
+    char prev_;
+};
+
 /// Plan v0.3 P6: the pool for a verify window of `n_tok` tokens.  `x_f` is (n_tok, n_embd), `ids` (n_tok, k) and
 /// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it;
 /// resident experts' rows are zeroed (the GPU adds them).  Requires `host_res` (the token-graph residency).
@@ -568,6 +585,11 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
+    /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
+    /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
+    /// read_direct (mapped_blob answers nullptr).  Returns whether the view was closed; `why` says why not.
+    bool drop_mapping(std::string& why);
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -588,6 +610,8 @@ public:
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
+    bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     /// CS-T: the GGUF in place assembles the missed experts on `fetch_threads_` threads.
@@ -600,6 +624,21 @@ public:
     /// Of the blobs the file tier read for the decode, how many had been warmed for their layer beforehand.
     int64_t warmed_hits() const { return warm_hits_.load(std::memory_order_relaxed); }
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
+    /// Prompt-path blobs found in the stage pool instead of read from the drive (copy_staged).
+    int64_t staged_prompt_hits() const { return stage_hits_pp_.load(std::memory_order_relaxed); }
+    /// Decode-window file-tier experts found in the stage pool instead of read from the drive.
+    int64_t staged_decode_hits() const { return stage_hits_dec_.load(std::memory_order_relaxed); }
+    /// The RAM tier's LRU part (--resident-lru-gib): the stage pool keeps up to `bytes` of the blobs the decode read
+    /// from the files, least recently used out first, and the prompt path copies from it.  Needs unbuffered reads (the
+    /// pool is where they land); STRATA_STAGE_KEEP_MIB sets it without the flag.
+    void set_stage_keep(uint64_t bytes);
+    uint64_t stage_keep() const { return stage_keep_; }
+    /// The elastic LRU (STRATA_LRU_KEEP_FREE_GIB): a watcher keeps at least `keep_free_bytes` of RAM available to the
+    /// system - when other programs take it, the LRU frees its coldest buffers (back to the OS at once, never paged);
+    /// when RAM is free again it grows back towards set_stage_keep's size.
+    void start_elastic_lru(uint64_t keep_free_bytes);
+    int64_t lru_freed() const { return lru_freed_.load(std::memory_order_relaxed); }
+    uint64_t lru_live_bytes() const { return (uint64_t) stage_live_ * stage_blob_; }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
 
@@ -642,6 +681,10 @@ private:
     bool open_gguf(std::string& err);
     const uint8_t* staged_blob(int64_t layer, int64_t expert);
     bool claim_stage(int64_t key, size_t& v, bool& fill, bool ahead = false);
+    /// The blob from its stage buffer when one holds it (an expert a decode window read from the files and the pool
+    /// kept, STRATA_STAGE_KEEP_MIB): copied into `dst` without a drive read.  Neither admits nor refreshes the entry,
+    /// so the prompt path's sweep over every cold expert does not push out what the decode reuses.
+    bool copy_staged(int64_t layer, int64_t expert, uint8_t* dst);
     bool fill_stage(size_t v, int64_t layer, int64_t expert, uint8_t* dst);
     void publish_stage(size_t v, int64_t layer, bool ok, double us);
     struct Fill { size_t v; int64_t layer, e; uint8_t* dst; };
@@ -677,7 +720,23 @@ private:
     // through the layer it was asked in and the next ones (the pool computes a layer's misses before the next).
     static constexpr uint64_t kStageAge = 3;
     std::mutex stage_mu_;
-    std::vector<std::unique_ptr<uint8_t[]>> stage_buf_;
+    /// The stage buffers are allocated page-aligned (VirtualAlloc on Windows); the elastic LRU frees them one by one.
+    struct StageFree { void operator()(uint8_t* p) const; };
+    std::vector<std::unique_ptr<uint8_t[], StageFree>> stage_buf_;
+    uint64_t stage_alloc_ = 0;                ///< bytes of each stage buffer, whole pages
+    // the elastic LRU (start_elastic_lru): the pool grows to lru_cap_ (at most stage_keep_), a watcher lowers lru_cap_
+    // and frees the coldest buffers when the available RAM falls below the floor, and raises it again when RAM is free
+    uint64_t lru_cap_ = ~0ull;
+    size_t stage_live_ = 0;                   ///< stage buffers allocated (a freed one leaves a null slot)
+    std::vector<size_t> stage_free_;          ///< null slots, reused before the vector grows
+    std::thread lru_watch_;
+    std::mutex lru_watch_mu_;
+    std::condition_variable lru_watch_cv_;
+    bool lru_watch_quit_ = false;
+    std::atomic<int64_t> lru_freed_{0};
+    void lru_watch_loop(uint64_t keep_free);
+    void lru_shrink_to(uint64_t bytes);       ///< stage_mu_ held: frees the coldest free buffers down to `bytes`
+    void stop_elastic_lru();
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
@@ -686,6 +745,10 @@ private:
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
+    std::atomic<int64_t> stage_hits_pp_{0};   ///< prompt-path blobs copied from a stage buffer (copy_staged)
+    std::atomic<int64_t> stage_hits_dec_{0};  ///< decode misses the stage pool already held (prefetch)
+    static uint64_t stage_keep_env();         ///< STRATA_STAGE_KEEP_MIB in bytes, 0 when unset
+    uint64_t stage_keep_ = stage_keep_env();  ///< bytes of blobs the stage pool keeps before reusing a buffer
     mutable std::atomic<int64_t> direct_fallbacks_{0};
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
@@ -757,6 +820,7 @@ private:
 #else
     int fd_ = -1;
 #endif
+    bool unmapped_ = false;   ///< pp-opt: drop_mapping closed the view (base_ stays as the "opened" mark only)
 };
 
 // ================================ THE RESIDENT ARENA (R2.1) ================================

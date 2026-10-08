@@ -432,6 +432,7 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    uint64_t resident_lru = 0;          ///< --resident-lru-gib: the part of the RAM budget kept as an LRU of decode reads
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -1868,6 +1869,11 @@ int main(int argc, char** argv) {
                 o.resident_pin = false;
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
+        }
+        else if (a == "--resident-lru-gib") {
+            const double gib = std::atof(next("--resident-lru-gib"));
+            if (!(gib > 0.0)) { std::fprintf(stderr, "strata generate: --resident-lru-gib needs N > 0\n"); return 2; }
+            o.resident_lru = (uint64_t) (gib * 1073741824.0);
         }
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
@@ -4059,9 +4065,35 @@ int main(int argc, char** argv) {
         // #773: without a RAM budget there is no RAM copy and the file cache IS the expert tier (measured on a
         // 32 GB, 2 x 16 GB rig: forcing unbuffered reads there re-read 163-629 GB from the drive and halved the
         // speed), so STRATA_UNBUFFERED_LOAD=1 is not honoured in that mode
+        // --resident-lru-gib: that much of the RAM budget is not filled from the profile at start but holds the experts
+        // the decode reads from the files, least recently used out first (the stage pool of the unbuffered reads)
+        if (o.resident_lru > 0) {
+            if (o.resident_budget <= o.resident_lru) {
+                std::fprintf(stderr, "strata generate: --resident-lru-gib must be smaller than --resident-budget-gib\n");
+                return 2;
+            }
+            o.resident_budget -= o.resident_lru;
+            src.set_stage_keep(o.resident_lru);
+            // STRATA_LRU_KEEP_FREE_GIB=G: the LRU part is elastic - it shrinks when the available RAM (on Windows also the
+            // available commit) falls below G (other programs get it back at once, nothing paged) and grows back
+            // towards its size when there is room again
+            if (const char* kf = std::getenv("STRATA_LRU_KEEP_FREE_GIB"); kf != nullptr && std::atof(kf) > 0.0) {
+                src.start_elastic_lru((uint64_t) (std::atof(kf) * 1073741824.0));
+#if defined(_WIN32)
+                std::fprintf(stderr, "strata generate: RAM tier LRU is elastic: it keeps %.1f GiB of RAM and of commit "
+                                     "available to other programs\n", std::atof(kf));
+#else
+                std::fprintf(stderr, "strata generate: RAM tier LRU is elastic: it keeps %.1f GiB of RAM available to "
+                                     "other programs\n", std::atof(kf));
+#endif
+            }
+            std::fprintf(stderr, "strata generate: RAM tier: %.2f GiB by the expert profile, %.2f GiB of the experts the "
+                                 "decode reads from the files (LRU)\n", (double) o.resident_budget / 1073741824.0,
+                         (double) o.resident_lru / 1073741824.0);
+        }
         if (o.resident_budget > 0) {
             std::string why;
-            const bool ub = src.set_unbuffered(o.resident_budget, why);
+            const bool ub = src.set_unbuffered(o.resident_budget + o.resident_lru, why);
             std::fprintf(stderr, "strata generate: the file tier reads %s (%s)\n",
                          ub ? "unbuffered" : "through the file cache", why.c_str());
         } else if (const char* env = std::getenv("STRATA_UNBUFFERED_LOAD"); env != nullptr && env[0] != '\0' &&
@@ -6073,6 +6105,14 @@ int main(int argc, char** argv) {
 #endif
     }
     if (o.adapt_async && !src.complement_ready()) adapt_async_off("the resident RAM mode is not running");
+    // pp-opt: with the file tier unbuffered, the mapped view of experts.bin is only a fallback from here on - and while
+    // it exists NTFS serves the unbuffered reads one at a time (drop_mapping).  STRATA_KEEP_MAPPING=1 keeps it (A/B).
+    if (srcp == &src && src.unbuffered() && std::getenv("STRATA_KEEP_MAPPING") == nullptr) {
+        std::string why;
+        const bool dropped = src.drop_mapping(why);
+        std::fprintf(stderr, "strata generate: the mapped view of the experts %s (%s)\n",
+                     dropped ? "is closed" : "stays open", why.c_str());
+    }
     if (o.serve) {
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
@@ -10856,6 +10896,15 @@ int main(int argc, char** argv) {
                     fb_prev = fb;
                 }
             }
+            if (srcp == &src && src.stage_keep() > 0)
+                std::fprintf(stderr, "strata serve: RAM tier LRU (%.2f GiB%s): since the start %lld decode and %lld prompt "
+                                     "blobs found in it\n", (double) src.stage_keep() / 1073741824.0,
+                             src.unbuffered() ? "" : ", inactive: the reads go through the file cache",
+                             (long long) src.staged_decode_hits(), (long long) src.staged_prompt_hits());
+            if (srcp == &src && src.lru_freed() > 0)
+                std::fprintf(stderr, "strata serve: RAM tier LRU elastic: %.2f GiB held now, %lld blobs given back to other "
+                                     "programs since the start\n", (double) src.lru_live_bytes() / 1073741824.0,
+                             (long long) src.lru_freed());
             // STRATA_SPLIT_TIMING: where each verify stage's host time went, cumulative per window since the start
             // (waiting for its GPU to ring a layer, the CPU pool and plan per layer, staging the window)
             if (static const bool st_timing = std::getenv("STRATA_SPLIT_TIMING") != nullptr; st_timing)
