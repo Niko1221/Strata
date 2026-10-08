@@ -1536,6 +1536,12 @@ class SharedPrefix(unittest.TestCase):
                        {"strata_prefix": {"tokens": True}}, {"strata_prefix": "x"}):
             self.assertFalse([k for k in self.keys(**absent) if k.startswith("pin=")], absent)
 
+    def test_lora_key(self):
+        self.assertIn("lora=0", self.keys(lora=False))
+        self.assertIn("lora=1", self.keys(lora=True))
+        for absent in ({}, {"lora": None}, {"lora": 0}, {"lora": "off"}):   # only a bool sets it
+            self.assertFalse([k for k in self.keys(**absent) if k.startswith("lora=")], absent)
+
     def test_messages_resolve_to_the_boundary_token(self):
         req = {"strata_prefix": {"messages": 2}}
         ids, _, _ = self.svc.prepare(self.MSGS, None, {}, 16, req=req)
