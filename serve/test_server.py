@@ -1632,6 +1632,16 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(ordered_gpus({"gpu": 1, "args": []}, {1: 1.0}), [1])
         self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0}), [0, 2, 1])
         self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 3.0, 2: 3.0}), [0, 1, 2])
+        # #1576: the reorder is skipped when it would land the last stage (head + draft + verify + cache) on a card
+        # with less VRAM than the config's own last card - the reporter's fast 12 GB / slow 22 GB pair
+        fast_small = {"gpu": [0, 1], "args": []}
+        speeds = {0: 8448.0 * 2610, 1: 4352.0 * 1665}     # 4070 Ti vs 2080 Ti
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 12288, 1: 22528}), [0, 1])   # keep: tail would shrink
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 24576, 1: 12288}), [1, 0])   # faster AND bigger: reorder
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 16384, 1: 16384}), [1, 0])   # equal VRAM: reorder
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 12288}), [1, 0])             # a card unmeasured: reorder
+        self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0},
+                                    {0: 8192, 1: 12288, 2: 24576}), [0, 1, 2])  # tail 1 (12G) < given tail 2 (24G)
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 

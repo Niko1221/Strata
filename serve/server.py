@@ -2324,14 +2324,34 @@ def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topolog
     return got if all(i in got for i in indices) else None
 
 
-def ordered_gpus(cfg: dict, scores=None) -> list[int]:
+def gpu_vram_mib(indices: list[int], hip: bool = False) -> dict[int, int] | None:
+    """Total VRAM of each card in MiB (NVML / amdgpu sysfs); None when any of them cannot be read."""
+    try:
+        from serve.telemetry import gpu_reader
+    except ImportError:
+        return None
+    out = {}
+    for i in indices:
+        g = gpu_reader(i, amd=hip)
+        if not g.ok():
+            return None
+        total = g.read().get("mem_total")
+        if total is None:
+            return None
+        out[i] = int(total) >> 20
+    return out
+
+
+def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     """#1352: the cards of a layer split in the order the engine stages them.  With "layer_split": "auto" (the
     default) the faster card goes LAST - the last stage runs the head, the draft layer and the verify, and a prompt
     chunk waits on it (the reporter's 4070 Ti SUPER + 5060 Ti: a 6K prompt took 50 s one way round and 15 s the
     other); "faster" is multiprocessors x max clock.  Equal cards keep the config's order (the sort is stable), and
     so does anything we cannot measure.  "gpu_order": "as_given" keeps the config's order whatever the cards.  A
-    manual "layer_split" ("24") also keeps it: the user placed the layers.  scores: {index: score} (tests); None asks
-    the driver."""
+    manual "layer_split" ("24") also keeps it: the user placed the layers.  #1576: the reorder is skipped when it
+    would land the last stage on a card with less total VRAM than the one the config put there - that stage's head,
+    draft and verify have a floor the smaller card cannot afford.  scores/vrams: {index: value} (tests); None asks
+    the driver - injected scores without injected vrams means no VRAM check (a test seam is a test seam)."""
     gl = gpu_list(cfg)
     if len(gl) < 2 or cfg.get("gpu_order") == "as_given":
         return gl
@@ -2344,6 +2364,12 @@ def ordered_gpus(cfg: dict, scores=None) -> list[int]:
         return gl
     out = sorted(gl, key=lambda i: sc[i])
     if out != gl:
+        vram = vrams if vrams is not None else (None if scores is not None else gpu_vram_mib(gl, hip))
+        if vram is not None and all(i in vram for i in gl) and vram[out[-1]] < vram[gl[-1]]:
+            print(f"[strata] layer split: keeping card order {','.join(map(str, gl))} - the faster card has "
+                  f"less VRAM than the one the split ends on ({vram[out[-1]]} vs {vram[gl[-1]]} MiB, #1576)",
+                  flush=True)
+            return gl
         print(f"[strata] layer split: card order {','.join(map(str, out))} (the faster card last; "
               f'"gpu_order": "as_given" keeps {",".join(map(str, gl))}, #1352)', flush=True)
     return out
