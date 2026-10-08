@@ -356,6 +356,70 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
     return ConversationRestore::restored;
 }
 
+bool conversation_prefix_header(SavedConversation& meta, std::vector<ConversationKvSizes>& sizes,
+                                const ConversationCheckpoint& root, bool cvec, const SessionState& ss,
+                                const ModelGeometry& g, const QsaState& draft, std::string& error) {
+    if (!root.imgs.empty() || !root.stage_parts.empty())
+        return fail(error, "a prefix holds no pictures or stage parts");
+    if (!conversation_checkpoint_validate(root, ss, g, error)) return false;
+    SavedConversation m;
+    m.geometry = geometry_key(g);
+    m.layer_lo = ss.layer_lo; m.layer_hi = ss.layer_hi;
+    m.live = root;
+    m.live.used = 0;
+    m.cvec = cvec;
+    const size_t layers = owned_qsa(ss);
+    m.kv.resize(layers + 1);
+    std::vector<ConversationKvSizes> z(layers + 1);
+    const int64_t upto = (int64_t) root.ids.size();
+    for (size_t j = 0; j <= layers; ++j)
+        if (!conversation_kv_layout(m.kv[j], z[j], j < layers ? owned(ss, j) : draft, g, upto, j < layers, error))
+            return false;
+    meta = std::move(m);
+    sizes = std::move(z);
+    return true;
+}
+
+bool conversation_prefix_save_stream(const SessionState& ss, const ModelGeometry& g, const QsaState& draft,
+                                     int64_t upto, std::vector<uint8_t>& bounce, const ConversationWrite& write,
+                                     std::string& error) {
+    if (!sync(error)) return false;
+    const size_t layers = owned_qsa(ss);
+    for (size_t j = 0; j <= layers; ++j)
+        if (!conversation_kv_save_stream(j < layers ? owned(ss, j) : draft, g, upto, j < layers, bounce, write, error))
+            return false;
+    return true;
+}
+
+ConversationRestore conversation_prefix_restore_stream(const SavedConversation& meta,
+                                                       const std::vector<ConversationKvSizes>& sizes,
+                                                       SessionState& ss, const ModelGeometry& g,
+                                                       const QsaState& draft, std::vector<uint8_t>& bounce,
+                                                       const ConversationRead& read, std::string& error) {
+    auto invalid = [&](const char* message) { fail(error, message); return ConversationRestore::invalid; };
+    if (!meta.live.stage_parts.empty() || !meta.live.imgs.empty() || !meta.checkpoints.empty() ||
+        !meta.stage_images.empty()) return invalid("not a prefix image");
+    if (meta.geometry != geometry_key(g)) return invalid("incompatible runtime geometry");
+    if (meta.layer_lo != ss.layer_lo || meta.layer_hi != ss.layer_hi)
+        return invalid("snapshot from another session layer range");
+    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec};
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(meta.live, ss, g, error))
+        return ConversationRestore::invalid;
+    const size_t layers = owned_qsa(ss);
+    if (meta.kv.size() != layers + 1 || sizes.size() != layers + 1) return invalid("invalid K/V layer count");
+    const int64_t upto = (int64_t) meta.live.ids.size();
+    for (size_t j = 0; j <= layers; ++j)
+        if (!conversation_kv_validate_sizes(meta.kv[j], sizes[j], j < layers ? owned(ss, j) : draft, g, upto,
+                                            j < layers, error)) return ConversationRestore::invalid;
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    for (size_t j = 0; j <= layers; ++j)
+        if (!conversation_kv_restore_stream(meta.kv[j], sizes[j], j < layers ? owned(ss, j) : draft, g, upto,
+                                            j < layers, bounce, read, error))
+            return ConversationRestore::transfer_failed;
+    if (!conversation_checkpoint_restore(meta.live, ss, g, error)) return ConversationRestore::transfer_failed;
+    return ConversationRestore::restored;
+}
+
 // the draft layer's K/V included (the stage that owns the draft head, or no layer split)
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                  const QsaState& draft, size_t& bytes, std::string& error) {
