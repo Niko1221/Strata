@@ -117,6 +117,28 @@ __global__ void mla_attn_kernel(const float* __restrict__ q, const __half* __res
     }
 }
 
+/// `[t][h][w] -> [h][t][w]`: swaps the two outer axes of a `n_tok x n_head` stack of `w`-wide slices, and is
+/// its own inverse (call it again with `n_head` and `n_tok` exchanged and the operands swapped).
+///
+/// This exists so the absorbed-MLA bands can be projected one head at a time over a WHOLE GROUP of tokens.
+/// `project_rows` takes `ncols` activation columns that are CONTIGUOUS and `w` apart, which token-major
+/// `qfull`/`kqv` are not - the head is the fastest axis and the stride between one token's copy of head `h`
+/// and the next is `n_head * w`.  Head-major makes the group's columns adjacent, which is the only thing
+/// standing between the band loop and one call per head per group instead of one call per head per token.
+///
+/// One block per (head, token) pair, threads walking the width: both the read and the write are coalesced on
+/// the inner axis.  At this model's shapes the move is `n_head * ntok * w` floats - for a group of eight, 512
+/// KiB for the 256-wide absorption and 1 MiB for the 512-wide de-absorption - which is a launch and not a
+/// kernel.
+__global__ void heads_major_kernel(const float* __restrict__ src, float* __restrict__ dst, int nh, int ntok,
+                                   int w) {
+    const int ht = blockIdx.y;
+    const int h = ht / ntok, t = ht - h * ntok;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= w) return;
+    dst[((int64_t) h * ntok + t) * w + i] = src[((int64_t) t * nh + h) * w + i];
+}
+
 /// `x` is `[kv, T]` (the width fastest, the engine's convention) and row `t` lands at cache row `pos + t`.
 /// `blockIdx.y` is the token: with `T == 1` the grid collapses to the same one-block-per-256-channels shape the
 /// single-token path always used, and the index arithmetic is `pos * kv + i` either way.
@@ -141,6 +163,20 @@ void glm_mla_cache_store_t(const float* x, uint16_t* cache, int64_t pos, int64_t
     mla_cache_store_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(x, c, (int) kv_lora, pos);
     check_launch("glm_mla_cache_store");
     sync_if_needed(stream, "glm_mla_cache_store");
+}
+
+void glm_heads_major(const float* src, float* dst, int64_t n_head, int64_t n_tok, int64_t width, void* stream) {
+    if (n_head <= 0 || n_tok <= 0 || width <= 0 || src == dst) return;
+    if (n_head * n_tok > 65535) {
+        std::fprintf(stderr, "glm_heads_major: %lld heads x %lld tokens exceeds the grid's %d\n",
+                     (long long) n_head, (long long) n_tok, 65535);
+        return;
+    }
+    const int w = (int) width;
+    dim3 grid((unsigned) ((w + 255) / 256), (unsigned) (n_head * n_tok));
+    heads_major_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(src, dst, (int) n_head, (int) n_tok, w);
+    check_launch("glm_heads_major");
+    sync_if_needed(stream, "glm_heads_major");
 }
 
 void glm_mla_attn(const float* q, const uint16_t* k_cache, float* out, int64_t n_head, int64_t kv_lora,

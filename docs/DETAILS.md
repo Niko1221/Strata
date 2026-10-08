@@ -1430,8 +1430,9 @@ Measured on 2× RTX 3060 12 GB + 2× RTX 5060 8 GB, UD-IQ4_XS, `--layer-split au
 | `--glm-gpu-experts 0` | **9.6 tok/s** (8.29 on the first tokens, then 9.28 9.52 9.57 9.67 9.75 9.90) | 344 tokens in 19 s |
 
 That is **+43%** on decode, and the prompt reading is unchanged — prefill still routes every token through the pool.
-(The prompt-reading column is from the group-of-eight prefill below; before that change the same runs read the prompt
-in 31 s.)
+(The prompt-reading column is the group-of-eight prefill of the next section, measured before the band change
+landed: those two runs read the prompt in 20 s and 19 s then, and the same configuration reads 18 s now. Before the
+group change the same runs read it in 31 s.)
 The tier took 19.1 GiB of VRAM in all: 61 / 53 / 22 / 30 slots a MoE layer on CUDA0..3, 1,719 of the model's 12,096
 (layer, expert) pairs, and it served 3.97 of the 8 experts a token routes per layer (49.7%) on the card. Slot counts
 differ per card because each is sized against its own free memory after its own weights, session and snapshot.
@@ -1454,23 +1455,42 @@ hold, so the profile it writes is the misses' routing and not the router's.
 **A chunked prefill reads each projection's weights once per group of tokens, not once per token — and the default
 chunk is 512 tokens.** A `--prefill` chunk hands the layer its tokens eight at a time — eight is the widest the
 quantized projections take — so the layer's weight matrices are read once for the group instead of once for each
-token. Nothing about the arithmetic changes: every kernel in the block was already written to take a width, a group
-of one still takes the single-token path byte for byte, and greedy answers are identical either way.
-`STRATA_GLM_NO_GROUP=1` pins the group to one token, which is the arm that checks it: 48 greedy tokens
-byte-identical with it on and off, and identical across a repeat of the same arm, so the engine is deterministic
-and the comparison has power.
+token. The card's arithmetic does not change: every kernel in the block was already written to take a width, and in
+`multi_exact` (the default) every column of a batched call is bitwise what the single-column call would have given
+(`mmvq_multi_parity`: 148,480 outputs compared, 0 differ). The CPU pool's arithmetic does — see "the chunk size
+moves the output" below. `STRATA_GLM_NO_GROUP=1` pins the group to one token, which is the arm that checks the
+card's half: 48 greedy tokens byte-identical with it on and off, and identical across a repeat of the same arm, so
+the engine is deterministic and the comparison has power.
+
+**The absorbed-MLA bands were the chunk's launch bill, and are not any more.** `nsys` on one 128-token chunk of the
+4-way split: the two band loops of `mla_layer` — the absorption and the de-absorption — issued 180,224 `ncols == 1`
+GEMVs, each with its own `native_quantize_q8_1`, so 360,448 of the chunk's 434,144 kernel launches were these,
+83.0%, at 2.18 µs and 1.21 µs a call for 136 KiB of weights read (512 rows of a 256-wide Q8_0 fold; the count is
+exact, 128 tokens × 11 MLA layers × 64 heads × 2 tensors). A band is per HEAD but is the same weight rows for every
+token, so all that stood between it and one batched call was the LAYOUT: `qfull`/`kqv` are token-major, and
+`project_rows` wants a batch's columns contiguous and `w` apart. One head-major transpose per loop
+(`glm_heads_major`, `[t][h][w] ↔ [h][t][w]`, its own inverse) makes them 22,528 `ncols = 8` calls, so 45,056
+launches — a layer's band tensor is 1,024 calls where it was 8,192 at 1.0 columns a call. The census is the before
+and after: one stage's 128-token chunk went from **51,216 calls to 8,208** over the same 65,664 columns, and the
+pre-fix per-tensor rows are why — a band tensor of one MLA layer read 1,088 MiB in 8,192 calls at one column a
+call, and after the change not one of the six reaches the table's top fourteen. Measured on a
+1,334-token prompt at `--prefill 512`: 71.9 s → 65.9 s, a single run each, against the 528 ms a chunk the nsys
+figures predict (11 chunks, 5.8 s predicted, 6.0 measured; the chunk curve below, measured the same way on the
+same prompt, reads 71.8 s → 65 s at that chunk size). The output does not move: 48 greedy ids at that chunk size
+are byte-identical to the binary before the change.
 
 The chunk size matters because of the CPU pool, not the card: a chunk must read every expert its tokens touch
 before it can serve any of them, and 88 tokens already touch 263 of the model's 288 experts, so a larger chunk
 does not read fewer bytes a *token* — it pays that fixed cost fewer times. On the rig above a 1,334-token prompt
-reads in 80.2 s at `--prefill 128`, 71.8 s at 512, 67.7 s at 2048 and 67.5 s at 4096, and a 344-token one in
-20.0 / 18.6 / 18.6 / 18.6 s (at 512 and up the prompt fits one chunk, which is why those are the same run). The
-session rows that cost are 30.2 MiB at 128, 120.6 MiB at 512, 482.5 MiB at 2048 — so 512 is where a 12% faster
-read costs 90 MiB, about 2% of what the smallest card in that rig has free, while 2048's extra 6% costs 362 MiB
-more of the memory the expert tier wants. `--prefill 1` is the one-token-at-a-time control arm.
+reads in 74 s at `--prefill 128`, 65 s at 512, 62 s at 2048 and 62 s at 4096, and a 344-token one in
+19 / 17 / 17 / 17 s (at 512 and up the prompt fits one chunk, which is why those are the same run; 256 splits it
+into two and reads 18 s). The session rows that cost are 30.2 MiB at 128, 120.6 MiB at 512, 482.5 MiB at 2048 —
+so 512 is where a 12% faster read costs 90 MiB, about 2% of what the smallest card in that rig has free, while
+2048's extra 5% costs 362 MiB more of the memory the expert tier wants. `--prefill 1` is the one-token-at-a-time
+control arm.
 
 The curve is flat once a prompt is long enough to need several chunks: a 5,294-token prompt on the same rig reads
-in 350.1 s at `--prefill 1024`, 344.3 s at 2048 and 350.8 s at 4096 — 15.1, 15.4 and 15.1 tokens a second, a 2%
+in 325 s at `--prefill 1024`, 318 s at 2048 and 317 s at 4096 — 16.3, 16.6 and 16.7 tokens a second, a 2.5%
 spread — while the session rows grow to 241.3 / 482.5 / 965.1 MiB. So the fixed cost a chunk pays is spent by
 1024 on a prompt this long, and going past it buys nothing and costs memory; `--prefill 8192` is not a bigger
 chunk at all, it is silently clamped to the pool's 4096.
@@ -1479,12 +1499,14 @@ Measured on the rig above, UD-IQ4_XS over four cards, 344-token prompt, `--prefi
 
 | | prefill |
 |---|---|
-| group of one (`STRATA_GLM_NO_GROUP=1`) | 344 tokens in 31 s |
-| group of eight (default) | **344 tokens in 20 s** |
+| group of one (`STRATA_GLM_NO_GROUP=1`) | 344 tokens in 32 s |
+| group of eight (default) | **344 tokens in 18 s** |
 
-That is 10.9 → 17.6 tokens a second. Over the two chunks that make up the prompt, the card's time went from 18.98 s
-to 7.25 s while the CPU pool's is unchanged at 11.87 s, so the pool is now the larger half of a prefill — 11.9 s of
-the 19.1 s those chunks take in all.
+That is 10.8 → 19.1 tokens a second. Over the two chunks that make up the prompt, the card's time went from 17.57 s
+to 4.97 s, a factor of 3.5, while the CPU pool's is the same to 1% — 11.95 s against 11.86 s — so the pool is now
+the larger half of a prefill, 11.9 s of the 17.2 s those chunks take in all. A group of one is the arm that shows
+the band change is only the group: it is the same code path at width 1, and it reads 32 s where the pre-change
+binary read 31 s, which is a run's spread and not a saving.
 
 **`STRATA_GLM_PREFILL_TIME=1`** prints where a chunk's time goes — on stderr, outside the token stream, and at no
 cost to a run that does not set it. One line a chunk splits the card, the CPU pool, `post` and the dense lead; six
@@ -1494,17 +1516,55 @@ mixer, `ffn3`, the norm and quantize, the router). Events rather than a clock ar
 turned "the CPU pool is the bottleneck" from a guess into 38% pool and 56% card, and it is why the group was worth
 writing at all.
 
+It also prints a **projection census**, which is what said the bands were the bill: every top-level
+`gemv_quantized` call counted by path — native batched, canonical batched, canonical single — with the columns it
+carried and the weight bytes the path implies, then the top fourteen tensors by bytes so that which projection is
+repeating is a name and not a guess. It is charged at the top level only, so the canonical path's per-column
+re-entry is not reported as `ncols` calls. One stage-chunk of the 4-way split: 8,208 calls over 65,664 columns,
+0 MiB of it repeated per column.
+
+**`STRATA_GLM_GROUP=N`** picks the group width inside 1..8, which is the arm that measures what a group *buys*
+rather than assuming it. On a 128-token chunk at `N` = 1 / 4 / 8 the whole model's card time is 6.45 / 2.31 /
+1.77 s and stage 0's weight bytes are 294,474 / 73,618 / 36,809 MiB: the bytes are exactly ÷4 then ÷2, which is
+what a read amortized over the group looks like, while the time stops falling in step once the launch bill is no
+longer the larger half. That is where the width stops — going to 16 would touch code the deployed Q8_0 driver
+shares for the share the card has left.
+
+**`STRATA_GLM_POOL_TIME=1`** prints one line a layer a chunk from the CPU expert pool: the routed pairs, the
+distinct experts the grouping reached, the jobs the `MAXT`-token cut made of them, the bytes read against the
+ideal the grouping could have reached — so the cut's re-read is the ratio between them — and the pool's own
+milliseconds split gate/up, quantize and down.
+
 **The A/B and measurement switches, every one of them off unless it is set.** `STRATA_GLM_NO_CLAMP` makes both
 SwiGLU limits read 0, which is the reference's own reading of an absent limit and therefore exactly "no clamp"; it
 is the arm that showed the clamp is what moves the output, since at the model's own limit of 10 nothing binds —
 which is how the clamp's total absence survived a 30/32 ladder match. `STRATA_GLM_NO_GROUP` pins a chunk's `pre` to
-one token instead of a group of eight, and is the arm that proves the group is bit-exact (48 greedy tokens
-identical). On the CPU pool, `STRATA_NO_SLICE_MT` puts the multi-token row kernels back to the per-token dot —
-bit-identical to `--prefill 1` at every chunk size, and 2.3x slower on the pool on this box, which is the
-measurement that says the pool's limit is the row decode and not the read — and `STRATA_SLICE_MT_DOWN` opts in the
+one token instead of a group of eight, and is the arm that proves the card's half of the group is bit-exact (48
+greedy tokens identical). `STRATA_GLM_GROUP=N` is the same knob with the width chosen, and is the arm that
+measures what a group buys. `STRATA_GLM_POOL_TIME=1` reports the CPU pool's grouping a layer at a time. On the CPU
+pool, `STRATA_NO_SLICE_MT` puts the multi-token row kernels back to the per-token dot — bit-identical to
+`--prefill 1` at every chunk size (verified at 1, 128 and 512), and 2.3x slower on the pool on this box, which is
+the measurement that says the pool's limit is the row decode and not the read. It is also the only switch that
+makes greedy output independent of the chunk size, which the default multi-token kernels are not — see "the chunk
+size moves the output" below. `STRATA_SLICE_MT_DOWN` opts in the
 down-rows half of the same kernels (about 4% here; off because the engine's own dispatch deliberately does not name
 IQ4_XS for it). `STRATA_MTP_DUMP_H=<path>` writes the hidden state the draft block is fed, as raw f32, so it can be
 diffed against the oracle's own dump.
+
+**The chunk size moves the output, which the default CPU pool kernels make unavoidable.** `--prefill` is not only a
+speed knob. Measured greedy on a 344-token prompt on the 4-way rig, 1, 128, 256 and 512 give four arms that each
+reproduce themselves byte for byte and disagree from the first token: `In a mixture-of-experts (MoE) transformer, each
+MoE layer re` at 1, `A mixture-of-experts (MoE) layer replaces the single FFN blo` at 128 and 256 (which then part
+company later inside those same 48 tokens), and `# Mixture-of-Experts Routing in Transformer Layers` at 512. The cause
+is the CPU pool and not the card: the multi-token row kernels (`native_gu_rows_slice`, and `gu_rows_nt`/`dot_rows_nt`
+beneath it) take their shape from the number of tokens sharing a job, and a job's composition follows how many of a
+chunk's tokens routed to that expert, so a token's dot rounds according to who else was in the chunk — about 3e-8 from
+the per-token dot, which glm5-next's q8_0 quantization of `h` between the two projections occasionally turns into ~1%
+on a row and up to 1.76 on a logit. `STRATA_NO_SLICE_MT=1` puts those kernels back on the per-token dot and makes
+chunks 1, 128 and 512 byte-identical on that prompt, which is what pins the cause on the pool rather than on the bands
+or the cards (`multi_exact` already makes a batched card column bitwise equal to the single-column call it replaced);
+it costs 2.3x on the pool. The switch stays off by default because the default chunk of 512 is where the ladder was
+validated, so a run at another chunk size is a run of a slightly different engine.
 
 ---
 

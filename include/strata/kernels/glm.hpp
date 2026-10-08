@@ -134,6 +134,13 @@ void glm_mla_cache_store(const float* x, uint16_t* cache, int64_t pos, int64_t k
 /// is one launch over the whole chunk rather than `T` launches of a kernel that moves 1 KiB each.
 void glm_mla_cache_store_t(const float* x, uint16_t* cache, int64_t pos, int64_t kv_lora, int64_t T, void* stream);
 
+/// `[t][h][w] <-> [h][t][w]`, the two outer axes of a `n_tok x n_head` stack of `w`-wide slices swapped.
+///
+/// The absorbed-MLA bands are per HEAD and `project_rows` wants a batch's activation columns contiguous, so a
+/// group of tokens can only be projected against one head's band if the group is the inner axis.  Transposing
+/// costs one launch per head stack and turns 64 launches per token into 64 per group.
+void glm_heads_major(const float* src, float* dst, int64_t n_head, int64_t n_tok, int64_t width, void* stream);
+
 /// The attention itself: `out[l, t, h] = sum_s p(t,s) * K[s, l]` with `p` the softmax over the cache of
 /// `scale * sum_l Qcur[l, t, h] * K[s, l]`.
 ///

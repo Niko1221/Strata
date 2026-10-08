@@ -123,6 +123,27 @@ struct GlmBuffers {
     /// `quantize_q8_K`/`quantize_q8_0` calls in the process.
     uint8_t* heads_q8k = nullptr;      ///< n_head * max(mla_head_dim, kv_lora_rank), block_q8_K
     uint8_t* heads_q8_0 = nullptr;     ///< the same width, block_q8_0
+    /// **THE TWO BAND LOOPS RUN ONE HEAD PER GROUP, AND THESE ARE WHAT MAKES THAT POSSIBLE.**  A band is the
+    /// same weight rows for every token, so the projection wants `ncols = ntok` - but `project_rows` takes its
+    /// columns contiguous and `w` apart, and in token-major `qfull`/`kqv` the same head two tokens apart is
+    /// `n_head * w` away.  So the group is transposed head-major into `heads_in`, projected one band at a time
+    /// into `band_out` (also head-major, the same `[h][t][w]` shape), and transposed back.
+    ///
+    /// Both are `n_head * max(mla_head_dim, kv_lora_rank)` floats a token - the WIDER of the two bands, because
+    /// one buffer serves both loops and the absorption's band is 512 rows wide where the de-absorption's is 256.
+    ///
+    /// **WHAT IT COSTS AND WHAT IT SAVES**, on a 128-token chunk of the 4-way split (`UD-IQ4_XS`): the band
+    /// GEMVs and the `native_quantize_q8_1` each one issued were 180,224 pairs - together 360,448 of the
+    /// chunk's 434,144 kernel launches, 83.0%, at 2.18 us and 1.21 us a call (nsys, before).  They are 22,528
+    /// calls now, one `ncols = 8` GEMV and one `ncols = 8` quantize each, so 45,056 launches.  The census weighs
+    /// both sides of it: one stage's 128-token chunk went from 51,216 calls to 8,208 over the same 65,664
+    /// columns, and a band tensor of one MLA layer - 1,088 MiB in 8,192 calls at one column a call before - does
+    /// not reach its top fourteen any more.  The group width is the whole of the difference.  Against that, each
+    /// transpose moves `n_head * ntok * w` floats in one launch - for a group of eight, 512 KiB in the
+    /// absorption and 1 MiB in the de-absorption - and there are 2 of them a layer: 16 groups x 11 MLA layers x
+    /// 2 = 352 launches for the same chunk, in place of the 360,448 that are gone.
+    float* heads_in = nullptr;         ///< `[h][t][w]`: the group, head-major, before the band loop
+    float* band_out = nullptr;         ///< `[h][t][w]`: the band loop's result, before it goes back
     float* qabs = nullptr;             ///< n_head * kv_lora_rank: `wk_b @ q` - the ABSORBED query (Qcur)
     float* kv_cmpr = nullptr;          ///< kv_lora_rank: the latent that goes into the cache AND is V
     float* kqv = nullptr;              ///< n_head * kv_lora_rank: the attention output, pre-de-absorption

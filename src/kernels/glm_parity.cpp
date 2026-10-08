@@ -705,6 +705,59 @@ void ref_mla_attn(const std::vector<float>& q, const std::vector<float>& kc, int
     }
 }
 
+/// `[t][h][w] -> [h][t][w]`, the move that lets the absorbed-MLA bands project a whole group at once.
+///
+/// **THE ARGUMENT ORDER IS THE THING THAT CAN BE WRONG HERE**, and it is not the obvious one: the kernel's
+/// `n_head`/`n_tok` describe the SOURCE, so going back the other way calls it with the two counts exchanged.
+/// The round-trip case is what pins that, and the permutation is checked value by value rather than by size,
+/// because a transpose that keeps every element and puts it in the wrong cell is exactly this kernel's failure
+/// mode and it is invisible to anything that only compares the multiset.
+void test_heads_major(Dev& d, int64_t nh, int64_t ntok, int64_t w) {
+    std::mt19937 rng((uint32_t) (0xC2B2AE35u ^ (uint32_t) (nh * 131 + ntok * 977 + w * 31)));
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    std::vector<float> src((size_t) ntok * nh * w);
+    for (float& v : src) v = u(rng);
+
+    float* d_src = d.put(src);
+    float* d_dst = nullptr;
+    check(cudaMalloc(&d_dst, src.size() * 4), "heads_major out");
+    strata::kernels::glm_heads_major(d_src, d_dst, nh, ntok, w, nullptr);
+    const std::vector<float> got = d.get(d_dst, src.size());
+
+    // The reference is the index arithmetic itself - there is no arithmetic in this kernel to disagree about,
+    // only addresses, so this is an equality and not a `close_enough`.
+    std::vector<double> want(src.size(), 0.0);
+    for (int64_t t = 0; t < ntok; ++t)
+        for (int64_t h = 0; h < nh; ++h)
+            for (int64_t i = 0; i < w; ++i)
+                want[(size_t) ((h * ntok + t) * w + i)] = src[(size_t) ((t * nh + h) * w + i)];
+    report("heads_major", close_enough(got, want, 0.0));
+
+    // ...and back.  `got` is `[h][t][w]`, so the source counts are now (ntok, nh) and the result must be the
+    // input bit for bit - a permutation, so "close" is not the right test either.
+    float* d_back = nullptr;
+    check(cudaMalloc(&d_back, src.size() * 4), "heads_major back");
+    strata::kernels::glm_heads_major(d_dst, d_back, ntok, nh, w, nullptr);
+    const std::vector<float> back = d.get(d_back, src.size());
+    report("  the reverse call restores the original", back == src);
+
+    // Rival 1: no move at all.  This is what a kernel that ignored its arguments would produce, and it is the
+    // one a test that only checked `got.size() == src.size()` would pass.
+    std::vector<double> rival(src.begin(), src.end());
+    report("  rival: an unchanged copy", differs(got, rival, 0.0));
+
+    // Rival 2: the OTHER two axes swapped - `[t][h][w] -> [t][w][h]`, i.e. the inner width treated as the head
+    // axis.  The natural misreading of "transpose", and it is a permutation of the same elements too.
+    std::vector<double> rival2(src.size(), 0.0);
+    for (int64_t t = 0; t < ntok; ++t)
+        for (int64_t h = 0; h < nh; ++h)
+            for (int64_t i = 0; i < w; ++i)
+                rival2[(size_t) ((t * w + i) * nh + h)] = src[(size_t) ((t * nh + h) * w + i)];
+    report("  rival: the width swapped with the head", differs(got, rival2, 0.0));
+
+    cudaFree(d_src); cudaFree(d_dst); cudaFree(d_back);
+}
+
 void test_mla_attn(Dev& d, int64_t nh, int64_t T, int64_t kv, int64_t n_kv, int64_t pos_base) {
     std::mt19937 rng((uint32_t) (0x9E3779B9u ^ (uint32_t) (nh * 131 + T * 977 + kv * 31 + n_kv * 7 + pos_base)));
     std::uniform_real_distribution<float> u(-1.0f, 1.0f);
@@ -1251,6 +1304,14 @@ int main(int argc, char** argv) {
     test_mla_attn(d, 4, 4, 8, 12, 8);
     test_mla_attn(d, 2, 1, 512, 3, 2);
     test_mla_attn(d, 2, 2, 512, 5, 3);
+
+    // The head/token transpose that lets the MLA bands take a whole group.  BOTH counts are above 1 in every
+    // case: at `ntok == 1` (or `nh == 1`) the move IS the identity, so the "unchanged copy" rival would be the
+    // right answer and the case would report a false failure.  The last one is the model's own shape.
+    test_heads_major(d, 3, 2, 8);
+    test_heads_major(d, 2, 5, 4);
+    test_heads_major(d, 4, 4, 3);
+    test_heads_major(d, 64, 8, 256);
 
     // The FFN's SwiGLU clamp: glm5-next's limit is 10.0 (`swiglu_clamp_exp`/`_shexp`), a second limit is run so
     // the constant is not hard-coded, and 0 is the no-clamp form the first family's packs get.

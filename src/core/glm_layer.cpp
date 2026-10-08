@@ -33,10 +33,12 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::core {
@@ -261,6 +263,8 @@ uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok, int64_t max_cel
         (uint64_t) g.n_head * g.mla_head_dim * 4,               // qfull
         q8k_bytes(g.n_head * mla_band_width(g)),                // heads_q8k
         (uint64_t) (g.n_head * mla_band_width(g) / 32) * 34,    // heads_q8_0
+        (uint64_t) g.n_head * mla_band_width(g) * 4,            // heads_in
+        (uint64_t) g.n_head * mla_band_width(g) * 4,            // band_out
         (uint64_t) g.n_head * g.kv_lora_rank * 4,               // qabs
         (uint64_t) g.kv_lora_rank * 4,                          // kv_cmpr
         (uint64_t) g.n_head * g.kv_lora_rank * 4,               // kqv
@@ -325,6 +329,8 @@ uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, int64_t max_cell
     b.qfull = (float*) take((uint64_t) g.n_head * g.mla_head_dim * 4);
     b.heads_q8k = (uint8_t*) take(q8k_bytes(g.n_head * mla_band_width(g)));
     b.heads_q8_0 = (uint8_t*) take((uint64_t) (g.n_head * mla_band_width(g) / 32) * 34);
+    b.heads_in = (float*) take((uint64_t) g.n_head * mla_band_width(g) * 4);
+    b.band_out = (float*) take((uint64_t) g.n_head * mla_band_width(g) * 4);
     b.qabs = (float*) take((uint64_t) g.n_head * g.kv_lora_rank * 4);
     b.kv_cmpr = (float*) take((uint64_t) g.kv_lora_rank * 4);
     b.kqv = (float*) take((uint64_t) g.n_head * g.kv_lora_rank * 4);
@@ -798,34 +804,46 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     //      per-head matrix, and the two bands are DIFFERENT WIDTHS (512 rows of a 256-wide key map, 256 rows
     //      of a 512-wide value map), which is where a 256 and a 512 get swapped.
     //
-    //      **THE QUANTIZE IS NOT PER HEAD, THE PROJECTION IS.**  The `n_head` queries are contiguous in
-    //      `qfull`, and a head's slice is a whole number of 256-element Q8_K blocks and 32-element Q8_0 ones,
-    //      so one quantize of the stack produces exactly the blocks `n_head` separate quantizes did, at
-    //      offsets `q8k_bytes(hd) * h`.  The projection still has to be per head - each head has its own
-    //      input and its own band of the folded matrix - but the quantize was 2 launches a head of a nearly
-    //      empty kernel (8 active threads of 128, doing 32 double divisions each).
+    //      **NEITHER THE QUANTIZE NOR THE PROJECTION IS PER TOKEN ANY MORE.**  The projection has to be per
+    //      head - each head has its own input and its own band of the folded matrix - but a band is the SAME
+    //      weight rows for every token in the group, so the group's tokens are the `ncols` a single
+    //      `project_rows` call carries.  What stands in the way is the LAYOUT: `project_rows` takes its columns
+    //      contiguous and `w` apart, and token-major `qfull` puts the head fastest, so the same head two tokens
+    //      apart is `n_head * hd` away.  `glm_heads_major` swaps the two outer axes for one launch, and that is
+    //      the whole of the fix - the group is then the inner axis and head `h`'s columns are adjacent.
     //
-    //      A CHUNK MULTIPLIES THE OUTER LOOP AND NOT THE INNER ONE.  Head `h` of token `t` is still its own
-    //      `project_rows` call - the band is the same weight rows for every token, but the input is a
-    //      different `hd`-wide slice of `qfull`, so there is nothing to share between them short of an
-    //      h-major `qfull`, which the projection above cannot produce.  What the chunk does buy here is the
-    //      one quantize of the whole `ntok x (nh*hd)` stack, which is `2` launches instead of `2 * ntok`.
-    quantize_both(b.qfull, b.heads_q8k, b.heads_q8_0, nh * hd * b.ntok, stream);
+    //      **THE QUANTIZE STILL COVERS THE WHOLE GROUP IN ONE CALL**, because the head-major stack is still
+    //      `n_head` slices each a whole number of 256-element Q8_K blocks and 32-element Q8_0 ones, so one
+    //      `quantize_both` produces exactly the blocks `n_head` separate ones would at the offsets the loop
+    //      below reads.  This note used to explain why the quantize was hoisted out of the loop while the
+    //      projection stayed in it; both are now once per group.
+    //
+    //      MEASURED, and this is the whole reason the loop was rewritten.  `nsys` on one 128-token chunk of
+    //      the 4-way split (`UD-IQ4_XS`, `--prefill 128`): the two band loops were 180,224 `ncols == 1`
+    //      GEMVs, one `native_quantize_q8_1` each, so 360,448 of the chunk's 434,144 kernel launches were
+    //      these - 83.0% - at 2.18 us a call for 136 KiB of weights, and the GPU kernel time was 386 ms for
+    //      the GEMVs and 218 ms for their quantizes.  The count is exact: 128 tokens x 11 MLA layers x 64
+    //      heads x 2 tensors.  AFTER: 22,528 calls and 45,056 launches.  The census weighs both sides of it -
+    //      one stage's 128-token chunk went from 51,216 calls to 8,208 over the same 65,664 columns, and the
+    //      band tensors that were 8,192 calls at one column a call do not reach its top fourteen any more.  The
+    //      group width is the whole of the difference, and the `heads_in` note in the header carries the
+    //      arithmetic.
+    kernels::glm_heads_major(b.qfull, b.heads_in, nh, b.ntok, hd, stream);
+    quantize_both(b.heads_in, b.heads_q8k, b.heads_q8_0, nh * hd * b.ntok, stream);
     const int64_t hd_q8k = (int64_t) q8k_bytes(hd), hd_q8_0 = (hd / 32) * 34;
-    const int64_t full_q8k = (int64_t) q8k_bytes(nh * hd), full_q8_0 = ((nh * hd) / 32) * 34;
-    for (int64_t t = 0; t < b.ntok; ++t) {
-        const float* tfull = b.qfull + t * nh * hd;
-        const uint8_t* tq8_0 = b.heads_q8_0 + t * full_q8_0;
-        const uint8_t* tq8k = b.heads_q8k + t * full_q8k;
-        float* tqabs = b.qabs + t * nh * kvl;
-        for (int64_t h = 0; h < nh; ++h) {
-            const float* xh = tfull + h * hd;
-            if (!project_rows(*wk_b, v.name("attn_k_b.weight"), xh, tq8_0 + h * hd_q8_0, tq8k + h * hd_q8k,
-                              tqabs + h * kvl, hd, h * kvl, kvl, stream, err)) {
-                return false;
-            }
+    // The group's columns for head `h` are `b.ntok` contiguous `hd`-wide ones, so the image strides are the
+    // group, not the stack.  `heads_q8k`/`heads_q8_0` are sized for the WIDER band per token and this layout
+    // is `nh * ntok * q8k_bytes(hd)` at most, which fits inside it.
+    const int64_t grp_q8k = (int64_t) b.ntok * hd_q8k, grp_q8_0 = (int64_t) b.ntok * hd_q8_0;
+    for (int64_t h = 0; h < nh; ++h) {
+        if (!project_rows(*wk_b, v.name("attn_k_b.weight"), b.heads_in + h * b.ntok * hd,
+                          b.heads_q8_0 + h * grp_q8_0, b.heads_q8k + h * grp_q8k,
+                          b.band_out + h * b.ntok * kvl, hd, h * kvl, kvl, stream, err, b.ntok)) {
+            return false;
         }
     }
+    // The way back: `band_out` is `[h][t][kvl]` and `qabs` is `[t][h][kvl]`, so the two axis counts exchange.
+    kernels::glm_heads_major(b.band_out, b.qabs, b.ntok, nh, kvl, stream);
 
     // ---- 4. the latent, its norm, and the cache write.  K == V, so there is one write and no second tensor.
     if (!project(*wkv_a, v.name("attn_kv_a_mqa.weight"), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16, b.kv_cmpr, n,
@@ -978,22 +996,21 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 
     // ---- 6. de-absorption.  The same fold as step 3, and here the slices are `kv_lora_rank` wide - still a
     //      whole number of blocks, which is the property that lets one quantize stand in for `n_head`.
-    quantize_both(b.kqv, b.heads_q8k, b.heads_q8_0, nh * kvl * b.ntok, stream);
+    // Same transpose and the same one-call-per-head-per-group as step 3 - see the note there for the numbers.
+    // The bands are the other way round (`kvl`-wide input, `hd` = 256 rows of a 512-wide value map), which is
+    // the swap the note in step 3 warns about.
+    kernels::glm_heads_major(b.kqv, b.heads_in, nh, b.ntok, kvl, stream);
+    quantize_both(b.heads_in, b.heads_q8k, b.heads_q8_0, nh * kvl * b.ntok, stream);
     const int64_t kvl_q8k = (int64_t) q8k_bytes(kvl), kvl_q8_0 = (kvl / 32) * 34;
-    const int64_t kqv_q8k = (int64_t) q8k_bytes(nh * kvl), kqv_q8_0 = ((nh * kvl) / 32) * 34;
-    for (int64_t t = 0; t < b.ntok; ++t) {
-        const float* tkqv = b.kqv + t * nh * kvl;
-        const uint8_t* tq8_0 = b.heads_q8_0 + t * kqv_q8_0;
-        const uint8_t* tq8k = b.heads_q8k + t * kqv_q8k;
-        float* thout = b.head_out + t * nh * hd;
-        for (int64_t h = 0; h < nh; ++h) {
-            const float* xh = tkqv + h * kvl;
-            if (!project_rows(*wv_b, v.name("attn_v_b.weight"), xh, tq8_0 + h * kvl_q8_0, tq8k + h * kvl_q8k,
-                              thout + h * hd, kvl, h * hd, hd, stream, err)) {
-                return false;
-            }
+    const int64_t grp_kvl_q8k = (int64_t) b.ntok * kvl_q8k, grp_kvl_q8_0 = (int64_t) b.ntok * kvl_q8_0;
+    for (int64_t h = 0; h < nh; ++h) {
+        if (!project_rows(*wv_b, v.name("attn_v_b.weight"), b.heads_in + h * b.ntok * kvl,
+                          b.heads_q8_0 + h * grp_kvl_q8_0, b.heads_q8k + h * grp_kvl_q8k,
+                          b.band_out + h * b.ntok * hd, kvl, h * hd, hd, stream, err, b.ntok)) {
+            return false;
         }
     }
+    kernels::glm_heads_major(b.band_out, b.head_out, b.ntok, nh, hd, stream);
 
     // ---- 7. back to the model's width.
     quantize_both(b.head_out, b.wide_q8k, b.wide_q8_0, nh * hd * b.ntok, stream);
@@ -1202,8 +1219,34 @@ void glm_pre_sections_report(int64_t tokens, int64_t layers) {
         std::fprintf(stderr, "strata glm prefill:   %-38s %7.3f s  %5.1f%%  %7.3f ms a call  %7.3f ms a token\n",
                      PRE_SECTION_NAMES[s], t.ms[s] / 1000.0, total > 0 ? 100.0 * t.ms[s] / total : 0.0,
                      t.ms[s] / (double) t.calls, t.ms[s] / (double) t.calls / per_call);
+    // **WHAT THE PROJECTIONS READ, BECAUSE THE SECTION TIMES CANNOT SAY IT.**  The native path takes `ncols`
+    // and reads a matrix once; the canonical path loops one column at a time and reads it `ncols` times.  Both
+    // land in the same section, and only this line tells them apart - `repeated` is the traffic a batched
+    // kernel would have divided by the group width.
+    {
+        const gemv::ProjStats& p = gemv::proj_stats();
+        std::fprintf(stderr,
+                     "strata glm prefill:   projections %.0f MiB in %lld calls over %lld columns (%lld native, "
+                     "%lld canonical looped over %lld columns), %.0f MiB of it repeated per column\n",
+                     (double) p.bytes / 1048576.0, p.calls, p.cols, p.native_calls, p.multi_calls, p.multi_cols,
+                     (double) p.multi_bytes / 1048576.0);
+        // THE PER-TENSOR TABLE, RANKED BY BYTES, because the aggregate cannot say WHICH projection repeats.
+        // A tensor whose `calls/cols` is ~1 was read once per column (a weight re-read per token); one near
+        // `1 / group` was batched.  `calls` and `cols` are both printed so the ratio is readable, not derived.
+        std::vector<std::pair<std::string, gemv::ProjStats::ByName>> rows(p.by_name.begin(), p.by_name.end());
+        std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
+        const size_t shown = rows.size() < 14 ? rows.size() : 14;
+        for (size_t i = 0; i < shown; ++i) {
+            const auto& r = rows[i];
+            std::fprintf(stderr,
+                         "strata glm prefill:     %-34s %8.1f MiB  %8lld calls  %8lld cols  %5.1f cols a call%s\n",
+                         r.first.c_str(), (double) r.second.bytes / 1048576.0, r.second.calls, r.second.cols,
+                         (double) r.second.cols / (double) r.second.calls, r.second.native ? "  native" : "");
+        }
+    }
     std::fflush(stderr);
     glm_pre_sections_reset();
+    gemv::proj_stats_reset();
 }
 
 // ================================ the block ================================

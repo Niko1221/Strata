@@ -1214,7 +1214,18 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
         // token at a third of the card's bandwidth - divides by up to eight.  `STRATA_GLM_NO_GROUP=1` pins the
         // group to one token, which is the arm that checks the two produce the same ids.
         static const bool no_group = std::getenv("STRATA_GLM_NO_GROUP") != nullptr;
-        const int64_t gmax = (s.glm_group_arena != nullptr && !no_group) ? GLM_MAX_NTOK : 1;
+        // `STRATA_GLM_GROUP=N` picks the width inside the range, which is the arm that measures what a group
+        // BUYS: the card's per-token cost against `N` says whether a weight read is amortized (flat per call)
+        // or repeated (flat per token).  `STRATA_GLM_NO_GROUP=1` is the same thing pinned to 1, kept because a
+        // lot of measurements already name it.
+        static const int64_t group_env = [] {
+            const char* v = std::getenv("STRATA_GLM_GROUP");
+            if (v == nullptr) return (int64_t) 0;
+            const long long n = std::atoll(v);
+            return (n >= 1 && n <= GLM_MAX_NTOK) ? (int64_t) n : (int64_t) 0;
+        }();
+        const int64_t gmax = (s.glm_group_arena == nullptr || no_group) ? 1
+                                                                       : (group_env > 0 ? group_env : GLM_MAX_NTOK);
         for (int64_t t0 = 0; t0 < T; t0 += gmax) {
             const int64_t nt = (T - t0 < gmax) ? (T - t0) : gmax;
             GlmBuffers vb;

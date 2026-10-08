@@ -218,9 +218,17 @@ bool native_rows_sliceable(int gu_type, int d_type, int nt) {
 // per-token dot by ~3e-8 relative, and glm5-next amplifies that: the geometry's `h` activation is quantized to
 // q8_0 between the two projections, so a 3e-8 shift in a gate/up row occasionally crosses a rounding step and
 // lands ~1% away.  Measured at the head, `--prefill 128` with these on differs from `--prefill 1` by up to 1.76
-// on a logit.  Over 64 greedy tokens the TEXT is identical, and it is identical at chunk 1, 8, 32, 128 and 512,
-// so the switch is on by default; `STRATA_NO_SLICE_MT` goes back to the per-token dot, which reproduces
-// `--prefill 1` bit for bit at every chunk size and costs 2.3x on the pool.
+// on a logit.
+//
+// **THAT IS ENOUGH TO MOVE A TOKEN, AND ON A LONG ENOUGH PROMPT IT DOES.**  Over 64 greedy tokens on the short
+// prompt this was first measured on, the text was identical at chunk 1, 8, 32, 128 and 512, which is why the
+// switch is on by default.  It does not generalise: on a 344-token prompt `--prefill` 1, 128, 256 and 512 give
+// four arms that each reproduce themselves byte for byte and disagree with each other from the first token.  The
+// shape a token's dot takes is the number of tokens sharing its job, and a job's composition is the chunk's, so
+// a chunk-dependent rounding survives into greedy output.  `STRATA_NO_SLICE_MT` goes back to the per-token dot,
+// which reproduces `--prefill 1` bit for bit at every chunk size (verified at 1, 128 and 512 on that prompt) and
+// costs 2.3x on the pool.  The card side is not implicated: `multi_exact` makes a batched column bitwise equal
+// to the single-column call it replaced (`mmvq_multi_parity`).
 //
 // Decode is untouched either way: at `nt == 1` both halves fall through to the `_ptrs` functions below.
 bool slice_mt_on() {

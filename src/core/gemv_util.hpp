@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace strata::core::gemv {
 
@@ -95,5 +96,39 @@ extern bool native_flash_attn_short;
 /// The row-split GEMVs' threads per row.  MEASURED, NOT ASSUMED, AND 64 IS NOT BETTER.
 void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weights, float* out, int64_t n_in,
                   int64_t n_out, bool split, void* stream);
+
+/// WHAT A CHUNK'S PROJECTIONS ACTUALLY READ, BY PATH.
+///
+/// `gemv_quantized` is where a group of tokens either amortizes a weight or does not: the native path takes
+/// `ncols` and reads the matrix once, and the canonical path LOOPS one column at a time and reads it `ncols`
+/// times.  That difference is invisible in the section timings - both are "the attention mixer" - and it is the
+/// whole question a chunked prefill has to answer, so it is counted here rather than inferred.
+///
+/// `bytes` is the weight traffic the path implies: `w.bytes` for a native call, `w.bytes * ncols` for the
+/// canonical multi-column loop.  Counted at the top level only, so the loop's own per-column calls do not
+/// double-count.  Read by `STRATA_GLM_PREFILL_TIME`'s report, and empty on every run that does not set it.
+struct ProjStats {
+    long long calls = 0;              ///< every top-level `gemv_quantized` call
+    long long native_calls = 0;       ///< ... served from the GGUF, `ncols` in one kernel
+    long long multi_calls = 0;        ///< ... canonical with `ncols > 1`, so one weight read PER COLUMN
+    long long single_calls = 0;       ///< ... canonical with `ncols == 1`
+    long long multi_cols = 0;         ///< the columns those `multi_calls` walked
+    long long cols = 0;               ///< columns over ALL calls: `calls * group width` where the width is real
+    unsigned long long bytes = 0;     ///< weight bytes read, as the path implies
+    unsigned long long multi_bytes = 0;   ///< the part of `bytes` a batched path would have divided by `ncols`
+
+    /// PER-TENSOR, because the aggregate above cannot say WHICH projection is repeating.  A caller that walks
+    /// one head's band per token and a caller that batches the group both land in `calls`; only the name and
+    /// the columns tell them apart.  Small and bounded - the engine touches a few dozen distinct tensors.
+    struct ByName {
+        long long calls = 0;
+        long long cols = 0;
+        unsigned long long bytes = 0;   ///< weight traffic this tensor's calls imply
+        bool native = false;
+    };
+    std::unordered_map<std::string, ByName> by_name;
+};
+ProjStats& proj_stats();
+void proj_stats_reset();
 
 }  // namespace strata::core::gemv

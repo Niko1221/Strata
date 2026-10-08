@@ -15,6 +15,18 @@
 namespace strata::core {
 namespace gemv {
 
+/// The projection accounting `gemv_quantized` charges to.  One process-wide record, reset by the prefill
+/// report; see the header for what each field means and why the split matters.
+ProjStats& proj_stats() {
+    static ProjStats s;
+    return s;
+}
+void proj_stats_reset() { proj_stats() = ProjStats{}; }
+
+/// Non-zero while the canonical path walks its columns, so the per-column re-entry is not charged a second
+/// time.  `thread_local` because the engine runs several stages in one process and each has its own stream.
+static thread_local int g_proj_depth = 0;
+
 uint64_t q8k_bytes(int64_t n) { return (uint64_t) (n / Q8K_ELEMS_PER_BLOCK) * Q8K_BYTES_PER_BLOCK; }
 /// `s_gemv_q8k` takes the canonical-form attributes; a `WeightRef` carries them, and a tensor that is NOT
 /// quantized has none.  Returns false and names the tensor rather than building a form out of zeroes - which
@@ -110,7 +122,39 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::
               std::to_string(ncols);
         return false;
     }
+    // THE ACCOUNTING IS CHARGED AT THE TOP LEVEL ONLY.  The canonical loop below re-enters this function once
+    // per column with `ncols == 1`; counting there would report one batched call as `ncols` calls and hide the
+    // thing being measured.  `w.bytes` is the matrix the call reads, and the canonical loop reads it once per
+    // column, which is exactly the traffic a batched path would have avoided.
+    ProjStats& ps = proj_stats();
+    const bool top = (g_proj_depth == 0);
+    // WHAT ONE CALL READS, IN WEIGHT BYTES.  A native tensor is not in the arena (`resident == false`) so
+    // `w.bytes` is zero for it and the byte accounting would have reported nothing; the size comes from the
+    // GGUF layout the kernel itself uses.  A sliced native call passes `n_out == rows`, so this is the band it
+    // actually reads, not the whole tensor.
+    unsigned long long call_bytes = w.bytes;
+    if (top && w.native_data) {
+        try {
+            call_bytes = (unsigned long long) native_mmvq_weight_bytes(w.native_type, (int) n_in, (int) n_out);
+        } catch (const std::exception&) {
+            call_bytes = 0;   // an unsupported type would have failed below anyway; do not report a wrong size
+        }
+    }
+    ProjStats::ByName* bn = nullptr;
+    if (top) {
+        ++ps.calls;
+        ps.cols += ncols;
+        bn = &ps.by_name[name];
+        bn->calls += 1;
+        bn->cols += ncols;
+        bn->native = (w.native_data != nullptr);
+    }
     if (w.native_data) {
+        if (top) {
+            ++ps.native_calls;
+            ps.bytes += call_bytes;   // one read, however many columns share it
+            bn->bytes += call_bytes;
+        }
         if (!x_f32 || !w.native_q8_1 || !stream || n_in != w.ne0 || n_out != w.ne1) {
             err = name + ": native projection requires matching FP32 input and session scratch";
             return false;
@@ -136,6 +180,15 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::
     if (ncols > 1) {
         const int64_t q8k_row = (int64_t) q8k_bytes(n_in);
         const int64_t q8_0_row = (n_in / 32) * 34;
+        // THE COST OF NOT BATCHING, IN BYTES.  `ncols - 1` extra reads of the same matrix.
+        if (top) {
+            ++ps.multi_calls;
+            ps.multi_cols += ncols;
+            ps.multi_bytes += call_bytes * (unsigned long long) (ncols - 1);
+            ps.bytes += call_bytes * (unsigned long long) ncols;
+            bn->bytes += call_bytes * (unsigned long long) ncols;
+        }
+        ++g_proj_depth;
         for (int64_t c = 0; c < ncols; ++c) {
             if (!gemv_quantized(w, p, f, x80 ? x80 + c * q8_0_row : nullptr, xq8k ? xq8k + c * q8k_row : nullptr,
                                 y + c * n_out, n_in, n_out, name, stream, err, x_f32 ? x_f32 + c * n_in : nullptr,
@@ -143,7 +196,13 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::
                 return false;
             }
         }
+        --g_proj_depth;
         return true;
+    }
+    if (top) {
+        ++ps.single_calls;
+        ps.bytes += call_bytes;
+        bn->bytes += call_bytes;
     }
     if ((w.code_bits == 2 || !w.wants_q8k()) ? !x80 : !xq8k) {
         err = name + ": missing canonical quantized activation";

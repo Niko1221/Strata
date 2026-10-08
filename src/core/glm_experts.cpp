@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 
 namespace strata::core {
 
@@ -53,6 +54,13 @@ bool GlmExpertPool::grow_to(const NativeFmt& f, int64_t nt) {
     act_.resize((size_t) nt * (size_t) f.act_bytes);
     job_cap_ = nt;
     return true;
+}
+
+/// `STRATA_GLM_POOL_TIME=1`: one line a layer a chunk, on what the grouping saved and what the `MAXT` cut took
+/// back.  Read once; off costs a `bool` test at the end of a chunk and nothing in the decode path.
+static bool pool_trace() {
+    static const bool on = std::getenv("STRATA_GLM_POOL_TIME") != nullptr;
+    return on;
 }
 
 void GlmExpertPool::count_routing(const bool on) {
@@ -155,6 +163,9 @@ bool GlmExpertPool::run(int64_t layer, const float* x, const int32_t* ids, int64
 
         ExpertJobMulti* jobs = jobs_.data();
         int32_t n_jobs = 0;
+        int32_t distinct = 0;
+        const int64_t mb0 = pool_->multi_bytes;
+        const double gu0 = pool_->ms_multi_gu, q0 = pool_->ms_multi_q, d0 = pool_->ms_multi_down;
         for (int32_t e = 0; e < (int32_t) n_expert_; ++e) {
             int32_t p = head_[(size_t) e];
             if (p < 0) continue;
@@ -193,9 +204,26 @@ bool GlmExpertPool::run(int64_t layer, const float* x, const int32_t* ids, int64
                 for (int u = n; u < MAXT; ++u) { j.act[u] = nullptr; j.nact[u] = nullptr; j.out[u] = nullptr; }
             }
             bytes_ += (uint64_t) f.bytes;   // the same bytes read once for every token of the chunk that wanted it
+            ++distinct;
         }
         pool_->run_split_multi_native(f, jobs, n_jobs);
         ++calls_;
+        // **WHAT THE GROUPING SAVED, AND WHAT THE `MAXT` CUT TOOK BACK.**  `bytes_` above counts each distinct
+        // expert once - the ideal a chunk can reach.  The pool's own `multi_bytes` counts what the kernels
+        // actually read, and it charges `f.bytes` PER JOB, so the gap between the two IS the re-read the
+        // `MAXT`-token cut costs: an expert the chunk routed to more than `MAXT` times becomes several jobs
+        // over the same rows.  Printed only under the switch, and only for a chunk - a decode step has no
+        // grouping to report.
+        if (pool_trace()) {
+            const int64_t read = pool_->multi_bytes - mb0;
+            std::fprintf(stderr,
+                         "strata glm pool: layer %lld, %lld tokens, %lld routed pairs -> %d distinct experts in "
+                         "%d jobs; ideal %.1f MiB, read %.1f MiB (%.2fx), gu %.2f q %.2f down %.2f ms\n",
+                         (long long) layer, (long long) nt, (long long) np, (int) distinct, (int) n_jobs,
+                         (double) ((uint64_t) distinct * f.bytes) / 1048576.0, (double) read / 1048576.0,
+                         distinct > 0 ? (double) read / (double) ((uint64_t) distinct * f.bytes) : 0.0,
+                         pool_->ms_multi_gu - gu0, pool_->ms_multi_q - q0, pool_->ms_multi_down - d0);
+        }
         return true;
     }
 
