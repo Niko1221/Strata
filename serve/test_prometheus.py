@@ -179,3 +179,34 @@ class Batched(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoutingCounts(unittest.TestCase):
+    """--routing-counts: the engine's counts file -> a per-layer summary in the JSON and per-layer gauges."""
+    def test_summary_and_gauges(self):
+        import json as _json, os as _os, tempfile
+        from serve import server as srv
+        with tempfile.TemporaryDirectory() as d:
+            path = _os.path.join(d, "counts.json")
+            rows = [[0] * 8 for _ in range(3)]
+            rows[0][1], rows[0][5] = 30, 10            # layer 0: two experts, 75 % / 25 %
+            rows[2] = [5] * 8                          # layer 2: spread evenly, 3 bits
+            with open(path, "w") as f:
+                _json.dump({"layers": 3, "experts": 8, "counts": rows}, f)
+            s = srv.routing_summary(path)
+            self.assertEqual(s["routed_total"], 80)
+            l0, l1, l2 = s["layers"]
+            self.assertEqual((l0["experts_seen"], l0["top"][0]), (2, [1, 30]))
+            self.assertEqual((l1["routed"], l1["experts_seen"], l1["entropy_bits"]), (0, 0, 0.0))
+            self.assertAlmostEqual(l2["entropy_bits"], 3.0, places=3)
+            text = render({"experts": s}, Latencies().snapshot())
+            self.assertIn("strata:expert_routed_total{", text)
+            self.assertIn('layer="2"} 3.0', text)
+            self.assertEqual(text.count("# TYPE strata:expert_entropy_bits gauge"), 1)
+            self.assertIsNone(srv.routing_summary(_os.path.join(d, "missing.json")))
+
+    def test_config_key_adds_the_engine_flag(self):
+        from serve import server as srv
+        args = srv.routing_counts_args({"routing_counts": "/data/routing/counts.json", "routing_counts_every": 2}, ["x"])
+        self.assertEqual(args, ["x", "--routing-counts", "/data/routing/counts.json", "--routing-counts-every", "2"])
+        self.assertEqual(srv.routing_counts_args({}, ["x"]), ["x"])

@@ -2060,7 +2060,7 @@ def engine_args(cfg: dict) -> list[str]:
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
-    return learned_profile_args(cfg, args)
+    return routing_counts_args(cfg, learned_profile_args(cfg, args))
 
 
 PARALLEL_MAX = 8      # the engine's batch window holds at most 8 rows (kVerifyMaxT); --batch-mtp waves more through it
@@ -2100,6 +2100,55 @@ def profile_shape(path: str) -> tuple[int, int] | None:
         return None
     _, nl, ne, _, n = struct.unpack("<5I", head[4:])
     return (nl, ne) if size >= 24 + 4 * n else None
+
+
+ROUTING_COUNTS: dict = {"path": None, "mtime": None, "summary": None}   # --routing-counts: the file and its summary
+
+
+def routing_counts_args(cfg: dict, args: list[str]) -> list[str]:
+    """(opt-in) "routing_counts": "<path>" in the config has the engine count how often each (layer, expert) pair is
+    routed and save the counts there (JSON) every "routing_counts_every" minutes (1 by default) between requests;
+    GET /metrics then reports a per-layer summary (experts seen, the top 32's share, entropy) and the top experts.
+    A relative path is the engine's (the config's "cwd").  Without the key, the arguments are the config's."""
+    path = cfg.get("routing_counts")
+    if not isinstance(path, str) or not path.strip() or "--routing-counts" in args:
+        return args
+    args = args + ["--routing-counts", path]
+    every = cfg.get("routing_counts_every")
+    if isinstance(every, (int, float)) and not isinstance(every, bool) and every > 0:
+        args += ["--routing-counts-every", str(every)]
+    here = cfg.get("cwd") or "."
+    ROUTING_COUNTS["path"] = path if os.path.isabs(path) else os.path.join(here, path)
+    return args
+
+
+def routing_summary(path: str | None, top_n: int = 10) -> dict | None:
+    """The engine's routing counts file -> {"routed_total", "layers": [{"layer", "experts_seen", "top32_share",
+    "entropy_bits", "top": [[expert, count], ...]}]}, cached on the file's mtime; None without a readable file."""
+    if not path:
+        return None
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return None
+    if ROUTING_COUNTS["mtime"] == mtime and ROUTING_COUNTS["path"] == path:
+        return ROUTING_COUNTS["summary"]
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        layers = []
+        for layer, row in enumerate(data["counts"]):
+            tot = sum(row)
+            ranked = sorted(((c, e) for e, c in enumerate(row) if c), reverse=True)
+            ent = -sum((c / tot) * math.log2(c / tot) for c, _ in ranked) if tot else 0.0
+            layers.append({"layer": layer, "routed": tot, "experts_seen": len(ranked),
+                           "top32_share": round(sum(c for c, _ in ranked[:32]) / tot, 4) if tot else 0.0,
+                           "entropy_bits": round(ent, 3), "top": [[e, c] for c, e in ranked[:top_n]]})
+    except (OSError, ValueError, KeyError, TypeError):
+        return ROUTING_COUNTS["summary"]                # a file being replaced: keep the last good summary
+    summary = {"experts": data.get("experts"), "routed_total": sum(x["routed"] for x in layers), "layers": layers}
+    ROUTING_COUNTS.update(mtime=mtime, summary=summary)
+    return summary
 
 
 def learned_profile_args(cfg: dict, args: list[str]) -> list[str]:
@@ -2891,7 +2940,8 @@ class Service:
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "time": now,
+                **({"experts": ex} if (ex := routing_summary(ROUTING_COUNTS["path"])) else {})}
 
     def v1_status(self) -> dict:
         """GET /v1/status: what this server is and does, for a client that would rather ask than guess (a front-end
