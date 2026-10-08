@@ -719,6 +719,7 @@ struct Prefill::Impl {
     float* H = nullptr;
     int32_t *ids_identity = nullptr, *bounds_dev = nullptr;
     uint8_t *grp_gu = nullptr, *grp_d = nullptr;
+    const void** grp_ptrs = nullptr;            // the group's gate/up matrices for MMQ (in place, or in grp_gu)
     std::vector<int32_t> bounds_host;
     std::unique_ptr<mmq::Context> mmq_ctx;
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
@@ -1208,6 +1209,7 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2)), ok);
         m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        m.grp_ptrs = o.take<const void*>(MMQ_GROUP, ok);
         // (written at every run's start, not here: when serving, these are live expert-cache slots until a request
         // lends them - a write now would corrupt a resident expert)
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
@@ -3598,13 +3600,35 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         mmq::GatherGroup gg;
                         int gg_slots[MMQ_GROUP];
                         int gg_nslots = 0;   // ring slots gathered by the next flush
-                        auto flush = [&]() {
+                        // The gate/up MMQ reads a complete group's blobs in place through m.grp_ptrs (a blob is gate
+                        // rows then up rows, the matrix MMQ wants), so only the down rows are gathered: the same bytes,
+                        // the same products.  Down keeps its gather - MMQ reads one tile past a 640-value matrix's last
+                        // row, which must be the zeroed tail (MMQ_TAIL), not the next slot.  The group's ring slots are
+                        // then released after the gate/up MMQ (gu_release).  A flush forced inside a group (a skipped
+                        // ring entry) gathers both as before.  STRATA_MMQ_INPLACE=0: always both.
+                        static const bool inplace_env = [] {
+                            const char* v = std::getenv("STRATA_MMQ_INPLACE");
+                            return v == nullptr || std::atoi(v) != 0;
+                        }();
+                        const bool gu_inplace = group_gather && inplace_env && mmq::inplace_ok() &&
+                                                lay.fmt[(size_t) l].up_off == mmq_gub / 2;
+                        bool gu_held = false;   // gg_slots still read by the coming gate/up MMQ
+                        auto flush = [&](bool final) {
                             if (gg.n <= gg.first) return;
                             const auto& f = lay.fmt[(size_t) l];
                             if (gg_nslots > 0) {   // the copies land in order: the last one covers the others
                                 pt.mark(kPfWaitCopy, cs);
                                 cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
                                 pt.mark(kPfDequant, cs);
+                            }
+                            const bool in_place = final && gu_inplace &&
+                                                  mmq::gather_native_group(gg, f.up_off, 0, f.down_off, mmq_db, m.grp_gu,
+                                                                           mmq_gub, m.grp_d, mmq_db, m.cs);
+                            if (gu_inplace) mmq::group_ptrs(gg, m.grp_gu, mmq_gub, !in_place, m.grp_ptrs, m.cs);
+                            if (in_place) {
+                                gu_held = gg_nslots > 0;
+                                gg.first = gg.n;
+                                return;
                             }
                             if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
                                                           m.grp_d, mmq_db, m.cs)) {
@@ -3635,7 +3659,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     gg.n = (int) q + 1;
                                     if (slot >= 0) gg_slots[gg_nslots++] = slot;
                                     if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
-                                    flush();
+                                    flush(true);
                                     gg = mmq::GatherGroup{};
                                 } else if (lay.native) {
                                     const auto& f = lay.fmt[(size_t) l];
@@ -3660,7 +3684,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 gu.w = m.grp_gu; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
                                 gu.n = ngx; gu.xq = m.Xq; gu.bounds = m.bounds_dev + j0; gu.ids = m.ids_identity;
                                 gu.total_rows = T * K; gu.max_rows = maxr; gu.dst = m.GU; gu.ld_dst = 1280;
+                                if (gu_inplace) gu.w_ptrs = m.grp_ptrs;
                                 m.mmq_ctx->run(gu, m.cs);
+                                if (gu_held) {   // the in-place blobs are read: their ring slots go back (see flush)
+                                    const int rel = gg_slots[gg_nslots - 1];
+                                    cudaEventRecord(m.used[rel], m.cs);
+                                    for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                    gg_nslots = 0;
+                                    gu_held = false;
+                                }
                                 mmq::swiglu(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, !lay.native, m.cs);
                                 pt.mark(kPfGemmD, cs);
                                 mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs);
@@ -3722,7 +3754,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const size_t kend = seq_start[(size_t) l + 1];
                             auto release_to = [&](int32_t e_stop) {
                                 while (k < kend && seq[k].e < e_stop) {
-                                    if (gg_nslots > 0) flush();   // the open group's slots get their event first
+                                    if (gg_nslots > 0) flush(false);   // the open group's slots get their event first
                                     const int sl = (int) (k % (size_t) m.ring);
                                     cudaEventRecord(m.used[sl], m.cs);
                                     m.used_of[sl] = sl;
