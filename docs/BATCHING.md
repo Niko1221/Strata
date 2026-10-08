@@ -96,6 +96,19 @@ chunks its conversation has reached.
   (`SAVE`/`RESTORE`, single-session only) read and write the K/V through the same chunk tables; a restore reserves its
   chunks first and is refused (retryable) when the lanes hold the pool.
 
+Measured with this change on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer split, UD-Q4_K_XL, with
+`--max-context 262144 --kv int8 --kv-resident 32768 --kv-pool-tokens 524288` (engine 0.1.40.3 plus the pool; one run each):
+
+| | |
+|---|---|
+| Pinned for the pool | 6.24 GiB for 524,288 cells (both stages together) |
+| Two lanes (`"parallel": 2`), each up to 262,144 tokens | share the one pool |
+| Four lanes (`"parallel": 4`), four concurrent 133,865-token prompts (556K tokens against the 524K pool, a 233K conversation already held) | all answered 200, each lane returned its own needle; the "KV pool full: slot N gives back its cached conversation" path ran |
+| A 134K-token conversation moved between the main session and a slot | about 0.2 s (chunk-table swap, no copy) |
+
+Not measured: decode or prompt speed against per-lane buffers (no run without the pool was made on these cards), HIP,
+SYCL, three or more cards, a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
+
 ## How the server uses the slots
 
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
