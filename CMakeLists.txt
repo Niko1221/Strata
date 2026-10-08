@@ -458,6 +458,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(exchange_storage_test PROPERTIES TIMEOUT 60)
   endif()
 
+  # available_host_bytes(): MemAvailable, cgroup limits and the operator's --memory-limit-mib cap on fixture directories
+  # - no GPU, no CUDA
+  if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/memory_guard_test.cpp")
+    add_executable(memory_guard_test tests/core/memory_guard_test.cpp src/core/conversation_memory.cpp)
+    target_include_directories(memory_guard_test PRIVATE include)
+    add_test(NAME memory_guard_test COMMAND memory_guard_test)
+    set_tests_properties(memory_guard_test PROPERTIES TIMEOUT 60)
+  endif()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
