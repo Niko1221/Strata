@@ -6,9 +6,9 @@
     "bytes": 67691704,
     "mtime": "2026-10-07 23:32:38 -0400"
   },
-  "binary_not_a_release": "Built on lm-server from our fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches without an open PR yet'.",
+  "binary_not_a_release": "Built on lm-server from my fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches without an open PR yet'.",
   "source_of_binary": {
-    "statement": "strata-w7 = the up-merge build (strata-w5) plus branch opt/04-split-batched-draft-kv, per our own evidence notes (pr-evidence 'w7 = merged w5 + opt/04'). The commit is not embedded in the binary; the match below is by branch contents and by time (binary mtime 23:32:38, opt/04 commit time 23:32:28, 2026-10-07, -0400).",
+    "statement": "strata-w7 = the up-merge build (strata-w5) plus branch opt/04-split-batched-draft-kv, per my own evidence notes (pr-evidence 'w7 = merged w5 + opt/04'). The commit is not embedded in the binary; the match below is by branch contents and by time (binary mtime 23:32:38, opt/04 commit time 23:32:28, 2026-10-07, -0400).",
     "repository": "https://github.com/noon-at-cgn/Strata",
     "branch": "opt/04-split-batched-draft-kv",
     "commit": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",
@@ -26,7 +26,7 @@
     "nvcc": "/usr/local/cuda-13.3/bin/nvcc, release 13.3, V13.3.73 (from CMakeCache.txt of /opt/strata-bmtp/build)",
     "STRATA_ENABLE_CUDA": "ON",
     "STRATA_BUILD_TESTS": "ON",
-    "note": "The operator's notes said CUDA 13.0; the build directory's CMakeCache says 13.3. Which toolkit compiled strata-w7 itself was not verified (the binary's build time is 2026-10-07; the cache file could have been regenerated later)."
+    "note": "My notes said CUDA 13.0; the build directory's CMakeCache says 13.3. Which toolkit compiled strata-w7 itself was not verified (the binary's build time is 2026-10-07; the cache file could have been regenerated later)."
   },
   "branches_on_origin_checked_with_git_ls_remote": {
     "opt/04-split-batched-draft-kv": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",

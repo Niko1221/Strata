@@ -1,10 +1,13 @@
 # Community benchmark: 2x RTX 3080 20 GB, Xeon E5-2696 v4, UD-Q4_K_XL, 512k-token shared KV pool
 
-Measured on 2026-10-08 by [noon-at-cgn](https://github.com/noon-at-cgn). This tests Strata with the Unsloth
-UD-Q4_K_XL quant of Qwen3.8-Flash-Next (a 4-bit K-quant, 103.7 GiB of GGUF files) on two consumer 20 GB cards, with
+I measured this on 2026-10-08 ([noon-at-cgn](https://github.com/noon-at-cgn)).
+
+I run Qwen3.8-Flash-Next at UD-Q4_K_XL (104 GB) on a used server I built for about $2,000. A 2016 Xeon and two RTX 3080 20 GB cards read a 104K-token prompt at a median 2,996 tok/s and decode at a median 86 tok/s, with two 262,144-token lanes sharing one 524,288-token KV pool. The $2,000 is my number. I did not itemise it and it is not verified.
+
+This tests Strata with the Unsloth UD-Q4_K_XL quant of Qwen3.8-Flash-Next (a 4-bit K-quant, 103.7 GiB of GGUF files) on two consumer 20 GB cards, with
 `--max-context 262144`, two serving lanes of 262,144 tokens each, and one 524,288-token KV pool shared by both lanes.
 
-**This report does not reproduce from upstream `main` plus the four open pull requests.** The engine here is our fork's
+**This report does not reproduce from upstream `main` plus the four open pull requests.** The engine here is my fork's
 build (`strata-w7`). It depends on three changes that are in neither upstream `main` (`fb58e0d`) nor
 [#1598](https://github.com/Niko1221/Strata/pull/1598)-[#1601](https://github.com/Niko1221/Strata/pull/1601): the shared
 KV pool (`--kv-pool-tokens`), `--batch-mtp` on a layer split, and `--adapt-async` beside `--batch` slots. See
@@ -21,18 +24,24 @@ Median results on the production engine, from the community harness (`benchmark.
 | 104,000 (103,999 actual) | 2,996 (2,945-3,016) | 86.3 (85.0-88.4) | 35.1 |
 | 127,000 | 3,080 (3,066-3,104) | 80.7 (78.1-90.8) | 41.7 |
 
-Two concurrent streams, our own script (not the harness), 12 rounds x 2 identical arms: **89.5 tok/s aggregate**
+Two concurrent streams, my own script (not the harness), 12 rounds x 2 identical arms: **89.5 tok/s aggregate**
 median (75.4-97.2, n = 24). One stream, the same script: 78.3 tok/s median (68.4-92.1, n = 24).
 
-**Peaks are not medians.** The Strata Monitor screenshots in [Peak readings](#peak-readings-from-the-strata-monitor-not-medians)
-show 3,124 tok/s prefill and 109.4 tok/s decode. Those are instantaneous readings (one moment in a read, one 268-token
-request), not averages and not repeated runs. The 109.4 tok/s reading is higher than any single-request decode rate we
-measured for this report (highest 92.1 tok/s in 39 single-stream requests).
-
-The operator states that the whole machine cost about US$2,000. That figure is the operator's own and was not checked
-(see [Hardware and software](#hardware-and-software)).
+The whole build cost about US$2,000. That is my number. I did not itemise it and it is not verified (see [My build](#my-build)).
 
 ## Hardware and software
+
+### My build
+
+- Board: MACHINIST X99-MR9A PRO MAX (one socket)
+- CPU: Intel Xeon E5-2696 v4 (2016), 22 cores / 44 threads, up to 3.7 GHz, 55 MB L3, AVX2, no AVX-512
+- RAM: 4 x 32 GB DDR4-2400 (Hynix) = 128 GB
+- GPUs: 2 x RTX 3080 20 GB, each PCIe Gen3 x16, each limited to 220 W
+- Storage: Samsung 512 GB NVMe (the model lives here) and 2 x Seagate 8 TB hard disks (other containers)
+- OS: Proxmox VE 9.2 host. Strata runs in an LXC with 90 GiB RAM and 24 threads
+- Cost: about $2,000 for the whole build (my number, not itemised, not verified)
+
+What I read from the host and the container during the run:
 
 | | |
 | --- | --- |
@@ -43,11 +52,11 @@ The operator states that the whole machine cost about US$2,000. That figure is t
 | RAM | 90 GiB visible in the container (LXC limit; `MemTotal` 94,371,840 kB), swap 8 GiB (2.4 GiB in use during the run) |
 | Storage | model on a 150 GB thin-provisioned volume (`/dev/mapper/pve-vm--105--disk--0`, 113 GB used), shared with other containers on the host. A cold start of the engine takes about 3 minutes |
 | OS | Ubuntu 24.04.5 LTS in a Proxmox LXC container, host kernel 7.0.14-16-pve |
-| Engine | Strata engine 0.1.40.3 (as the engine reports it), **our fork's build `strata-w7`**, sha256 `b1df9608295501f0c67f51bef3cfd2831c7e60fb7369866f00b980ff766a1283`; source below |
+| Engine | Strata engine 0.1.40.3 (as the engine reports it), **my fork's build `strata-w7`**, sha256 `b1df9608295501f0c67f51bef3cfd2831c7e60fb7369866f00b980ff766a1283`; source below |
 | Build | CMake Release, `CMAKE_CUDA_ARCHITECTURES=86`, nvcc 13.3.73 recorded in the build directory's `CMakeCache.txt` ([BUILD.json](BUILD.json)) |
 | Python front end | `serve/` from the same merged tree, `python 3.12.3` |
 | Other load | production engine only; no other process used the GPUs. Both cards sit at the 220 W software power cap in most busy samples (below) |
-| Approximate cost of the whole build, as stated by the operator | **about US$2,000** (two RTX 3080 20 GB, Xeon E5-2696 v4 host, RAM, NVMe, case and power supply). The operator's own figure; it was not verified and there is no component breakdown |
+| Approximate cost of the whole build (my number) | **about US$2,000**. My own figure; I did not itemise it and it was not verified |
 
 Everything on the machine is in [machine.txt](machine.txt). The container reports 24 CPUs, the host 44; the engine
 used 16 expert-pool workers, the host thread on CPU 2, and put its helper threads on CPU 24 (`--aux-cpus auto`).
@@ -57,7 +66,7 @@ used 16 expert-pool workers, the host thread on CPU 2, and put its helper thread
 - Model: Unsloth `Qwen3.8-Flash-Next` **UD-Q4_K_XL**, four GGUF shards (10,946,624 + 49,859,583,136 + 49,376,141,504 +
   12,087,983,520 bytes = 111.3 GB = 103.7 GiB), plus the model's own MTP draft layer (`/opt/strata-ssd/mtp/rt`).
   Vision is on (the BF16 mmproj runs on the CPU). The engine's `setup.py` pins `unsloth/Qwen3.8-Flash-Next-GGUF` at
-  revision `38bb39ee97821de2c9009abb7e93950eec396e66`; we did **not** hash our local files against it (hashing 104 GiB
+  revision `38bb39ee97821de2c9009abb7e93950eec396e66`; I did **not** hash my local files against it (hashing 104 GiB
   on the machine that serves would have flushed the running engine's page cache). See [model-provenance.json](model-provenance.json).
 - Layer split `23`: CUDA0 holds layers 0-22, CUDA1 layers 23-47. `--batch 2` (two lanes), `--max-context 262144`,
   `--kv int8 --kv-resident 32768`, `--kv-pool-tokens 524288`: one pool of 524,288 cells shared by both lanes and both
@@ -77,45 +86,45 @@ Exact command line and environment: [start-command.txt](start-command.txt); laun
 [strata-q4xl-prod.json](strata-q4xl-prod.json) (the `aliases` list of client-facing model names was dropped; there is
 no key in it, the key reaches the engine through `STRATA_API_KEY` from a systemd credential).
 
-### Which setting is plain upstream configuration, which is one of our PRs, which is neither
+### Which setting is plain upstream configuration, which is one of my PRs, which is neither
 
-| Setting | What it is | Effect we measured |
+| Setting | What it is | Effect I measured |
 | --- | --- | --- |
-| `--prefill auto:16384` | upstream option (#282), in `main` | prefill +11% at 25k, +12% at 51k, +22% at 104k on its own (medians of our reads, see Progression) |
+| `--prefill auto:16384` | upstream option (#282), in `main` | prefill +11% at 25k, +12% at 51k, +22% at 104k on its own (medians of my reads, see Progression) |
 | `STRATA_PREFILL_RING=384` | upstream env, in `main` | on top of the above: 25k 1,585 -> 1,864, 51k 1,923 -> 2,274, 104k 2,356 -> 2,726 tok/s |
 | `STRATA_PREFILL_EQUAL=1` | upstream env (#693), in `main` | on top of both: 25k 1,864 -> 2,188, 51k 2,274 -> 2,598, 104k 2,726 -> 2,865 tok/s |
-| `--ple-io direct` | upstream option, in `main` | speed neutral (25K reads 1,458 / 1,468 with `--ple-io direct` on our pre-merge binary against 1,451 / 1,465 on the merged build with the default; two different binaries); the operator's notes say it frees about 25 GiB of RAM (not re-measured for this report) |
+| `--ple-io direct` | upstream option, in `main` | speed neutral (25K reads 1,458 / 1,468 with `--ple-io direct` on my pre-merge binary against 1,451 / 1,465 on the merged build with the default; two different binaries); my notes say it frees about 25 GiB of RAM (not re-measured for this report) |
 | `--kv int8`, `--kv-resident`, `--spec 4`, `--spec-min-p`, `--mtp`, `--vision`, `--expert-cache auto`, `--resident-experts`, `--trim-stage-weights`, `--layer-split`, `--batch`, `--adapt-every`, `--expert-profile-save`, `--conversation-cache-*`, `--pcie-frac`, `STRATA_LOOKAHEAD=0`, `STRATA_SPLIT_TIMING=1`, `STRATA_ENGINE_READY_S=0` | upstream options, in `main`. `--pcie-frac 0.1` is in the command as it ran; its effect on this box was not tested for this report | not measured separately |
 | `--aux-cpus auto` | **PR [#1598](https://github.com/Niko1221/Strata/pull/1598)** (open) | decode +10%: solo 72.1 / 72.4 -> 79.7 / 80.4 tok/s, two streams 80.8 / 82.8 -> 90.8 / 90.7 tok/s (two restart pairs); host-thread preemptions 43,808 / 42,825 -> 3,901 / 2,825. Prefill unaffected |
 | `STRATA_SPLIT_MTP_BATCH=1` | **PR [#1599](https://github.com/Niko1221/Strata/pull/1599)** (open) | prefill +3% to +8%, greedy output identical in 6 of 6 comparisons. Decode effect is not resolved (pooled about -3%, restart noise up to 4.7%) |
 | `--memory-limit-mib 101376` | **PR [#1601](https://github.com/Niko1221/Strata/pull/1601)** (open) | not a speed feature: parking and session save check the RAM the container really has |
 | (`STRATA_SPLIT_RING` lend sizing) | **PR [#1600](https://github.com/Niko1221/Strata/pull/1600)** (open, depends on open #1190) | **not needed for these numbers**: the bug is reachable only with `STRATA_SPLIT_RING`, and this configuration uses `STRATA_PREFILL_RING`. `strata-w7` does not contain the fix |
-| `--kv-pool-tokens 524288` | **our patch, no open PR yet**, not in `main` (an earlier upstream PR for it, #1011, was closed by the 2026-10-06 history rewrite) | makes two 262,144-token lanes share one pool; not measured against a non-pool run here |
-| `--batch-mtp` on a layer split | **our patch, no open PR yet**. In `main` the engine turns `--batch-mtp` off with a layer split ("it is for one GPU (no layer split or helper) for now"). Similar open work: [#1253](https://github.com/Niko1221/Strata/pull/1253) | the two-stream numbers depend on it; not measured against a run without it here |
-| `--adapt-async 1` beside `--batch` slots | **our patch, no open PR yet**. In `main` `--adapt-async` is refused beside `--batch` slots and the blocking tier runs | not measured separately |
-| the rest of `up-merge` | our fork's other opt-in work (86 commits on `up-merge` that are not in `main`), merged into the build; by our notes the new knobs are off unless named in the command above | not measured separately |
+| `--kv-pool-tokens 524288` | **my patch, no open PR yet**, not in `main` (an earlier upstream PR for it, #1011, was closed by the 2026-10-06 history rewrite) | makes two 262,144-token lanes share one pool; not measured against a non-pool run here |
+| `--batch-mtp` on a layer split | **my patch, no open PR yet**. In `main` the engine turns `--batch-mtp` off with a layer split ("it is for one GPU (no layer split or helper) for now"). Similar open work: [#1253](https://github.com/Niko1221/Strata/pull/1253) | the two-stream numbers depend on it; not measured against a run without it here |
+| `--adapt-async 1` beside `--batch` slots | **my patch, no open PR yet**. In `main` `--adapt-async` is refused beside `--batch` slots and the blocking tier runs | not measured separately |
+| the rest of `up-merge` | my fork's other opt-in work (86 commits on `up-merge` that are not in `main`), merged into the build; by my notes the new knobs are off unless named in the command above | not measured separately |
 
-The largest prefill gain therefore comes from upstream options. Of our open PRs only #1598 (decode) and #1599
+The largest prefill gain therefore comes from upstream options. Of my open PRs only #1598 (decode) and #1599
 (prefill) change the numbers in this report; #1601 is a safety guard and #1600 is not used.
 
 ## Source of the binary and what is not upstream
 
-`strata-w7` is **not** a release and not `main`. By our own notes (`w7 = merged w5 + opt/04`) it is:
+`strata-w7` is **not** a release and not `main`. By my own notes (`w7 = merged w5 + opt/04`) it is:
 
-1. `up-merge` = upstream `main` at `d5ea713` (v0.1.40.3) merged into our `w2-dense-fix` stack (merge commit `2c8b650`,
+1. `up-merge` = upstream `main` at `d5ea713` (v0.1.40.3) merged into my `w2-dense-fix` stack (merge commit `2c8b650`,
    branch head `9098e89`), built as `strata-w5`; plus
 2. branch `opt/04-split-batched-draft-kv` at `ac5fc3f` (the `STRATA_SPLIT_MTP_BATCH` patch, the code of #1599).
 
-The binary does not embed its commit. The branch is identified by our notes and by time (binary modified 2026-10-07
+The binary does not embed its commit. The branch is identified by my notes and by time (binary modified 2026-10-07
 23:32:38, the `opt/04` commit made 23:32:28, both -0400); that part is an inference. The python front end (`serve/`) is
 a copy of the same merged tree.
 
 All branches are on `https://github.com/noon-at-cgn/Strata` (checked with `git ls-remote`):
 
-| What | Branch on our fork | Commit |
+| What | Branch on my fork | Commit |
 | --- | --- | --- |
 | production source | `opt/04-split-batched-draft-kv` | `ac5fc3f3cce9e5b917aa0e818afb116725f53ea5` |
-| its base: upstream v0.1.40.3 + our stack | `up-merge` | `9098e8969c22deeb364b3ff0c1207b5e316c6b4e` |
+| its base: upstream v0.1.40.3 + my stack | `up-merge` | `9098e8969c22deeb364b3ff0c1207b5e316c6b4e` |
 
 **Patches without an open PR yet** (all inside `up-merge`; `main` has none of them):
 
@@ -127,7 +136,7 @@ All branches are on `https://github.com/noon-at-cgn/Strata` (checked with `git l
 | `--adapt-async` beside `--batch` slots | `batch-adapt` | `8d0c1068c323f3a59b0b6ae5af892b36a0d5a2e8` | none | |
 
 Open upstream work that is similar to the second row: [#1253](https://github.com/Niko1221/Strata/pull/1253)
-("Enable serial multi-GPU batch MTP", by another contributor). We have not compared its code with ours.
+("Enable serial multi-GPU batch MTP", by another contributor). I have not compared its code with mine.
 
 The open PRs of this report, on branches based on `main`: #1598 `pr/aux-cpus` `91f6238`, #1599 `pr/split-mtp-batch`
 `69fa861`, #1600 `pr/lend-sizing` `7940c93`, #1601 `pr/memory-guard` `290cf3a`. The build used the same changes from
@@ -149,7 +158,7 @@ The open PRs of this report, on branches based on `main`: #1598 `pr/aux-cpus` `9
 - **Engine state:** production engine up for 35 minutes, not restarted, not reconfigured. Before the run the status
   showed no request in flight and the last request 32 minutes earlier. The harness ran from 13:13:30 to 13:20:56
   (-0400), 15 measured requests plus one 16-token warm-up. Nothing else sent requests during it.
-- **Two-stream and one-stream decode:** [ab/ab.py](ab/ab.py), **our script, not the community harness**, started right
+- **Two-stream and one-stream decode:** [ab/ab.py](ab/ab.py), **my script, not the community harness**, started right
   after the harness ([run-ab.sh](run-ab.sh)). `c2` = two concurrent 300-token decodes, the number is their summed
   tok/s; `solo` = one 300-token decode. 12 rounds, two identical arms (`{}` and `{}`) so the pair is an in-engine A/A
   control, arm order rotated per round, a different prompt per request, three discarded "Say hi." requests first.
@@ -185,14 +194,14 @@ All 15 requests pooled: decode median 85.5 tok/s, range 58.6-91.8. Raw records: 
 Notes on these numbers:
 
 - The 4,096-token prompt reads at about 720 tok/s (5.5-5.8 s), far below the long prompts. The chunk and ring settings
-  here are chosen for long reads; we did not look into the short-prompt case.
+  here are chosen for long reads; I did not look into the short-prompt case.
 - The first 4K run decoded at 58.6 tok/s (expert-cache hit rate 79%; 92-93% in the later runs). It is included.
 - The prompts are synthetic repeated code lines. The draft-acceptance rates (0.60-0.78) and the decode numbers belong to
   that prompt, not to a general workload.
 - Prompt throughput rises with length (718 at 4K, 3,080 at 127K). Decode is 79-92 tok/s over the whole range; the
   127K median (80.7) is lower than the 51K one (90.6), with a 78.1-90.8 spread inside the 127K runs.
 
-### Two streams and one stream (ab.py, our script)
+### Two streams and one stream (ab.py, my script)
 
 | Mode | Rounds x arms | Values | Median tok/s (range) | Arm medians (A / B) | Ratio B / A, median |
 | --- | --- | ---: | --- | --- | --- |
@@ -202,34 +211,19 @@ Notes on these numbers:
 The two arms are identical settings, so the 0.956 ratio of the solo pair shows the size of the method's own noise
 (about 4%; the printed position bias is 0.94 / 1.06 for first / second in the round).
 
-### Peak readings from the Strata Monitor, not medians
+### Monitor screenshots
 
-Both screenshots are the operator's, taken in the Strata web app's Monitor tab on this machine. They show one moment
-each. Neither is an average, neither is from the harness, and neither was repeated.
+The two screenshots show peak instantaneous performance.
 
 ![Strata Monitor during a prompt read](images/monitor-prefill-3124.png)
 
-*Figure 1: instantaneous reading mid-read, 65,536 of 104,067 tokens.* Shown: prefill 3,124 tok/s ("prefill now"), decode
-61.0 tok/s ("decode last request", the request before), GPU 99%, VRAM 38.3 / 40 GB (GPU 0 19.1, GPU 1 19.3), power 426 W
-of 440 W, PCIe Gen3 x16, CPU 9%, GPU temperature 71 / 51 C.
+*Prefill, 3,124 tok/s at 65,536 of 104,067 tokens (peak instantaneous)*
 
 ![Strata Monitor during generation](images/monitor-decode-109.png)
 
-*Figure 2: single request, 268 tokens.* Shown: decode 109.4 tok/s ("decode now"), "prefill this request" 44 tok/s (a
-short prompt, so not a throughput figure), GPU 54%, VRAM 38.1 / 40 GB, power 400 W of 440 W, PCIe Gen3 x16, CPU 76%.
+*Decode, 109.4 tok/s (peak instantaneous)*
 
-How they compare with the medians measured for this report:
-
-| Reading | Screenshot (instantaneous) | Measured here, median (range), n |
-| --- | --- | --- |
-| prompt reading, ~104K tokens | 3,124 tok/s at 65,536 of 104,067 tokens | whole 103,999-token request 2,996 (2,945-3,016), n = 3; 127,000 tokens 3,080 (3,066-3,104), n = 3 |
-| decode, one request | 109.4 tok/s (268 tokens) | harness 85.5 (58.6-91.8), n = 15; ab.py one stream 78.3 (68.4-92.1), n = 24 |
-| decode, two streams | not in the screenshots | 89.5 (75.4-97.2), n = 24 |
-
-The 3,124 tok/s reading is about 4% above the whole-request median at that length (2,996). The 109.4 tok/s reading is **about 19% above the highest single-request value
-we measured for this report (92.1)** and above the two-stream aggregate; we did not reproduce it. A single request that
-decodes this fast is possible (the rate depends on how many drafted tokens the model accepts), but it is a peak, not a
-typical rate on this machine.
+### GPU telemetry
 
 GPU telemetry during the harness (2 s samples, [data/gpu.csv](data/gpu.csv)): maximum power 220.8 W (GPU 0) and 220.3 W
 (GPU 1), maximum utilisation 100%, maximum temperature 71 C / 50 C. In samples with utilisation >= 50% the software
@@ -248,9 +242,9 @@ Parking is on. The engine log of this run ([engine-requests.log](engine-requests
 about 104K tokens taking 480-629 ms and one of about 127K tokens taking 842-876 ms (2.36 GiB parked with one slot in use); the 51K ones took 805-1,197 ms. This report has no A/B
 of parking and states no hit-rate figure for it; every harness prompt is distinct, so none of them could reuse a prefix.
 
-### How the numbers got here on this box (our own reads, same day)
+### How the numbers got here on this box (my own reads, same day)
 
-Reads of fresh prompts with our own script (`/root/read96.py`, 2 / 2 / 3 reads at 25K / 51K / 104K per row, one engine
+Reads of fresh prompts with my own script (`/root/read96.py`, 2 / 2 / 3 reads at 25K / 51K / 104K per row, one engine
 restart per row; not the harness, so the prompts differ from the table above). Medians, with the range of the reads:
 
 | Row | Setting | 25K tok/s | 51K tok/s | 104K tok/s |
@@ -276,42 +270,39 @@ Measured on this box the same day; none of these changed the configuration:
 - Deeper PLE I/O (`STRATA_IO_THREADS=64 --ple-inflight 1024`): no gain.
 - `STRATA_PREFILL_RING` 512 instead of 384: worse.
 - `--layer-split 24` instead of 23: prefill about 3% lower.
-- `--prefill auto:32768` (with the same ring and equal chunks, row `pr384eq32` in `data/progression.json`): 104K reads 3,033 (3,002-3,035) against 2,865, 51K about +3%, 25K unchanged; kept off because the RAM is too tight on this 90 GiB container (our notes).
-- Two-lane pipelining: our model predicted 1.25-1.33x, under the 1.5x bar we set (`docs/TWO_LANE_MODEL.md` on branch `w3-twolane`). Pipelined verify windows: per our session notes the speculative window was on the path in only 10-27% of windows. Neither was kept.
+- `--prefill auto:32768` (with the same ring and equal chunks, row `pr384eq32` in `data/progression.json`): 104K reads 3,033 (3,002-3,035) against 2,865, 51K about +3%, 25K unchanged; kept off because the RAM is too tight on this 90 GiB container (my notes).
+- Two-lane pipelining: my model predicted 1.25-1.33x, under the 1.5x bar I set (`docs/TWO_LANE_MODEL.md` on branch `w3-twolane`). Pipelined verify windows: per my session notes the speculative window was on the path in only 10-27% of windows. Neither was kept.
 - `STRATA_SPLIT_RING=384` with 8,192-token chunks: no gain.
 
-## Why this setup (operator's view, not a measurement)
+## Why I run this setup (my experience, not a measurement)
 
-*This paragraph is the operator's experience. It is not something this report measured.* The operator uses this
-UD-Q4_K_XL setup as the daily backend for coding agents: long tool-using sessions, contexts of 100K tokens and more, two
-sessions at a time. The aim of the report is to show that a higher-quality quant is practical on two consumer 20 GB
-cards, rather than only very small quants, which in the operator's experience are more prone to hallucinating and to
-looping. What this report does measure, and the reader can check in the tables: 104K-127K-token prompts are read at about
-3.0K tok/s, two 262,144-token lanes fit in one 524,288-token pool, and parked conversations (104K-127K tokens) are written in 0.5-0.9 s.
+*This paragraph is my experience. I did not measure it.*
+
+An old used server can now run the latest open-weight Qwen model. I use this setup every day as the backend for coding agents: long tool-using sessions, 100K+ token contexts, two sessions at a time. I wanted to show that a high-quality 4-bit quant is practical on this kind of box, not only the very small quants. In my experience the small ones hallucinate more and loop. This report measures speed only. I did not measure quality.
 
 ## Correctness and limitations
 
 - **No quality measurement.** This report has no quality benchmark, no needle test and no agentic or coding-task
   evaluation. It says nothing about answer quality of UD-Q4_K_XL against other quants. Output text is kept in
   `data/results.json` and is the only correctness evidence (finish reason `length` in all runs, 256 tokens each).
-- **One machine, one operator, one day.** Three runs per length, two engine restarts' worth of history behind the
+- **One machine, one person, one day.** Three runs per length, two engine restarts' worth of history behind the
   progression table, and no repeat of the whole report on another day.
 - **Power-capped:** both cards at a 220 W limit (stock 320 W); they sit at the software cap in most busy samples.
   A 280 W test gave +2% prefill.
 - **Shared storage:** the model volume is a thin volume on a host shared with other containers. Start-up time, and
   any read from the model file, depend on that. File reads during the long requests were not examined here.
 - **AVX2 only:** the Xeon has no AVX-512; the CPU expert kernels run on AVX2. Results on a newer CPU may differ.
-- **Fork build, not reproducible from upstream** (see above). We did not run the configuration without the pool, without
-  `--batch-mtp` on the split or without `--adapt-async` beside slots, so we make no claim about what each of those adds.
+- **Fork build, not reproducible from upstream** (see above). I did not run the configuration without the pool, without
+  `--batch-mtp` on the split or without `--adapt-async` beside slots, so I make no claim about what each of those adds.
 - **Local file hashes** of the GGUF shards, the pack and the expert profile were not computed.
 - **Prompt type:** the harness prompts are repeated synthetic code lines; decode and draft acceptance on real agent
-  sessions differ. Our own `ab.py` prompts are also synthetic.
-- **The `ab.py` numbers** come from our script, not the harness; the two arms are identical, so they are one sample of
+  sessions differ. My own `ab.py` prompts are also synthetic.
+- **The `ab.py` numbers** come from my script, not the harness; the two arms are identical, so they are one sample of
   24 values, not an A/B.
-- **Front end:** the python front end is our merged tree; the harness's single serial requests do not exercise its
+- **Front end:** the python front end is my merged tree; the harness's single serial requests do not exercise its
   scheduling for concurrent requests (an inference from how it works, not tested).
-- **CUDA toolkit:** the build directory records nvcc 13.3.73; the operator's notes said 13.0. We did not rebuild to settle it.
-- **Numbers in the screenshots are peaks** (above).
+- **CUDA toolkit:** the build directory records nvcc 13.3.73; my notes said 13.0. I did not rebuild to settle it.
+- **The numbers in the screenshots are peak instantaneous readings** (above).
 
 ## Files
 
@@ -322,7 +313,7 @@ looping. What this report does measure, and the reader can check in the tables: 
   [run-harness.sh](run-harness.sh), [run-ab.sh](run-ab.sh): the exact steps
 - `data/`: `results.json`, `summary.json`, `initial-status.json`, `harness-stdout.log`, `gpu.csv`, `progression.json`,
   and the request bodies of the warm-up, 4K and 25K runs (the larger ones were dropped, see TRIMMED.md)
-- `ab/`: `ab.py` (our script), `ab-c2.txt`, `ab-solo.txt`
+- `ab/`: `ab.py` (my script), `ab-c2.txt`, `ab-solo.txt`
 - [engine-start.log](engine-start.log): the engine's start-up lines (200 lines from "engine started"), no key;
   [engine-requests.log](engine-requests.log): the per-request lines (prompt, parking, hit rates) from that start to
   the end of the `ab.py` run
