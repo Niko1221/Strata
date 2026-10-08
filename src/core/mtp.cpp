@@ -18,6 +18,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -127,6 +128,7 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace
 
 MtpDrafter::~MtpDrafter() {
+    const OnDevice on_device(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
@@ -158,6 +160,12 @@ MtpDrafter::~MtpDrafter() {
     for (cudaEvent_t e : ev_step_) if (e) cudaEventDestroy(e);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_, h_force_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
+}
+
+bool MtpDrafter::idle(std::string& err) {
+    const OnDevice on_device(device_);
+    if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "mtp: its stream failed"; return false; }
+    return true;
 }
 
 const float* MtpDrafter::f32(const char* name) const {
@@ -624,8 +632,10 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             return false;
         }
         dhead_ = shared->dhead_;
-        dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
+        // The shared subset keeps its source format (including a --mtp-q4 head).
+        dhead_type_ = shared->dhead_type_;
         dvocab_ = shared->dvocab_;
+        dvocab_host_ = shared->dvocab_host_;
         n_dvocab_ = shared->n_dvocab_;
         owns_draft_head_ = false;
     }
@@ -671,6 +681,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
 
 bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    // A batch drafter owns one slot; its captured kernels must keep that slot's positions.
+    MropeScope positions(ss_->mrope != nullptr ? ss_->mrope : mrope_table());
     const ModelGeometry& g = *g_;
     const int64_t N = g.n_embd, HC = g.hc, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const QsaShapes s = shapes_of(g);
@@ -786,6 +798,8 @@ void MtpDrafter::norm_rope(float* data, const float* gamma, int rows, int cols, 
 
 bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    // A batch drafter owns one slot; its captured kernels must keep that slot's positions.
+    MropeScope positions(ss_->mrope != nullptr ? ss_->mrope : mrope_table());
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     const int T = 1;
