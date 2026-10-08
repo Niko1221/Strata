@@ -60,6 +60,7 @@ function setTheme(t, save) {
   if (save) try { localStorage.setItem("strata.theme", t); } catch (e) { /* ignore */ }
   $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
+  refreshPreviews();
 }
 const flipTheme = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
 $("theme-btn").onclick = flipTheme;
@@ -497,10 +498,73 @@ function inline(s) {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
-function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
+// a previewable fence (svg or html) is shown in an empty-sandbox frame: an opaque origin, no scripts, forms, popups or
+// navigation; the meta CSP blocks the network and, for good measure, scripts again. So generated markup previews
+// static and offline; inline style still works, because the model's own styling is inline. The frame document carries
+// the app's theme (color-scheme and ink), so the browser leaves it transparent on the theme surface, and it is built
+// again when the theme changes. Firefox does not run SVG animation (SMIL) in a document with scripting off, so a plain
+// svg is shown as an image (data URL): an image runs no scripts and loads nothing, and it animates. A block can also be
+// run with scripts, only when the user asks for it (a warning first, one block at a time, never remembered): the frame
+// then has sandbox="allow-scripts" (still an opaque origin) and the CSP allows inline scripts but still no network.
+const csp = (scripts) => `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; ${scripts ? "script-src 'unsafe-inline'; " : ""}style-src 'unsafe-inline'; img-src data:">`;
+function themeCss() {
+  const root = document.documentElement;
+  const ink = getComputedStyle(root).getPropertyValue("--st-ink").trim() || "CanvasText";
+  return { ink, css: `html{color-scheme:${root.dataset.theme === "dark" ? "dark" : "light"};color:${ink}}` };
+}
+const frameHead = (css, scripts) => `<!doctype html><html><head>${csp(scripts)}<style>${themeCss().css}html,body{background:transparent;margin:0;height:100%}${css}</style></head><body>`;
+const SVG_NS = "http://www.w3.org/2000/svg";
+// a plain svg as an <img> with a data URL, or null when it is not well-formed XML (then the inline svg is used)
+function svgImage(s) {
+  try {
+    const d = new DOMParser().parseFromString(/^<svg\b[^>]*\sxmlns\s*=/i.test(s) ? s : s.replace(/^<svg\b/i, `<svg xmlns="${SVG_NS}"`), "image/svg+xml");
+    const r = d.documentElement;
+    if (d.querySelector("parsererror") || r.namespaceURI !== SVG_NS || r.localName !== "svg") return null;
+    const st = d.createElementNS(SVG_NS, "style");                       // an image has no page around it: give currentColor the app's ink
+    st.textContent = `svg{color:${themeCss().ink}}`;
+    r.insertBefore(st, r.firstChild);
+    const fill = !r.hasAttribute("width") && !r.hasAttribute("height");
+    return `<img alt="" ${fill ? 'style="width:100%;height:100%;object-fit:contain" ' : ""}src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(d))}">`;
+  } catch (e) { return null; }
+}
+function previewDoc(lang, code, scripts) {
+  const s = code.trim();
+  if (/^svg\b/i.test(lang) && /^<svg[\s>]/i.test(s)) {
+    const img = scripts ? null : svgImage(s);
+    return frameHead("body{display:flex;align-items:center;justify-content:center}" + (img ? "img" : "svg") + "{max-width:100%;max-height:100%}", scripts) + (img || s) + "</body></html>";   // inline: the html parser supplies the svg namespace, so no xmlns patching
+  }
+  if (/^html?$/i.test(lang) && /^<[/a-z!]/i.test(s)) {
+    // a complete document: our CSP and theme come first, then the page without its doctype (its own html and head tags merge
+    // into ours, and its own CSS still wins); nothing of the page can run before the CSP is in force
+    if (/^<!doctype\s+html/i.test(s)) return `<!doctype html><html><head>${csp(scripts)}<style>${themeCss().css}</style></head>` + s.replace(/^<!doctype[^>]*>/i, "");
+    return frameHead("", scripts) + s + "</body></html>";                // a fragment: wrap in a minimal document
+  }
+  return null;
+}
+// (re)build a frame's document from its box's code, in the current theme (or empty it, when the preview closes); the frame is a new element, because the
+// sandbox attribute counts only when a frame is created
+function fillPreview(fr, scripts, blank) {
+  const box = fr.closest(".st-code");
+  const doc = blank ? null : previewDoc(fr.dataset.lang, box.querySelector("pre").textContent, scripts);
+  const nf = document.createElement("iframe");
+  nf.setAttribute("sandbox", scripts ? "allow-scripts" : "");
+  nf.title = fr.title; nf.dataset.lang = fr.dataset.lang;
+  if (doc) { nf.dataset.opened = "1"; if (scripts) nf.dataset.scripts = "1"; nf.srcdoc = doc; }
+  fr.replaceWith(nf);
+  box.classList.toggle("st-code--run", !!(doc && scripts));
+  const rb = box.querySelector("[data-preview-scripts]");
+  if (rb) { rb.setAttribute("aria-pressed", String(!!(doc && scripts))); rb.setAttribute("aria-label", doc && scripts ? "Stop scripts" : "Run scripts"); }
+}
+function refreshPreviews() { for (const fr of document.querySelectorAll("iframe[data-opened]")) fillPreview(fr, fr.dataset.scripts === "1"); }
+function codeBlock(lang, code, complete) {
+  const ok = complete && previewDoc(lang || "", code, false) !== null;
+  const kind = ok ? (/^svg\b/i.test(lang || "") ? "svg" : "page") : null;
+  const head = `<div class="st-code__head"><span>${esc(lang || "code")}</span><span class="st-code__btns">` +
+    (kind === "page" ? `<button class="st-btn st-btn--icon" data-preview-scripts aria-label="Run scripts" aria-pressed="false" title="Run scripts">${icon("warning")}</button>` : "") +
+    (ok ? `<button class="st-btn st-btn--icon" data-preview-toggle data-preview-label="Preview ${kind}" aria-pressed="false">${icon("image")}</button>` : "") +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></span></div>`;
+  const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${kind === "svg" ? "SVG preview" : "Page preview"}" data-lang="${esc(lang)}"></iframe></div>` : "";
+  return `<div class="st-code">${head}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -546,8 +610,8 @@ function markdown(text) {
     html += blocks(rest.slice(0, m.index));
     rest = rest.slice(m.index + m[0].length);
     const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { html += codeBlock(m[2].trim(), rest); break; }         // still streaming
-    html += codeBlock(m[2].trim(), rest.slice(0, end.index));
+    if (!end) { html += codeBlock(m[2].trim(), rest, false); break; }  // still streaming: no preview of a partial svg
+    html += codeBlock(m[2].trim(), rest.slice(0, end.index), true);
     rest = rest.slice(end.index + end[0].length);
   }
   return html;
@@ -697,6 +761,29 @@ function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  // an svg/html block: flip between its code and its sandboxed preview (state lives on the box; it resets if the
+  // answer is rebuilt mid-stream, and the frame is built on the first open and again on a theme change). Closing the
+  // preview also turns scripts off; they only run after the user confirms, one block at a time.
+  const pv = e.target.closest("[data-preview-toggle]");
+  if (pv) {
+    const box = pv.closest(".st-code");
+    const on = box.dataset.preview === "true";
+    if (on) delete box.dataset.preview; else box.dataset.preview = "true";
+    pv.setAttribute("aria-pressed", String(!on));
+    pv.setAttribute("aria-label", on ? pv.dataset.previewLabel : "Show code");
+    const fr = box.querySelector("iframe");
+    if (on) fillPreview(fr, false, true);
+    else if (!fr.dataset.opened) fillPreview(fr, false);
+    return;
+  }
+  const rs = e.target.closest("[data-preview-scripts]");
+  if (rs) {
+    const fr = rs.closest(".st-code").querySelector("iframe");
+    const run = fr.dataset.scripts !== "1";
+    if (run && !confirm("Run this code with scripts?\n\nIt runs in your browser, cut off from this chat and from the network, but it can still freeze the tab, and it is code the model wrote.\n\nOnly this block, and only until you close the preview.")) return;
+    fillPreview(fr, run);
+    return;
+  }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it

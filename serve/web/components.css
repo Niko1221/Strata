@@ -78,8 +78,21 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 /* code */
 .st-code{border-radius:var(--st-r-md);background:var(--st-code-bg);color:var(--st-code-ink);overflow:hidden}
 .st-code__head{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 8px 14px;font:500 var(--st-fs-xs)/1 var(--st-font);color:#9aa3ab;border-bottom:1px solid rgba(255,255,255,.06)}
+.st-code__btns{display:flex;gap:4px}
 .st-code pre{margin:0;padding:14px;overflow:auto;font:400 13px/1.6 var(--st-font-mono)}
 .st-code .st-btn--icon{color:#9aa3ab} .st-code .st-btn--icon:hover{background:rgba(255,255,255,.08);color:#fff}
+.st-code .st-btn--icon[aria-pressed="true"]{background:rgba(255,255,255,.12);color:#fff}
+/* svg/html preview - the frame document is sandboxed and CSP-blocked (no scripts unless the user runs them, no network) and carries the app's
+   theme (color-scheme and ink), so it is transparent: the preview sits on the theme surface and shows through
+   see-through content. It is built again when the theme changes. */
+.st-code__preview{display:none}
+.st-code[data-preview="true"]>pre{display:none}
+.st-code[data-preview="true"] .st-code__preview{display:block;height:min(340px,60vh);background:var(--st-surface-2)}
+.st-code [data-preview-scripts]{display:none}
+.st-code[data-preview="true"] [data-preview-scripts]{display:inline-flex}
+.st-code .st-btn--icon[data-preview-scripts][aria-pressed="true"]{background:var(--st-warn-tint);color:var(--st-warn-text)}
+.st-code--run .st-code__preview{outline:2px solid var(--st-warn-text);outline-offset:-2px}
+.st-code__preview iframe{display:block;width:100%;height:100%;border:0;background:transparent}
 
 /* composer */
 .st-composer{display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--st-surface);border:1px solid var(--st-line);border-radius:var(--st-r-lg);box-shadow:var(--st-sh-bar)}
