@@ -2911,7 +2911,14 @@ def update_installed_engine(url_base, toolkit=None) -> None:
         try:                                           # a failed compile must not stop the model from starting
             if gpu is None:
                 raise RuntimeError("no NVIDIA GPU found")
-            gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *(int(x) for x in meta.get("archs", []))})}
+            built = {int(x) for x in meta.get("archs", [])}
+            # #1485: gpu_info()'s most-VRAM pick can be a card this model does not run on (a Volta beside the
+            # model's two 4090s put sm_70 into the CUDA 13 rebuild, which cannot compile it); like the HIP branch
+            # above, prefer a card the engine was actually built for - its arch adds nothing new to the union
+            served = [x for x in gpus() if int(x["arch"]) in built]
+            if served:
+                gpu = max(served, key=lambda x: (round(x["vram_gb"]), -x["index"]))
+            gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *built})}
             if int(toolkit) == 12:                     # the cards it was compiled for (the main GPU may be newer)
                 gpu["archs"] = sorted({int(x) for x in meta.get("archs", [])}) or gpu["archs"]
             build_engine(gpu, vision, False, get_llama_cpp(), toolkit=toolkit)
