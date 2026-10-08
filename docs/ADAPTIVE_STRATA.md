@@ -4,6 +4,12 @@ Status: isolated research branch, 2026-10-08. Not a released feature or a proven
 Production configuration is unchanged. The intended objective is correct agentic task completion in less
 wall-clock time while leaving resources available to foreground applications.
 
+The current branch includes upstream **v0.1.40.4**, commit
+[`6674a0065fb96bacde33e3eb10f91a1df86f95f2`](https://github.com/Niko1221/Strata/commit/6674a0065fb96bacde33e3eb10f91a1df86f95f2).
+That update restores the Pascal decode path by retaining restrict-qualified pointers and disabling the
+new PDL prefetch below `sm_70`; it does not establish a speed gain for the RTX 4070 Laptop. Earlier validation
+below retains its original v0.1.40.3 source and binary identity. Results are not transferred to this revision.
+
 ## Scope
 
 Memory capacity and compute availability are separate constraints. A busy CPU should not automatically
@@ -12,8 +18,9 @@ should choose among supported CPU and GPU execution paths, RAM and VRAM residenc
 model files according to measured completion cost. Returning resources to Strata after another workload
 finishes is part of the objective.
 
-This branch currently provides live expert-cache resizing, cooperative background waits and pacing, an
-opt-in text-request parking path, and experimental single-GPU routing from matched measurements.
+This branch currently provides live expert-cache resizing, cooperative background waits and pacing,
+opt-in active text-request parking, opt-in pressure-triggered idle unloading with guarded reload admission,
+and experimental single-GPU routing from matched measurements.
 Uncalibrated routing keeps the configured split. These are separate controls with separate validation
 boundaries; enabling one does not establish that every resource can be relocated or released.
 It does not provide general tensor relocation, live CPU-worker resizing, multi-GPU balancing, SSD selection,
@@ -63,14 +70,101 @@ Cancellation waits for lifecycle ownership to settle before releasing the reques
 an unowned reload thread running. The initial and post-STOP measured footprints are combined conservatively,
 but sampled capacity still cannot exclude a new allocation racing the reload.
 
-**Between requests, full engine unloading is not implemented by this controller.** Live MEMORY control can
-return reclaimable RAM/VRAM cache space while an agent waits for a compiler or other tool, but fixed execution
-allocations remain resident. A new idle-unload policy would need coordinated HTTP admission and vision
-preparation; it must not be inferred from the active-request parking feature. Model weights evicted from
-RAM are read again from their existing model files; this does not require writing another model copy to SSD.
-Strata already has a separate timed idle-unload/autoload mechanism. The missing integration here is
-automatic pressure-triggered idle unloading plus guarded admission before the next request's load and
-vision preparation; this branch does not replace that existing timer or claim to have added it.
+**Between requests, a separate opt-in `coadaptive.idle_parking` policy now implements full engine unloading
+under sustained memory pressure.** The final revision passed a bounded real-pressure Hermes/tool-wait
+acceptance; its [separate evidence packet](../bench/results/2026-10-08-idle-pressure) records the exact
+source, binary and limits. Live MEMORY control can first return reclaimable
+RAM/VRAM caches, while idle parking can release the native and vision processes and their fixed execution
+allocations. It acts only with no active generation, queued request or HTTP preparation owner. CPU activity
+alone is not a trigger. This makes a compiler-tool interval eligible when the agent has finished one model
+call and has not yet submitted its next one; it does not infer the tool's type or special-case Hermes.
+
+The monitor owns FIFO before capturing a fresh, conservative full-reload footprint and model identity,
+then unloads the native and configured vision processes. There is no active response to journal or replay.
+The next request reserves preparation before any load or vision encoding, waits for capacity while retaining
+FIFO ownership, then reloads and processes its normal supplied history. OpenAI, Anthropic and Responses
+streaming requests receive waiting heartbeats; disconnect or shutdown cancels admission and joins owned
+lifecycle cleanup before releasing the queue. Stale or missing required readings do not authorize unloading
+or a reload. A verified process exit is required before claiming that its allocations were returned.
+
+Reload admission requires the measured full startup footprint plus reserves in physical RAM, Windows
+commit and GPU memory. RAM and commit each use the largest of `min_ram_headroom_gib`,
+`pressure_ram_available_gib` and `pressure_commit_available_gib`; GPU memory uses the larger of
+`min_vram_headroom_mib` and `pressure_vram_free_mib`, also respecting the existing server load floor.
+Capacity must stay sufficient through the recovery interval. This prevents the model's own unloading from
+being counted as recovery while the competing workload still occupies the space needed to restart.
+Pre-READY capacity failures use bounded retry/backoff after verified cleanup; arbitrary generation failures
+are not automatically replayed.
+
+The physical-RAM estimate retains the largest of current process working sets plus the arena restoration
+delta, valid Windows working-set peaks, and the configured startup arena plus current vision working set;
+it adds the configured overhead once and checks private commit separately.
+These are sampled bounds, not allocation guarantees: without working-set peaks, OS-trimmed fixed allocations
+may remain unmeasured even though the startup arena floor is retained.
+
+Strata's existing timed idle-unload/autoload mechanism remains separate. When this new policy is enabled,
+manual or timed unloading also captures a reload footprint and uses guarded admission next time. The policy
+does not introduce the existing timer. Model weights evicted from RAM are read again from their existing
+model files; no additional SSD model copy is written. Full idle unloading discards process-local cache state,
+so later loading and prompt reprocessing can be expensive.
+
+### Idle-parking configuration and limits
+
+The `idle_parking` block is disabled when absent. These are its defaults; explicitly set `enabled` to `true`
+only in a compatible experimental configuration:
+
+```json
+"coadaptive": {
+  "enabled": true,
+  "mode": "live",
+  "idle_parking": {
+    "enabled": false,
+    "pressure_seconds": 10,
+    "pressure_ram_available_gib": 3,
+    "pressure_commit_available_gib": 3,
+    "pressure_vram_free_mib": 250,
+    "recovery_seconds": 10,
+    "retry_seconds": 30,
+    "min_ram_headroom_gib": 3,
+    "min_vram_headroom_mib": 320,
+    "max_sample_age_seconds": 5
+  }
+}
+```
+
+Idle parking requires live coadaptive and memory policies, resource presets disabled, an explicit
+`--pcie-frac`, a single compatible stoppable native engine, and its `BACKGROUND` control capability.
+Configuration currently requires the engine and any configured vision encoder to be loaded. It is
+incompatible with initial lazy loading and with a `before_load` hook: an arbitrary hook's allocations and
+side effects are not covered by measured reload admission. A journal `directory` is rejected for idle
+parking; the separately enabled active-request path still requires its protected journal directory.
+
+An image request can wait for admission before vision preparation and then follow normal image handling.
+This does not add migration of an already-running image request. Initial startup still uses the existing
+fit/load checks; idle parking is not a substitute for a measured first load. Thresholds must be consistent
+with a feasible reload footprint, or requests can remain waiting until the competing workload releases
+enough resources. Polling and the default ten-second pressure interval mean the response is not immediate.
+
+Status is available under `memory_policy.idle_parking`: `disabled`, `ready`, `unloading`, `suspended`,
+`admitting`, `reloading` or `unavailable`, with the captured footprint, reason and admission result when
+applicable. `memory_policy.preparing_requests` reports preparation ownership. In unloaded state the public
+metrics omit stale process-allocation counters while retaining internal capabilities and model identity.
+This reporting detail follows the stale-counter observation in
+[miskahm's PR #1093](https://github.com/Niko1221/Strata/pull/1093); its monitor UI and slider code are not imported.
+
+The final acceptance verified native and vision process replacement, capacity waiting and cancellation,
+then normal completion in the same Hermes session after actual compiler feedback. The four-job C++ build
+passed 2,096 cases, with 104 independent checks. Agent wall time was 190.442 seconds; minimum sampled
+headroom was 5.623 GiB RAM and 294 MiB native/DXGI VRAM. A separate real 3 GiB holder and deliberately
+extended tool interval supplied controlled pressure. The 2.296-second build finished before unloading,
+so this is a continuity test, not a compilation speedup. Final HTTP vision/tool checks also passed.
+The final Python suite ran 893 tests: 886 passed and seven skipped. Five targeted native tests passed.
+
+Separate short static-profile probes showed that a 20 GiB resident cap used about 12.15 GiB less peak
+process RAM than 32 GiB and still passed arithmetic, vision and tool continuation, with slower replies.
+Those probes used an earlier server revision, retain their own hashes and sensor limitations, and do not
+qualify near-64K reload admission. Automatic smaller-profile selection is not implemented; the current
+idle policy waits for its full measured startup footprint. The evidence packet preserves this boundary.
 
 There remains a finite working-set floor whenever inference is actually running. If no supported execution
 shape fits, the safe options are waiting or parking, not treating nominal RAM, VRAM and SSD sizes as one
@@ -87,7 +181,8 @@ API references. The broader research survey below is not a list of imported impl
 
 The live allocator, MEMORY protocol, acknowledgement handling, RAM blocks, GPU VMM resizing and resource
 presets are based on medking82's [PR #726](https://github.com/Niko1221/Strata/pull/726), ported onto
-v0.1.40.3. Its author is retained in Git history. That PR was closed without merging during history cleanup;
+v0.1.40.3, then carried forward with the upstream v0.1.40.4 update above. Its author is retained in Git history.
+That PR was closed without merging during history cleanup;
 closure should not be described as a technical rejection.
 
 Other related work must be considered before an upstream submission:
@@ -108,7 +203,8 @@ Other related work must be considered before an upstream submission:
   of these patches is imported here.
 
 These related feature PRs (#1117, #1324, #1461, #1471, #1480 and its underlying spill/restore work)
-were still open when rechecked on 2026-10-08; the latest public release was v0.1.40.3. Searches for open
+were still open at the earlier 2026-10-08 duplication check, when the release base was v0.1.40.3.
+The branch has since incorporated v0.1.40.4. Searches for open
 elasticity, pressure and background-control proposals did not identify an equivalent active-request
 journal/unload/reload controller. This is a scoped duplication check, not a claim that the broader idea
 is novel. Recheck heads and maintainer feedback before publication. PR #1324's author explicitly distinguishes
@@ -313,11 +409,11 @@ Change the latter mode to `live` only for an isolated validation. Leave `routing
 there is trustworthy calibration for that exact runtime. The RAM cap and startup reserve still belong
 in the native arguments. Shadow mode is the default because direction tests do not prove faster tasks.
 
-## Current cooperative-control and parking validation (2026-10-08)
+## Cooperative-control and parking validation before the v0.1.40.4 update (2026-10-08)
 
-The current Python suite ran **851 tests: 844 passed and seven skipped**. The native build and five focused
-native control/memory tests passed. These counts concern the current working-source campaign, separately
-from the older campaign below. The real parking run used native binary SHA-256
+That Python suite ran **851 tests: 844 passed and seven skipped**. The native build and five focused
+native control/memory tests passed. These counts concern the earlier cooperative-control campaign,
+separately from the older campaign below and the new idle-parking implementation. The real parking run used native binary SHA-256
 `b17c3ef7a55ff1b00e217fb5a5251a23583734b2ce6e2d57d1423012215d83aa` and server source SHA-256
 `f714e58627696099ecda6969307c066fee597a6b28412d218805045a98ea0e45`.
 

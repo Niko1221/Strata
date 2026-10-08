@@ -11,6 +11,7 @@ to this implementation. Validation must use this branch's own test evidence.
 | --- | --- | --- |
 | [medking82's Strata PR #726](https://github.com/Niko1221/Strata/pull/726), source snapshot [`15a59d4785f492b4df3fb78862373a5383696450`](https://github.com/medking82/Strata/commit/15a59d4785f492b4df3fb78862373a5383696450) | **Adapted code:** live RAM blocks, GPU VMM expert-cache resize, `MEMORY` protocol and acknowledgements, guarded prefill loans, memory policy, resource presets, their UI and tests. This source snapshot was ported onto the v0.1.40.3 base identified below; subsequent commits modify that port. The public source snapshot is the attribution reference, independently of the port's commit identity. | Original author **medking82** is retained on the port commit. This is substantial reused Strata code, not a newly invented allocator. Retain the repository's [MIT license and notices](../LICENSE). PR closure without merge is not represented as technical rejection. |
 | [Strata v0.1.40.3 base, `d5ea7133741e67743c0e886bb426c0ce8d69cf6c`](https://github.com/Niko1221/Strata/commit/d5ea7133741e67743c0e886bb426c0ce8d69cf6c) | **Existing project code extended:** the native generation loop, prefill execution, expert source/cache, asynchronous readers, worker pool, server FIFO, output parser, detokenizer, lifecycle and sampling. | Credit Niko1221 and Strata contributors; retain the existing MIT license. Fixes to this port's integration are not attributed to unrelated research. |
+| [Strata v0.1.40.4, `6674a0065fb96bacde33e3eb10f91a1df86f95f2`](https://github.com/Niko1221/Strata/commit/6674a0065fb96bacde33e3eb10f91a1df86f95f2), including [`fbb3624`](https://github.com/Niko1221/Strata/commit/fbb3624) | **Upstream update merged:** Pascal decode retains restrict-qualified pointers and disables the newer PDL prefetch below `sm_70`, plus engine/version metadata. This is the current branch's upstream base; the original port and earlier measurements retain their v0.1.40.3 identities. | Credit the upstream Strata contributors and retain MIT notices. This architecture-specific update is not presented as a measured RTX 4070 Laptop speed gain. |
 
 Specific existing mechanisms reused:
 
@@ -30,6 +31,9 @@ Specific existing mechanisms reused:
   active-request parking retains the existing FIFO owner, incremental parser,
   streamed tool-call identity, UTF-8 detokenizer, and cancellation contract. It uses
   exact-prefix re-prefill; it does not import another project's checkpoint format.
+  The separate idle-pressure policy extends these same existing lifecycle/FIFO
+  mechanisms with preparation reservation and full-load admission; it does not
+  claim to have invented Strata's pre-existing timed idle unload/autoload feature.
 
 ## Design principles actually used
 
@@ -37,11 +41,13 @@ Specific existing mechanisms reused:
 | --- | --- | --- |
 | Liu, Ye, Li and Li, [ATSInfer, *Automated Tensor Scheduling for Hybrid CPU-GPU LLM Inference on Consumer Devices*, arXiv:2607.10183v2, sections 4.3–4.4](https://arxiv.org/html/2607.10183v2) | **Design inspiration:** `serve/routing_costs.py` compares measured CPU/GPU choices and exposed transfer/completion cost under changing load. The citation is also beside that implementation. | No ATSInfer source, tensor-placement algorithm, learned estimator, benchmark or claimed speedup is incorporated. This branch only selects among already-supported Strata request-level routing choices using qualified matched samples. |
 | [StarPU performance models and data-aware task scheduling](https://starpu.gitlabpages.inria.fr/features.html) | **Design inspiration:** the same optional routing-cost gate considers expected completion cost and data movement rather than utilization alone. | No StarPU runtime, scheduler source, task graph, out-of-core subsystem or dependency was imported. Its source license is not being used to license this original routing gate. |
+| [miskahm's Strata PR #1093](https://github.com/Niko1221/Strata/pull/1093) | **Reporting idea used:** omit stale process-allocation counters from public metrics after the engine has unloaded, so old expert/arena/VRAM figures are not reported as current usage. This branch filters the published INFO view while retaining internal capabilities and identity needed for guarded reload. | The monitor split button, idle slider, frontend code and other unrelated changes are not copied. The implementation is original integration of the specific stale-counter observation, with a source comment beside it. |
 
-These are the two research/system principles explicitly used in the implemented
-routing gate. The fresh-sample requirements, thresholds, hysteresis, lease bounds,
-pressure admission and bounded retry policy are original choices in this branch;
-they are not presented as implementations of ATSInfer or StarPU.
+ATSInfer and StarPU are the two research/system principles explicitly used in
+the implemented routing gate; PR #1093 is separately credited for the reporting
+idea actually used. The fresh-sample requirements, thresholds, hysteresis, lease
+bounds, pressure admission and bounded retry policy are original choices in this
+branch; they are not presented as implementations of ATSInfer or StarPU.
 
 ## API and ABI references used by original integration code
 
@@ -57,10 +63,20 @@ they are not presented as implementations of ATSInfer or StarPU.
 
 ## Original changes and attribution boundaries
 
+The idle-admission follow-up also uses the Windows peak working-set counter exposed by the installed
+psutil `memory_info()` binding. Microsoft's
+[`PROCESS_MEMORY_COUNTERS`](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters)
+defines peak/current working sets separately from commit charge. This API contract was used to check the
+physical-reload estimate after Windows trims pageable memory; private commit remains a separate constraint.
+No Microsoft or psutil implementation was copied. A past peak is evidence of observed allocation, not a
+guarantee that a future workload cannot need more memory.
+
 The short-lived `BACKGROUND` lease, request STOP epoch helper, cooperative prefill
 pause integration, current acknowledgement reconciliation, lifecycle worker,
-exact-output journal/admission policy and their new regression tests are original
-extensions of the inherited Strata implementation. Internal correctness fixes
+exact-output journal/admission policy, idle-pressure full-unload/load-admission
+policy, HTTP preparation ownership and their new regression tests are original
+extensions of the inherited Strata implementation. The specific stale-counter
+reporting idea is attributed to PR #1093 above. Internal correctness fixes
 such as retaining the last valid context during a pre-READY retry do not derive
 from a research paper and are not cited as such.
 
