@@ -972,6 +972,19 @@ NAME may
 not contain a path, a drive, a stream (`:`), a Windows device name (`NUL`, `CON.bin`, `COM1`...), a control character,
 a leading dot or a trailing dot or space.
 
+`--session-save-reclaim` (an engine argument in the config's `args`, off by default) lets a SAVE that fails its
+RAM preflight first release reconstructible host caches: retained K/V buffers, oldest unpinned parked
+conversations, then unpinned checkpoints other than the one selected for the file. It stops as soon as measured
+available RAM meets the original allocation estimate plus `--conversation-cache-min-free-mib`; it does not lower
+that floor or assume that freed allocations have reached the OS. Pinned prefixes and the selected checkpoint
+stay intact, including their order and tie preference. Unknown RAM telemetry or an unknown allocation estimate
+does not evict anything. The usual admission check still runs before copying state.
+
+This can trade later prefix-cache hits for room to save. Released caches stay released even if admission or file
+I/O later fails; the current tokens, images, steering and live device state are unchanged. It cannot guarantee a
+SAVE under arbitrary memory pressure. With the option off, or enough RAM at the first probe, cache retention and
+the session file format are unchanged. RESTORE is unchanged.
+
 The request must be `Content-Type: application/json` (else `415`) and come from no browser page, Strata's own or a
 trusted origin (another site's `Origin` gets `403`, also with an API key); the Host and API-key checks apply as
 everywhere. Errors: `501` without `--slot-save-path` or with parallel requests; `400` for a slot other than 0, an unknown action, a refused
