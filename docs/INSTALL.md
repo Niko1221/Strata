@@ -97,6 +97,8 @@ The same idea, in a container (NVIDIA cards).
    `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
    The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
    set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
+   `docker build -t strata --build-arg PORTABLE=1 .` builds the CPU code for any AVX2 CPU instead of
+   only the one that built it (use it when the image runs on a different PC than it was built on).
 3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
    `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
 

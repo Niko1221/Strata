@@ -10,9 +10,10 @@
 # one matching your card. Narrow CUDA_ARCHITECTURES to your card for a faster
 # build; a card outside the set needs a rebuild with its own arch.
 #
-# Build:
+# Build (the default compiles native code for the CPU that builds the image):
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
+#   docker build -t strata --build-arg PORTABLE=1 .                   # AVX2 CPU floor: for an image that runs on other PCs
 #
 # Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
 #   docker run --rm --gpus all \
@@ -72,9 +73,10 @@ RUN python3 -m venv .venv \
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built
 # exactly the way setup.py builds them: native code for the CPU that builds the
-# image, so build it on the PC it runs on. BUILD.json is what setup.py reads to
-# decide whether an engine is current: source=local with a matching src hash
-# means the first start reuses it instead of recompiling.
+# image by default, so build it on the PC it runs on, or pass PORTABLE=1 (the
+# AVX2 floor) for an image that moves between PCs. BUILD.json is what setup.py
+# reads to decide whether an engine is current: source=local with a matching src
+# hash means the first start reuses it instead of recompiling.
 RUN .venv/bin/python - <<'PYEOF'
 import json, os, pathlib, shutil
 import setup
