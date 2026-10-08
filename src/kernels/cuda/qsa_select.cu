@@ -889,15 +889,22 @@ __global__ void __launch_bounds__(256, 1) block_scores_thread_kernel(const float
     __shared__ __align__(16) float4 ks[TS_KB][IDX_DIM / 4];
     __shared__ float so[TS_Q][TS_KB + 1];
     __shared__ int64_t s_nbid[TS_Q];
+    // Four lanes per query, lane j (0..3) one quarter of the tree for all four heads: the partials c[j] of lane 0's
+    // xor-shuffle sum combine groups j, j+16, j+8, j+24, j+4, j+20, j+12, j+28, and only then do the quarters meet
+    // (c0 + c2, c1 + c3, then their sum) - two shuffles here.  A key load now feeds four heads: four times fewer
+    // shared-memory loads per FMA (the kernel was bound by the MIO pipe, ncu: mio_throttle first).
+    constexpr int QG[8] = {0, 16, 8, 24, 4, 20, 12, 28};
     const int t = threadIdx.x, lane = t & 31;
-    const int ql = (t >> 5) * 8 + (lane >> 2), h = lane & 3;   // this lane's query (in the CTA) and head
+    const int ql = (t >> 5) * 8 + (lane >> 2), j4 = lane & 3;   // this lane's query (in the CTA) and quarter
     const int64_t q0 = (int64_t) blockIdx.y * TS_Q, qi = q0 + ql;
     if (t < TS_Q) s_nbid[t] = q0 + t < nq ? steps[(q0 + t) * kStepCount + kStepNBid] : -1;
-    float4 qv[IDX_DIM / 4];
+    float4 qv[IDX_HEADS][8];
     {
-        const float4* src = reinterpret_cast<const float4*>(q_idx + (qi < nq ? qi : 0) * IDX_HEADS * IDX_DIM + h * IDX_DIM);
+        const float4* src = reinterpret_cast<const float4*>(q_idx + (qi < nq ? qi : 0) * IDX_HEADS * IDX_DIM);
 #pragma unroll
-        for (int g = 0; g < IDX_DIM / 4; ++g) qv[g] = src[g];
+        for (int h = 0; h < IDX_HEADS; ++h)
+#pragma unroll
+            for (int m = 0; m < 8; ++m) qv[h][m] = src[h * (IDX_DIM / 4) + j4 + QG[m]];
     }
     __syncthreads();
     int64_t top = -1;   // the largest n_bid of the CTA's queries: blocks at or past it are never written here
@@ -914,24 +921,23 @@ __global__ void __launch_bounds__(256, 1) block_scores_thread_kernel(const float
             ks[i / (IDX_DIM / 4)][i % (IDX_DIM / 4)] = reinterpret_cast<const float4*>(pooled + (b0 + i / (IDX_DIM / 4)) * IDX_DIM)[i % (IDX_DIM / 4)];
         __syncthreads();
         for (int j = 0; j < nb; ++j) {
-            const float4* k = ks[j];
-            float c[4];
+            float4 kk[8];
 #pragma unroll
-            for (int g = 0; g < 4; ++g)
-                c[g] = ((ts_part(k[g], qv[g]) + ts_part(k[g + 16], qv[g + 16])) +
-                        (ts_part(k[g + 8], qv[g + 8]) + ts_part(k[g + 24], qv[g + 24]))) +
-                       ((ts_part(k[g + 4], qv[g + 4]) + ts_part(k[g + 20], qv[g + 20])) +
-                        (ts_part(k[g + 12], qv[g + 12]) + ts_part(k[g + 28], qv[g + 28])));
-            const float d = (c[0] + c[2]) + (c[1] + c[3]);
-            const float r = d > 0.0f ? d : 0.0f;
-            const float r1 = __shfl_down_sync(0xffffffffu, r, 1), r2 = __shfl_down_sync(0xffffffffu, r, 2),
-                        r3 = __shfl_down_sync(0xffffffffu, r, 3);
-            if (h == 0) {
+            for (int m = 0; m < 8; ++m) kk[m] = ks[j][j4 + QG[m]];
+            float e[IDX_HEADS];
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const float c = ((ts_part(kk[0], qv[h][0]) + ts_part(kk[1], qv[h][1])) +
+                                 (ts_part(kk[2], qv[h][2]) + ts_part(kk[3], qv[h][3]))) +
+                                ((ts_part(kk[4], qv[h][4]) + ts_part(kk[5], qv[h][5])) +
+                                 (ts_part(kk[6], qv[h][6]) + ts_part(kk[7], qv[h][7])));
+                const float d = c + __shfl_xor_sync(0xffffffffu, c, 2);   // lane 0: c0 + c2, lane 1: c1 + c3
+                e[h] = d + __shfl_xor_sync(0xffffffffu, d, 1);           // lane 0: (c0 + c2) + (c1 + c3)
+            }
+            if (j4 == 0) {
                 float score = 0.0f;
-                score += r;
-                score += r1;
-                score += r2;
-                score += r3;
+#pragma unroll
+                for (int h = 0; h < IDX_HEADS; ++h) score += e[h] > 0.0f ? e[h] : 0.0f;
                 so[ql][j] = score;
             }
         }
