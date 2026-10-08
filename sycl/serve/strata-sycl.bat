@@ -23,9 +23,22 @@ rem replay each window's body instead of its captured graph (slower per round, s
 rem Level Zero (level_zero:0, with ze sysman) can unset this again once the driver exposes it.
 if not defined STRATA_VERIFY_EAGER set STRATA_VERIFY_EAGER=1
 if not defined STRATA_STAGER_THREADS set STRATA_STAGER_THREADS=12
-rem The B-series spin bound (sycl/CMakeLists.txt: 20,000 on Windows) is what the window's waits want, and with the MTP
-rem drafter on it is worth 73% of decode (measured on an Arc Pro B70: 45.4 against 26.2 tok/s, 4.19 against 2.28
-rem tokens per round). Without --mtp the suffix drafter's waits run out inside that bound, so it drafts nothing and
-rem every round verifies one token: 21.8 against 68.8 tok/s with --spec 2. Say so rather than let it be a mystery.
-echo %* | findstr /c:"--mtp" >NUL || >&2 echo [strata-sycl] no --mtp in the arguments: the build's 20,000 spin bound leaves the suffix drafter without a draft (measured 3.7x slower decode). Rebuild with -DSTRATA_SYCL_SPIN_MAX=2000000 for this configuration.
+rem The spin bound. Upstream picks it per device at run time from the Linux kernel driver - 20,000 reads under xe (the
+rem B-series on Linux), 2,000,000 everywhere else - and intel_gpu_driver() reads /sys/class/drm, so on Windows every
+rem card gets the long bound (sycl/include/strata/sycl_queue.hpp, sycl_doorbell.hpp, #1397). On this port's OpenCL
+rem backend a window's per-layer waits are expected to run out and give up, so with the MTP drafter on the short bound
+rem is worth most of decode: Arc Pro B70, the same binary one STRATA_SPIN_MAX apart, 256 greedy tokens after a
+rem 2,049-token prompt, medians of 3 interleaved runs - 44.1 against 24.9 tok/s (+77%), 2.15 against 1.18 tokens per
+rem round, and with the long bound 204 of 217 rounds accepted no draft at all. Without --mtp the suffix drafter's own
+rem waits want the long bound instead (21.8 against 68.8 tok/s with --spec 2), so the default is left alone there.
+rem An A-series card wants the long bound even with --mtp: there the GPU genuinely waits on the host's per-layer CPU
+rem expert work and a short bound made it go on with the experts' outputs missing - hence the B-series check.
+rem STRATA_SPIN_MAX already in the environment always wins. docs/INTEL.md has both measurements.
+if defined STRATA_SPIN_MAX goto :spin_bound
+echo %* | findstr /c:"--mtp" >NUL || goto :spin_bound
+for /f "usebackq delims=" %%v in (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "if ((Get-CimInstance Win32_VideoController | Where-Object { $_.Status -ne 'Error' }).Name -match 'Arc.* B\d') {'yes'} else {'no'}"`) do set BSERIES=%%v
+if not "%BSERIES%"=="yes" goto :spin_bound
+set STRATA_SPIN_MAX=20000
+>&2 echo [strata-sycl] B-series card with --mtp: STRATA_SPIN_MAX=20000. On the OpenCL backend the window's waits are meant to run out, and the long bound cost 44%% of decode here (docs/INTEL.md). Set STRATA_SPIN_MAX yourself to override.
+:spin_bound
 "%HERE%\%BIN%" %*

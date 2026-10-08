@@ -256,7 +256,7 @@ What the port had to get right beyond compiling (each is an entry in `sycl/tools
   stays unreliable on this platform, which is why the all-resident path waits for the window instead.
 - **Bounded spins.** A device spin that never sees its flag is not a hang of one process: the xe driver
   times the queue out and resets the GT node by node - a window graph has 2,400 - and the card stays
-  wedged until a reboot (twice). Every spin is capped (`kSpinMax`).
+  wedged until a reboot (twice). Every spin is capped (`strata::spin_max(queue)`, chosen per device at run time).
 - **32-lane sub-groups.** The kernels are written for warps; dpct pinned 134 of 289 launches, the rest
   would run at Xe2's default 16 (`-fsycl-default-sub-group-size=32`).
 - **Synchronous copies.** `cudaMemcpy` blocks; dpct's default-queue `memcpy` did not wait. With the
@@ -711,9 +711,11 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   and is not for a CPU layer in the first request (cold pages, 13 s for a 26-token prompt). The GPU gave up, went on with the
   experts' outputs missing, the next layers' routing was garbage (one expert chosen ten times for a token: `nt=10`) and the
   CPU pool wrote past its token arrays and died with a segmentation fault (exit code 139); when it did not die the logits were NaN
-  and the sampler's answer was token 0. Later requests ran with warm pages and were right. The bound is now a build option,
-  `STRATA_SYCL_SPIN_MAX` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`): 2,000,000 reads (a few seconds) unless the build is an
-  AOT build for a `bmg` card, which keeps 20,000. Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
+  and the sampler's answer was token 0. Later requests ran with warm pages and were right. The bound is now chosen per device
+  at run time (`strata::spin_max(queue)`): 20,000 reads on a card under the `xe` driver, 2,000,000 (a few seconds) elsewhere, so
+  an A-series card on `i915` keeps the long bound this case needs. `STRATA_SPIN_MAX=<reads>` overrides at run time, and
+  `-DSTRATA_SYCL_SPIN_MAX=<reads>` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`) fixes one bound for every device in the build.
+  Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
   token 0 in the first request; with 2,000,000 reads 4 of 4 were right in all three requests.
 - **Speed.** About 10 to 15 tok/s decode (76 to 92% of the drafts accepted), a 26-token first prompt in 13 s and later short prompts in 0.2 to
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
@@ -828,10 +830,26 @@ single token and decode is 3.7x slower - a silent loss, since the answer is stil
 both because the drafting waits want the long bound and the window's want the short one; that is the shape of the
 upstream report.
 
-The branch's default is 20,000 on Windows because the port's own configuration is `--spec 4 --mtp`, and
-`sycl/serve/strata-sycl.bat` warns on stderr when the engine runs without `--mtp`. Rebuild for the other case with
-`-DSTRATA_SYCL_SPIN_MAX=2000000`; the override is what this branch's default is made of. At 20,000 this release decodes
-*faster* than 0.1.40.2 did, so the decode regression that release shipped is this default and not its kernels.
+Upstream has since made the bound a run-time, per-device choice (`strata::spin_max(queue)`,
+`sycl/include/strata/sycl_doorbell.hpp`): 20,000 reads on a card under the `xe` driver, 2,000,000 everywhere else -
+Windows included, on the reading of #1397 that "a JIT/OpenCL B-series build measured faster with the long bound". That
+reading is the `--spec 2` half of the table above. `intel_gpu_driver()` reads `/sys/class/drm`, so on Windows it
+returns nothing and every card there gets the long bound whatever the drafting configuration, which leaves the
+`--spec 4 --mtp` configuration - the one setup writes - at 1.18 tokens per round.
+
+This branch therefore chooses in the launcher, which is the place that knows the configuration:
+`sycl/serve/strata-sycl.bat` sets `STRATA_SPIN_MAX=20000` when `--mtp` is in the arguments *and* the working
+adapter's name is a B-series Arc, and leaves the default alone otherwise. An A-series card keeps the long bound even
+with `--mtp`, because there the GPU genuinely waits on the host's per-layer CPU expert work and a short bound made it
+go on with the experts' outputs missing. A `STRATA_SPIN_MAX` already in the environment wins, and `-DSTRATA_SYCL_SPIN_MAX`
+still fixes one bound for every device in a build.
+
+Re-measured after the rebase onto that change, so these are against the run-time choice and not the build option: the
+same binary, one `STRATA_SPIN_MAX` apart, Coder IQ1_M, `--spec 4 --mtp`, 256 greedy tokens after a 2,049-token prompt,
+medians of three interleaved runs - **44.1 against 24.9 tok/s (+77%)**, 2.15 against 1.18 tokens per round, and with
+the long bound 204 of 217 rounds accepted no draft at all against 48 of 120 with the short one. Prefill is unchanged
+by the bound (72.9 tok/s both ways), so this is the decode path alone. At 20,000 this release decodes *faster* than
+0.1.40.2 did, so the decode regression that release shipped is the bound and not its kernels.
 
 `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host clocks under `STRATA_VERIFY_EAGER=1`): a
 4-token window is ~65 ms and the GDN hyper-connection read is ~24 ms of it, nearly flat from T=2 (23.6 ms) to T=6
