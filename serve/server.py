@@ -690,8 +690,10 @@ class StrataEngine:
                 pass
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
-            raise RuntimeError(why + (f" (see {log})" if log else "") +
-                               start_failure_hint(log, log_start) + start_log_tail(log, log_start))
+            # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
+            # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
+            raise EngineDied(why + (f" (see {log})" if log else "") +
+                             start_failure_hint(log, log_start) + start_log_tail(log, log_start))
         self.known_ctx = self.max_context   # survives a failed restart: requests keep their limit and restart it
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
@@ -871,8 +873,10 @@ class StrataEngine:
                     time.sleep(self.RESTART_RETRY_S)
         finally:
             self.starting = False
-            with self.slot_cv:                   # #1012: wake the requests that waited through it: they go on with the
-                self.slot_cv.notify_all()        # new engine, or (it did not start) end with a clean EngineDied
+            # a lazy first start never reached the post-READY __init__ where slot_cv is made (#1527)
+            if "slot_cv" in self.__dict__:
+                with self.slot_cv:               # #1012: wake the requests that waited through it: they go on with the
+                    self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
     def _parse_done(self, line):
