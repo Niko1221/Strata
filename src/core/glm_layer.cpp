@@ -1429,6 +1429,19 @@ bool glm_mtp_step(const WeightTable& tables, const ModelGeometry& g, const GlmBu
         return false;
     }
     if (hidden == nullptr) { err = "glm5-next: the MTP block was handed no hidden state"; return false; }
+    // **THIS STEP IS ONE TOKEN, AND IT SAYS SO RATHER THAN LOOKING GROUP-READY.**  Unlike the trunk block, the
+    // whole of it is single-token by construction - `embed_row` of one `token`, the block's own `st.emb`/`st.cat`
+    // scratch, `copy_dev(b.cur, st.inp, n)` - so the `1`s in its norms below are not an oversight to be
+    // "fixed" by writing `b.ntok`.  Doing that would normalize the first token and leave the rest of the group
+    // reading whatever the previous call left in `st.*`, which is the kind of wrong answer that still generates.
+    // The guard is here because a GROUP carve is now a `GlmBuffers` with `ntok == 8` that any caller could hand
+    // this by mistake.  Making the block take a group is its own change: every `st.*` field above would need a
+    // per-token row and `mla_layer`'s `n_written` a row per token, not a count.
+    if (b.ntok != 1) {
+        err = "glm5-next: the MTP block is a single-token step and was handed a " + std::to_string(b.ntok) +
+              "-token scratch";
+        return false;
+    }
 
     // **THE DRAFT BLOCK'S OWN INDEX IS `n_layers`, WHICH IS WHERE THE TRUNK STOPS.**  `n_layers` is
     // `block_count - nextn_predict_layers` (model_arch.cpp), so on the shipped 46-block artifact this is 45 -
