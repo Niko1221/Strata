@@ -20,7 +20,8 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift|coder|unsloth|qwen36, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S (qwen36: UD-IQ4_XS|UD-IQ3_S),
+Options: --family qwen|swift|coder|unsloth|qwen36|ornith|huihui, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S
+(qwen36: UD-IQ4_XS|UD-IQ3_S; ornith: IQ4_XS|IQ3_XXS; huihui: Q2_K|Q3_K|Q4_K|Q5_K|Q6_K, MTP off),
 --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
@@ -71,6 +72,7 @@ HF_REVISIONS = {
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
     "bartowski/Ornith-1.5-35B-A3B-GGUF": "64b0493d34a5ca4c1b4ad67bb99b41d74b4f07d6",
+    "huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF": "acd5abe0c5ebd064f3863ca7d4bba2d924ec6544",
 }
 
 
@@ -271,6 +273,28 @@ MODELS = {
                            # 15,340,447,392 bytes; experts 12.38 GiB = 13.3 GB (measured)
                            "download_gb": 15.3, "ram_gb": 24, "arena_gb": 13.3, "families": ("ornith",),
                            "engine": QWEN36_ENGINE},
+    # Huihui's abliterated Qwen3.6 (family "huihui"): single-file K-quants, largest first (small_size).
+    # Q4_K's arena: 19,505,610,752 bytes = 18.16 GiB in the existing Windows / RTX 3080 runtime proof.
+    # The other arenas are conservative estimates: the entire GGUF size rounded UP to 0.1 GB, not measurements.
+    # RAM lines leave the same 10 GB beside the arena as low_ram_needed (Qwen3.6 / Ornith), rounded up.
+    # Q8_0 and F16 are not offered: larger, untested files outside this small-PC setup menu.
+    "Huihui-Qwen3.6-Q6_K": {"size": "Q6_K", "about": "6-bit K-quant (Huihui); RAM estimate, not measured",
+                            "download_gb": 29.2, "ram_gb": 40, "arena_gb": 29.3, "families": ("huihui",),
+                            "engine": QWEN36_ENGINE},
+    "Huihui-Qwen3.6-Q5_K": {"size": "Q5_K", "about": "5-bit K-quant (Huihui); RAM estimate, not measured",
+                            "download_gb": 25.3, "ram_gb": 36, "arena_gb": 25.4, "families": ("huihui",),
+                            "engine": QWEN36_ENGINE},
+    "Huihui-Qwen3.6-Q4_K": {"size": "Q4_K", "about": "4-bit K-quant (Huihui), ~18.2 GiB of experts (measured); "
+                                                  "the setup estimate fits a 32 GB PC",
+                            "download_gb": 21.7, "ram_gb": 30, "arena_gb": 19.5, "families": ("huihui",),
+                            "engine": QWEN36_ENGINE},
+    "Huihui-Qwen3.6-Q3_K": {"size": "Q3_K", "about": "3-bit K-quant (Huihui); RAM estimate, not measured",
+                            "download_gb": 17.2, "ram_gb": 28, "arena_gb": 17.2, "families": ("huihui",),
+                            "engine": QWEN36_ENGINE},
+    "Huihui-Qwen3.6-Q2_K": {"size": "Q2_K", "about": "2-bit K-quant (Huihui), the smallest download; "
+                                                  "RAM estimate, not measured",
+                            "download_gb": 13.2, "ram_gb": 24, "arena_gb": 13.3, "families": ("huihui",),
+                            "engine": QWEN36_ENGINE},
 }
 # Qwen3.6-35B-A3B's two files at the pinned revision: name -> (bytes, sha256), checked after the download
 QWEN36_FILES = {
@@ -281,6 +305,14 @@ QWEN36_FILES = {
 ORNITH_FILES = {
     "Ornith-1.5-35B-A3B-IQ4_XS.gguf": (19278554784, "d6aef57fa948e9bba3ca4959b3c237ed898c605471f48c73a32cedbd24aabe70"),
     "Ornith-1.5-35B-A3B-IQ3_XXS.gguf": (15340447392, "8918ccb9ee29abe3875efec0c3e86f0e35ef0b8a03e3f0e1c422869859a518d0"),
+}
+# Huihui's offered single-file GGUFs at the pinned revision: name -> (bytes, LFS sha256)
+HUIHUI_FILES = {
+    "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q2_K.gguf": (13246129376, "85f446fff19406aa81bd8333433fa11921038ba1b80523c2432d82623b73fb73"),
+    "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q3_K.gguf": (17165606112, "a2b82acc9d3e0f1de711cac93deaebc6f07ee999ab82a400ef0dd8d8ca97338f"),
+    "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf": (21712409824, "63b75afb4b68fc61059c78115b580037074de88146e0762f4a496081e410cf81"),
+    "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q5_K.gguf": (25346479328, "01a919f50fdffb78713423f5883709808bc0672f257f5b9627c98181723fb45b"),
+    "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q6_K.gguf": (29207678176, "06aa67c944362aff75878ba732b18054485c3a1c89b7085796cfde5ad3c5041a"),
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -348,6 +380,20 @@ FAMILIES = {
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+    # Huihui's abliterated Qwen3.6: the same qwen35moe engine, pack and expert profile.  The repository also has
+    # mmproj-model-f16.gguf, but this architecture's vision path is not wired in yet.  Its quantized nextn projection
+    # cannot serve as the draft (BF16/F32 required): no --mtp and no fallback to Flash-Next's separate draft.
+    "huihui": {"title": "Huihui Qwen3.6 abliterated (35B-A3B)", "by": "huihui-ai's abliterated Qwen3.6",
+               "about": "Q2_K-Q6_K single-file GGUFs (13-29 GB downloads); MTP off, no images yet",
+               "hf": hf("huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF"),
+               "file": "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-{q}.gguf", "shards": 1, "tag": "huihui-",
+               "mmproj_hf": hf("huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF"), "mmproj": None,
+               "name": "huihui-qwen3.6-35b-a3b-abliterated", "vision": False,
+               "pack_args": ["--compat-bf16"], "sha256": HUIHUI_FILES, "profile": "expert-profile-qwen36.bin",
+               "architecture": "qwen35moe", "own_mtp": False, "mtp": False,
+               "mtp_note": "MTP is off: these GGUFs' draft projection is quantized, but the engine needs BF16/F32; "
+                           "no separate draft is downloaded.",
+               "ple": False, "one_gpu": True, "nvidia_only": True},
     # Qwen3.6-35B-A3B (general.architecture qwen35moe): one GGUF file, no PLE table (no --ple-gguf), its MTP draft
     # layer inside the file (blk.40: --mtp is the model file, nothing else is fetched), the pack built like Unsloth's
     # (--compat-bf16).  No images yet; one GPU (no layer split yet); its batched prompt path is NVIDIA-only (sm_75+)
@@ -358,7 +404,7 @@ FAMILIES = {
                "tag": "qwen36-", "mmproj_hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "mmproj": None, "name": "qwen3.6-35b-a3b", "vision": False,
                "pack_args": ["--compat-bf16"], "sha256": QWEN36_FILES, "profile": "expert-profile-qwen36.bin",
                "license": "Apache 2.0: https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
-               "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
+               "architecture": "qwen35moe", "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
     # Ornith-1.5-35B-A3B: a fine-tune of the same architecture (agentic coding), the same engine path as qwen36 (its
     # draft layer in the file, no PLE, one GPU, NVIDIA's batched prompt path); the Qwen3.6 expert profile and draft
     # vocabulary apply (the same geometry and tokenizer).
@@ -369,7 +415,7 @@ FAMILIES = {
                "name": "ornith-1.5-35b-a3b", "vision": False,
                "pack_args": ["--compat-bf16"], "sha256": ORNITH_FILES, "profile": "expert-profile-qwen36.bin",
                "license": "MIT: https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B",
-               "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
+               "architecture": "qwen35moe", "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1202,9 +1248,9 @@ FLASH_NEXT_FLOOR_SLACK_GB = 4    # step 1's tolerance under a size's RAM line ("
 
 
 def small_family(family: str) -> bool:
-    """A family of the 35B-A3B models (Qwen3.6-35B-A3B and its fine-tunes: qwen36, ornith) - the model file holds its
-    draft layer ("own_mtp"); the Flash-Next families do not."""
-    return bool(FAMILIES.get(family, {}).get("own_mtp"))
+    """A 35B-A3B family (qwen36, ornith, huihui): qwen35moe, whether or not its draft layer is usable.
+    The architecture, not MTP availability, selects its RAM recommendations and engine support check."""
+    return FAMILIES.get(family, {}).get("architecture") == "qwen35moe"
 
 
 def engine_runs_small(eng: Path) -> bool:
@@ -1601,9 +1647,8 @@ GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|B
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
                    "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only (and Unsloth's "
                    "Qwen3.6-35B-A3B-MTP UD-IQ4_XS and UD-IQ3_S; Ornith-1.5-35B-A3B's IQ4_XS and IQ3_XXS by "
-                   "bartowski): other GGUFs (Unsloth's "
-                   "UD-IQ3_XXS or "
-                   "UD-Q2_K_XL, K-quants) cannot be used")
+                   "bartowski; Huihui-Qwen3.6-35B-A3B-abliterated's Q2_K, Q3_K, Q4_K, Q5_K and Q6_K): other GGUFs "
+                   "(Unsloth's UD-IQ3_XXS or UD-Q2_K_XL, other K-quants) cannot be used through setup")
 
 
 def gguf_unsupported(name: str) -> str | None:
@@ -4437,15 +4482,15 @@ def small_model_vram_note(vram_gb: float) -> str:
             "more it runs with 32K")
 
 
-def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
+def small_card_note(ctx: int, draft_vocab: str | None, mtp: bool = True) -> list[str]:
     """#496: what frees VRAM on a card under 8 GB when the start stops with "no VRAM is left for the expert cache"
-    (the engine already lowers its own reserve on such a card) - a recommendation, setup changes none of it.  (The
-    draft layer stays: the server needs it.)"""
+    (the engine already lowers its own reserve on such a card) - a recommendation, setup changes none of it.
+    A family without usable MTP gets no tip about the draft head."""
     start = "START-HERE.bat --setup" if WIN else "./setup.sh"
     tips = []
     if ctx > 8192:
         tips.append("an 8K context (a smaller KV cache)")
-    if draft_vocab != "en":
+    if mtp and draft_vocab != "en":
         tips.append(f"--draft-vocab en (a draft head of ~{DRAFT_VOCAB_MIB['en']} MiB instead of "
                     f"~{DRAFT_VOCAB_MIB[draft_vocab or 'cjk']})")
     lines = ["If the start stops with \"no VRAM is left for the expert cache\" (the engine's log says how much is "
@@ -4773,8 +4818,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, coder = its "
                                                              "Coder, unsloth = Unsloth's 4-bit files, qwen36 = "
-                                                             "Qwen3.6-35B-A3B (for 16-32 GB of RAM)")
-    ap.add_argument("--model", choices=model_choices())
+                                                             "Qwen3.6-35B-A3B (for 16-32 GB of RAM), ornith = "
+                                                             "Ornith-1.5-35B-A3B, huihui = Huihui's abliterated "
+                                                             "Qwen3.6-35B-A3B (Q2_K-Q6_K, MTP off)")
+    ap.add_argument("--model", choices=model_choices(), help="this family's published size name (huihui: Q2_K, "
+                                                            "Q3_K, Q4_K, Q5_K or Q6_K)")
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4817,8 +4865,8 @@ def main() -> int:
     ap.add_argument("--data-dir", help="where the model files go (~70-120 GB): default Strata-data next to this folder, "
                                        "remembered for every Strata folder on this PC")
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
-    ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
-                                       "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
+    ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with the chosen single file, or "
+                                       "every shard: <name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -5189,7 +5237,9 @@ def main() -> int:
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
     if small_family(family) and 0 < gpu["vram_gb"] < SMALL_MODEL_VRAM_GB:
-        warn(small_model_vram_note(gpu["vram_gb"]))
+        warn(small_model_vram_note(gpu["vram_gb"]) if fam.get("mtp", True) else
+             f"{fam['title']} has not been measured on a {gpu['vram_gb']:.0f} GB card: setup recommends its "
+             "smallest size and an 8K context, but it may not fit")
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()
@@ -5460,8 +5510,9 @@ def main() -> int:
     pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    own_mtp = bool(fam.get("own_mtp"))                # Qwen3.6: the draft layer is in the model file, nothing fetched
-    need = to_fetch + (1 if own_mtp else 2 if mtp_have else 8) + \
+    use_mtp = bool(fam.get("mtp", True))              # Huihui: the quantized draft cannot be used (no fallback fetch)
+    own_mtp = use_mtp and bool(fam.get("own_mtp"))    # Qwen3.6 / Ornith: in the model file, nothing fetched
+    need = to_fetch + (1 if own_mtp or not use_mtp else 2 if mtp_have else 8) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
@@ -5489,8 +5540,8 @@ def main() -> int:
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))
-    if eng is not None and own_mtp and not engine_runs_small(eng):
-        # Qwen3.6 / Ornith: no ready-made engine runs them yet (the published ones predate qwen35moe), so this PC
+    if eng is not None and small_family(family) and not engine_runs_small(eng):
+        # The 35B-A3B families: published engines predate qwen35moe, so this PC
         # compiles the engine from this checkout, as it does for a card the ready-made one has no code for; that
         # engine runs every family.  A ready-made engine that has it is used as is.
         ver = json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("version", "?")
@@ -5518,7 +5569,7 @@ def main() -> int:
     if budget is not None and engine_ver < need_engine:   # checked before the 15-111 GB download
         fail(f"{model} needs engine {'.'.join(map(str, need_engine))} or newer; this one is {meta.get('version')}",
              "update Strata (or compile the engine with --build) and run setup again")
-    if own_mtp and not engine_runs_small(eng):          # e.g. --build of an older checkout; checked before the download
+    if small_family(family) and not engine_runs_small(eng):  # --build of an older checkout; before the download
         fail(f"{fam['title']} {size_of(model)} needs an engine with the qwen35moe support (Strata "
              f"{'.'.join(map(str, QWEN36_ENGINE))} source or newer); this one ({meta.get('version')}) has none",
              "update Strata and run setup again with --build")
@@ -5599,8 +5650,12 @@ def main() -> int:
     mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
     # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
-    draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
-    if own_mtp:
+    draft_vocab = (a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")) if use_mtp else None
+    if not use_mtp:
+        warn(fam.get("mtp_note", "MTP is off for this family: no draft layer is prepared."))
+        if a.draft_vocab:
+            warn("--draft-vocab is not used: this family has no usable MTP draft")
+    elif own_mtp:
         # Qwen3.6-35B-A3B: the draft layer is the model file's own MTP block (blk.40, "nextn") - nothing is fetched
         # or converted; --mtp names the model file and --mtp-draft-vocab the shipped token subset (the same
         # tokenizer as Flash-Next's, so data/'s subsets apply)
@@ -5622,8 +5677,9 @@ def main() -> int:
                 env=env)
         refresh_draft_vocab(rt, draft_vocab or "cjk")
         ok(f"MTP draft layer: {rt}")
-    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
-        say("  " + line)
+    if use_mtp:
+        for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):  # #474: a recommendation, nothing changes
+            say("  " + line)
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -5636,7 +5692,8 @@ def main() -> int:
         if ple is None:
             fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    mtp_args = ["--mtp", str(rt)]
+    mtp_args = ["--mtp", str(rt)] if use_mtp else []
+    # Native packs and the API still need --spec >= 2 without --mtp; the window does not load an MTP draft.
     if own_mtp:                                        # the model file's own draft layer, the chosen token subset
         mtp_args += ["--mtp-draft-vocab", str(ROOT / "data" / DRAFT_VOCABS.get(draft_vocab or "cjk", "draft_vocab.bin"))]
     args = ["--pack", str(pack), "--native", str(shards[0]),
@@ -5771,7 +5828,7 @@ def main() -> int:
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
-        for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
+        for line in small_card_note(ctx, draft_vocab, mtp=use_mtp):  # a recommendation: nothing changes
             say("  " + line)
     elif hip and a.vram_reserve_mib is None and linux_desktop():
         for line in desktop_reserve_note():              # #560 #516: a recommendation: nothing changes

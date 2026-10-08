@@ -9,7 +9,7 @@ shared expert - but 40 layers of 256 experts instead of 48 of 512, so its expert
 
 > **On this page:** [Setup](#setup) · [What fits](#what-fits) · [Speed](#speed-measured) ·
 > [Small cards](#small-cards) · [Against llama.cpp](#against-llamacpp) · [Ornith-1.5](#ornith-15-35b-a3b) ·
-> [What is different](#what-is-different-from-flash-next) · [Limits](#limits)
+> [Huihui abliterated](#huihui-abliterated) · [What is different](#what-is-different-from-flash-next) · [Limits](#limits)
 
 ## Setup
 
@@ -141,6 +141,36 @@ Its draft layer helps less than Qwen3.6's: with every draft proposed, 61% of the
 APEX-MTP-Compact file) did no better, 44% and 29%, and the Q4_0 kernels give llama.cpp's results (`iq_parity`), so the
 difference is the draft layer itself, which the fine-tune did not retrain. The answers are the main model's either way: greedy decoding gives llama.cpp b11438's tokens except where
 3-bit rounding moves a close choice (IQ3_XXS: one difference seen, at a token llama.cpp gave 0.73 and Strata 0.63).
+
+## Huihui abliterated
+
+[Huihui-Qwen3.6-35B-A3B-abliterated](https://huggingface.co/huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF)
+is huihui-ai's abliterated variant of Qwen3.6-35B-A3B. It uses the same `qwen35moe` engine path, native pack and
+Qwen3.6 expert profile, on one GPU, without images yet (the repository's `mmproj-model-f16.gguf` is not used).
+
+```
+./setup.sh --setup --family huihui --model Q4_K         (Linux)
+START-HERE.bat --setup --family huihui --model Q4_K     (Windows)
+```
+
+| Size | Download (GB) | RAM it asks for (estimate) |
+| --- | ---: | ---: |
+| Q2_K | 13.2 | 24 GB |
+| Q3_K | 17.2 | 28 GB |
+| **Q4_K** (the file with runtime proof here) | 21.7 | 30 GB |
+| Q5_K | 25.3 | 36 GB |
+| Q6_K | 29.2 | 40 GB |
+
+These are single files, pinned by revision, byte count and SHA-256. Setup picks the largest that fits its RAM rule
+(Q4_K on a 32 GB PC, Q2_K on a 24 GB PC); an explicit `--model` keeps your choice. Q4_K's expert arena was 18.16 GiB
+(~19.5 GB) in the Windows / RTX 3080 runtime proof. The other sizes have not been run here: their RAM estimates
+conservatively use the entire GGUF size, plus the same 10 GB of RAM headroom as Qwen3.6. Q8_0 (37.8 GB) and f16
+(71.1 GB) are published too, but are not offered in this small-PC setup menu.
+
+**MTP is off for this family.** Despite the repository's `MTP-GGUF` name, these quantized files' draft projection
+cannot be used: the engine needs BF16/F32. Setup writes no `--mtp` or draft-vocabulary flag and fetches no separate
+draft. It still writes `--spec 4`, because the native-pack/API path requires a verify window even without MTP.
+This family is opt-in: Qwen3.6 remains the automatic suggestion for a PC whose RAM does not fit Flash-Next.
 
 ## What is different from Flash-Next
 
