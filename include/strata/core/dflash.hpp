@@ -112,6 +112,7 @@ public:
     /// The device bytes this drafter holds right now: the BF16 weights, the widened norm vectors,
     /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
     /// embedding table and native head are the target's and are not in here.  0 before upload().
+    bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
     uint64_t vram_bytes() const { return vram_; }
 
     /// Uploads the BF16 weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
@@ -179,6 +180,7 @@ private:
 
     // the target's shared modules
     const NativeHead* head_ = nullptr;
+    NativeHead* owned_head_ = nullptr;
     const WeightRef* emb_ref_ = nullptr;
 
     // weights (device BF16, the GGUF layout) and the rms_norm gammas widened to F32
