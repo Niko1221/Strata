@@ -48,7 +48,7 @@ run the same command again: it continues where it stopped. Q2_0 and IQ3_S (`make
 |---|---|
 | run in the background | `make start`, then `make status` / `make stop` (log: `strata-run.log`) |
 | send one test message | `make chat PROMPT="Write a haiku"` |
-| cap the thinking | `make chat PROMPT="..." EFFORT=high MAX_TOKENS=32768 REASONING_BUDGET=4096` (then it must answer) |
+| cap the thinking | `make chat PROMPT="..." EFFORT=high MAX_TOKENS=32768 REASONING_BUDGET=4096` (then it must answer); in the web chat: Sampling > Thinking budget |
 | use another port | `make run PORT=8090`, or put `PORT := 8090` in a file named `Makefile.local` |
 | use a bigger context window | `make run CONTEXT=131072` (up to 262,144; it stays set, and needs more memory) |
 | download without questions | `make pull MODEL=Q2_0 SETUP_ARGS="--yes"` |
@@ -106,6 +106,8 @@ thumb: 8-16 GB): set too high, the whole Mac can slow down or stop responding un
 | Conversation reuse | yes: a follow-up reads only what is new |
 | Pictures | yes: `strata-vision` runs on Metal |
 | MTP draft layer | opt-in: `--mtp on` |
+| GPT-OSS 120B (OpenAI's harmony format) | yes, set up by hand: see [GPT-OSS 120B](#gpt-oss-120b) |
+| EAGLE3 draft model (`--eagle3`) | opt-in engine flag, off: slower than no draft on GPT-OSS ([below](#eagle3-draft-model---eagle3)) |
 | Several requests at once (`"parallel"`) | opt-in, the same as on a PC |
 | Monitor tab | GPU load, memory and power, the chip's temperature (its die sensors), CPU, RAM; PCIe shows "n/a" (an integrated GPU has no PCIe link) |
 | Expert cache, CPU experts, rope scaling, Intel Macs | no |
@@ -117,6 +119,59 @@ the original checkpoint: it downloads the 31 MTP tensors (5 GB, SHA-256 checked)
 and llama.cpp's converter makes a 4.1 GB file of them. The converter needs PyTorch, so setup installs it once into
 `.venv-mtp` (about 730 MB). llama.cpp pins numpy 2.2.6, which converts this head wrongly (no error, but no draft is ever
 accepted), so setup uses numpy 2.4.0 and checks the result against a known SHA-256.
+
+### GPT-OSS 120B
+
+OpenAI's [gpt-oss-120b](https://huggingface.co/ggml-org/gpt-oss-120b-GGUF) (117B parameters, about 5B active per token,
+MXFP4) runs in Strata on the same engine. Setup does not install it; by hand:
+
+```sh
+D=../Strata-data/models/gpt-oss-120b; mkdir -p $D
+aria2c -x16 -s16 -c -d $D \
+  "https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/238abdd290bb874b90a5da1b4549881b7d05c091/gpt-oss-120b-MXFP4.gguf" \
+  --checksum=sha-256=582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d          # 63.4 GB
+.venv/bin/python tools/strata_tokenizer.py --gguf $D/gpt-oss-120b-MXFP4.gguf --out ../Strata-data/packs/gpt-oss-120b
+```
+
+Then a run config like `strata-<model>.json` with `"args": ["--gguf", "<that file>", "--max-context", "131072", "--kv",
+"f16"]`, `"tokenizer": "<the pack>/tokenizer"`, `"backend": "metal"` and OpenAI's suggested sampling `"sampling":
+{"temperature": 1.0, "top_p": 1.0}`, and `serve/server.py --engine strata --config <it> --port 8090`.
+
+What Strata does for it: its tokenizer (`pre` = `gpt-4o`, OpenAI's o200k) matched `openai/gpt-oss-120b`'s own
+tokenizer on 2,178 strings (87,702 tokens, 0 differences); the server reads its replies in OpenAI's harmony format (the
+`analysis` channel is the thinking, `final` the answer, a message `to=functions.NAME` a tool call) and closes the
+thinking the harmony way when a thinking budget runs out; the engine keeps its conversation checkpoints at `<|start|>`.
+
+| Measured on the test Mac, 2026-10-08 | |
+|---|---|
+| Answers, a 40-token thinking budget, a tool call and its result (OpenAI API) | correct |
+| Decode, short answers, just after loading | 99-105 tok/s |
+| Decode, 256-token answers, minutes later (GPU at ~990 MHz, see [Why the speed changes](#why-the-speed-changes)) | 20-33 tok/s |
+| A follow-up that shares the start of the conversation | read only its new part (125 of 167 prompt tokens reused) |
+| Memory | the 63 GB file, plus the context's cache |
+
+Limits: GPT-OSS always thinks, so "Off" in the chat's Thinking setting means its low effort. A `tool_choice` that names a
+tool is not forced (the model chooses); its template writes one tool call per message. The web chat's own defaults
+(temperature 0.6, top-k 20) are Qwen's: set temperature 1.0 and top-p 1.0 there for GPT-OSS. Only the `qwen35` and
+`gpt-4o` tokenizers are known to Strata; another model's pack is refused rather than tokenized wrongly.
+
+### EAGLE3 draft model (`--eagle3`)
+
+`strata-metal --eagle3 <gguf> --spec N` drafts with an EAGLE3 model (it reads 3 of the target's layers) instead of an MTP
+head; llama.cpp drives both the same way. It is off: on GPT-OSS with
+[eagle3-gpt-oss-120b-Q8_0.gguf](https://huggingface.co/ggml-org/gpt-oss-120b-GGUF) (849 MB) it was slower than no draft.
+`metal/bench/ab.py`, 4 alternating rounds, 3 prompts, 256 tokens, greedy:
+
+| | No draft | `--eagle3 --spec 3` |
+|---|---:|---:|
+| Decode, median of the per-run medians | 31.5 tok/s | 23.2 tok/s (0.74x, slower in 10 of 12 runs) |
+| Drafts accepted | | 34-52% |
+
+Likely why: this EAGLE3 file keeps the full 201K-token output layer (no reduced draft vocabulary), and checking 4 tokens of
+a mixture-of-experts model reads up to 4 tokens' worth of experts. On the 3,676-token prompt the greedy answer also differed
+from the one without a draft (the 4-token check rounds differently). With EAGLE3 the engine rolls back one cell more than a
+checkpoint holds: llama.cpp keeps EAGLE3's one-cell lag in a checkpoint only for a recurrent model, and without it the
+draft would skip a position (`metal/strata_metal.cpp`, `rollback`).
 
 ## Measured
 

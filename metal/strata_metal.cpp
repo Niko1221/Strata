@@ -119,6 +119,7 @@ bool next_line(std::string& s, bool wait = true) {
 llama_token g_image_pad = 248056;   // qwen4exp.ple.image_token_id; --image-pad-id for another model (the tests)
 struct Options {
     std::string gguf, mtp;
+    std::string eagle3;                                // --eagle3 <gguf>: an EAGLE3 draft model instead of --mtp
     int64_t max_context = 32768;
     std::string kv = "int8";
     std::vector<llama_token> eos = {248044, 248046};   // <|endoftext|>, <|im_end|>: the CUDA engine's --eos-ids
@@ -153,6 +154,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         if (a == "--serve") continue;
         else if (a == "--gguf") o.gguf = val("--gguf");
         else if (a == "--mtp") o.mtp = val("--mtp");
+        else if (a == "--eagle3") o.eagle3 = val("--eagle3");
         else if (a == "--spec") o.spec = std::atoi(val("--spec"));
         else if (a == "--batch" || a == "--slots") o.batch = std::max(0, std::min(16, std::atoi(val("--batch"))));
         else if (a == "--max-context") o.max_context = std::atoll(val("--max-context"));
@@ -172,6 +174,7 @@ bool parse_args(int argc, char** argv, Options& o) {
     }
     if (o.gguf.empty()) { std::fprintf(stderr, "strata-metal: --gguf <the model's first GGUF shard> is required\n"); return false; }
     if (o.max_context < 512) { std::fprintf(stderr, "strata-metal: --max-context must be 512 or more\n"); return false; }
+    if (!o.mtp.empty() && !o.eagle3.empty()) { std::fprintf(stderr, "strata-metal: --mtp or --eagle3, not both\n"); return false; }
     if (o.spec < 1 || o.spec > 16) { std::fprintf(stderr, "strata-metal: --spec takes 1 to 16 drafted tokens\n"); return false; }
     if (o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4" && o.kv != "f16") {
         std::fprintf(stderr, "strata-metal: --kv takes int8, q4_0, k8v4 or f16\n");
@@ -326,9 +329,12 @@ struct Engine {
         postprocess_cpu_params(p.cpuparams_batch, &p.cpuparams);
         postprocess_cpu_params(p.speculative.draft.cpuparams, &p.cpuparams);
         postprocess_cpu_params(p.speculative.draft.cpuparams_batch, &p.cpuparams_batch);
-        if (!o.mtp.empty()) {
-            p.speculative.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
-            p.speculative.draft.mparams.path = o.mtp;
+        const std::string& draft_path = o.mtp.empty() ? o.eagle3 : o.mtp;
+        if (!draft_path.empty()) {
+            // the draft: the model's MTP head, or an EAGLE3 model (it reads 3 of the target's layers; llama.cpp's
+            // common_speculative drives both through the same begin / process / draft / accept calls)
+            p.speculative.types = {o.mtp.empty() ? COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 : COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
+            p.speculative.draft.mparams.path = draft_path;
             p.speculative.draft.n_max = o.spec;
             p.speculative.draft.n_gpu_layers = 999;
             p.speculative.draft.cache_type_k = p.cache_type_k;
@@ -344,15 +350,15 @@ struct Engine {
         if (!ctx) { err = "could not create the context (too long a --max-context for this Mac's memory?)"; return false; }
         vocab = llama_model_get_vocab(model);
         n_embd = llama_model_n_embd(model);
-        if (!o.mtp.empty()) {
+        if (!draft_path.empty()) {
             common_params pd = common_base_params_to_speculative(p);
             spec_init = common_speculative_init_from_params(pd, model, ctx);
             ctx_dft = spec_init ? spec_init->context() : nullptr;
-            if (!ctx_dft) { err = "could not load the MTP draft head " + o.mtp; return false; }
+            if (!ctx_dft) { err = "could not load the draft model " + draft_path; return false; }
             p.speculative.draft.ctx_tgt = ctx;
             p.speculative.draft.ctx_dft = ctx_dft;
             spec = common_speculative_init(p.speculative, 1);   // the solo path's sequence (0) drafts
-            if (!spec) { err = "could not start speculative decoding with " + o.mtp; return false; }
+            if (!spec) { err = "could not start speculative decoding with " + draft_path; return false; }
         }
         seqs.resize((size_t) p.n_parallel);
         slots.resize((size_t) o.batch);
@@ -402,9 +408,18 @@ struct Engine {
                      llama_memory_seq_rm(llama_get_memory(ctx_dft), 0, c.pos, -1);
                 if (ok && !c.spec.empty()) common_speculative_set_state(spec, 0, c.spec);
             }
+            // EAGLE3's draft context lags one cell (its last pair waits for the next token), and llama.cpp keeps that
+            // boundary in a checkpoint only for a recurrent target: for another (GPT-OSS) the restored draft would
+            // jump a position.  One cell less of both, read again, gives EAGLE3 the boundary from fresh features.
+            size_t n = c.n;
+            if (ok && sq == 0 && !o.eagle3.empty() && c.spec.empty() && n > 0) {
+                ok = llama_memory_seq_rm(mem(), sq, c.pos - 1, -1) &&
+                     llama_memory_seq_rm(llama_get_memory(ctx_dft), 0, c.pos - 1, -1);
+                --n;
+            }
             if (ok) {
-                S.live.resize(c.n);
-                S.keys.resize(c.n);
+                S.live.resize(n);
+                S.keys.resize(n);
                 return;
             }
             std::fprintf(stderr, "strata-metal: checkpoint at %zu could not be restored; reading the prompt again\n", c.n);
@@ -455,7 +470,7 @@ struct Engine {
             const int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
             if (rc != 0) { err = "llama_process failed (" + std::to_string(rc) + ")"; return false; }
             if (spec && sq == 0 && drafter && !common_speculative_process(spec, batch)) {
-                err = "the MTP drafter could not follow the batch";
+                err = "the draft model could not follow the batch";
                 return false;
             }
             S.live.insert(S.live.end(), P.ids.begin() + (long) s, P.ids.begin() + (long) e);
