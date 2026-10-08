@@ -220,26 +220,32 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // must not share them (a shared pool made every layer attend layer 0's K/V).
     if (pool_g_.n_qsa_layers() != dg.layers)
         return bail("dflash: the pool geometry does not give one state per draft layer");
+    // The attention capacity decides the pools' depth too: the drafter never reads or writes a
+    // cell at or past cap_, so cells past it would only be allocated to rot.  The window (default
+    // 32768) is what keeps the five FP16 pools affordable (32768 cells x 20 KiB = 640 MiB); at the
+    // session's full max_cells a long-context session would ask for many GiB of drafter K/V alone.
+    window_ = (window > 0 && window < max_cells) ? window : 0;
+    cap_ = std::min<int64_t>(((window_ > 0 ? window_ : max_cells) + 63) / 64 * 64, max_cells);
     // The allocation policy is EXPLICIT, not the session's: whole-resident FP16 pools carved from
     // this drafter's own arena, no ring, no streaming host copy, no elastic VMM.  qsa_state_bytes
     // and qsa_state_init consume the same options, so the arena holds every logical page the
     // identity page table names (n_slots == n_pages) - the runtime never repairs a state that a
-    // different policy has already carved.  `window` caps only the attention's capacity below; the
-    // pools always hold the session's full max_cells.
+    // different policy has already carved.  ring = -1 is what kv_plan reads as "always fully
+    // resident": disable_streaming only kills the ring and would leave the session's --kv-resident
+    // cap to hand back a mode-1 (streamed) state the ownership invariant refuses.
     strata::core::QsaStateInitOptions kv_opts;
     kv_opts.force_owned_kv = true;
     kv_opts.force_f16_kv = true;
-    kv_opts.disable_streaming = true;
     kv_opts.disable_elastic = true;
-    const int64_t ring = 0;
+    const int64_t ring = -1;
     const auto pool_shapes = strata::core::shapes_of(pool_g_);
-    const uint64_t sb = strata::core::qsa_state_bytes(pool_g_, max_cells, false, ring, kv_opts);
+    const uint64_t sb = strata::core::qsa_state_bytes(pool_g_, cap_, false, ring, kv_opts);
     st_.assign((size_t) dg.layers, QsaState{});
     arenas_.assign((size_t) dg.layers, nullptr);
     for (int l = 0; l < (int) dg.layers; ++l) {
         if (cudaMalloc(&arenas_[(size_t) l], sb) != cudaSuccess)
-            return bail("dflash: the draft K/V states do not fit in VRAM");
-        if (strata::core::qsa_state_init(pool_g_, max_cells, arenas_[(size_t) l], st_[(size_t) l],
+            return bail("dflash: the draft K/V states do not fit in VRAM (lower --dflash-window)");
+        if (strata::core::qsa_state_init(pool_g_, cap_, arenas_[(size_t) l], st_[(size_t) l],
                                          &ss.qsa_states[ss.qsa_primary()], ring, kv_opts) == 0)
             return bail("dflash: the draft K/V state init failed");
         {
@@ -302,8 +308,6 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // ---- buffers: at most 8 rows ride through the forward at once
     max_rows_ = 8;
     pos_kv_off_ = max_rows_ * dg.n_head;   // the KV positions' region starts after the q region
-    window_ = (window > 0 && window < max_cells) ? window : 0;
-    cap_ = (((window_ > 0 ? window_ : max_cells) + 63) / 64) * 64;
     shapes_ = strata::core::shapes_of(pool_g_);
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, shapes_);
     const int64_t R = max_rows_, N = dg.hidden, F = dg.fusion_in(), I = dg.intermediate;
@@ -455,6 +459,13 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, F = dg.fusion_in(), KVW = dg.n_head_kv * dg.head_dim;
+    // the pools hold exactly the attention window's cells: a context cell past cap_ has no page
+    // (propose() refuses the same bound before its own appends)
+    if (pos0 < 0 || rows < 1 || pos0 + rows > cap_) {
+        err = "dflash: context cells past the window cap (" + std::to_string(pos0 + rows) + " > " +
+              std::to_string(cap_) + ") - raise --dflash-window";
+        return false;
+    }
     auto wp = [&](const char* name) -> const uint16_t* {
         for (auto& [n, p] : wt_)
             if (n == name) return p;
