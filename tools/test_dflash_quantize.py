@@ -52,4 +52,15 @@ class Export(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'truncated'):
                 d.export(truncated, Path(folder)/'bad.gguf', 'Q4_0')
 
+class BF16Conversion(unittest.TestCase):
+    def test_nan_sign_payload_infinities_and_ties(self):
+        from gguf_writer import to_bf16
+        # Signalling/quiet NaNs of both signs must never become infinities.
+        raw = np.array([0x7f800001, 0xff800001, 0x7fc12345, 0xffc12345,
+                        0x7f800000, 0xff800000, 0x00000000, 0x80000000,
+                        0x3f808000, 0x3f818000], dtype='<u4')
+        expected = np.array([0x7fc0, 0xffc0, 0x7fc1, 0xffc1, 0x7f80, 0xff80,
+                             0, 0x8000, 0x3f80, 0x3f82], dtype='<u2')
+        np.testing.assert_array_equal(to_bf16(raw.view('<f4')), expected)
+
 if __name__ == '__main__': unittest.main()

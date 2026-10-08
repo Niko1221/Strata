@@ -156,12 +156,19 @@ class DrafterChoice(unittest.TestCase):
                 self.assertTrue(output.is_file())
                 self.assertEqual(setup.prepare_dflash(data, [data], str(original), "q5", {}), output)
                 self.assertEqual(run.call_count, 1)
-                output.write_bytes(output.read_bytes()[:-32])
+                # A readable but wrong tensor directory must also invalidate the cache.
+                w = GGUFWriter(); w.add("general.architecture", "dflash")
+                w.add("strata.dflash.source_sha256", hashlib.sha256(original.read_bytes()).hexdigest())
+                w.add("strata.dflash.quantization", "Q5_0")
+                w.add_bf16("wrong-norm.weight", np.ones((2560,), np.float32), shape=[2560]); w.write(output)
                 setup.prepare_dflash(data, [data], str(original), "q5", {})
                 self.assertEqual(run.call_count, 2)
-                output.write_bytes(b"broken cached GGUF")
+                output.write_bytes(output.read_bytes()[:-32])
                 setup.prepare_dflash(data, [data], str(original), "q5", {})
                 self.assertEqual(run.call_count, 3)
+                output.write_bytes(b"broken cached GGUF")
+                setup.prepare_dflash(data, [data], str(original), "q5", {})
+                self.assertEqual(run.call_count, 4)
 
     def test_pinned_download_and_checkpoint_hash(self):
         with tempfile.TemporaryDirectory() as folder:
