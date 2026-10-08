@@ -1,0 +1,35 @@
+{
+ "args": [
+  "--pack",
+  "<data-dir>\\packs\\iq2_xs",
+  "--native",
+  "<data-dir>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<data-dir>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+  "--expert-profile",
+  "<repo>\\data\\expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "768",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<data-dir>\\mtp\\rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "k8v4",
+  "--kv-resident",
+  "20480",
+  "--conversation-cache-mib",
+  "4096",
+  "--conversation-cache-slots",
+  "4"
+ ],
+ "env": {
+  "STRATA_PREFILL_STREAM_MIN": "512"
+ }
+}
