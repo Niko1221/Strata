@@ -728,6 +728,36 @@ the display-class registry's 64-bit VRAM size, which is the true VRAM (WMI's `Ad
 `setup --check` names it. The Monitor tab reads the name and VRAM from the same detection; util, temperature and
 power are not read yet.
 
+**How much context this card takes, measured.** All experts resident (12,288 slots, 23.42 GiB), so the KV cache has
+what the card has left; `--kv-resident` is the only variable. 16,386-token prompt, 128 greedy tokens after it,
+medians of three interleaved runs, INT8 KV:
+
+| `--kv-resident` | KV cache streams? | prompt reading | decode after it |
+|---|---|---|---|
+| 32,768 | yes, above 32,768 | 178.4 tok/s | 40.7 tok/s |
+| 65,536 | yes, above 65,536 | 178.6 | 42.1 |
+| **131,072** | **no - it all fits** | **181.6** | 41.2 |
+| 196,608 | - | **never finished (>25 min)** | - |
+
+Two results, both against expectation. **Within the range that works, the resident KV is nearly free**: the expert
+cache is 12,288 slots / 23.42 GiB in every run and the prompt borrows almost the same slots throughout (1,036, 1,036,
+969), so it is not being squeezed, and decode does not fall off as the reservation grows (40.7 / 42.1 / 41.2 is inside
+the run-to-run noise, individual runs 39.2-45.9). The "about 3.6 GiB of VRAM to context costs ~6% of decode" note above
+is therefore not the rule here: the expert pool is sized from the *free* VRAM, so the KV is what gets what is left
+rather than the other way round. A 128K cache on this card is close to free, and it is worth setting
+`--kv-resident` to the context rather than leaving it at 32,768.
+
+**Past the ceiling the prompt does not merely slow down, it stops.** At 196,608 the prefill ran past 25 minutes
+without finishing, with the Windows GPU counters showing the card at **100% and 30.83 of 32.00 GiB dedicated memory in
+use** (system RAM unremarkable), the log stopped at the plain-SYCL prompt GEMM's banner, and the expert cache still
+fully resident. Same shape as the prompt collapse in #1549, reached by over-reserving the KV instead of by not fitting
+the experts - so 131,072 is this card's ceiling for `--kv-resident` on this backend, and both collapses are reported
+there as one problem.
+
+Two more numbers for planning agentic work here, both from this sweep: prompt reading is much faster than the 2,048-token
+figures elsewhere in this file (178-186 tok/s against 74.7 at 2,048 tokens - a short prompt is the worst case for it),
+and decode after a 16,386-token prompt is 40.7-42.1 tok/s against 43.6 at 2,048.
+
 **The Monitor tab reads this card through the OS's own counters.** xe exposes nothing on Windows - no sysfs, no
 user-mode Level Zero adapter - so the reader (`sycl/serve/xe_telemetry.py`) takes load and VRAM-in-use from the PDH
 counters Windows keeps for every WDDM adapter, `GPU Engine` (per process, per engine, summed per card as Task Manager
