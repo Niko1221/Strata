@@ -109,10 +109,11 @@ public:
     const DFlashArtifact& artifact() const { return artifact_; }
     /// Maximum candidates this artifact may propose per pass (its trained query count).
     int max_block() const { return (int) artifact_.geom().block_size; }
+    bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
     /// The device bytes this drafter holds right now: the BF16 weights, the widened norm vectors,
     /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
-    /// embedding table and native head are the target's and are not in here.  0 before upload().
-    bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
+    /// embedding table and shared native head are not counted. An optional draft-owned head
+    /// and its activation scratch are counted. 0 before upload().
     uint64_t vram_bytes() const { return vram_; }
 
     /// Uploads the BF16 weights and carves the drafter's own K/V pools and scratch.  Call BEFORE

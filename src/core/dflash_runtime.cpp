@@ -454,7 +454,7 @@ bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
     const DFlashGeometry& dg = artifact_.geom();
     auto candidate = std::make_unique<NativeHead>();
     if (!candidate->load({path}, dg.hidden, dg.vocab, err)) return false;
-    vram_ += candidate->weight_bytes();
+    vram_ += candidate->weight_bytes() + strata::kernels::native_q8_1_bytes((int) dg.hidden, 1);
     std::fprintf(stderr, "dflash: draft-only head %s, type %d, +%.1f MiB weights; verifier head unchanged\n",
                  path.c_str(), candidate->type(), candidate->weight_bytes() / 1048576.0);
     owned_head_ = candidate.release();
