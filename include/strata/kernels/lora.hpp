@@ -67,7 +67,8 @@ uint64_t lora_device_bytes(const std::vector<LoraLayerHost>& layers);
 
 /// y[t * ldy + o] += s B (A x[t * ldx + :]) for t < n, o < n_out, gated by the device flag (off: nothing written).
 /// No-op for a layer the adapter does not cover.  ldx / ldy 0 = dense rows.  Capturable for n <= kLoraCaptureTokens
-/// (two kernels per 8 tokens through the layer's own scratch, no host sync); a longer eager call runs two tiled
+/// (two kernels per 8 tokens through the layer's own scratch, the second a programmatic dependent launch where
+/// the device has it; no host sync); a longer eager call runs two tiled
 /// products through a per-stream scratch grown on demand.
 void lora_apply(int64_t layer, const float* x, int64_t ldx, int64_t n, float* y, int64_t ldy, void* stream);
 /// The same with x as FP16 bits (the prompt path's gated attention, `attn_h`).

@@ -1,9 +1,9 @@
 // src/kernels/cuda/lora.cu - see include/strata/kernels/lora.hpp.
 //
 // Two paths for y += B (A x), both reading the request flag on the device:
-//   * small (n <= SMALL_N tokens per launch, the decode and verify windows): ONE kernel, no scratch.  Every block
-//     computes the whole h = A x (rank x n, in shared memory) and then its own slice of the n_out outputs; the
-//     redundant A x is a few MB of L2 reads, cheaper than a second launch plus a scratch keyed by stream.
+//   * small (n <= SMALL_N tokens per launch, the decode and verify windows): h = A x, then y += B h, two kernels
+//     through the layer's own h.  The second is a programmatic dependent launch: it starts while the first runs and
+//     loads its column of B before it waits for h.
 //   * tiled (the prompt path, eager): h = X A^T and y += h B^T as two tiled fp32 GEMMs through a per-device scratch.
 #include "strata/kernels/lora.hpp"
 
@@ -144,12 +144,68 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_kernel(const float* __rest
     for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += acc[t];
 }
 
+// The up kernel when B fits in registers (rank <= PDL_RANK) and the device has programmatic dependent launch: the
+// same sums as lora_up_kernel, but the B column is loaded before cudaGridDependencySynchronize, while the down kernel
+// still runs.  The flag is read first, so an off request loads nothing (the host only writes it between syncs).
+#if defined(__HIPCC__)
+constexpr bool kPdl = false;
+#else
+constexpr bool kPdl = true;
+#endif
+constexpr int PDL_RANK = 64;
+template <int NT>
+__global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __restrict__ bt, const float* h,
+                                                                 float* __restrict__ y, int64_t ldy, int rank, int n_out,
+                                                                 const int* __restrict__ on) {
+    if (*on == 0) return;
+    extern __shared__ float hs[];   // NT x rank
+    const int o = blockIdx.x * UP_THREADS + threadIdx.x;
+    float bv[PDL_RANK];
+#pragma unroll
+    for (int r = 0; r < PDL_RANK; ++r) bv[r] = (r < rank && o < n_out) ? __ldg(bt + (int64_t) r * n_out + o) : 0.0f;
+#if !defined(__HIPCC__) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    cudaGridDependencySynchronize();   // h written and visible; before sm_90 the launch is an ordinary one
+#endif
+    for (int i = threadIdx.x; i < NT * rank; i += UP_THREADS) hs[i] = __ldcg(h + i);
+    __syncthreads();
+    if (o >= n_out) return;
+    float acc[NT];
+#pragma unroll
+    for (int t = 0; t < NT; ++t) acc[t] = 0.0f;
+#pragma unroll
+    for (int r = 0; r < PDL_RANK; ++r) {
+        if (r < rank) {
+#pragma unroll
+            for (int t = 0; t < NT; ++t) acc[t] = fmaf(bv[r], hs[t * rank + r], acc[t]);
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += acc[t];
+}
+
 template <typename XT, int NT>
 void launch_small(const float* a, const float* bt, float* h, const XT* x, int64_t ldx, float* y, int64_t ldy, int rank,
                   int n_in, int n_out, const int* on, cudaStream_t s) {
     lora_down_kernel<XT, NT><<<(unsigned) rank, DOWN_THREADS, 0, s>>>(a, x, ldx, h, rank, n_in, on);
-    lora_up_kernel<NT><<<(unsigned) ((n_out + UP_THREADS - 1) / UP_THREADS), UP_THREADS, (size_t) NT * rank * sizeof(float),
-                         s>>>(bt, h, y, ldy, rank, n_out, on);
+    const unsigned up_blocks = (unsigned) ((n_out + UP_THREADS - 1) / UP_THREADS);
+    const size_t up_smem = (size_t) NT * rank * sizeof(float);
+#if !defined(__HIPCC__)
+    if (kPdl && rank <= PDL_RANK) {
+        cudaLaunchAttribute attr[1] = {};
+        attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        attr[0].val.programmaticStreamSerializationAllowed = 1;
+        cudaLaunchConfig_t cfg = {};
+        cfg.gridDim = dim3(up_blocks);
+        cfg.blockDim = dim3(UP_THREADS);
+        cfg.dynamicSmemBytes = up_smem;
+        cfg.stream = s;
+        cfg.attrs = attr;
+        cfg.numAttrs = 1;
+        cudaLaunchKernelEx(&cfg, lora_up_pdl_kernel<NT>, bt, (const float*) h, y, ldy, rank, n_out, on);
+        return;
+    }
+#endif
+    lora_up_kernel<NT><<<up_blocks, UP_THREADS, up_smem, s>>>(bt, h, y, ldy, rank, n_out, on);
 }
 
 // C[T, N] (=, or += with `add`) X[T, K] . W, W given as [N, K] (w_nk) or [K, N] row-major, all fp32 but X.
