@@ -3895,6 +3895,9 @@ int main(int argc, char** argv) {
         // the groups it would run with (the default gives way to it: one group; a number or auto given pipelines)
         if (why == nullptr && !stages.empty() && batch_groups_for(true).groups > 1)
             why = "it does not combine with --batch-groups (pipelined slot groups) yet";
+        // (a layer split with helper-GPU expert caches or --remote-expert-opt has not been run with slot drafters)
+        if (why == nullptr && !stages.empty() && (remote_caches || o.remote_expert_opt))
+            why = "it is not run with helper expert caches on a layer split";
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: WARNING: --batch-mtp is off: %s\n", why);
             batch_mtp = false;

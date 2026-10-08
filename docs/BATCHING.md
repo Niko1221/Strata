@@ -22,19 +22,21 @@ asked, with a note when it is more than setup would recommend.
 With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the server's
 environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch behaviour
 described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so check the
-engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, `--batch-groups`
-with a layer split, a layer split on one GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured
-+31% to +39% total throughput with 2 to 4 clients on one GPU (a RX R9700 run too).
+engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer split with
+`--batch-groups` above 1 or with helper-GPU expert caches or `--remote-expert-opt`, a layer split with two stages on one
+GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total throughput with 2 to 4
+clients on one GPU (a RX R9700 run too).
 
 **With a layer split** (e.g. `"layer_split": "24"` on two GPUs, `"parallel": 2`, `--spec 4 --mtp ...`) it works the
 same way, with the slot drafters on the **last stage's GPU** (where the solo drafter and the head are): each slot gets a
 drafter that shares the solo drafter's weights and owns only its K/V ring and buffers (the engine logs `--batch-mtp: N
 slot drafters on CUDAk (X MiB ... each)` at start; the K/V ring of each also keeps a pinned-RAM copy, as the solo
 drafter's does). A window carries two rows per active slot (its token and its proposal) through every stage, so at most
-four slots are in one window; more slots (`--batch` up to what fits) rotate through. The split keeps `--kv-pool-tokens`
-and `--kv-resident` as without `--batch-mtp`. Not supported with a split: `--batch-groups` (pipelined slot groups; the
-engine turns `--batch-mtp` off and says so). The code does not depend on the number of stages, but the two-stage split
-is the one it was written for.
+four slots are in one window; more slots (`--batch` up to what fits) rotate through. The windows run through the stages
+one after the other (`--batch-groups 1`): on 0.1.41 a layer split with `--batch` 2 or more pipelines the slots in groups
+by default, and the pipelined path does not run the slots' MTP drafts, so with `--batch-mtp` and no `--batch-groups` the
+engine runs one group and says so; `--batch-groups G` (G above 1) or `--batch-groups auto` given on the command line
+keeps the pipeline and turns `--batch-mtp` off. Only a layer split of two stages on two GPUs has been run.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -134,8 +136,9 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- `--batch-mtp` uses one proposal per slot. With a layer split it needs each stage on its own GPU and does not combine
-  with `--batch-groups` (pipelined slot groups).
+- `--batch-mtp` uses one proposal per slot. With a layer split it needs each stage on its own GPU, does not combine
+  with `--batch-groups` above 1 (pipelined slot groups run no drafts, #1413) and has not been run with helper expert
+  caches.
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
