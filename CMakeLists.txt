@@ -316,6 +316,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/sampler.cu
                           src/kernels/cuda/s2_gemv_q8.cu
     src/kernels/cuda/s2_expert_grouped.cu
+    src/kernels/cuda/s2_qpn8.cu
                           src/kernels/cuda/shared_expert.cu
                           src/kernels/cuda/gr.cu
                           src/kernels/cuda/gdn.cu
@@ -963,6 +964,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(s2_expert_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(s2_expert_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME s2_expert_grouped_parity COMMAND s2_expert_grouped_parity --selftest)
+
+  # The V100 QPN8 repack + m8n8k4 path vs the DP4A kernels (GPU, synthetic): the per-chunk terms must be
+  # bit-exact and the outputs within the measured float-order bound.  Requires STRATA_QPN8=1 (skips otherwise).
+  # NVIDIA only: the kernel is mma.m8n8k4, and only the experimental Volta build compiles it (the test skips
+  # everywhere else, `s2_qpn8_active()` constant false).
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+    add_executable(s2_qpn8_parity src/kernels/s2_qpn8_parity.cpp)
+    target_include_directories(s2_qpn8_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(s2_qpn8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME s2_qpn8_parity COMMAND s2_qpn8_parity --selftest)
+  endif()
 
   # Plan v0.3 P3: native MMVQ for 1..8 tokens (bitwise selftest + --bench timing); synthetic data, no model.
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/native_mmvq_multi.cpp")

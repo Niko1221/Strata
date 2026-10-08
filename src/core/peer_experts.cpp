@@ -6,6 +6,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/s2_qpn8.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -142,7 +143,9 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     for (const auto& pr : ranked) {
         if (primary.slot_of(pr.first, pr.second) >= 0) continue;
         const uint64_t b = lay.blob_bytes(pr.first);
-        const uint64_t b256 = lay.native ? (b + 255) / 256 * 256 : lay.max_blob;
+        // the slot bytes a uniform cache will really use: doubled when the V100 QPN8 dual form is on
+        const uint64_t b256 = lay.native ? (b + 255) / 256 * 256
+                                         : (uint64_t) strata::kernels::s2_qpn8_slot_bytes((int64_t) lay.max_blob);
         if (used + b256 > budget) break;
         if (max_slots > 0 && (int64_t) pick.size() >= max_slots) break;
         used += b256;

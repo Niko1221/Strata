@@ -232,6 +232,10 @@ private:
     int64_t n_layers_ = 0;
     int64_t n_expert_ = 0;
     int64_t blob_ = 0;
+    /// V100 QPN8 (s2_qpn8.hpp): this arena's slots hold a repacked copy at `slot + blob_/2`, written at every
+    /// fill.  Set only by `open()`'s uniform canonical-blob path; `open_sized` slots are never dual-form (a
+    /// native pack's per-layer slots have no room and no repack).
+    bool qpn8_rep_ = false;
     int64_t next_free_ = 0;
     int64_t fills_ = 0;
     /// R4.2g.  `per_layer_` off (the default) leaves `next_free_` as the only admission counter, so the

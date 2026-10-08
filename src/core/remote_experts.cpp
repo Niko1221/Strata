@@ -5,6 +5,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/s2_qpn8.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -145,7 +146,9 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
         if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
-            const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
+            // the slot bytes a uniform (non-native) cache will really use: doubled when the QPN8 dual form is on
+            const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256
+                                              : (uint64_t) strata::kernels::s2_qpn8_slot_bytes((int64_t) lay.max_blob);
             if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
             selected.push_back(pair);
             needed += bytes;
