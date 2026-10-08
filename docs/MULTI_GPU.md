@@ -239,8 +239,8 @@ Two cards, exactly two stages, `--serve`. In the config:
   (`--mmap-experts` on that 32 GB PC) the file reads dominate and it measured no faster.
 
 The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE and the like) are read only with
-`STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows` and `--adapt-async 1` exclude each other (the engine says so and keeps the
-pipeline).
+`STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows 2` can run with `--adapt-async 1`. `STRATA_PIPELINE_ADAPT_ASYNC=0` keeps the
+blocking adaptive tier with the pipeline. This switch does not need `STRATA_PIPELINE_DEBUG=1`.
 
 ## Several conversations at once
 
