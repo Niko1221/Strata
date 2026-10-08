@@ -1,5 +1,6 @@
 """#893 / #894: a request body sent as Transfer-Encoding: chunked (a relay or proxy) is decoded, on every route that
-reads a body; a malformed or oversized one is a 400 / 413, not an empty body.
+reads a body; a malformed or oversized one is a 400 / 413, not an empty body. Incomplete framing must not apply an
+otherwise valid JSON body, for either Content-Length or chunked requests.
 
     python -m unittest serve.test_chunked_body -v
 """
@@ -99,6 +100,52 @@ class ChunkedBody(unittest.TestCase):
                 b"Transfer-Encoding: chunked" + CRLF)
         status, got = self.send(head, chunked(body))
         self.assertEqual(status, 200, got)
+
+    def assert_settings_body_rejected(self, extra: bytes, body: bytes):
+        previous = dict(self.svc.shared)
+        self.addCleanup(self.svc.set_shared, previous)
+        before = self.svc.set_shared({"temperature": 0.7})
+        head = b"/settings HTTP/1.1" + CRLF + b"Content-Type: application/json" + CRLF + extra
+        status, got = self.send(head, body)
+        self.assertEqual((status, self.svc.shared), (400, before), got)
+
+    def test_a_short_content_length_body_does_not_change_settings(self):
+        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
+        self.assert_settings_body_rejected(b"Content-Length: %d" % (len(body) + 1) + CRLF, body)
+
+    def test_incomplete_chunked_trailers_do_not_change_settings(self):
+        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
+        prefix = chunked(body)[:-len(CRLF)]                 # the zero chunk, without the terminating blank line
+        for tail in (b"", b"X-Trailer: 1", b"X-Trailer: 1" + CRLF, b"\r", b"\n", b" " + CRLF):
+            with self.subTest(tail=tail):
+                self.assert_settings_body_rejected(b"Transfer-Encoding: chunked" + CRLF, prefix + tail)
+
+    def test_chunked_trailer_limit_does_not_change_settings(self):
+        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
+        prefix = chunked(body)[:-len(CRLF)]
+        for end in (b"", CRLF):
+            with self.subTest(end=end):
+                trailers = (b"X-Trailer: 1" + CRLF) * 64 + end
+                self.assert_settings_body_rejected(b"Transfer-Encoding: chunked" + CRLF, prefix + trailers)
+
+    def test_an_overlong_chunked_trailer_does_not_change_settings(self):
+        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
+        trailers = b"X-Trailer: " + b"x" * 8193 + CRLF
+        self.assert_settings_body_rejected(b"Transfer-Encoding: chunked" + CRLF, chunked(body, trailers=trailers))
+
+    def test_complete_settings_bodies_still_apply(self):
+        previous = dict(self.svc.shared)
+        self.addCleanup(self.svc.set_shared, previous)
+        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
+        for extra, framed in ((b"Content-Length: %d" % len(body) + CRLF, body),
+                              (b"Transfer-Encoding: chunked" + CRLF, chunked(body)),
+                              (b"Transfer-Encoding: chunked" + CRLF,
+                               chunked(body, trailers=(b"X-Trailer: 1" + CRLF) * 63))):
+            with self.subTest(extra=extra, size=len(framed)):
+                self.svc.set_shared({"temperature": 0.7})
+                head = b"/settings HTTP/1.1" + CRLF + b"Content-Type: application/json" + CRLF + extra
+                status, got = self.send(head, framed)
+                self.assertEqual((status, self.svc.shared), (200, {"temperature": 0.5}), got)
 
     def test_a_chunked_control_body_is_consumed(self):
         head = (b"/unload HTTP/1.1" + CRLF + b"Content-Type: application/json" + CRLF +
