@@ -110,10 +110,17 @@ draft K/V (`STRATA_MTP_BATCH_RING=0` sends a ring back to the old pass); otherwi
 `strata serve: draft layer prompt K/V batched on CUDA<d> ...` or `strata serve: STRATA_SPLIT_MTP_BATCH=1 declined, the
 drafter's own pass runs: <reason>`. The draft layer's K/V come out of Q8_1 x Q8_0 MMQ instead of its own mmvq, so the
 drafts, and how many are accepted, can move; the target's tokens are decided by the verify window.
-`tools/split_mtp_batch_parity.py` compares the greedy texts of the two arms. Preliminary, one machine (2x RTX 3080 20 GB,
-UD-Q4_K_XL, `--layer-split 23`, `--batch-mtp`, two slots), few runs per arm, TODO-EVIDENCE (n, the A/A control and the
-parity result): a 24K-token prompt read at 1,751 tok/s without and 1,857 with; 25K-token prompts +5 to 7%, 104K +2%;
-drafts accepted 0.633 without, 0.635 with.
+`tools/split_mtp_batch_parity.py` compares the greedy texts of the two arms. Measured on one machine (2x RTX 3080 20 GB
+at 220 W, Xeon E5-2696 v4, UD-Q4_K_XL, `--layer-split 23`, `--batch-mtp`, two slots, `--prefill auto:16384`), two full
+restarts per arm in the order off, on, off, on, the same binary in every arm: pooled medians of the prompt read were 1,996
+tok/s without and 2,129 with at 25K tokens (+6.7%), 2,448 and 2,553 at 51K (+4.3%), 2,846 and 2,940 at 104K (+3.3%); all 8
+on/off ratios of medians are above 1 (1.03 to 1.08), and the two off restarts differ by at most 2% at 25K and 0.3% at the
+other sizes. The host's "after each chunk" time per request fell from 0.9-1.3 s to 0.1-0.25 s (one restart per arm). Greedy
+output (`--adapt-every 0 --suffix-draft 0`, five prompts of 256 tokens and one 25.5K-token prompt) was identical in 6 of 6
+prompts in all five comparisons, the two runs inside one process (A/A) included, and the drafts accepted were 826 of 1,210
+in every run, so no difference in acceptance was visible. Decode is not shown to be unchanged: the medians with the variable
+set were about 3% lower (pooled solo 82.6 -> 80.2 tok/s, two streams 93.2 -> 90.8), and the same configuration restarted
+twice moved up to 4.7%, so two restarts per arm can neither confirm nor exclude it; the change touches only the prompt path.
 
 **Each card loads only its own layers' dense weights** (0.1.39, PR #639) with explicit split points (`--layer-split
 27`, not `auto`): every card used to keep a full copy (~3.4 GB for the Coder) though its stage reads only its own
