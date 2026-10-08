@@ -181,9 +181,14 @@ answer to the same prompt again and again:
   under 1 ms sampling. So the draft round trips are at most about 15% of a step: removing them all would gain less than
   that, and most of their time is the draft head's own work (it has the full 248K-token output layer).
 - Stopping the drafts early when the draft head is unsure (`p_min` 0.5) was 5% slower and changed the answer's tokens.
-- `llama-bench` on the same file: a forward pass of 1, 2, 3, 4 and 8 tokens took about 21, 28, 34, 31 and 42 ms, so
-  checking 4 drafted tokens costs about 1.5x one token. The engine's 4-token check took about 41 ms against
-  `llama-bench`'s 31 ms (it also returns logits and hidden rows for all 4 tokens); that gap was not taken apart yet.
+- `llama-bench` on the same file: a forward pass of 1, 2, 3, 4 and 8 tokens took about 21, 28, 34, 31 and 42 ms in
+  one run, so checking 4 drafted tokens costs about 1.5x one token; in another run, minutes later, a 4-token pass took
+  38 and then 169 ms. The engine's 41 ms for its 4-token check and `llama-bench`'s 31 ms came from different runs, so
+  they do not show an overhead in the engine.
+- What the engine's check needs beyond `llama-bench`'s pass, timed in one process against the same model: logits for
+  all 4 tokens about +1-4%, the hidden rows the draft head reads about +0-3%, the recurrent-state snapshots that let
+  rejected drafts be taken back about +6-9%. All three are needed for MTP. (The draft head's context builds a
+  throwaway CPU thread pool for each call; in a profile that was 0.04% of the time.)
 - The llama.cpp update of 2026-10-08 (55 upstream commits, among them few-row matrix kernels and a Metal fusion fix)
   was faster in two A/Bs: +11.5% (4 rounds, p = 0.46) and +8.3% (6 rounds, p = 0.054; 15 of 18 runs faster), with
   the same tokens every run. Which upstream change gives it was not isolated.
