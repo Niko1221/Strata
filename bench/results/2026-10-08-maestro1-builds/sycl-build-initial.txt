@@ -1,0 +1,1288 @@
+[1/201] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[2/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+/home/calvin/workspace/strata-validation/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml.cpp:16:13: warning: unused variable 'ggml_uncaught_exception_init' [-Wunused-variable]
+   16 | static bool ggml_uncaught_exception_init = []{
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1 warning generated.
+[3/201] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[4/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[5/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[6/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[7/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[8/201] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[9/201] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[10/201] Building CXX object CMakeFiles/strata_core.dir/src/core/device.dp.cpp.o
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:466:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  466 | T select_from_sub_group(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:507:37: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  507 | T shift_sub_group_left(unsigned int member_mask,
+      |                                     ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:551:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  551 | T shift_sub_group_right(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:671:41: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  671 | T permute_sub_group_by_xor(unsigned int member_mask,
+      |                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:680:47: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  680 |   unsigned logical_remote_id = (target_offset < logical_sub_group_size) ? start_index + target_offset : id;
+      |                                 ~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:441:57: warning: unused parameter 'item_ct1' [-Wunused-parameter]
+  441 |                         exp_props, [=](sycl::nd_item<3> item_ct1) {
+      |                                                         ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+39 warnings generated.
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:441:57: warning: unused parameter 'item_ct1' [-Wunused-parameter]
+  441 |                         exp_props, [=](sycl::nd_item<3> item_ct1) {
+      |                                                         ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/device.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+34 warnings generated.
+[11/201] Building CXX object CMakeFiles/strata_core.dir/src/core/pinned.dp.cpp.o
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:466:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  466 | T select_from_sub_group(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:507:37: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  507 | T shift_sub_group_left(unsigned int member_mask,
+      |                                     ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:551:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  551 | T shift_sub_group_right(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:671:41: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  671 | T permute_sub_group_by_xor(unsigned int member_mask,
+      |                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:680:47: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  680 |   unsigned logical_remote_id = (target_offset < logical_sub_group_size) ? start_index + target_offset : id;
+      |                                 ~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:579:27: warning: unused variable 'off' [-Wunused-variable]
+  579 |             for (uint64_t off : slice_starts) 0;
+      |                           ^~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:579:47: warning: expression result unused [-Wunused-value]
+  579 |             for (uint64_t off : slice_starts) 0;
+      |                                               ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+40 warnings generated.
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:579:27: warning: unused variable 'off' [-Wunused-variable]
+  579 |             for (uint64_t off : slice_starts) 0;
+      |                           ^~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:579:47: warning: expression result unused [-Wunused-value]
+  579 |             for (uint64_t off : slice_starts) 0;
+      |                                               ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/pinned.dp.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+35 warnings generated.
+[12/201] Building CXX object CMakeFiles/strata_core.dir/home/calvin/workspace/strata-validation/strata/src/platform/memory.cpp.o
+[13/201] Building CXX object CMakeFiles/strata_core.dir/src/core/graph.cpp.o
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:466:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  466 | T select_from_sub_group(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:507:37: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  507 | T shift_sub_group_left(unsigned int member_mask,
+      |                                     ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:551:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  551 | T shift_sub_group_right(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:671:41: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  671 | T permute_sub_group_by_xor(unsigned int member_mask,
+      |                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:680:47: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  680 |   unsigned logical_remote_id = (target_offset < logical_sub_group_size) ? start_index + target_offset : id;
+      |                                 ~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+36 warnings generated.
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/graph.cpp:3:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+31 warnings generated.
+[14/201] Building CXX object CMakeFiles/strata_core.dir/src/core/weights.cpp.o
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:466:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  466 | T select_from_sub_group(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:507:37: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  507 | T shift_sub_group_left(unsigned int member_mask,
+      |                                     ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:551:38: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  551 | T shift_sub_group_right(unsigned int member_mask,
+      |                                      ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:671:41: warning: unused parameter 'member_mask' [-Wunused-parameter]
+  671 | T permute_sub_group_by_xor(unsigned int member_mask,
+      |                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:680:47: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  680 |   unsigned logical_remote_id = (target_offset < logical_sub_group_size) ? start_index + target_offset : id;
+      |                                 ~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:57: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                ~~~~
+      |                                                %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                         ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:69: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                     ~~~~
+      |                                                     %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                     ^~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:83: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                          ~~~~
+      |                                                          %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:95: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                               ~~~~
+      |                                                               %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                               ^~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:172:35: warning: format specifies type 'long long *' but the argument has type 'int64_t *' (aka 'long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                    ~~~~
+      |                                                                    %ld
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                   ^~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:172:43: warning: format specifies type 'long long *' but the argument has type 'int64_t *' (aka 'long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                         ~~~~
+      |                                                                         %ld
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                           ^~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:50: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                             ~~~~
+      |                                                                                             %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                  ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:66: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                  ~~~~
+      |                                                                                                  %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                  ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:83: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                       ~~~~
+      |                                                                                                       %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                                   ^~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+47 warnings generated.
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:112:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:343:30: warning: unused parameter 'direction' [-Wunused-parameter]
+  343 |             memcpy_direction direction,
+      |                              ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/detail/memory_detail.hpp:901:29: warning: unused parameter 'cgh' [-Wunused-parameter]
+  901 |   get_access(sycl::handler &cgh) {
+      |                             ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:816:23: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+  816 |     for (int i = 0; i < numAttributes; i++) {
+      |                     ~ ^ ~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:15:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:959:15: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+  959 |   if (wg_size > max_wg_size) {
+      |       ~~~~~~~ ^ ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1021:35: warning: comparison of integers of different signs: 'int' and 'size_t' (aka 'unsigned long') [-Wsign-compare]
+ 1021 |       max_ws_size_for_device_code >= max_wg_size)
+      |       ~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1291 |     result = (a & b | c) ^ a;
+      |               ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1291:17: note: place parentheses around the '&' expression to silence this warning
+ 1291 |     result = (a & b | c) ^ a;
+      |                 ^
+      |               (    )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1315 |     result = a & (b | c) | (b & c);
+      |              ~~^~~~~~~~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1315:16: note: place parentheses around the '&' expression to silence this warning
+ 1315 |     result = a & (b | c) | (b & c);
+      |                ^
+      |              (          )
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: warning: '&' within '|' [-Wbitwise-op-parentheses]
+ 1318 |     result = a & b | c;
+      |              ~~^~~ ~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/util.hpp:1318:16: note: place parentheses around the '&' expression to silence this warning
+ 1318 |     result = a & b | c;
+      |                ^
+      |              (    )
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:54:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:50:57: warning: unused parameter 'function' [-Wunused-parameter]
+   50 |                                             const void *function) {
+      |                                                         ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/kernel.hpp:57:38: warning: unused parameter 'function' [-Wunused-parameter]
+   57 | get_kernel_function_info(const void *function) {
+      |                                      ^
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:59:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:629:35: warning: unused parameter 'q' [-Wunused-parameter]
+  629 |   void unmap_resource(sycl::queue q) {
+      |                                   ^
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:656:9: warning: field '_res_external_mem' will be initialized after field '_res_reg_flags' [-Wreorder-ctor]
+  656 |       : _res_external_mem(external_mem), _res_reg_flags(reg_flags) {}
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ~~~~~~~~~~~~~~~~~~~~~~~~~
+      |         _res_reg_flags(reg_flags)        _res_external_mem(external_mem)
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1163:24: warning: comparison of integers of different signs: 'size_t' (aka 'unsigned long') and 'int' [-Wsign-compare]
+ 1163 |   for (size_t i = 0; i < count; ++i) {
+      |                      ~ ^ ~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1350:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1350 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1393:21: warning: comparison of integers of different signs: 'int' and 'unsigned int' [-Wsign-compare]
+ 1393 |   for (int i = 0; i < numExtSems; i++) {
+      |                   ~ ^ ~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/bindless_images.hpp:1686:60: warning: unused parameter 'channel' [-Wunused-parameter]
+ 1686 |   void attach(image_mem_wrapper *mem, const image_channel &channel,
+      |                                                            ^
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:57: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                ~~~~
+      |                                                %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                         ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:69: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                     ~~~~
+      |                                                     %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                     ^~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:83: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                          ~~~~
+      |                                                          %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:171:95: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                               ~~~~
+      |                                                               %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                               ^~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:172:35: warning: format specifies type 'long long *' but the argument has type 'int64_t *' (aka 'long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                    ~~~~
+      |                                                                    %ld
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                   ^~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:172:43: warning: format specifies type 'long long *' but the argument has type 'int64_t *' (aka 'long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                         ~~~~
+      |                                                                         %ld
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                           ^~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:50: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                             ~~~~
+      |                                                                                             %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                  ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:66: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                  ~~~~
+      |                                                                                                  %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                  ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:173:83: warning: format specifies type 'unsigned long long *' but the argument has type 'uint64_t *' (aka 'unsigned long *') [-Wformat]
+  170 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                       ~~~~
+      |                                                                                                       %lu
+  171 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  172 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+  173 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                                   ^~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:52:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/device.hpp:93:13: warning: unused function 'destroy_event' [-Wunused-function]
+   93 | static void destroy_event(event_ptr event) {
+      |             ^~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:53:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/image.hpp:14:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:165:17: warning: 'static' function 'get_buffer' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  165 | static buffer_t get_buffer(const void *ptr) {
+      |                 ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:141:36: warning: 'static' function 'get_buffer_and_offset' declared in header file should be declared 'static inline' [-Wunneeded-internal-declaration]
+  141 | static std::pair<buffer_t, size_t> get_buffer_and_offset(const void *ptr) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:304:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  304 | static void dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:322:13: warning: unused function 'dpct_memcpy' [-Wunused-function]
+  322 | static void dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:340:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  340 | static void async_dpct_memcpy(void *to_ptr, const void *from_ptr, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:358:13: warning: unused function 'async_dpct_memcpy' [-Wunused-function]
+  358 | static void async_dpct_memcpy(void *to_ptr, int to_dev_id, const void *from_ptr,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:494:13: warning: unused function 'dpct_memset' [-Wunused-function]
+  494 | static void dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:507:13: warning: unused function 'dpct_memset_d16' [-Wunused-function]
+  507 | static void dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:519:13: warning: unused function 'dpct_memset_d32' [-Wunused-function]
+  519 | static void dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:532:13: warning: unused function 'async_dpct_memset' [-Wunused-function]
+  532 | static void async_dpct_memset(void *dev_ptr, int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:544:13: warning: unused function 'async_dpct_memset_d16' [-Wunused-function]
+  544 | static void async_dpct_memset_d16(void *dev_ptr, unsigned short value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/memory.hpp:556:13: warning: unused function 'async_dpct_memset_d32' [-Wunused-function]
+  556 | static void async_dpct_memset_d32(void *dev_ptr, unsigned int value, size_t size,
+      |             ^~~~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/src/core/weights.cpp:4:
+In file included from /home/calvin/workspace/strata-validation/strata/sycl/include/dpct/dpct.hpp:60:
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:136:1: warning: unused function 'add_empty_node' [-Wunused-function]
+  136 | add_empty_node(dpct::experimental::node_ptr *newNode,
+      | ^~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:162:13: warning: unused function 'add_dependencies' [-Wunused-function]
+  162 | static void add_dependencies(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:176:13: warning: unused function 'get_nodes' [-Wunused-function]
+  176 | static void get_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/sycl/include/dpct/graph.hpp:187:13: warning: unused function 'get_root_nodes' [-Wunused-function]
+  187 | static void get_root_nodes(dpct::experimental::command_graph_ptr graph,
+      |             ^~~~~~~~~~~~~~
+42 warnings generated.
+[15/201] Building CXX object CMakeFiles/strata_core.dir/home/calvin/workspace/strata-validation/strata/src/core/layout.cpp.o
+[16/201] Linking CXX static library ggml/src/libggml-base.a
+[17/201] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[18/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[19/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[20/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/iqp.cpp.o
+[21/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[22/201] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[23/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[24/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[25/201] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+ninja: build stopped: interrupted by user.

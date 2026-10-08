@@ -1,0 +1,248 @@
+[
+  {
+    "Package": "intel-oneapi-compiler-dpcpp-cpp-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-dpcpp-cpp-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "552b3ff6c062271623fd2cf4482d3ea270ca54d3390d5f6f1567f85e3e1dfacb"
+  },
+  {
+    "Package": "intel-oneapi-dpcpp-cpp-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-dpcpp-cpp-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "fa97aac3f6ef43b0966f736dc47ebd4c97bddc709c80cba0fec0e1a1f36f9662"
+  },
+  {
+    "Package": "intel-oneapi-compiler-dpcpp-cpp-common-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-dpcpp-cpp-common-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "d26bef9048fd2f9ff9cc8a0443f41766ef3ff0682d6847f3d60f496f3fdd4d26"
+  },
+  {
+    "Package": "intel-oneapi-compiler-dpcpp-eclipse-cfg-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-dpcpp-eclipse-cfg-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "1209d9c22f5f40cedcf8066ea2714e5cbd9a185d9a3737f4d69452e3d09eeda7"
+  },
+  {
+    "Package": "intel-oneapi-common-vars",
+    "Version": "2026.0.0-235",
+    "Filename": "pool/main/intel-oneapi-common-vars-2026.0.0-235_all.deb",
+    "SHA256": "f04ac260f028dccb67c6d7a87e660b42247c7464fa4126ee8c07359ce527de80"
+  },
+  {
+    "Package": "intel-oneapi-common-licensing-2026.0",
+    "Version": "2026.0.0-235",
+    "Filename": "pool/main/intel-oneapi-common-licensing-2026.0-2026.0.0-235_all.deb",
+    "SHA256": "6f85b5c530236545cce55fdf8eef38249c03a3e529252208d60c4627417fac85"
+  },
+  {
+    "Package": "intel-oneapi-common-oneapi-vars-2026.0",
+    "Version": "2026.0.0-235",
+    "Filename": "pool/main/intel-oneapi-common-oneapi-vars-2026.0-2026.0.0-235_all.deb",
+    "SHA256": "0b4a4c82f3517004d7608a743c67689e71dee1c0706f73fb7f74c78aa6999013"
+  },
+  {
+    "Package": "intel-oneapi-compiler-cpp-eclipse-cfg-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-cpp-eclipse-cfg-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "72f336ce5db4c06e1ce7a0e07398dad3abf3af0986e678413463f4cb4db4aebe"
+  },
+  {
+    "Package": "intel-oneapi-icc-eclipse-plugin-cpp-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-icc-eclipse-plugin-cpp-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "79fedeb999518b7b67643d3a56b3abd806fc37c626b48852e93e93ff960a7d9d"
+  },
+  {
+    "Package": "intel-oneapi-compiler-dpcpp-cpp-runtime-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-dpcpp-cpp-runtime-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "df0413d57cff5a9c67bd02c1e958d7e0512f77878bbcf976c9e08af7c0b1069c"
+  },
+  {
+    "Package": "intel-oneapi-compiler-shared-runtime-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-shared-runtime-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "c0c77700243af0413f7fbefd26649943c4959171ead91b6ace36ef0c8dfb2630"
+  },
+  {
+    "Package": "intel-oneapi-openmp-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-openmp-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "89fdf95c72613ae1a7fb0834c7b8ccd4c2460fc68e37643b2bbe44c37678bd02"
+  },
+  {
+    "Package": "intel-oneapi-openmp-common-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-openmp-common-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "431b70bf1fb9ce58b392eb85110506c78c536f80f4d995c5080b1011e063b810"
+  },
+  {
+    "Package": "intel-oneapi-umf-1.1",
+    "Version": "1.1.0-340",
+    "Filename": "pool/main/intel-oneapi-umf-1.1-1.1.0-340_amd64.deb",
+    "SHA256": "8705a997042c76f67228b4135184754e1cd3f8f68b6629bcb261c1d5b958ce78"
+  },
+  {
+    "Package": "intel-oneapi-tcm-1.5",
+    "Version": "1.5.0-489",
+    "Filename": "pool/main/intel-oneapi-tcm-1.5-1.5.0-489_amd64.deb",
+    "SHA256": "7122ed7748d54342b24f0a2838a64f24b54e430ac4d06b2961a8eefee4ffb089"
+  },
+  {
+    "Package": "intel-oneapi-tbb-2023.1",
+    "Version": "2023.1.0-151",
+    "Filename": "pool/main/intel-oneapi-tbb-2023.1-2023.1.0-151_amd64.deb",
+    "SHA256": "f6e4ae469436a8c5ee2250203268344164c9ff455a2207219c75c463aab99a8b"
+  },
+  {
+    "Package": "intel-oneapi-compiler-shared-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-shared-2026.1-2026.1.1-325_amd64.deb",
+    "SHA256": "87039478855d1b7ce08c5a30456e360158cdf45a6fb6a791083651ec340c5e99"
+  },
+  {
+    "Package": "intel-oneapi-compiler-shared-common-2026.1",
+    "Version": "2026.1.1-325",
+    "Filename": "pool/main/intel-oneapi-compiler-shared-common-2026.1-2026.1.1-325_all.deb",
+    "SHA256": "283b675d295c9da38902edbc936980cde6b85d835480269f87559e5c59236591"
+  },
+  {
+    "Package": "intel-oneapi-dpcpp-debugger-2026.1",
+    "Version": "2026.1.0-70",
+    "Filename": "pool/main/intel-oneapi-dpcpp-debugger-2026.1-2026.1.0-70_amd64.deb",
+    "SHA256": "b6da9590c514af088c7d899a89b0fa36141f4ca0e2821488d05faa65fb42c7cc"
+  },
+  {
+    "Package": "intel-oneapi-tbb-devel-2023.1",
+    "Version": "2023.1.0-151",
+    "Filename": "pool/main/intel-oneapi-tbb-devel-2023.1-2023.1.0-151_amd64.deb",
+    "SHA256": "f56474678ecf588da4a3ac5342bcffdfd001dfad78bb432a5eb19765f7f6e512"
+  },
+  {
+    "Package": "intel-oneapi-dev-utilities-2026.0",
+    "Version": "2026.0.1-16",
+    "Filename": "pool/main/intel-oneapi-dev-utilities-2026.0-2026.0.1-16_amd64.deb",
+    "SHA256": "50b80bb9eb4cb9e67b112ddf5befa4b8ce6415d870931d3a45c3ff0665351fcd"
+  },
+  {
+    "Package": "intel-oneapi-dev-utilities-eclipse-cfg-2026.0",
+    "Version": "2026.0.1-16",
+    "Filename": "pool/main/intel-oneapi-dev-utilities-eclipse-cfg-2026.0-2026.0.1-16_all.deb",
+    "SHA256": "18771cadbb2b1643d69878f19440ae071c612a0dea7300b2779b91a1d928d01c"
+  },
+  {
+    "Package": "intel-oneapi-libdpstd-devel-2022.13",
+    "Version": "2022.13.0-107",
+    "Filename": "pool/main/intel-oneapi-libdpstd-devel-2022.13-2022.13.0-107_amd64.deb",
+    "SHA256": "ecf6f345e4fdef992d9127ccc9e7708f36f613398f95f075565e94bf53028835"
+  },
+  {
+    "Package": "intel-oneapi-mkl-devel-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-devel-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "4ca800dd34d54b61c8b04294c616e40567b3fd7177e7b25af856e59046691ea8"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-devel-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-devel-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "cd58bc4ef0e9f50e93fb5a1905964bb48cf2c37a8ab8476e1dd0c89ca1889f7d"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-include-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-include-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "3dc8777afea889fe2e9fa09352c998771adf23a99ca9fbb3e7e1c93a00c5cf4d"
+  },
+  {
+    "Package": "intel-oneapi-mkl-classic-include-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-classic-include-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "509a3737d8f38339dffa35c26ce8c01857787d0fcadb3daacb188efc2caa3483"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "f9bf74297e01d6ba234acafb4ac22e0d41d257f8a822c72eadebcbbdbf85d3d3"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-blas-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-blas-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "9668d51a7cf68ae4b8944a8cdaa24f6d4ef72604c048f68fd8603b2b792bd783"
+  },
+  {
+    "Package": "intel-oneapi-mkl-core-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-core-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "3b230c02fc0ac44f8f71062c20cd883b37c6c1e00940dc0a7f13b02d9c47bd93"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-lapack-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-lapack-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "f701832f5e49b29731c15a27a094122bebe6a1fbd90ddf14c431b7923b8fd921"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-dft-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-dft-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "31862dd325a31ccacc1e5e9c93140f4c8bd8a0353e0b3658e2b87e329e58d373"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-sparse-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-sparse-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "6a499dc1c5f049ad522a5288151ff0c93f535b8e8ab34edcd773785338e07d45"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-vm-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-vm-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "80a3189a247ea3d7620102a674634d8cbe710ee0014706b47a7dde249cd470c5"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-rng-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-rng-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "b0748e152f2042dedd1d21c784fb2a8b551c573b7e7ed0361ada2423deb275bf"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-stats-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-stats-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "6263986f1471a4460f2ebc2e92d258a39619c324cf2022c67124f5d7f317e101"
+  },
+  {
+    "Package": "intel-oneapi-mkl-sycl-data-fitting-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-sycl-data-fitting-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "3b42d700cad45bb1f7d717923695e995953002e531e067b1b0219c11cd2cac27"
+  },
+  {
+    "Package": "intel-oneapi-mkl-core-devel-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-core-devel-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "f748e21ebb3396670085da04375511ade4a372943838ddbf4f770ef65bcb7c43"
+  },
+  {
+    "Package": "intel-oneapi-mkl-classic-devel-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-classic-devel-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "9d0147f07fa7059ff638873c269ce360ffb944ab11b7944c72cb14cd93f433aa"
+  },
+  {
+    "Package": "intel-oneapi-mkl-cluster-devel-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-cluster-devel-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "a49eb433f85946161c6c17ef2c2b146f2dac457c9e8f62152e775a964e4d75cb"
+  },
+  {
+    "Package": "intel-oneapi-mkl-cluster-2026.1",
+    "Version": "2026.1.0-236",
+    "Filename": "pool/main/intel-oneapi-mkl-cluster-2026.1-2026.1.0-236_amd64.deb",
+    "SHA256": "ce17bde7a711300bd6ddd16a30dbb0b24c0e63600ab04dd9d78f4d63f5c311c8"
+  }
+]

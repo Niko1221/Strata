@@ -1,0 +1,15 @@
+clang++: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]
+-- Strata: HIP enabled, arch gfx1100
+-- strata: pack/full/experts.bin absent - the expert arena load test is NOT registered
+-- STRATA tests: no python3 with numpy was found (the configured interpreter and .venv were probed) - the iq_parity fixtures and its test are not registered; the fixtures need python3 with numpy and the repository's vendored gguf-py
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- ggml version: 0.24.0
+-- ggml commit:  unknown
+-- Configuring done (1.8s)
+-- Generating done (0.4s)
+-- Build files have been written to: /home/calvin/workspace/strata-validation/build-hip

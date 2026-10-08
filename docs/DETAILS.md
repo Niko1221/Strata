@@ -1691,8 +1691,11 @@ The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, whi
 The SM87 CUDA build rebased onto upstream `fb58e0d` (0.1.41) passed 102 eligible
 CTest cases across the initial run and targeted rerun, all 48 native Coder
 expert-layer checks and seven real API checks. Three original model-fixture
-CTest cases were not validated; HIP/SYCL toolchains and desktop GPU runtime
-were unavailable. See the [recorded checks and exclusions](../bench/results/2026-10-08-jetson-orin/README.md#rebase-onto-upstream-0141).
+CTest cases were not validated. Subsequent full Release HIP gfx1100 and
+SYCL SPIR-V builds passed on `maestro1` (x86-64 Ubuntu 22.04, Celeron N3450);
+HIP/SYCL GPU tests, model execution and desktop GPU runtime remain untested.
+The [backend build report](../bench/results/2026-10-08-maestro1-builds/README.md)
+records toolchain versions, commands and logs. See the [recorded Orin checks and exclusions](../bench/results/2026-10-08-jetson-orin/README.md#rebase-onto-upstream-0141).
 
 On the 32 GB AGX Orin, the same pinned Coder IQ1_M model with file-backed
 experts, MTP spec 4 and prefill batch 64 passed capacities 1K, 2K, 4K, 8K,

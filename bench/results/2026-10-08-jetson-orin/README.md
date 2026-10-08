@@ -211,8 +211,14 @@ GPU allocations; strict free-VRAM delta assertions remain on discrete GPUs.
 The [x86 CPU/router cross-build](rebased-validation/x86-build.txt) passed.
 [HIP](rebased-validation/hip-unavailable.txt) and
 [SYCL](rebased-validation/sycl-unavailable.txt) configure attempts confirmed
-that their toolchains are unavailable on this host; those builds and runtime
-behavior, and desktop GPU runtime, were not tested.
+that their toolchains are unavailable on the Orin. Subsequent full Release
+HIP (gfx1100, MMQ and tests enabled) and SYCL (SPIR-V, parity targets enabled)
+builds passed on the x86-64 Ubuntu host `maestro1`, using AMD TheRock
+`7.10.0a20251120` and Intel DPC++ 2026.1.1 with oneMKL 2026.1.0. Both binaries
+loaded and printed help. The [backend build report](../2026-10-08-maestro1-builds/README.md)
+records commands, compiler versions, complete logs and CPU/setup test
+exclusions. HIP/SYCL model execution and desktop GPU runtime remain untested;
+these builds do not extend the Orin performance results to other hardware.
 
 ### Parametric context comparison
 

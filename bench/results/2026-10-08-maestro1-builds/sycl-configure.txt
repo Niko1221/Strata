@@ -1,0 +1,11 @@
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- ggml version: 0.24.0
+-- ggml commit:  unknown
+-- Configuring done (0.5s)
+-- Generating done (0.2s)
+-- Build files have been written to: /home/calvin/workspace/strata-validation/build-sycl

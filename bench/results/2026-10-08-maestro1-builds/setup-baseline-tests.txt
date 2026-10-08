@@ -1,0 +1,100 @@
+....s.............../mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:614: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:659: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.............  Compiling the image encoder (for the CPU) ...
+  [ok] engine: /home/calvin/workspace/strata-validation/tmp/tmpog0o6sd4/engine/strata, image encoder (CPU): /home/calvin/workspace/strata-validation/tmp/tmpog0o6sd4/engine/strata-vision
+............../mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:614: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:659: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+................../mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:614: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py:659: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/bin/python3: No module named pip
+E/usr/bin/python3: No module named pip
+E....  [!]  the finish mark of x.gguf cannot be written ([Errno 13] read-only): the next run does this step again
+...............
+======================================================================
+ERROR: test_the_encoder_is_built_native (tools.test_setup_choices.CudaVision) [gpu]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 535, in test_the_encoder_is_built_native
+    quiet(setup.build_engine, {"arch": "86"}, vision, True, "llama")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 28, in quiet
+    return fn(*args, **kw), out.getvalue()
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 3226, in build_engine
+    shutil.copy2(bdir / EXE, eng / EXE)
+  File "/usr/lib/python3.10/shutil.py", line 434, in copy2
+    copyfile(src, dst, follow_symlinks=follow_symlinks)
+  File "/usr/lib/python3.10/shutil.py", line 254, in copyfile
+    with open(src, 'rb') as fsrc:
+FileNotFoundError: [Errno 2] No such file or directory: '/home/calvin/workspace/strata-validation/tmp/tmpai42ou_z/build/strata'
+
+======================================================================
+ERROR: test_the_encoder_is_built_native (tools.test_setup_choices.CudaVision) [cpu]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 535, in test_the_encoder_is_built_native
+    quiet(setup.build_engine, {"arch": "86"}, vision, True, "llama")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 28, in quiet
+    return fn(*args, **kw), out.getvalue()
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 3226, in build_engine
+    shutil.copy2(bdir / EXE, eng / EXE)
+  File "/usr/lib/python3.10/shutil.py", line 434, in copy2
+    copyfile(src, dst, follow_symlinks=follow_symlinks)
+  File "/usr/lib/python3.10/shutil.py", line 254, in copyfile
+    with open(src, 'rb') as fsrc:
+FileNotFoundError: [Errno 2] No such file or directory: '/home/calvin/workspace/strata-validation/tmp/tmpq5ndg1z0/build/strata'
+
+======================================================================
+ERROR: test_the_cpu_encoder_is_built_once (tools.test_setup_choices.HipVision)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 344, in test_the_cpu_encoder_is_built_once
+    built, meta, have = self.build({}, "cpu")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 340, in build
+    quiet(setup.build_engine_hip, {"arch": "gfx1201"}, "llama", vision)
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 28, in quiet
+    return fn(*args, **kw), out.getvalue()
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 2495, in build_engine_hip
+    root, dirs = rocm_root(archs)
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 2420, in rocm_root
+    run(pip + [f"rocm[libraries,devel]=={wheel}"])
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 383, in run
+    fail(f"command failed (exit {r.returncode}): {Path(str(cmd[0])).name}")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 337, in fail
+    sys.exit(1)
+SystemExit: 1
+
+======================================================================
+ERROR: test_without_images_nothing_changes (tools.test_setup_choices.HipVision)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 355, in test_without_images_nothing_changes
+    built, meta, have = self.build({}, "none")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 340, in build
+    quiet(setup.build_engine_hip, {"arch": "gfx1201"}, "llama", vision)
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/tools/test_setup_choices.py", line 28, in quiet
+    return fn(*args, **kw), out.getvalue()
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 2495, in build_engine_hip
+    root, dirs = rocm_root(archs)
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 2420, in rocm_root
+    run(pip + [f"rocm[libraries,devel]=={wheel}"])
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 383, in run
+    fail(f"command failed (exit {r.returncode}): {Path(str(cmd[0])).name}")
+  File "/mnt/sda2/home/calvin/workspace/strata-validation/upstream-baseline/setup.py", line 337, in fail
+    sys.exit(1)
+SystemExit: 1
+
+----------------------------------------------------------------------
+Ran 87 tests in 2.894s
+
+FAILED (errors=4, skipped=1)

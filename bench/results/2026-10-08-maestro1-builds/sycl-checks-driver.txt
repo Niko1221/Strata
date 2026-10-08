@@ -1,0 +1,2 @@
+WARNING: hwloc library not found in /tcm/latest/lib
+   WARNING: vars.sh does not set up dependencies when invoked directly. Please perform environment setup for UMF before running DPC++ applications.

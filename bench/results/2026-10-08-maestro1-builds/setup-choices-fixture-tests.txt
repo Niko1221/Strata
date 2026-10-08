@@ -1,0 +1,7 @@
+Choices fixtures only: simulate an AVX2 desktop CPU; no GPU execution.
+.........................  [!]  the finish mark of x.gguf cannot be written ([Errno 13] read-only): the next run does this step again
+...............
+----------------------------------------------------------------------
+Ran 40 tests in 0.546s
+
+OK

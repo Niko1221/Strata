@@ -1,0 +1,48 @@
+Thu Oct  8 21:07:10 UTC 2026
+Linux maestro1 6.8.0-65-generic #68~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jul 15 18:06:34 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+13ea3b0f13ecad9da4a6d0915ea6d508b0b4deb2
+AMD clang version 22.0.0git (https://github.com/ROCm/llvm-project.git 8e85e3138dd485c4221cc12aff9eb60ab48ed3b5+PATCHED:371bd8145f7e4d1d481987d05427c94e17708b91)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_core/lib/llvm/bin
+cmake version 3.31.10
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+Architecture:                         x86_64
+CPU op-mode(s):                       32-bit, 64-bit
+Address sizes:                        39 bits physical, 48 bits virtual
+Byte Order:                           Little Endian
+CPU(s):                               4
+On-line CPU(s) list:                  0-3
+Vendor ID:                            GenuineIntel
+Model name:                           Intel(R) Celeron(R) CPU N3450 @ 1.10GHz
+CPU family:                           6
+Model:                                92
+Thread(s) per core:                   1
+Core(s) per socket:                   4
+Socket(s):                            1
+Stepping:                             9
+CPU max MHz:                          2200.0000
+CPU min MHz:                          800.0000
+BogoMIPS:                             2188.80
+Flags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx est tm2 ssse3 sdbg cx16 xtpr pdcm sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave rdrand lahf_lm 3dnowprefetch cpuid_fault cat_l2 ibrs ibpb stibp tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust smep erms mpx rdt_a rdseed smap clflushopt intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves dtherm ida arat pln pts vnmi md_clear arch_capabilities
+Virtualization:                       VT-x
+L1d cache:                            96 KiB (4 instances)
+L1i cache:                            128 KiB (4 instances)
+L2 cache:                             2 MiB (2 instances)
+NUMA node(s):                         1
+NUMA node0 CPU(s):                    0-3
+Vulnerability Gather data sampling:   Not affected
+Vulnerability Itlb multihit:          Not affected
+Vulnerability L1tf:                   Not affected
+Vulnerability Mds:                    Not affected
+Vulnerability Meltdown:               Not affected
+Vulnerability Mmio stale data:        Not affected
+Vulnerability Reg file data sampling: Vulnerable: No microcode
+Vulnerability Retbleed:               Not affected
+Vulnerability Spec rstack overflow:   Not affected
+Vulnerability Spec store bypass:      Not affected
+Vulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:             Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                  Not affected
+Vulnerability Tsx async abort:        Not affected

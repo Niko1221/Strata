@@ -1,0 +1,53 @@
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- The HIP compiler identification is unknown
+clang++: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]
+-- Detecting HIP compiler ABI info
+clang++: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]
+-- Detecting HIP compiler ABI info - failed
+-- Check for working HIP compiler: /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/llvm/bin/clang++
+clang++: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]
+-- Check for working HIP compiler: /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/llvm/bin/clang++ - broken
+CMake Error at /home/calvin/workspace/strata-validation/toolchains/build-tools/lib/python3.10/site-packages/cmake/data/share/cmake-3.31/Modules/CMakeTestHIPCompiler.cmake:73 (message):
+  The HIP compiler
+
+    "/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/llvm/bin/clang++"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: '/home/calvin/workspace/strata-validation/build-hip/CMakeFiles/CMakeScratch/TryCompile-10FjAa'
+    
+    Run Build Command(s): /home/calvin/workspace/strata-validation/toolchains/build-tools/bin/ninja -v cmTC_1a92f
+    [1/2] /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/llvm/bin/clang++    --rocm-path=/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel --rocm-device-lib-path=/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/lib/llvm/amdgcn/bitcode  --offload-arch=gfx1100 -o CMakeFiles/cmTC_1a92f.dir/testHIPCompiler.hip.o  -c /home/calvin/workspace/strata-validation/build-hip/CMakeFiles/CMakeScratch/TryCompile-10FjAa/testHIPCompiler.hip
+    FAILED: [code=1] CMakeFiles/cmTC_1a92f.dir/testHIPCompiler.hip.o 
+    /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/llvm/bin/clang++    --rocm-path=/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel --rocm-device-lib-path=/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/lib/llvm/amdgcn/bitcode  --offload-arch=gfx1100 -o CMakeFiles/cmTC_1a92f.dir/testHIPCompiler.hip.o  -c /home/calvin/workspace/strata-validation/build-hip/CMakeFiles/CMakeScratch/TryCompile-10FjAa/testHIPCompiler.hip
+    clang++: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]
+    In file included from <built-in>:1:
+    In file included from /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_core/lib/llvm/lib/clang/22/include/__clang_hip_runtime_wrapper.h:111:
+    /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_core/lib/llvm/lib/clang/22/include/cuda_wrappers/cmath:30:2: error: "Could not find standard C++ header 'cmath'. Add -v to your compilation command to check the include paths being searched. You may need to install the appropriate standard C++ library package corresponding to the search path."
+       30 | #error "Could not find standard C++ header 'cmath'. Add -v to your compilation command to check the include paths being searched. You may need to install the appropriate standard C++ library package corresponding to the search path."
+          |  ^
+    In file included from <built-in>:1:
+    /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_core/lib/llvm/lib/clang/22/include/__clang_hip_runtime_wrapper.h:112:10: fatal error: 'cstdlib' file not found
+      112 | #include <cstdlib>
+          |          ^~~~~~~~~
+    2 errors generated when compiling for gfx1100.
+    ninja: build stopped: subcommand failed.
+    
+    
+
+  
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  cmake/hip_backend.cmake:45 (enable_language)
+  CMakeLists.txt:123 (include)
+
+
+-- Configuring incomplete, errors occurred!

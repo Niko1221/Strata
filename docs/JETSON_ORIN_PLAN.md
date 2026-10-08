@@ -238,7 +238,10 @@ The port was rebased onto upstream `fb58e0d` after synchronizing the fork.
 The full SM87 CUDA build, 102 eligible CTest cases across the initial run
 and targeted rerun, 48-layer native Coder checks, seven real API checks,
 15 Jetson setup cases and 111 desktop setup cases passed. The x86 CPU/router
-cross-build passed; HIP, SYCL and desktop GPU runtime were not tested here.
+cross-build passed. Full Release HIP gfx1100 and SYCL SPIR-V builds subsequently
+passed on `maestro1`, an x86-64 Ubuntu 22.04 host with a Celeron N3450;
+[commands and logs](../bench/results/2026-10-08-maestro1-builds/README.md).
+HIP/SYCL GPU tests, model execution and desktop GPU runtime remain untested.
 The [updated report](../bench/results/2026-10-08-jetson-orin/README.md#rebase-onto-upstream-0141)
 records fixture exclusions, ARM test-reference corrections and the parametric
 1K–256K context comparison against the preserved 0.1.40.3 engine.

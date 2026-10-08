@@ -1,0 +1,16 @@
+Using Python 3.10.12 environment at: toolchains/rocm
+Resolved 4 packages in 1.22s
+   Building rocm==7.10.0a20251120
+Downloading rocm-sdk-devel (1.5GiB)
+Downloading rocm-sdk-core (293.3MiB)
+Downloading rocm-sdk-libraries-gfx110x-dgpu (280.3MiB)
+      Built rocm==7.10.0a20251120
+ Downloaded rocm-sdk-core
+ Downloaded rocm-sdk-libraries-gfx110x-dgpu
+ Downloaded rocm-sdk-devel
+Prepared 4 packages in 1m 06s
+Installed 4 packages in 101ms
+ + rocm==7.10.0a20251120
+ + rocm-sdk-core==7.10.0a20251120
+ + rocm-sdk-devel==7.10.0a20251120
+ + rocm-sdk-libraries-gfx110x-dgpu==7.10.0a20251120
