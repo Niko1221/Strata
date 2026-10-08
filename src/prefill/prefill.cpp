@@ -1758,10 +1758,10 @@ int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 // experts streamed per chunk), and a wrong r costs (1024 on two RTX 4090: 22-36% slower). The engine neither guesses r
 // nor learns it from the prompts it serves - that made a prompt's chunks, and so its output bits, depend on how busy
 // the PC happened to be: setup's --calibrate measures it once (tools/calibrate.py) and writes `--prefill-pipe <r>`.
-// `--prefill-pipe 1` needs no r: only today's chunk count is evened out. The model calls that never slower, but a chunk
-// of stream_all_min() tokens or more streams every expert its stage does not hold, while a shorter one stages only the
-// experts it routes to: a tail of a few tokens is nearly free, and evening it out adds a full pass (two RTX 4090, a
-// prompt 25 tokens past 8192: 25% slower) - --calibrate tries it like the other values.
+// `--prefill-pipe 1` needs no r: STRATA_PREFILL_EQUAL's rule - today's chunk count evened out, only when today's last
+// chunk has stream_all_min() tokens or more.  A chunk that size streams every expert its stage does not hold, a shorter
+// one only the experts it routes to: a tail of a few tokens is nearly free, and evening it out would add a full pass
+// (two RTX 4090, a prompt 25 tokens past 8192: 25% slower).  --calibrate tries it like the other values.
 namespace {
 double g_pipe = -1.0;       // --prefill-pipe; < 0: not given (STRATA_PREFILL_PIPE, else 0)
 double g_pipe_req = -1.0;   // the `pipe=` request key; < 0: none
@@ -1788,6 +1788,16 @@ int64_t Prefill::pipe_key(double value) { return !(value > 0.0) ? -1 : value <= 
 int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {
     if (stages < 2 || n <= 0 || cap <= 0) return cap;
     const int64_t r = ratio_tokens(ratio), S1 = stages - 1;
+    if (r == 0) {
+        // `--prefill-pipe 1`: STRATA_PREFILL_EQUAL's rule (#693, generate.cpp equal_chunk) - today's chunk count, evened
+        // out on the 256-token grid, only when today's last chunk streams every expert anyway (stream_all_min tokens or
+        // more): evening a short tail out would add a full pass over the experts (two RTX 4090: 25% slower)
+        const int64_t k = (n + cap - 1) / cap;
+        const int64_t last = n - (k - 1) * cap;
+        if (k <= 1 || last < stream_all_min()) return cap;
+        const int64_t per = (n + k - 1) / k;
+        return std::min(cap, ((per + 255) / 256) * 256);
+    }
     auto cost = [&](int64_t c) {   // chunks of c tokens, the last the rest
         const int64_t k = (n + c - 1) / c;
         return k * r + n + S1 * (r + std::min(c, n));

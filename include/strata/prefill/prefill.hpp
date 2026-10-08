@@ -85,12 +85,12 @@ public:
     static int64_t stream_all_min_tokens();
     /// --prefill-pipe (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
     /// stages, chunks of at most `cap` (the buffers' size) and a stage-chunk cost of b + a C with b/a = `ratio` tokens
-    /// (0: unknown - the same chunk count as `cap` gives, evened out): the chunk count with the pipeline's least time,
-    /// see the definition. `cap` when that is today's split or not 3% better than it. A function of its arguments
-    /// only, so a prompt's chunks (and its output bits) never depend on timing.
+    /// (0: unknown - STRATA_PREFILL_EQUAL's rule: the same chunk count as `cap` gives, evened out when its last chunk
+    /// has stream_all_min tokens or more): the chunk count with the pipeline's least time, see the definition. `cap`
+    /// when that is today's split or not 3% better than it. A function of its arguments only.
     static int64_t pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio);
-    /// --prefill-pipe for this run: 0 off (the buffers' chunks), 1 today's chunk count evened out, a number > 1 the
-    /// rig's b/a in tokens (setup's --calibrate measures it). Default: STRATA_PREFILL_PIPE, else 0.
+    /// --prefill-pipe for this run: 0 off (the buffers' chunks), 1 today's chunk count evened out (STRATA_PREFILL_EQUAL's
+    /// rule), a number > 1 the rig's b/a in tokens (setup's --calibrate measures it). Default: STRATA_PREFILL_PIPE, else 0.
     static void set_pipe(double value);
     /// The same for the next prompts only (the `pipe=` request key, setup's calibration); < 0 = the run's own value.
     static void set_pipe_request(double value);

@@ -176,11 +176,12 @@ dies keep b/a 768 (355-356 against 219-220 tok/s in every round, +62%); two RTX 
 faster than off, b/a 768 20% slower). A first version that read a different stretch of text per value and confirmed in
 two rounds picked 1536 on the RTX 3090 Ti pair from one fast read - where the experts are streamed, the read speed
 depends on the text. `--prefill-pipe 1` needs no
-b/a: it only evens out today's chunk count. That is not always faster: a chunk of 1024 tokens or more (3072 with
-`STRATA_PREFILL_CPU_SHARE` set) streams every expert its card does not hold, a shorter one only the experts it routes
-to, so a prompt just past the chunk size reads
-as one full chunk and a nearly free tail, and evening it out adds a second full pass over the experts (two RTX 4090,
-MistyMoonR's calibration: off 2,129 tok/s, evened 1,601). 0 (the default) is today's split;
+b/a: it is `STRATA_PREFILL_EQUAL=1`'s rule (#693) - today's chunk count, evened out on the 256-token grid, and only
+when today's last chunk has 1024 tokens or more (3072 with `STRATA_PREFILL_CPU_SHARE` set). A chunk that size streams
+every expert its card does not hold, a shorter one only the experts it routes to, so a prompt just past the chunk size
+reads as one full chunk and a nearly free tail, and evening that out would add a second full pass over the experts:
+the first version evened every split out, and on two RTX 4090 MistyMoonR's calibration read 1,601 tok/s with it
+against 2,129 off. 0 (the default) is today's split;
 `STRATA_PREFILL_PIPE=<R>` is the same as the flag where the config cannot carry it. The chunk geometry changes the
 rounding, which is why it is opt-in.
 
