@@ -3114,6 +3114,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     bool any_cpu = false;
     for (int64_t i = 0; i < n; ++i)
         if (kind[i] < 0) { any_cpu = true; break; }
+    if (d.dres_check != nullptr && any_cpu) {   // STRATA_ADAPT_CHECKRES
+        bool published = false;
+        for (int64_t i = 0; i < n && !published; ++i)
+            published = ids[i] < 0 || ids[i] >= d.n_expert ||
+                        d.dres_check[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] < 0;
+        if (!published) ++d.stale_x;
+    }
     const auto c1 = std::chrono::steady_clock::now();
     if (any_cpu) {
         // #578 --remote-expert-opt: a token whose experts all run on a GPU (CUDA0 or a helper) needs no CPU activation
