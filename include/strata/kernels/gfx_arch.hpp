@@ -1,4 +1,5 @@
-// include/strata/kernels/gfx_arch.hpp - which AMD architecture names the gfx11 matrix-core code was built for.
+// include/strata/kernels/gfx_arch.hpp - which AMD architecture names the gfx11 matrix-core code (and the gfx12 native
+// prompt-expert kernels) was built for.
 //
 // The WMMA kernels select their intrinsic with `#if defined(__gfx1100__) || ... || defined(__gfx1151__)`: a gfx11 part
 // outside that list (gfx1103, gfx1152, ...) gets an empty or trapping body.  The runtime gates therefore match the SAME
