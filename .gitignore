@@ -64,3 +64,4 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+engine-metal/BUILD.json
