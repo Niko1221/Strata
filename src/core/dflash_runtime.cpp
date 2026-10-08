@@ -221,7 +221,7 @@ void DFlashDrafter::release() {
     free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
     free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
     free_dev(gate_); free_dev(up_); free_dev(logits_);
-    free_dev(xq_); free_dev(attn_scratch_);
+    free_dev(xq_); free_dev(attn_scratch_); free_dev(arg_scratch_);
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
     if (cs_) cudaStreamDestroy(cs_);
