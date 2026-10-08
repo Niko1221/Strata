@@ -25,7 +25,8 @@ FAKE_BATCH = r'''import queue, sys, threading, time
 args = sys.argv[1:]
 slots = int(args[args.index("--batch") + 1]) if "--batch" in args else 0
 fit = int(args[args.index("--fit") + 1]) if "--fit" in args else slots
-fail = "--fail-window" in args        # #997: the first window over two slots fails
+fail = "--fail-window" in args
+groups = int(args[args.index("--says-groups") + 1]) if "--says-groups" in args else 0   # INFO batch_groups=G (--batch-groups auto)        # #997: the first window over two slots fails
 STEP = 0.02
 CH = 32
 lines, stop = queue.Queue(), threading.Event()
@@ -39,7 +40,7 @@ def reader():
     lines.put(None)
 threading.Thread(target=reader, daemon=True).start()
 print("INFO engine=0.1.39" + (f" batch_slots={fit}" if fit >= 2 else "") +
-      (" slot_cache=1" if "--slotcache" in args else ""), flush=True)
+      (" slot_cache=1" if "--slotcache" in args else "") + (f" batch_groups={groups}" if groups > 1 else ""), flush=True)
 print("READY 4096 stop", flush=True)
 LONG = list(b"LONGREPLY")
 def continued(ids):        # (the whole reply, how much of it the prompt already ends with: a request continued)
@@ -245,7 +246,7 @@ class PickSlot(unittest.TestCase):
 class ParallelService(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
-    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False):
+    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0, more=()):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -256,6 +257,8 @@ class ParallelService(unittest.TestCase):
         extra += ["--slotcache"] if slot_cache else []
         extra += ["--fail-window"] if fail else []
         extra += ["--reuse"] if reuse else []
+        extra += ["--says-groups", str(says_groups)] if says_groups else []
+        extra += list(more)
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra)
@@ -295,6 +298,45 @@ class ParallelService(unittest.TestCase):
         self.start(4, fit=2)
         self.assertEqual(self.engine.batch, 2)
         self.assertEqual(self.get("/v1/status")["concurrency"]["serving"], 2)
+
+    def test_batch_groups_auto_follows_the_engine(self):
+        """--batch-groups auto: the engine picks the groups and says so (INFO batch_groups=G); the server spreads the
+        requests over those groups, and a plain number is read as before."""
+        self.start(8, says_groups=4, more=["--batch-groups", "auto"])
+        e = self.engine
+        self.assertEqual((e.batch, e.slot_groups), (8, 4))
+        self.assertEqual(e.slot_group, [0, 0, 1, 1, 2, 2, 3, 3])
+        self.assertEqual(e.slot_order[:4], [0, 2, 4, 6])
+        self.tearDown(); self.httpd = self.engine = self.tmp = None
+        self.start(8, more=["--batch-groups", "auto"])          # an engine that reports none: one group
+        self.assertEqual(self.engine.slot_groups, 1)
+        self.tearDown(); self.httpd = self.engine = self.tmp = None
+        self.start(8, more=["--batch-groups", "2"])
+        self.assertEqual(self.engine.slot_groups, 2)
+        self.tearDown(); self.httpd = self.engine = self.tmp = None
+        self.start(8, says_groups=4)                           # 0.1.41: no flag on a layer split = the engine's choice
+        self.assertEqual(self.engine.slot_groups, 4)
+        self.tearDown(); self.httpd = self.engine = self.tmp = None
+        self.start(8, says_groups=4, more=["--batch-groups", "1"])   # the opt-out
+        self.assertEqual(self.engine.slot_groups, 1)
+
+    def test_a_burst_of_connections_is_not_reset(self):
+        """30-40 clients at once got "connection reset by peer" with the listen backlog of 5 (4 x R9700 burst): the
+        server listens with a deep backlog (STRATA_HTTP_BACKLOG, 256), so 60 simultaneous requests all get answers."""
+        import serve.server as server
+        self.assertGreaterEqual(server.Server.request_queue_size, 64)
+        self.start(2)
+        errs, ok = [], []
+        def one(i):
+            try:
+                self.chat(f"burst {i}", max_tokens=8)
+                ok.append(i)
+            except Exception as e:                      # noqa: BLE001
+                errs.append(repr(e))
+        th = [threading.Thread(target=one, args=(i,)) for i in range(60)]
+        for t in th: t.start()
+        for t in th: t.join()
+        self.assertEqual((len(ok), errs[:2]), (60, []))
 
     def test_stop_strings_in_a_batch_slot(self):
         """#454: a stop string cuts the answer in --batch mode too, and the slot is freed for the next request."""
@@ -386,6 +428,36 @@ class ParallelService(unittest.TestCase):
         with self.svc.status_lock:
             self.assertEqual(len(self.svc.history), 2)
         self.assertFalse(any(self.engine.slot_busy))
+
+    def test_three_requests_long_long_short_do_not_deadlock(self):
+        """ENGINE_REVIEW finding 1 (0.1.41 check): two long prompts fill both slots, a short one arrives a moment later
+        and wants one of them (the yield path).  The reviewer's repro: long, long, short at 0.25 s steps.  Every
+        request must be answered; none may wait on the control lock that the yielding read holds."""
+        self.start(2)
+        texts = ["long " * 600, "lung " * 600, "short"]
+        res, errors = {}, []
+
+        def go(t):
+            t0 = time.time()
+            try:
+                r = self.chat(t, max_tokens=64)
+                res[t] = (r["choices"][0]["message"]["content"], time.time() - t0)
+            except Exception as e:      # noqa: BLE001 - a timeout is the failure this test looks for
+                errors.append((t[:6], repr(e)))
+        threads = []
+        for t in texts:
+            th = threading.Thread(target=go, args=(t,))
+            th.start()
+            threads.append(th)
+            time.sleep(0.25)
+        for th in threads:
+            th.join(45)
+        self.assertFalse(any(th.is_alive() for th in threads), "a request never finished (deadlock)")
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 3)
+        self.assertFalse(any(self.engine.slot_busy))
+        with self.svc.status_lock:
+            self.assertEqual(len(self.svc.history), 3)
 
     def test_an_admission_gives_way_too(self):
         """The same while another request decodes in a slot: the long one is being admitted, a short one waits."""

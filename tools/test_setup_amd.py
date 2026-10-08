@@ -465,5 +465,60 @@ class HipRuntimeBesideExe(unittest.TestCase):
             self.assertEqual(list(Path(d).iterdir()), [])
 
 
+class DeviceAccess(unittest.TestCase):
+    """Linux AMD: /dev/kfd and the render nodes must be openable by the user; setup warns, never refuses."""
+
+    def dev(self, d, kfd=True, nodes=("renderD128",)):
+        root = Path(d)
+        (root / "dri").mkdir()
+        if kfd:
+            (root / "kfd").write_text("")
+        for n in nodes:
+            (root / "dri" / n).write_text("")
+        return str(root)
+
+    def test_accessible_is_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(setup.amd_device_access_problem(self.dev(d), access=lambda p, m: True))
+
+    def test_no_kfd_is_not_this_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(setup.amd_device_access_problem(self.dev(d, kfd=False), access=lambda p, m: False))
+
+    def test_kfd_denied_names_the_fix(self):
+        with tempfile.TemporaryDirectory() as d:
+            msg = setup.amd_device_access_problem(self.dev(d), access=lambda p, m: not p.endswith("kfd"))
+            self.assertIn("kfd", msg)
+            self.assertNotIn("renderD128", msg)
+            self.assertIn("sudo usermod -aG render,video $USER", msg)
+            self.assertIn("log out and in", msg)
+
+    def test_render_node_denied(self):
+        with tempfile.TemporaryDirectory() as d:
+            msg = setup.amd_device_access_problem(self.dev(d), access=lambda p, m: "renderD" not in p)
+            self.assertIn("renderD128", msg)
+            self.assertNotIn("/kfd", msg)
+
+    def test_engine_names_the_permission_not_another_program(self):
+        src = (Path(setup.__file__).resolve().parent / "src/program/generate.cpp").read_text(encoding="utf-8")
+        i = src.index("cannot open /dev/kfd")
+        guard = src[src.rindex("#if", 0, i):i]
+        self.assertIn("cudaGetDeviceCount", guard)
+        self.assertIn('access("/dev/kfd", R_OK | W_OK)', guard)
+        self.assertIn("STRATA_USE_HIP", guard)               # CUDA builds keep the "another program" text
+        self.assertIn("another program (or an engine that is still exiting)", src)
+
+
+class TdrPointer(unittest.TestCase):
+    def test_setup_points_windows_gfx12_to_the_entry(self):
+        src = Path(setup.__file__).read_text(encoding="utf-8")
+        self.assertIn('WIN and str(gpu.get("arch") or "").startswith("gfx12")', src)
+        doc = (Path(setup.__file__).resolve().parent / "docs/TROUBLESHOOTING.md").read_text(encoding="utf-8")
+        self.assertIn("Windows AMD: the driver resets", doc)
+        for env in ("STRATA_PF_STEP_SYNC", "STRATA_KV_HOST_DMA"):
+            self.assertIn(env, doc)
+            self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

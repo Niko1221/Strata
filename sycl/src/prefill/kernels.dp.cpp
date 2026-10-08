@@ -2444,7 +2444,16 @@ void gr_broadcast(const float* e, float* R, int64_t T, void* stream) {
     }
     check("gr_broadcast");
 }
-void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream) {
+// The prompt kernels' declarations take the model's sizes since qwen35moe (Qwen3.6-35B-A3B, docs/QWEN36.md); this
+// port has Flash-Next's kernels only, so any other size stops here instead of running the wrong shapes.
+static void flash_next_only(const char* what, bool ok) {
+    if (ok) return;
+    std::fprintf(stderr, "%s: the SYCL engine has Flash-Next's prompt kernels only (Qwen3.6 runs on CUDA)\n", what);
+    std::exit(1);
+}
+void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream,
+               int64_t hv) {
+    flash_next_only("gdn_gates", hv == HV);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2460,7 +2469,9 @@ void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate
     }
     check("gdn_gates");
 }
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream,
+              int64_t hv) {
+    flash_next_only("gdn_conv", hv == HV);
     static const bool serial = std::getenv("STRATA_GDN_CONV_SERIAL") != nullptr;   // the old walk (A/B)
     if (serial || T <= CONV_TILE) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2565,7 +2576,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
 }
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
-                            void* stream, int64_t ld16) {
+                            void* stream, int64_t ld16, int64_t hv, bool silu) {
+    flash_next_only("gdn_recurrence", hv == HV && !silu);
     if (ld16 <= 0) ld16 = (int64_t) HV * S;
 #if defined(__HIPCC__)
     if (variant == 3) {   // diagnostics: the quad recurrence + the old norm kernel
@@ -2697,15 +2709,17 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
     check("gdn_recurrence");
 }
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream, int64_t ld16) {
+                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream, int64_t ld16,
+                    int64_t hv, bool silu) {
     // Aurora (S23): four lanes per column + the grid-stride norm, the same bits (tests/hip/gdn_rec_head.cpp);
     // STRATA_GDN_HEAD=1 (on by default on gfx1151; off with STRATA_GDN_HEAD=0 or STRATA_GDN_REC_HEADS) takes them
     // (AMD builds only; the arch defaults set STRATA_GDN_HEAD=1 on gfx1151 and leave other cards on the earlier kernels)
     static const bool head = [] { const char* v = std::getenv("STRATA_GDN_HEAD"); return v != nullptr && std::atoi(v) != 0; }();
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;
-    gdn_recurrence_variant(head && !serial ? 1 : 0, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
+    gdn_recurrence_variant(head && !serial ? 1 : 0, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16, hv, silu);
 }
-void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream) {
+void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream, int64_t k) {
+    flash_next_only("route", k == 10);
     if (n_expert == 512)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2778,7 +2792,8 @@ void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, voi
     }
     check("blob_dequant_f16");
 }
-void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
+void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream, int64_t n_ff) {
+    flash_next_only("swiglu_interleaved", n_ff == 640);
     if (n <= 0) return;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2795,7 +2810,8 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
     }
     check("swiglu_interleaved");
 }
-void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream) {
+void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream, int64_t n_ff) {
+    flash_next_only("swiglu_pair", n_ff == 640);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2897,7 +2913,8 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     check("gather_rows16");
 }
 void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream) {
+                 int64_t T, void* stream, int64_t n_embd, int64_t k) {
+    flash_next_only("moe_combine", n_embd == 2560 && k == 10);
 #ifndef STRATA_W_NO_COMB
     if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared) | reinterpret_cast<uintptr_t>(bo)) & 15) == 0) {
         {
@@ -3013,7 +3030,8 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
     }
     check("rope");
 }
-void split_q(const float* q_full, float* q, int64_t T, void* stream) {
+void split_q(const float* q_full, float* q, int64_t T, void* stream, int64_t n_head) {
+    flash_next_only("split_q", n_head == 24);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -3029,7 +3047,9 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
     }
     check("split_q");
 }
-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
+void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16,
+               int64_t n_head) {
+    flash_next_only("gate_attn", n_head == 24);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

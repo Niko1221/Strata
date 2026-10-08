@@ -30,7 +30,7 @@ The file goes where every model goes (`<data>/models/qwen36-UD-IQ4_XS/`), its pa
 separate draft download. The engine finds out which model it runs from the file (`general.architecture`):
 nothing in the command line says "Qwen3.6".
 
-No ready-made engine runs it yet: the published Windows engines (0.1.40 to 0.1.40.2) were built before this model was
+No ready-made engine runs it yet: the published Windows engines (0.1.40 to 0.1.41) were built before this model was
 added. Setup looks for it in the engine and, when the ready-made one lacks it, compiles the engine on the PC instead
 (10-20 minutes, once; setup installs the compiler and the CUDA toolkit when they are missing, asking first). On Linux
 setup compiles the engine anyway. The compiled engine runs every model, Flash-Next too.

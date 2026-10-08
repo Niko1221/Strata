@@ -2386,7 +2386,7 @@ __dpct_inline__ void store_run(dst_t* y, const float* v) {
 template <typename dst_t>
 inline void dq_iq2_xxs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq2_xxs* x = (const block_iq2_xxs*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint16_t* q2 = x[ibs].qs + 4 * ib;
     const uint8_t* aux8 = (const uint8_t*) q2;
@@ -2402,7 +2402,7 @@ inline void dq_iq2_xxs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq2_xs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq2_xs* x = (const block_iq2_xs*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint16_t* q2 = x[ibs].qs + 4 * ib;
     const uint8_t* grid = (const uint8_t*) (iq2xs_grid + (q2[il] & 511));
@@ -2416,7 +2416,7 @@ inline void dq_iq2_xs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq2_s(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq2_s* x = (const block_iq2_s*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint8_t* grid = (const uint8_t*) (iq2s_grid + (x[ibs].qs[4 * ib + il] | ((x[ibs].qh[ib] << (8 - 2 * il)) & 0x300)));
     const float d = (float) x[ibs].d * (0.5f + ((x[ibs].scales[ib] >> 4 * (il / 2)) & 0xf)) * 0.25f;
@@ -2429,7 +2429,7 @@ inline void dq_iq2_s(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq3_xxs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq3_xxs* x = (const block_iq3_xxs*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint8_t* q3 = x[ibs].qs + 8 * ib;
     const uint16_t* gas = (const uint16_t*) (x[ibs].qs + QK_K / 4) + 2 * ib;
@@ -2449,7 +2449,7 @@ inline void dq_iq3_xxs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq3_s(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq3_s* x = (const block_iq3_s*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint8_t* qs = x[ibs].qs + 8 * ib;
     const uint8_t* grid1 = (const uint8_t*) (iq3s_grid + (qs[2 * il + 0] | ((x[ibs].qh[ib] << (8 - 2 * il)) & 256)));
@@ -2467,7 +2467,7 @@ inline void dq_iq3_s(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq1_m(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq1_m* x = (const block_iq1_m*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint16_t* sc = (const uint16_t*) x[ibs].scales;
     iq1m_scale_t scale;
@@ -2488,7 +2488,7 @@ inline void dq_iq4_nl(const void *vx, int64_t ibs, dst_t *yy, int tid) {
     const block_iq4_nl* x = (const block_iq4_nl*) vx + ibs * (QK_K / QK4_NL);
     // SYCL port: thread (ib, il) writes the block's values [8 il, 8 il + 8) as one run: il < 2 the low nibbles of
     // qs[8 il ..], il >= 2 the high nibbles of qs[8 (il - 2) ..] (the same values as llama.cpp's 4 + 4 split)
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;   // consecutive lanes write consecutive 16-byte runs (coalesced stores)
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint8_t* q4 = x[ib].qs + 8 * (il & 1);
     const float d = (float) x[ib].d;

@@ -8,7 +8,7 @@
 # below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
 # and is wrong about its own performance, which is the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.40.2 LANGUAGES CXX)
+project(strata VERSION 0.1.41 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -1267,8 +1267,8 @@ if(STRATA_NATIVE_EXPERTS)
     set(_strata_mmq_cuda_types ${_strata_mmq_types})
     if(STRATA_MMQ_KQUANTS)
       list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1)
-      if(STRATA_Q6K_EXPERTS)   # UD-Q6_K_XL gate/up (docs/UNSLOTH_Q6.md)
-        list(APPEND _strata_mmq_cuda_types q6_k)
+      if(STRATA_Q6K_EXPERTS OR STRATA_HIP_GFX906)   # UD-Q6_K_XL gate/up (docs/UNSLOTH_Q6.md),
+        list(APPEND _strata_mmq_cuda_types q6_k)    #   and gfx906: moe_mmq.cu calls it under __HIPCC__
       endif()
     endif()
     foreach(_t IN LISTS _strata_mmq_cuda_types)
@@ -1454,6 +1454,7 @@ if(STRATA_BUILD_TESTS)
   add_executable(expert_multi_test src/kernels/cpu/expert_multi_test.cpp)
   target_link_libraries(expert_multi_test PRIVATE strata_kernels_cpu)
   add_test(NAME expert_multi_test COMMAND expert_multi_test)
+  set_tests_properties(expert_multi_test PROPERTIES SKIP_RETURN_CODE 77)   # no AVX-512: skipped
 
   # PR #706: the opt-in AVX-2 Q2_0 bit-plane kernel (STRATA_Q2_BITPLANE=1) against the legacy one, bitwise alone/window
   if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|x64|X86")
@@ -1477,6 +1478,41 @@ if(STRATA_BUILD_TESTS)
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)
   add_test(NAME pool_stress COMMAND pool_stress 20)
+
+  # #795: nothing an AVX2-only CPU can reach may hold AVX-512 / AVX-VNNI-class instructions.  (1) the linked test binary
+  # (every CPU kernel file plus ggml-cpu; on Linux, the kernel library) is disassembled and any function with such instructions must be a kernel of
+  # a wide-ISA file, not a weak / COMDAT copy and not a probe or helper that every CPU runs; (2) with -DSTRATA_SDE=<sde>
+  # (Intel SDE) the CPU tests run on an emulated AVX2-only Haswell and on an Alder Lake (AVX-VNNI, no AVX-512): SDE stops
+  # at the first instruction the chip does not have.
+  if(TARGET iq_avx2_parity)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+      if(MSVC)
+        target_link_options(iq_avx2_parity PRIVATE /MAP)
+        add_test(NAME isa_guard_check COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_isa_guard.py
+                 $<TARGET_FILE:iq_avx2_parity> --map $<TARGET_FILE_DIR:iq_avx2_parity>/iq_avx2_parity.map)
+      else()
+        # the library, not the binary: a Linux source build compiles ggml-cpu for the build machine on purpose
+        add_test(NAME isa_guard_check COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_isa_guard.py
+                 $<TARGET_FILE:strata_kernels_cpu>)
+      endif()
+      set_tests_properties(isa_guard_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
+  endif()
+  set(STRATA_SDE "" CACHE FILEPATH "Intel SDE (sde / sde64): also run the CPU tests on an emulated AVX2-only and an AVX-VNNI-only CPU")
+  if(STRATA_SDE AND TARGET iq_avx2_parity)
+    foreach(_chip hsw adl)
+      foreach(_t iq_avx2_parity q8k_quant_parity router_dot_parity pool_tasks_test q2_bitplane_parity)
+        if(TARGET ${_t})
+          add_test(NAME sde_${_chip}_${_t} COMMAND ${STRATA_SDE} -${_chip} -- $<TARGET_FILE:${_t}>)
+          set_tests_properties(sde_${_chip}_${_t} PROPERTIES TIMEOUT 900)
+        endif()
+      endforeach()
+      if(TARGET q2_bitplane_parity)
+        set_tests_properties(sde_${_chip}_q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1")
+      endif()
+    endforeach()
+  endif()
 
   if(UNIX AND NOT APPLE)
     add_executable(direct_file_async_test tests/platform/direct_file_async.cpp src/platform/direct_file.cpp)
