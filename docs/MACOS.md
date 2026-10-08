@@ -1,7 +1,7 @@
 # Strata on a Mac (Apple Silicon)
 
-**Experimental: tested on one Mac.** A MacBook Pro M5 Max (40-core GPU, 128 GB) on macOS 26.4, with the Q2_0 model
-at a 32K context. Other Apple Silicon Macs and other model files are untested. Read
+**Experimental: tested on one Mac.** A MacBook Pro M5 Max (40-core GPU, 128 GB) on macOS 26.4, with the Q2_0 and
+IQ3_S models. Other Apple Silicon Macs and other model files are untested. Read
 [Limits and warnings](#limits-and-warnings) before you install.
 
 On a Mac, Strata serves the same web app and APIs (OpenAI, Anthropic, Responses, MCP) as on a PC. The engine under
@@ -39,7 +39,7 @@ make run                     # starts it; open http://127.0.0.1:8080 when it say
 ([ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF),
 pinned to one revision), plus the 0.9 GB image encoder if you answer yes to images. The files go to `Strata-data/`
 next to the `Strata` folder; each one's size is checked against the server's when it finishes. If the download stops,
-run the same command again: it continues where it stopped. Q2_0 is the only size tested on a Mac. Add
+run the same command again: it continues where it stopped. Q2_0 and IQ3_S (`make pull MODEL=IQ3_S`, 83.6 GB) are the sizes tested on a Mac. Add
 `SETUP_ARGS="--yes"` to skip the questions, and set `HF_ENDPOINT` to use a Hugging Face mirror.
 
 `make run` alone also works the first time: it asks the same questions, downloads, then starts.
@@ -62,10 +62,10 @@ If setup stops, it says what is missing and the command that fixes it.
 
 - **Memory.** A Mac's CPU and GPU share one memory. Metal sets a limit on how much the GPU may use at once
   (`recommendedMaxWorkingSetSize`); `make check` prints this Mac's value. On the test Mac it was 107.5 of 128 GB; it
-  differs between Macs and macOS versions. Q2_0's weights take about 35 GB of it, plus the context's cache. Everything
+  differs between Macs and macOS versions. Q2_0's weights take about 35 GB of it (IQ3_S's about 51 GB), plus the context's cache. Everything
   the Mac does shares the same memory, so close other large apps. Below 128 GB only the 64 GB floor applies: nobody
   has measured how close a 64 GB Mac gets.
-- **Only Q2_0 was tested.** `make check` marks the other sizes "untested on a Mac". On a PC, the Unsloth sizes
+- **Only Q2_0 and IQ3_S were tested.** `make check` marks the other sizes "untested on a Mac". On a PC, the Unsloth sizes
   (UD-Q4_K_XL, UD-IQ4_XS) stream part of their experts from the SSD; the Mac engine cannot, so all of a model's experts
   must fit in Metal's limit. UD-Q4_K_XL (111 GB) is larger than the test Mac's default limit.
 - **Speed.** On the test Mac: 13-17 tokens/s for the answer and 225-270 tokens/s to read a prompt, with other programs
@@ -134,6 +134,28 @@ medians of 3, 2026-10-06, with other programs running (the answer speed moved by
 - Two requests at once with MTP: 17.2 tok/s together against 18.7 one after the other (batch slots decode without
   drafts). llama.cpp's `batched-bench` without MTP: 13.2 tok/s for one sequence, 22.5 for two, 29.7 for four.
 - The engine adds nothing on top of llama.cpp: `llama-bench` on the same file gives 16.9 tok/s output.
+
+### IQ3_S compared with Q2_0
+
+IQ3_S (3.5 bits) has 46% more expert weights than Q2_0 (54.8 GB against 37.6 GB in the first file; the 28.8 GB
+n-gram file is the same), so it was expected to write about 30% slower. Measured on the test Mac, 2026-10-08: the same
+settings for both (128K context, f16 cache, `--mtp on`, 2 batch slots), greedy, thinking off, through the OpenAI API,
+the two models loaded in turns (IQ3_S, Q2_0, IQ3_S, Q2_0), medians of 4 runs, with a Rust build, a virtual machine
+and Docker running (load average 10-40).
+
+| | Q2_0 | IQ3_S | IQ3_S / Q2_0 |
+|---|---:|---:|---:|
+| Writes the answer, short prompt (33 tokens) | 27.3 tok/s (25.7-29.7) | 24.3 tok/s (21.1-27.0) | 0.89 |
+| Writes the answer, 3,775-token prompt | 24.4 tok/s (18.6-27.2) | 22.6 tok/s (22.3-24.0) | 0.93 |
+| Reads the 3,775-token prompt | ~367 tok/s | ~346 tok/s | 0.94 |
+| MTP drafts accepted | 60-64% | 53-58% | |
+| Engine memory at a 128K context | | ~74 GB | |
+
+- IQ3_S is only 7-11% slower: most of a token's time here is fixed work that does not grow with the weights (the
+  CPU that dispatches the GPU's work, the recurrent layers, the MTP draft), not reading the weights. Its drafts are
+  accepted a little less often, which costs part of that gap.
+- Q2_0's 18.6 tok/s run came when the load average reached 40; without it, the long-prompt range is 24.3-27.2.
+- So on this Mac IQ3_S costs about a tenth of the speed and 16 GB more memory for the better quality.
 
 ### Compared with MLX (mlx-lm)
 

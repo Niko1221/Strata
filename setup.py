@@ -5159,11 +5159,11 @@ def main() -> int:
             # a Mac's GPU gets ~75-85% of the memory, so the RAM figures of a PC undercount it: 64 GB is the floor there
             need_gb = max(d["ram_gb"], 64) if MAC else d["ram_gb"]
             verdict = "fits" if ram >= need_gb else "tight" if ram >= need_gb - 8 else "does not fit"
-            if MAC:                                    # docs/MACOS.md: only Q2_0 was measured on a Mac
+            if MAC:                                    # docs/MACOS.md: only Q2_0 and IQ3_S were measured on a Mac
                 if d.get("budget"):
                     verdict = verdict if verdict == "does not fit" else ("untested on a Mac: the Metal engine does not "
                                                                          "stream experts from the SSD, so all must fit in Metal's memory limit")
-                elif m != "Q2_0" and not verdict.startswith("does not fit"):
+                elif m not in ("Q2_0", "IQ3_S") and not verdict.startswith("does not fit"):
                     verdict += " - untested on a Mac"
                 any_fits = any_fits or not verdict.startswith("does not fit")
                 say(f"  {m:8s} needs ~{need_gb} GB RAM: {verdict}")
