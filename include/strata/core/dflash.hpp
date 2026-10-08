@@ -195,7 +195,13 @@ private:
     int64_t window_ = 0, cap_ = 0, attn_scratch_floats_ = 0;
 
     // buffers: at most 8 rows ride through the forward at once
-    int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr;
+    int32_t *tok_ = nullptr, *step_ = nullptr, *attn_step_ = nullptr;
+    int32_t *pos_ = nullptr, *poskv_ = nullptr;   ///< the rope positions, built on the DEVICE once
+                                                  ///< per forward (dflash_build_positions): the query
+                                                  ///< rows' [row][head] at pos+r, and the KV rows'
+                                                  ///< [row][head_kv].  No host staging - the pinned
+                                                  ///< h_pos_/h_step_ pair and its two-region race
+                                                  ///< dance existed only for the staging copies
     uint16_t *tapin_ = nullptr, *xn16_ = nullptr, *attn16_ = nullptr;
     float *tapf_ = nullptr, *emb_ = nullptr, *h_ = nullptr, *xn_ = nullptr, *ctx_ = nullptr;
     float *q_ = nullptr, *kc_ = nullptr, *vc_ = nullptr, *attn_ = nullptr, *bo_ = nullptr;
@@ -204,16 +210,6 @@ private:
     int32_t* out_ = nullptr;         ///< the block's picks, device alias
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory
     int32_t* h_tok_ = nullptr;       ///< host-side token ids staged to tok_
-    int32_t* h_step_ = nullptr;      ///< host-side step records staged to step_
-    int32_t* h_pos_ = nullptr;       ///< host-side per-head positions staged to pos_;
-                                     ///< [0, max_rows*n_head) = the query rows' positions (the same
-                                     ///< values every layer), [pos_kv_off_, +n_head_kv per row) =
-                                     ///< the KV rows' positions - TWO DISJOINT regions, because a
-                                     ///< pinned buffer rewritten while an earlier enqueued copy of
-                                     ///  it is still pending hands the copy the NEW bytes (the
-                                     ///  row-0-only rope corruption); within one region every
-                                     ///  rewrite writes the same values, so a race is harmless
-    int64_t pos_kv_off_ = 0;         ///< the KV region's first index (int32) inside h_pos_
     void* attn_scratch_ = nullptr;
     int64_t max_rows_ = 0;
     int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
