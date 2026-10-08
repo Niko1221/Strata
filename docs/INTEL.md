@@ -715,6 +715,15 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   `STRATA_SYCL_SPIN_MAX` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`): 2,000,000 reads (a few seconds) unless the build is an
   AOT build for a `bmg` card, which keeps 20,000. Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
   token 0 in the first request; with 2,000,000 reads 4 of 4 were right in all three requests.
+- **Kernels misread memory more than 4 GiB into an allocation (fixed in the build).** On an Arc A770 (16 GB, `xe`, Coder
+  IQ1_M, `--stream-experts`, a 4.46 GiB expert cache) every prompt answered `!!!!` (token 0): the experts in the cache's
+  last 0.46 GiB dequantized to NaN in the prompt path. A copy of those slots read back equal to the GGUF
+  (`STRATA_VERIFY_ALL_SLOTS` passed) and a fresh device copy of the same bytes dequantized clean; only a kernel reading
+  the slot in place got wrong bytes. In a JIT build IGC addresses a kernel's pointer arguments as a 32-bit offset from
+  the allocation's base. The JIT build now passes `-ze-opt-greater-than-4GB-buffer-required` (`sycl/CMakeLists.txt`),
+  which keeps the kernels on 64-bit addresses. After the change, prompts of 73 to 542 tokens had 0 non-finite values
+  (`STRATA_DBG_NAN=1`) and the 542-token prompt answered right. The speed cost is not measured. The AOT (`bmg-*`) build is
+  unchanged. oneMKL's own precompiled kernels do not get the option; the GEMM stages an operand past 4 GiB for that.
 - **Speed.** About 10 to 15 tok/s decode (76 to 92% of the drafts accepted), a 26-token first prompt in 13 s and later short prompts in 0.2 to
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
