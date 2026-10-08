@@ -1,0 +1,5 @@
+same requests, same positions; KL in nats
+arm          positions   KL vs Q8_0 0.1.40.3   KL vs Q8_0 0.1.41   0.1.40.3 -> 0.1.41 KL  top-1 same
+q8_0             17339                   nan                 nan                  0.0224       96.6%
+ud-q4_k_xl       17339                0.0518              0.0558                  0.0216       97.0%
+ud-q5_k_xl       17339                0.0317              0.0346                  0.0230       96.6%

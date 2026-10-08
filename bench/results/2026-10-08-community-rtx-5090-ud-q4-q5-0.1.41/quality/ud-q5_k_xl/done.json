@@ -1,0 +1,32 @@
+{
+ "engine": {
+  "model": "quality-ud-q5_k_xl",
+  "max_context": 49152,
+  "images": false,
+  "version": "0.1.41",
+  "context": 49152,
+  "kv": "int8",
+  "kv_resident": 0,
+  "expert_slots": 6217,
+  "expert_cache_mib": 23736,
+  "expert_slots_primary": 6217,
+  "expert_cache_primary_mib": 23736,
+  "spec": 6,
+  "mtp_max": 4,
+  "lookup": 3,
+  "vram_free_mib": 142,
+  "cvec": 0,
+  "arena_mib": 57340,
+  "pool_workers": 15,
+  "pcie_frac": "0.55",
+  "spec_min_p": "0.70",
+  "conversation_cache_mib": 0,
+  "conversation_cache_slots": 4,
+  "conversation_cache_min_free_mib": 2560,
+  "tail_role_token": -1,
+  "vram_elastic": 0,
+  "engine": "0.1.41"
+ },
+ "load_s": 45.1,
+ "total_s": 461.3
+}

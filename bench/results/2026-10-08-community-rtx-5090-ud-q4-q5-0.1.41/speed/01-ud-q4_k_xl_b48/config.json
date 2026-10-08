@@ -1,0 +1,51 @@
+{
+ "exe": "/home/chris/src/Strata-0.1.41/build/strata",
+ "args": [
+  "--pack",
+  "/home/chris/src/Strata-0.1.41/packs/ud-q4_k_xl",
+  "--native",
+  "/home/chris/models/unsloth/Qwen3.8-Flash-Next-GGUF/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "--expert-profile",
+  "/home/chris/src/Strata-0.1.41/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--mtp",
+  "/home/chris/models/strata/mtp/rt",
+  "--max-context",
+  "250000",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--pcie-frac",
+  "0.00",
+  "--spec-min-p",
+  "0.70",
+  "--conversation-cache-mib",
+  "6144",
+  "--conversation-cache-slots",
+  "3",
+  "--conversation-cache-min-free-mib",
+  "2048",
+  "--resident-budget-gib",
+  "48"
+ ],
+ "cwd": "/home/chris/src/Strata-0.1.41",
+ "tokenizer": "/home/chris/src/Strata-0.1.41/packs/ud-q4_k_xl/tokenizer",
+ "model_name": "bench-ud-q4_k_xl",
+ "log": "/home/chris/strata-ablation/20261008-170929/cells/01-model=ud-q4_k_xl_b48_Strata-0.1.41/engine.log",
+ "lib_dirs": [
+  "/usr/local/cuda-13.3/bin",
+  "/usr/local/cuda-13.3/lib64"
+ ],
+ "port": 8097,
+ "gpu": 0,
+ "gpus_asked": true,
+ "env": {
+  "STRATA_PF_FUSED": "1"
+ }
+}

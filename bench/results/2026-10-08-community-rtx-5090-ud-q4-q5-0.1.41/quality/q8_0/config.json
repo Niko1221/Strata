@@ -1,0 +1,40 @@
+{
+ "exe": "/home/chris/src/Strata-0.1.41/build/strata",
+ "args": [
+  "--pack",
+  "/home/chris/src/Strata-0.1.41/packs/q8_0",
+  "--native",
+  "/home/chris/models/unsloth/Qwen3.8-Flash-Next-GGUF/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+  "--expert-profile",
+  "/home/chris/src/Strata-0.1.41/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.70",
+  "--max-context",
+  "49152",
+  "--kv",
+  "int8",
+  "--short-read",
+  "1024",
+  "--adapt-every",
+  "100000",
+  "--mtp",
+  "/home/chris/models/strata/mtp/rt",
+  "--resident-budget-gib",
+  "56"
+ ],
+ "cwd": "/home/chris/src/Strata-0.1.41",
+ "tokenizer": "/home/chris/src/Strata-0.1.41/packs/q8_0/tokenizer",
+ "model_name": "quality-q8_0",
+ "lib_dirs": [
+  "/usr/local/cuda-13.3/bin",
+  "/usr/local/cuda-13.3/lib64"
+ ],
+ "port": 8096,
+ "log": "/home/chris/v041/quality/arms/q8_0/engine.log"
+}

@@ -26,6 +26,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-07: 2x NVIDIA Quadro RTX 4000 8 GB, Xeon E5-2620 v3, 96 GB RAM](../bench/results/2026-10-07-community-2x-rtx-4000/README.md):
   Strata 0.1.38, Swift-Qwen3.8-Flash-Next IQ2_XS, 131,072-token context, layer split across dual GPUs with RAM-tiered expert cache;
   measured deep-context prompt ingestion (73k–74k tokens at 100–250 tok/s, 18–23 tok/s decode) and production pipeline comparison against a 12B model.
+- [2026-10-08: RTX 5090, Ryzen 9 9950X3D, 89 GiB RAM](../bench/results/2026-10-08-community-rtx-5090-ud-q4-q5-0.1.41/README.md):
+  Strata v0.1.41 source build with #1612, unsloth UD-Q4_K_XL and UD-Q5_K_XL with and without images, 48 GiB RAM budget;
+  three runs each at 4,096 and 32,768 prompt tokens, KL against unsloth Q8_0 on 30 public-text requests, and a three-question image check on each quant.
 
 ## What to record
 
