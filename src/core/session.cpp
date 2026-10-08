@@ -76,7 +76,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     // zero-sized on a GLM geometry (no GDN channels, no QSA layers, no PLE), so one expression sizes both and
     // there is no arch branch to forget at one of the three carve sites.
     if (g.arch == Arch::Glm5Next) {
-        n += glm_buffers_bytes(g);
+        n += glm_buffers_bytes(g, 1, max_cells);
         // The chunked-prefill rows, ZERO at the default `glm_chunk == 1`.  The single-token path reads none of
         // them, so a decode run's session stays byte-for-byte the size it was - which is what makes the
         // `--prefill 1` arm of the verification a genuine control rather than "the same code with a 240 KiB
@@ -162,8 +162,8 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.glm_state_arena = nullptr;
     s.glm_state_bytes = 0;
     if (g.arch == Arch::Glm5Next) {
-        s.glm_arena = take(glm_buffers_bytes(g));
-        glm_buffers_init(g, 1, s.glm_arena, s.glm);
+        s.glm_arena = take(glm_buffers_bytes(g, 1, max_cells));
+        glm_buffers_init(g, 1, max_cells, s.glm_arena, s.glm);
         // The chunked-prefill rows.  `glm_chunk_tokens` is what `session_token_chunk` checks a request against,
         // so it stays 1 - "no chunk is carved" - when chunking was not asked for.
         if (glm_chunk > 1) {

@@ -158,6 +158,12 @@ void glm_swiglu(float* gate, const float* up, float limit, int64_t n, void* stre
 /// `dst += src`.
 void glm_add_inplace(float* dst, const float* src, int64_t n, void* stream);
 
+/// THE INDEXER'S KEY NORM - the only LayerNorm in this arch, with a weight AND a bias.  `x`/`y` are `rows`
+/// columns of `cols` elements with the width fastest, and `y == x` is allowed.  `eps` is the model's
+/// `attention.layer_norm_rms_epsilon`; see `glm_elt.cu` for why a mean-centred norm is not an RMSNorm here.
+void glm_layer_norm(const float* x, const float* w, const float* b, float* y, int64_t rows, int64_t cols,
+                    float eps, void* stream);
+
 /// `dst[i] *= sigmoid(z[i])` - KDA's output gate, which is a SIGMOID here (qwen4exp's GDN uses one too, but
 /// only after a different norm; the pair is easy to conflate and neither output looks wrong).
 void glm_sigmoid_mul(float* dst, const float* z, int64_t n, void* stream);

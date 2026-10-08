@@ -23,10 +23,22 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 
 namespace strata::kernels {
+
+/// The opt-in switch.  One atomic read per layer per token, and an atomic because the CLI sets it on the main
+/// thread while a session may already have been created - the alternative (a plain bool) is a data race the
+/// standard does not forgive just because it is set once before any read in practice.
+namespace {
+std::atomic<bool> dsa_enabled{false};
+}  // namespace
+
+void glm_dsa_set_enabled(bool enabled) { dsa_enabled.store(enabled, std::memory_order_relaxed); }
+bool glm_dsa_enabled() { return dsa_enabled.load(std::memory_order_relaxed); }
+
 namespace {
 
 constexpr int DS_THREADS = 256;

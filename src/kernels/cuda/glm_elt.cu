@@ -49,6 +49,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -93,6 +94,55 @@ __global__ void add_inplace_kernel(float* __restrict__ dst, const float* __restr
 __global__ void sigmoid_mul_kernel(float* __restrict__ dst, const float* __restrict__ z, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] *= 1.0f / (1.0f + expf(-z[i]));
+}
+
+/// THE ONE NORM IN THIS ARCH WITH A WEIGHT **AND A BIAS**: the DSA indexer's key norm
+/// (`indexer.k_norm.weight` / `.bias`, 128 elements each).  Every other norm here is an RMSNorm with a weight
+/// only, and reaching for one of those would run and produce a plausible key.
+///
+/// It is a MEAN-CENTRED norm, so it is not `rms_norm_weighted` with a zero bias bolted on, and the variance is
+/// the BIASED one from the second moment:
+///
+///     mu = mean(x);  inv = rsqrt(mean(x*x) - mu*mu + eps);  y = (x - mu) * inv * w + b
+///
+/// which is `layer_norm_kernel` in Project Maya's `glm_model.cu:112-140` — the only transcription of this step
+/// outside the two llama.cpp trees, and the one whose arithmetic the ladder oracle's CUDA path also uses.
+/// `eps` is `attention.layer_norm_rms_epsilon` (1e-5 on this model), the same number the RMSNorms take; it is
+/// added INSIDE the root, so it bounds the divide and not the variance.
+///
+/// ONE BLOCK PER ROW, with the row strided across the block: `dim` is 128, so most of a 256-thread block is idle
+/// in the second pass and the reduction is 8 steps deep.  That is deliberate and copied: the alternative (a
+/// warp-per-row shuffle form) changes the summation ORDER, and this norm feeds a selection whose ties are
+/// resolved by the value of a dot product.
+constexpr int LN_THREADS = 256;
+
+__global__ void layer_norm_kernel(const float* __restrict__ x, const float* __restrict__ w,
+                                  const float* __restrict__ b, float* __restrict__ y, int dim, float eps) {
+    __shared__ float s_sum[LN_THREADS];
+    __shared__ float s_sq[LN_THREADS];
+    const int tid = (int) threadIdx.x;
+    const float* xr = x + (size_t) dim * blockIdx.x;
+    float* yr = y + (size_t) dim * blockIdx.x;
+
+    float sum = 0.0f, sq = 0.0f;
+    for (int e = tid; e < dim; e += LN_THREADS) {
+        const float v = xr[e];
+        sum += v;
+        sq += v * v;
+    }
+    s_sum[tid] = sum;
+    s_sq[tid] = sq;
+    __syncthreads();
+    for (int span = LN_THREADS / 2; span > 0; span >>= 1) {
+        if (tid < span) {
+            s_sum[tid] += s_sum[tid + span];
+            s_sq[tid] += s_sq[tid + span];
+        }
+        __syncthreads();
+    }
+    const float mu = s_sum[0] / (float) dim;
+    const float inv = rsqrtf(s_sq[0] / (float) dim - mu * mu + eps);
+    for (int e = tid; e < dim; e += LN_THREADS) yr[e] = (xr[e] - mu) * inv * w[e] + b[e];
 }
 
 /// `y[o] = sum_i W[o][i] * x[i]`, W row-major `[n_out, n_in]`, F32.
@@ -224,6 +274,21 @@ void glm_sigmoid_mul(float* dst, const float* z, int64_t n, void* stream) {
     sigmoid_mul_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(dst, z, n);
     check_launch("glm_sigmoid_mul");
     sync_if_needed(stream, "glm_sigmoid_mul");
+}
+
+void glm_layer_norm(const float* x, const float* w, const float* b, float* y, int64_t rows, int64_t cols,
+                    float eps, void* stream) {
+    if (rows <= 0 || cols <= 0) return;
+    if (cols > INT32_MAX || rows > 65535) {
+        std::fprintf(stderr, "glm_layer_norm: %lld rows of %lld exceed the launch's int/grid\n", (long long) rows,
+                     (long long) cols);
+        return;
+    }
+    // IN PLACE IS ALLOWED and is how the indexer calls it: a row is read into registers before anything is
+    // written (the two passes are separated by `__syncthreads`), so `x == y` needs no extra buffer.
+    layer_norm_kernel<<<(unsigned) rows, LN_THREADS, 0, (cudaStream_t) stream>>>(x, w, b, y, (int) cols, eps);
+    check_launch("glm_layer_norm");
+    sync_if_needed(stream, "glm_layer_norm");
 }
 
 void glm_f32_gemv(const float* x, const float* w, float* y, int64_t n_in, int64_t n_out, void* stream) {

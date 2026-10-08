@@ -48,6 +48,7 @@
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/glm_dsa.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -402,6 +403,11 @@ struct Options {
     std::string dump_routing;
     bool no_capture = false;          // run the layers directly instead of replaying graphs
     bool no_pool = false;             // skip the CPU expert pool: the GPU-only floor
+    /// glm5-next only: run the DSA k-pool indexer in the MLA layers, attending the `idx_top_k` cells it
+    /// selects instead of the whole cache.  The two agree exactly while everything is selected, so this is a
+    /// feature above ~2048 cells and not a correctness fix; off is the reference's own default (`cparams.dsa`).
+    /// Refused on any other arch, which has its own indexer behind `--native-qsa-indexer`.
+    bool dsa = false;
     bool sync_every_layer = false;
     /// Per-stage CUDA-event timings inside the layer halves.  `--no-capture` only: an event recorded inside a
     /// stream capture is silently dropped, so the captured path cannot carry this.
@@ -779,6 +785,9 @@ void usage() {
                  "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
+                 "  --dsa                glm5-next: attend the 2048 cells the DSA k-pool indexer selects instead\n"
+                 "                       of the whole cache.  Identical below ~2048 cells; above, it is the model's\n"
+                 "                       own attention\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
                  "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
                  "                       which changes every number downstream - pass it for any real run\n"
@@ -1798,6 +1807,7 @@ int main(int argc, char** argv) {
         else if (a == "--native-dense-gguf") o.native_dense_gguf.push_back(next("--native-dense-gguf"));
         else if (a == "--no-capture") o.no_capture = true;
         else if (a == "--no-pool") o.no_pool = true;
+        else if (a == "--dsa") o.dsa = true;
         else if (a == "--sync-every-layer") o.sync_every_layer = true;
         else if (a == "--stage-timing") o.stage_timing = true;
         else if (a == "--graph-only") o.graph_only = true;
@@ -3222,6 +3232,7 @@ int main(int argc, char** argv) {
     strata::kernels::native_router_set_enabled(o.native_router);
     strata::kernels::native_qsa_set_enabled(o.native_qsa);
     strata::kernels::native_qsa_indexer_set_enabled(o.native_qsa_indexer);
+    strata::kernels::glm_dsa_set_enabled(o.dsa);
     strata::kernels::native_rope_set_enabled(o.native_rope);
     // The vision path: every rope kernel reads a cell's (t, h, w) from this table (strata/kernels/mrope.hpp).  It is
     // the identity until an image request, and it is set here, before any CUDA graph captures a rope kernel.
@@ -4400,6 +4411,24 @@ int main(int argc, char** argv) {
     strata::core::GlmExpertPool glm_pool_store;
     strata::core::GlmPoolFn glm_pool_fn = nullptr;
     void* glm_pool_user = nullptr;
+    // --dsa BEFORE the arch branch, because its two refusals are about the ARCH and not about glm5-next's own
+    // wiring: another family has its own indexer behind `--native-qsa-indexer`, and a glm5-next pack without the
+    // indexer geometry would run a selection over a zero-pool score row - `glm_dsa_select` would pad every cell
+    // to -1 and the layer would attend nothing, silently and fluently.
+    if (o.dsa) {
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            std::fprintf(stderr, "strata generate: --dsa is glm5-next's k-pool indexer; %s has its own behind "
+                                 "--native-qsa-indexer\n", strata::core::arch_name(g.arch));
+            return 2;
+        }
+        if (g.idx_key_dim <= 0 || g.idx_q_heads <= 0 || g.idx_kpool <= 0 || g.idx_top_k <= 0) {
+            std::fprintf(stderr, "strata generate: --dsa needs the indexer geometry (key_dim %lld, q_heads %lld, "
+                                 "kpool %lld, top_k %lld) and this pack carries none\n",
+                         (long long) g.idx_key_dim, (long long) g.idx_q_heads, (long long) g.idx_kpool,
+                         (long long) g.idx_top_k);
+            return 2;
+        }
+    }
     if (g.arch == strata::core::Arch::Glm5Next) {
         if (!o.no_capture) {
             o.no_capture = true;
@@ -7785,7 +7814,7 @@ int main(int argc, char** argv) {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
                     {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
                     {"native_gdn", o.native_gdn}, {"native_flash_attn_short", o.native_flash_attn_short},
-                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa},
+                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa}, {"dsa", o.dsa},
                     {"native_rope", o.native_rope}, {"native_ple_postops", o.native_ple_postops},
                     {"native_router", o.native_router}, {"cpu_oracle_q8_0", o.cpu_oracle_q8_0},
                     {"gr_fp32_activations", o.gr_fp32_activations}, {"gr_native_mmvf", o.gr_native_mmvf},

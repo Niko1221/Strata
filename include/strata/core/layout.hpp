@@ -87,6 +87,16 @@ struct ModelGeometry {
     int64_t hc_mix = 0;             // 24 = hc*(2+hc): pre(4) + post(4) + comb(16)
     int64_t idx_top_k = 0;          // 2048
     int64_t idx_kpool = 0;          // 4
+    /// Whether the DSA selection appends the incomplete tail of the last pool.  **THE TWO ORACLES DISAGREE AND
+    /// THE MODEL DOES NOT SAY**: ik_llama.cpp builds the tail whenever `kpool > 1` and reads no key at all;
+    /// upstream llama.cpp reads `attention.indexer.kpool_select_tail`, defaulting to false; and every artifact in
+    /// hand (`l4.gguf`'s metadata was read key by key) carries NEITHER.  So this is a choice, and the choice is
+    /// ik - the oracle the ladder runs against.  See `glm_dsa.hpp` for the full disagreement.
+    ///
+    /// It matters at the START of a sequence and nowhere else: with the tail off, the first `kpool - 1` tokens
+    /// have no complete pool to attend to and see nothing at all.  A pack that carries the key is not honoured
+    /// here, because none does and a silently-followed second reading is worse than a stated one.
+    int64_t idx_select_tail = 0;
     double expert_weights_scale = 0.0;  // 2.5, applied after the sum-normalisation
     /// The SwiGLU clamp limit, two of them because glm5-next carries two: the ROUTED experts read
     /// `swiglu_clamp_exp` and the dense-lead layers plus the shared expert read `swiglu_clamp_shexp`.  Both are
@@ -171,6 +181,7 @@ inline ModelGeometry glm5next_geometry() {
     g.idx_key_dim = 128;
     g.idx_top_k = 2048;
     g.idx_kpool = 4;
+    g.idx_select_tail = 1;         // ik's reading; the model carries no key either way (see the field)
 
     g.hc = 4;
     g.hc_mix = 24;

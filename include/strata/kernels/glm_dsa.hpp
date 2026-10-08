@@ -45,6 +45,32 @@
 // the model was trained to see.  It is a parameter and not a constant so the other reading stays reachable and
 // testable - `glm_parity` runs both.
 //
+// ---- A SECOND, SMALLER DIVERGENCE: ik's `n_sel` reserves room for the tail, and we do not.
+//
+// ik's selection width is a MINIMUM OF THREE terms (`build_glm5next.cpp:151-155`), not our two:
+//
+//     n_sel = min(n_pool, indexer_top_k / r, (n_kv - tail_cnt) / r)      tail_cnt = tail_cells ? r-1 : 0
+//
+// and `tail_cells` is non-null whenever `r > 1` (the same unconditional construction as `select_tail` above), so
+// on this model the third term is `(n_kv - 3) / 4`.  ik states its purpose in the line above it: "reserve room
+// for the tail (r-1 cells) so r*n_sel + (r-1) <= n_kv; dense fallback if the cache is too small".  It is a bound
+// on a STATIC graph shape - ik's cell list is a concat of two `ggml` tensors whose sizes are fixed at build time.
+//
+// We have no such shape to satisfy: `cells` is a row of `n_sel` ints sized once from `top_k/kpool` and the tail,
+// and a selection that ran past the cache is not representable-but-wrong here, it simply is shorter.  We select
+// `min(top_k/kpool, pools completed)`.  Copying the guard would import a batching artifact into the model's
+// attention: under it ik's cells depend on `n_kv`, which is the ubatch's END (`llama-build-context.cpp:66`,
+// `n_kv = worst_case ? kv_self.size : kv_self.n`) - so identical tokens at the same position would select
+// differently under `-b 64` and `-b 512`.
+//
+// MEASURED, and the reason this is a note rather than a code change: at `-c 512` with the default `top_k` 2048,
+// ik's `--dsa` output is BYTE-IDENTICAL to its own no-`--dsa` output over all 255 scored rows of chunk 0, and
+// stays byte-identical at `-b 64` (llama-perplexity on `l4.gguf`, PPL 91142.1138 in every one of the four runs).
+// ik's cap there is (512-3)/4 = 127, and no scored row has 128 visible pools - the 128th appears only at the
+// cache's final cell, whose row perplexity cannot score because it has no next token.  So the term binds, if it
+// ever does, at exactly one position per full cache, and above ~2051 cells `top_k/kpool` binds for both engines
+// and the guard is inert.
+//
 // ---- LAYOUT CONTRACTS.  All f32, ggml order (features fastest); the token is the outermost axis.
 //
 //   ik, ig        [key_dim, n_cells]        e + key_dim*c      the cache is indexed by CELL, one row per token
@@ -64,11 +90,30 @@
 //
 // **`glm_dsa_pool` READS `ik`/`ig` FROM POOL 0**, so pooling a range that does not start at 0 must offset both
 // pointers by `lo * kpool * key_dim` and `pooled` by `lo * key_dim`.
+//
+// **AND THE ENGINE EXPLOITS THAT: IT KEEPS ONLY THE POOL IN PROGRESS.**  A cell's `ik`/`ig` are read exactly once
+// - by the pool that contains them - and never again, so the engine stores `kpool` cells of key and gate rather
+// than the whole `[key_dim, n_cells]` history the reference's cache holds.  Each token's row is copied into the
+// slot `pos % kpool`, and the pool runs on completion with `n_pools = 1`.  At a 16K context that is 4 KB of
+// partial state a layer instead of 16 MB of history, and `pooled` (the only part anything reads later) is the
+// same size either way.  The arithmetic is identical: `glm_dsa_pool` reads members 0..kpool-1 of one pool in
+// both forms, and the only difference is which rows of memory are contiguous.
 #pragma once
 
 #include <cstdint>
 
 namespace strata::kernels {
+
+/// **WHETHER THE ENGINE RUNS THE INDEXER AT ALL.**  Off is the reference's own default (`cparams.dsa = false`)
+/// and it is what this port did before the indexer existed: `glm_mla_attn` over every cell up to the query.
+///
+/// It is a process-wide switch set once from the CLI (`--dsa`), not a parameter threaded through the block, for
+/// the reason `native_qsa_indexer_set_enabled` is: it reaches `mla_layer` without every layer's signature
+/// growing an argument, and it is the same shape as the family's other opt-in kernels.  The session's STATE
+/// SIZE does not depend on it (the indexer's carve is taken either way), so nothing that is sized once can
+/// disagree with something that is read later.
+void glm_dsa_set_enabled(bool enabled);
+bool glm_dsa_enabled();
 
 /// The number of pools a query selects from: `idx_top_k / kpool` (2048/4 = 512 here).
 inline int glm_dsa_top_pools(int64_t idx_top_k, int64_t idx_kpool) {

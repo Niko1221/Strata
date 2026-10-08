@@ -132,12 +132,34 @@ struct GlmBuffers {
     // `n_embd` scratch the block already owns and the pointer `hc_post` is handed.
     float* ffn_gate = nullptr;         ///< ffn width
     float* ffn_up = nullptr;           ///< ffn width
+
+    // ---- the DSA indexer's scratch ----
+    //
+    // `key`, `gate`, `iq` and `iw` are the four projections' outputs and are per token like everything above; the
+    // first two are then copied a row at a time into the layer's pool-in-progress, which is why they are not the
+    // same buffer as `idx_partial_k`/`_g` in the state.
+    //
+    // **`score` AND `cells` ARE THE ONE EXCEPTION: ONCE PER CARVE, NOT ONCE PER TOKEN.**  They belong to the
+    // SELECTION, which runs one query at a time even inside a chunk - a pool's visibility is a function of that
+    // query's own position - so one row is live at a time and a chunk overwrites it `ntok` times.  Scaling them
+    // would be `ntok * max_cells / kpool` floats and `ntok * 2051` ints: 64 MB and 33 MB at a 16K context and a
+    // 4096-token chunk.  `GlmBuffers`' own note above is the rule; this is the exception and it is stated there
+    // too.
+    float* idx_key = nullptr;          ///< key_dim per token: `indexer.attn_k`, normed
+    float* idx_gate = nullptr;         ///< key_dim per token: `indexer_compressor_gate`
+    float* idx_iq = nullptr;           ///< key_dim * idx_heads per token: `indexer.attn_q_b @ qr`
+    float* idx_iw = nullptr;           ///< idx_heads per token: `indexer.proj @ cur`, prescaled
+    float* idx_score = nullptr;        ///< max_cells / kpool, ONE query's row
+    int32_t* idx_cells = nullptr;      ///< glm_dsa_n_sel(): 2051 here, ONE query's row
+    int32_t* idx_pos = nullptr;        ///< ntok absolute positions, what `glm_dsa_select` masks by
 };
 
 /// `ntok` is how many tokens the carve is for: every field above is per token and the whole carve scales with
 /// it, so `ntok == 1` is exactly the decode path's scratch and `ntok == T` is what a chunk needs.
-uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok = 1);
-uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, void* base, GlmBuffers& b);
+/// `max_cells` sizes the DSA selection's three once-per-carve rows and nothing else; see the note on
+/// `glm_buffers_bytes` in the .cpp, which is where the exception to "everything here is per token" is argued.
+uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok, int64_t max_cells);
+uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, int64_t max_cells, void* base, GlmBuffers& b);
 
 /// The per-layer PERSISTENT state, which is two different things depending on the layer's mixer.
 struct GlmLayerState {
@@ -151,6 +173,22 @@ struct GlmLayerState {
     uint16_t* mla_cache = nullptr;
     /// Rows in `mla_cache` (0 on a KDA layer).  The KDA half has no use for it - its state is fixed-size.
     int64_t max_cells = 0;
+
+    // ---- the DSA indexer (MLA layers only; see `kernels/glm_dsa.hpp`) ----
+    //
+    // **THREE ARRAYS, AND THE FIRST TWO HOLD ONLY THE POOL IN PROGRESS.**  A cell's indexer key and gate are read
+    // exactly once, by the pool that contains them, so the engine keeps `kpool` cells of each and not the
+    // `max_cells` the reference's cache holds - a token writes its row into slot `pos % kpool` and the pool runs
+    // when that slot is the last one.  The alternative is 16 MB a layer at a 16K context for bytes nothing reads.
+    //
+    // `pooled` is the part that IS history: every completed pool, `key_dim` wide, indexed by pool number, and the
+    // only thing a query's selection reads.  It is `max_cells / kpool` columns.
+    //
+    // All three are carved even when `glm_dsa_enabled()` is false.  The session's size must not depend on a switch
+    // that is set from the command line, or a run that enables it late would write past a carve sized without it.
+    float* idx_partial_k = nullptr;   ///< key_dim * kpool: the current pool's keys, member fastest
+    float* idx_partial_g = nullptr;   ///< key_dim * kpool: the same for the compressor gate
+    float* idx_pooled = nullptr;      ///< key_dim * (max_cells / kpool)
 };
 
 /// Floats the KDA state needs (the delta state plus the conv history), zero when the arch has no KDA.

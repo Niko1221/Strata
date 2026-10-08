@@ -28,6 +28,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/glm.hpp"
+#include "strata/kernels/glm_dsa.hpp"
 #include "strata/kernels/quantize_act.hpp"
 
 #include <cuda_runtime.h>
@@ -35,6 +36,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 namespace {
@@ -162,6 +164,39 @@ constexpr int64_t TAIL = 128;
 
 // ================================ sizing ================================
 
+namespace {
+
+/// The pools a query can select from, which is all of them once the cache is full: `max_cells / kpool`, rounded
+/// UP because a cache whose length is not a multiple of the pool size still carries the last, partial pool's
+/// index.  The partial pool itself can never be selected - `glm_dsa_select` only ever reads pools whose last
+/// member exists - but `pooled` is addressed by pool number, so the column has to exist.
+uint64_t glm_dsa_pools(const ModelGeometry& g, int64_t max_cells) {
+    if (g.idx_kpool <= 0 || max_cells <= 0) return 0;
+    return (uint64_t) ((max_cells + g.idx_kpool - 1) / g.idx_kpool);
+}
+
+/// One query's `score` row: `key_dim` floats for each pool it might have to score.
+uint64_t glm_dsa_score_bytes(const ModelGeometry& g, int64_t max_cells) {
+    return glm_dsa_pools(g, max_cells) * (uint64_t) g.idx_key_dim * 4;
+}
+
+/// The ints one `cells` row needs (`glm_dsa_n_sel`), 4 bytes each.  A named helper rather than the call spelled
+/// at each site, because `glm_buffers_bytes` and `glm_buffers_init` are two lists that must agree byte for byte
+/// and this is the term most easily written twice with two different readings of `select_tail`.
+uint64_t glm_dsa_cells_bytes(const ModelGeometry& g) {
+    return (uint64_t) kernels::glm_dsa_n_sel(g.idx_top_k, g.idx_kpool, (int) g.idx_select_tail) * 4;
+}
+
+/// ONE MLA LAYER'S indexer state: the pool in progress (key and gate) plus every completed pool.  See
+/// `GlmLayerState` for why the per-cell key history is not kept.
+uint64_t glm_dsa_state_bytes(const ModelGeometry& g, int64_t max_cells) {
+    if (g.idx_kpool <= 0 || g.idx_key_dim <= 0) return 0;
+    const uint64_t partial = (uint64_t) g.idx_key_dim * (uint64_t) g.idx_kpool * 4;
+    return 2 * align16(partial) + glm_dsa_pools(g, max_cells) * (uint64_t) g.idx_key_dim * 4;
+}
+
+}  // namespace
+
 /// **EVERY FIELD IN `GlmBuffers` IS PER TOKEN, SO THE WHOLE CARVE SCALES WITH `ntok`.**  There is no field in
 /// the list below that is shared across a chunk: the mHC maps, the normed input, the wide image pair, the KDA
 /// streams, the MLA latent and head stacks and the FFN pair are each one token's worth of scratch, written by a
@@ -172,7 +207,16 @@ constexpr int64_t TAIL = 128;
 /// and `glm_buffers_init` can share one list and cannot drift: `init` takes the same list through the same
 /// `slot()`.  Either spelling is a valid layout - nothing here needs the field to be `ntok`-contiguous at a
 /// boundary - and the one that is checkable against a single list is the one to keep.
-uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok) {
+///
+/// **THE DSA SELECTION'S THREE ROWS ARE THE EXCEPTION: THEY ARE ONCE PER CARVE, NOT ONCE PER TOKEN.**  `idx_iq`
+/// and `idx_iw` are projections and scale with `ntok` like everything else; `idx_score`, `idx_cells` and `idx_pos`
+/// belong to the selection, which runs one query at a time even inside a chunk (a pool's visibility is a function
+/// of that query's own position), so one row is live at a time.  Scaling them would be `ntok * max_cells / kpool`
+/// floats - 64 MB at a 16K context and a 4096-token chunk - for storage overwritten once per query.
+///
+/// `max_cells` is a parameter for those three and for nothing else: every other field is a function of the
+/// geometry alone, which is why this function did not need it before.
+uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok, int64_t max_cells) {
     if (ntok < 1) return 0;
     const int64_t n = g.n_embd;
     const int64_t hc = g.hc;
@@ -216,13 +260,24 @@ uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok) {
         (uint64_t) g.n_head * g.mla_head_dim * 4,               // head_out
         (uint64_t) fw * 4,                                      // ffn_gate
         (uint64_t) fw * 4,                                      // ffn_up
+        (uint64_t) g.idx_key_dim * 4,                           // idx_key
+        (uint64_t) g.idx_key_dim * 4,                           // idx_gate
+        (uint64_t) g.idx_key_dim * g.idx_q_heads * 4,           // idx_iq
+        (uint64_t) g.idx_q_heads * 4,                           // idx_iw
+        (uint64_t) 4,                                           // idx_pos
     };
     uint64_t total = 0;
     for (uint64_t v : parts) total += (uint64_t) ntok * align16(v);
+    // THE THREE THAT ARE ONCE PER CARVE - see the note above and `GlmBuffers`.
+    const uint64_t once[] = {
+        glm_dsa_score_bytes(g, max_cells),                        // idx_score
+        glm_dsa_cells_bytes(g),                                   // idx_cells
+    };
+    for (uint64_t v : once) total += align16(v);
     return total;
 }
 
-uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, void* base, GlmBuffers& b) {
+uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, int64_t max_cells, void* base, GlmBuffers& b) {
     const int64_t n = g.n_embd;
     const int64_t hc = g.hc;
     const int64_t nv = kda_n_v(g);
@@ -269,6 +324,16 @@ uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, void* base, GlmB
     b.head_out = (float*) take((uint64_t) g.n_head * g.mla_head_dim * 4);
     b.ffn_gate = (float*) take((uint64_t) fw * 4);
     b.ffn_up = (float*) take((uint64_t) fw * 4);
+    b.idx_key = (float*) take((uint64_t) g.idx_key_dim * 4);
+    b.idx_gate = (float*) take((uint64_t) g.idx_key_dim * 4);
+    b.idx_iq = (float*) take((uint64_t) g.idx_key_dim * g.idx_q_heads * 4);
+    b.idx_iw = (float*) take((uint64_t) g.idx_q_heads * 4);
+    b.idx_pos = (int32_t*) take((uint64_t) 4);
+    // ONCE PER CARVE, not per token - the last three takes, matching the last three terms of
+    // `glm_buffers_bytes`.  `take_once` is `take` without the `ntok`.
+    const auto take_once = [&](uint64_t bytes) -> void* { return a.take(align16(bytes)); };
+    b.idx_score = (float*) take_once(glm_dsa_score_bytes(g, max_cells));
+    b.idx_cells = (int32_t*) take_once(glm_dsa_cells_bytes(g));
 
     // ---- the aliases a chunk needs, set here so no call site does this arithmetic ----
     b.ntok = ntok;
@@ -366,18 +431,36 @@ uint64_t glm_mla_cache_bytes(const ModelGeometry& g, int64_t max_cells) {
 bool glm_is_kda_layer(const ModelGeometry& g, int64_t layer) { return !is_qsa_layer(g, layer); }
 
 uint64_t glm_layer_state_bytes(const ModelGeometry& g, int64_t max_cells, int64_t layer) {
-    return glm_is_kda_layer(g, layer) ? glm_kda_state_floats(g) * 4 : glm_mla_cache_bytes(g, max_cells);
+    if (glm_is_kda_layer(g, layer)) return glm_kda_state_floats(g) * 4;
+    // The latent cache and the indexer state, in the order `glm_state_init` lays them down.  The cache's size is
+    // aligned UP before the indexer's arrays start: the cache is fp16 and the indexer's are f32, so on a latent
+    // width that is not a multiple of 2 the two would otherwise disagree about where a float may live.
+    return align16(glm_mla_cache_bytes(g, max_cells)) + glm_dsa_state_bytes(g, max_cells);
 }
 
 uint64_t glm_state_init(const ModelGeometry& g, int64_t max_cells, int64_t layer, void* base, GlmLayerState& st) {
     st.kda_state = nullptr;
     st.kda_conv = nullptr;
     st.mla_cache = nullptr;
+    st.idx_partial_k = nullptr;
+    st.idx_partial_g = nullptr;
+    st.idx_pooled = nullptr;
     st.max_cells = 0;
     if (!glm_is_kda_layer(g, layer)) {
         st.mla_cache = (uint16_t*) base;
         st.max_cells = max_cells;
-        return glm_mla_cache_bytes(g, max_cells);
+        const uint64_t cache = align16(glm_mla_cache_bytes(g, max_cells));
+        // The indexer, in the order `glm_dsa_state_bytes` adds it: the pool in progress (key, then gate), then
+        // every completed pool.  All three are zeroed with the rest of the carve and the partial is only ever READ
+        // once all `kpool` of its members have been written, so a stale partial cannot be pooled.
+        if (glm_dsa_state_bytes(g, max_cells) > 0) {
+            uint8_t* p = (uint8_t*) base + cache;
+            const uint64_t partial = (uint64_t) g.idx_key_dim * (uint64_t) g.idx_kpool * 4;
+            st.idx_partial_k = (float*) p;
+            st.idx_partial_g = (float*) (p + align16(partial));
+            st.idx_pooled = (float*) (p + 2 * align16(partial));
+        }
+        return cache + glm_dsa_state_bytes(g, max_cells);
     }
     // The delta state first, then the conv history - the order `glm_kda_state_floats` adds them in, and the
     // order `kda_layer` indexes them with.  Two pointers into one carve, so a change here is a change to both.
@@ -711,9 +794,121 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     //      not the sequence length - the cache holds the sequence and the kernel walks it.  A chunk calls it
     //      `ntok` times, each with its own `pos_base` and its own `n_kv`, because the mask is a function of the
     //      token's absolute position and the kernel takes it as a launch argument.
+    //
+    //      **OR THE DSA SELECTION, WHICH REPLACES THIS CALL AND NOTHING ELSE.**  With `--dsa` the layer attends the
+    //      `idx_top_k` cells the k-pool indexer picks instead of every cell - the reference's own optional path
+    //      (`cparams.dsa`, off by default there too).  Everything above and below is untouched: the same `qabs`
+    //      goes in and the same `kqv` comes out, which is what lets the de-absorption in step 6 be shared.
+    const bool dsa = kernels::glm_dsa_enabled();
+    // Two of the indexer's values are needed by the PER-QUERY loop below and not only by the batch above it: the
+    // key width, and `ape` (the pooled members' additive embedding, which `glm_dsa_pool` reads for every pool).
+    const int64_t kd = g.idx_key_dim, ih = g.idx_q_heads;
+    const float* ape = nullptr;
+    std::vector<int32_t> pos_host;   // the chunk's absolute positions, uploaded in one copy; empty when `!dsa`
+    if (dsa) {
+        // The four indexer projections, over the whole chunk.  `cur` still carries the images steps 1 and 4 read,
+        // and `qr` the ones step 2 read - so `iq` takes the WIDE pair and the other three the `cur` pair.
+        const WeightRef* w_ik = req(v, "indexer.attn_k.weight", err);
+        const WeightRef* w_kn = req(v, "indexer.k_norm.weight", err);
+        const WeightRef* w_kb = req(v, "indexer.k_norm.bias", err);
+        const WeightRef* w_ig = req(v, "indexer_compressor_gate.weight", err);
+        const WeightRef* w_iq = req(v, "indexer.attn_q_b.weight", err);
+        const WeightRef* w_iw = req(v, "indexer.proj.weight", err);
+        if (!w_ik || !w_kn || !w_kb || !w_ig || !w_iq || !w_iw) return false;
+        if (kd <= 0 || ih <= 0 || st.idx_partial_k == nullptr || st.idx_pooled == nullptr) {
+            err = "glm5-next: --dsa needs the indexer, whose geometry (key_length/head_count) and carved state "
+                  "this model does not have";
+            return false;
+        }
+        // The key norm's two vectors are read as f32 of the key width, the same check the MLA latents' norms get.
+        if (w_kn->bytes < (uint64_t) kd * 4 || w_kb->bytes < (uint64_t) kd * 4) {
+            err = v.name("indexer.k_norm.weight") + "/" + v.name("indexer.k_norm.bias") +
+                  ": the indexer's key norm is not f32 of the key width";
+            return false;
+        }
+        const WeightRef* w_ape = req(v, "indexer_compressor_ape.weight", err);
+        if (w_ape == nullptr) return false;
+        if (w_ape->bytes < (uint64_t) kd * g.idx_kpool * 4) {
+            err = v.name("indexer_compressor_ape.weight") + ": not f32 of [key_length, kpool]";
+            return false;
+        }
+        if (g.idx_kpool <= 0 || g.idx_kpool > kd) {
+            err = "glm5-next: idx_kpool " + std::to_string((long long) g.idx_kpool) + " is not usable";
+            return false;
+        }
+        ape = (const float*) w_ape->data;
+        // `iq` is `attn_q_b @ qr` - THE SAME NORMED LATENT the MLA query came from, read twice for two different
+        // up-projections, which is why it is `qr` and not `qfull`.
+        if (!project(*w_ik, v.name("indexer.attn_k.weight"), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16, b.idx_key, n,
+                     kd, b.ntok, stream, err))
+            return false;
+        kernels::glm_layer_norm(b.idx_key, (const float*) w_kn->data, (const float*) w_kb->data, b.idx_key, b.ntok,
+                               kd, eps, stream);
+        if (!project(*w_ig, v.name("indexer_compressor_gate.weight"), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16,
+                     b.idx_gate, n, kd, b.ntok, stream, err))
+            return false;
+        if (!project(*w_iq, v.name("indexer.attn_q_b.weight"), b.qr, b.wide_q8_0, b.wide_q8k, b.wide_bf16, b.idx_iq,
+                     qlr, kd * ih, b.ntok, stream, err))
+            return false;
+        // `iw = proj @ cur * prescale`, the prescale being `1/sqrt(key_dim * idx_heads)` - the reference divides
+        // by that where it BUILDS the weights, so it belongs to this projection and not to `glm_dsa_score`.
+        if (!project(*w_iw, v.name("indexer.proj.weight"), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16, b.idx_iw, n, ih,
+                     b.ntok, stream, err))
+            return false;
+        const float prescale = (float) (1.0 / std::sqrt((double) kd * (double) ih));
+        kernels::scale_inplace(b.idx_iw, ih * b.ntok, prescale, stream);
+        // The queries' absolute positions, which `glm_dsa_select` masks by - `n_vis = (pos + 1) / kpool`.  They go
+        // over in ONE host-to-device copy for the whole chunk: they are the only thing in this path the host has to
+        // touch, and doing it per query would be a pageable copy a layer a token on the decode path.
+        pos_host.resize((size_t) b.ntok);
+        for (int64_t t = 0; t < b.ntok; ++t) pos_host[(size_t) t] = (int32_t) (abs_pos + t);
+        cudaMemcpyAsync(b.idx_pos, pos_host.data(), (size_t) b.ntok * 4, cudaMemcpyHostToDevice,
+                        (cudaStream_t) stream);
+    }
+
+    const int64_t kpool = g.idx_kpool;
+    const int top_pools_max = kernels::glm_dsa_top_pools(g.idx_top_k, kpool);
+    const int tail = g.idx_select_tail != 0 ? 1 : 0;
     for (int64_t t = 0; t < b.ntok; ++t) {
-        kernels::glm_mla_attn(b.qabs + t * nh * kvl, st.mla_cache, b.kqv + t * nh * kvl, nh, kvl, abs_pos + t + 1,
-                              /*T=*/1, abs_pos + t, (float) (1.0 / std::sqrt((double) hd)), stream);
+        if (!dsa) {
+            kernels::glm_mla_attn(b.qabs + t * nh * kvl, st.mla_cache, b.kqv + t * nh * kvl, nh, kvl, abs_pos + t + 1,
+                                  /*T=*/1, abs_pos + t, (float) (1.0 / std::sqrt((double) hd)), stream);
+            continue;
+        }
+        // ---- the indexer, for THIS query.  Its own `ik`/`ig` rows go into the pool in progress, this query's
+        //      pool is pooled if it completes the pool, and only then is the selection run - a pool is visible to
+        //      the query whose own cell is its LAST member (`glm_dsa_select`'s `n_vis`), so pooling after the
+        //      selection would hide the current token from itself.
+        const int64_t p = abs_pos + t;
+        const int64_t slot = p % kpool;
+        const int64_t pool_done = (p + 1) / kpool;
+        cudaMemcpyAsync(st.idx_partial_k + slot * kd, b.idx_key + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
+                        (cudaStream_t) stream);
+        cudaMemcpyAsync(st.idx_partial_g + slot * kd, b.idx_gate + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
+                        (cudaStream_t) stream);
+        if (slot == kpool - 1) {
+            // `glm_dsa_pool` pools from pool 0, so the completed pool is the ONLY pool in this call: its members
+            // are the `kpool` rows the partial holds, and its column is `pool_done - 1`.
+            kernels::glm_dsa_pool(st.idx_partial_k, st.idx_partial_g, ape, kd, (int) kpool, 1,
+                                  st.idx_pooled + (pool_done - 1) * kd, stream);
+        }
+        int top_pools = (int) (pool_done < top_pools_max ? pool_done : top_pools_max);
+        if (pool_done > 0) {
+            kernels::glm_dsa_score(b.idx_iq + t * kd * ih, st.idx_pooled, b.idx_iw + t * ih, (int) kd, (int) ih,
+                                   /*n_tokens=*/1, (int) pool_done, b.idx_score, stream);
+        }
+        if (pool_done > 0 || tail) {
+            const int n_sel = (int) (kpool * top_pools + (tail ? kpool - 1 : 0));
+            kernels::glm_dsa_select(b.idx_score, (int) pool_done, (int) kpool, top_pools, tail, /*n_tokens=*/1,
+                                    n_sel, b.idx_pos + t, b.idx_cells, stream);
+            kernels::glm_dsa_attn(b.qabs + t * nh * kvl, st.mla_cache, b.idx_cells, (int) kvl, (int) nh, (int) hd,
+                                  /*n_tokens=*/1, n_sel, b.kqv + t * nh * kvl, stream);
+        } else {
+            // Nothing to attend to: with the tail OFF, the first `kpool - 1` queries have no complete pool and the
+            // reference zeroes their attention output rather than leaving a stale one.  Unreachable at this
+            // model's own reading (`idx_select_tail` is 1), kept because the other reading is a parameter.
+            cudaMemsetAsync(b.kqv + t * nh * kvl, 0, (size_t) nh * kvl * 4, (cudaStream_t) stream);
+        }
     }
 
     // ---- 6. de-absorption.  The same fold as step 3, and here the slices are `kv_lora_rank` wide - still a
