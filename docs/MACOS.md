@@ -70,16 +70,28 @@ If setup stops, it says what is missing and the command that fixes it.
   must fit in Metal's limit. UD-Q4_K_XL (111 GB) is larger than the test Mac's default limit.
 - **Speed.** On the test Mac: 13-17 tokens/s for the answer and 225-270 tokens/s to read a prompt, with other programs
   running (see [Measured](#measured)). Other Macs will differ; slower memory means fewer tokens per second.
-- **It can halve after a few minutes.** On the test Mac, short IQ3_S answers with `--mtp on`, sent one after another,
+- **It can halve after a few minutes** (on a 96 W adapter; see *Power* above, the 140 W one fixed it). On the test Mac, short IQ3_S answers with `--mtp on`, sent one after another,
   ran at 59-65 tokens/s in the first minute after a pause and at about 30-35 (at times 13-20) later, with the same
   answers. The slow phase came with a low GPU clock (600-830 MHz), the GPU busy about half the time, 8-11 W and a
   59-69 °C die. The cause was not isolated; macOS's power management is the likely one. A single long answer, Q2_0 and
   MTP off were not measured this way. See [Why the speed changes](#why-the-speed-changes);
   [macmon](https://github.com/vladkens/macmon) (`brew install macmon`, no sudo) shows the GPU's clock live.
-- **Power.** Keep a laptop plugged in and out of Low Power Mode, and set *System Settings > Battery > Energy Mode* to
-  *High Power* where your Mac has it. Measured with GPT-OSS 120B on the test Mac (96 W adapter): 900-word answers ran at
-  35 tok/s in *Automatic* (GPU 364-807 MHz) and 46-53 tok/s in *High Power* (GPU 880-1,150 MHz, up to 83 °C, louder
-  fans); a short answer right after a long one went from 33 to 49 tok/s.
+- **Power: use the adapter your Mac came with, and High Power.** The biggest speed factor measured on the test Mac was
+  the power adapter. With a 96 W adapter macOS held the GPU's clock down after the first ~20 seconds of an answer, at only
+  60-70 °C; the 16-inch MacBook Pro with an M5 Max ships with 140 W, and the machine drew up to 143 W. GPT-OSS 120B,
+  900-word answers (decode tok/s):
+
+  | | 96 W, *Automatic* | 96 W, *High Power* | 140 W, *High Power* |
+  |---|---:|---:|---:|
+  | 900-word answer | 35 | 46-53 | 93-100 |
+  | short answer right after it | 33 | 49 | 93 |
+  | GPU clock | 364-807 MHz | 880-1,150 MHz | 1,300-1,620 MHz |
+  | GPU busy | 23-37% | 39-55% | 80-100% |
+
+  Set *System Settings > Battery > Energy Mode* to *High Power* where your Mac has it (louder fans; the GPU reached
+  85 °C). The same slow-down without a cause is reported in llama.cpp
+  [#10444](https://github.com/ggml-org/llama.cpp/issues/10444) (M3 Max, 96 W adapter). Earlier speed numbers on this
+  page were measured on the 96 W adapter.
 - **Disk.** The download is 66.4 GB (67.3 GB with the image encoder); installed with the engine, about 70 GB. `--mtp on`
   adds about 12 GB. Keep the model on the internal SSD: its 28 GB n-gram table is not loaded into memory, its rows are
   read from the model file as they are needed.
