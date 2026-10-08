@@ -176,4 +176,57 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
+
+// STRATA_ROUTE_RESIDENT (EXPERIMENTAL, opt-in, changes the output): residency-biased routing for 512 x 10.
+// After the top-10: for the ranks lo..hi a non-resident expert is replaced by the best resident expert not already
+// picked when its logit is within `margin` of the replaced one; the weights are then the softmax of the selected
+// logits (the router's renormalisation).  Tokens without a swap keep the router's exact bits.
+// stats (device, 4 x uint64): [0] tail entries seen, [1] swaps, [2] non-resident entries before, [3] after.
+__global__ void route_resident_k(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ weights,
+                                 const int32_t* __restrict__ res, int n_tok, float margin, int lo, int hi,
+                                 unsigned long long* __restrict__ stats) {
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n_tok) return;
+    const float* l = logits + (size_t) t * 512;
+    int32_t* id = ids + (size_t) t * 10;
+    int swaps = 0, tail = 0, before = 0;
+    for (int r = 0; r < 10; ++r) before += res[id[r]] < 0;
+    for (int r = lo; r <= hi && r < 10; ++r) {
+        const int e = id[r];
+        if (res[e] >= 0) continue;
+        ++tail;
+        int best = -1;
+        float bl = -INFINITY;
+        for (int f = 0; f < 512; ++f) {
+            if (res[f] < 0 || l[f] <= bl) continue;
+            bool used = false;
+            for (int q = 0; q < 10; ++q) used |= id[q] == f;
+            if (!used) { best = f; bl = l[f]; }
+        }
+        if (best >= 0 && l[e] - bl <= margin) { id[r] = best; ++swaps; }
+    }
+    int after = 0;
+    for (int r = 0; r < 10; ++r) after += res[id[r]] < 0;
+    if (swaps) {
+        float m = -INFINITY;
+        for (int r = 0; r < 10; ++r) m = fmaxf(m, l[id[r]]);
+        float ex[10], sum = 0.0f;
+        for (int r = 0; r < 10; ++r) { ex[r] = expf(l[id[r]] - m); sum += ex[r]; }
+        for (int r = 0; r < 10; ++r) weights[(size_t) t * 10 + r] = ex[r] / sum;
+    }
+    if (stats) {
+        atomicAdd(stats + 0, (unsigned long long) tail);
+        atomicAdd(stats + 1, (unsigned long long) swaps);
+        atomicAdd(stats + 2, (unsigned long long) before);
+        atomicAdd(stats + 3, (unsigned long long) after);
+    }
+}
+void native_route_resident(const float* logits, int32_t* ids, float* weights, const int32_t* res_layer, int n_tok, float margin,
+                           int rank_lo, int rank_hi, unsigned long long* stats, void* stream) {
+    if (!stream || n_tok < 1 || !res_layer) throw std::invalid_argument("native_route_resident: bad arguments");
+    route_resident_k<<<(unsigned) ((n_tok + 31) / 32), 32, 0, static_cast<cudaStream_t>(stream)>>>(
+        logits, ids, weights, res_layer, n_tok, margin, rank_lo, rank_hi, stats);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
 }

@@ -297,6 +297,7 @@ class Telemetry:
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
+        self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _disk(self):
@@ -350,8 +351,12 @@ class Telemetry:
                 pass
         return s
 
+    def close(self):
+        """Ends the sampler thread (a server that stops, a test's service): it used to run for the life of the process."""
+        self._stop.set()
+
     def _loop(self):
-        while True:
+        while not self._stop.is_set():
             s = self.sample()
             with self.lock:
                 self.now = s
@@ -359,7 +364,7 @@ class Telemetry:
                           "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
-            time.sleep(1.0)
+            self._stop.wait(1.0)
 
     def snapshot(self):
         with self.lock:

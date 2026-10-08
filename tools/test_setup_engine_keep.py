@@ -52,6 +52,17 @@ class KeepPrevious(unittest.TestCase):
             self.assertEqual(setup.rollback_engine(), 0)
             self.assertEqual((self.eng / "strata.exe").read_bytes(), b"new")
 
+    def test_previous_keeps_its_build_json_after_get_prebuilt_moved_it_aside(self):
+        """get_prebuilt takes the old BUILD.json out of the way (BUILD.json.prev) before the unpack, so the
+        engine kept in .previous still says its version instead of '?'."""
+        engine(self.eng, "0.1.39", b"old")
+        (self.eng / "BUILD.json").replace(self.eng / "BUILD.json.prev")
+        engine(self.new, "0.1.40", b"new")
+        setup.install_unpacked(self.new, self.eng)
+        self.assertEqual(setup.engine_version_of(self.eng / ".previous"), "0.1.39")
+        self.assertFalse((self.eng / "BUILD.json.prev").exists())
+        self.assertEqual(setup.engine_version_of(self.eng), "0.1.40")
+
     def test_one_generation_only(self):
         engine(self.eng, "0.1.38", b"a")
         for version, exe in (("0.1.39", b"b"), ("0.1.40", b"c")):

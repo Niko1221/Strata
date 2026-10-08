@@ -192,7 +192,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # toolkit the CUDA 12 zip is built with (cuBLAS 12.9.1.4, runtime 12.9.79).  Not tested on such an old driver here.
 CUDA12_MIN_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 40, 3)             # versions compare all four numbers; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 41)                # versions compare all numbers; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
@@ -748,6 +748,24 @@ def gpu_drives_display(g) -> bool:
     return text.strip().lower() == "enabled"
 
 
+def gpu_compute_mode(index: int) -> str:
+    """#1445: nvidia-smi's compute mode for this card ("Default", "Exclusive_Process", "Prohibited", ...); "" when it
+    does not say."""
+    return out(["nvidia-smi", "-i", str(index), "--query-gpu=compute_mode", "--format=csv,noheader"]).strip()
+
+
+def compute_mode_warning(index: int, mode: str) -> str | None:
+    """#1445: the warning for a card that is not in the Default compute mode, or None.  In Exclusive_Process only one
+    process may hold a CUDA context, so the engine, the vision encoder and the tuning run cannot share the card
+    ("CUDA-capable device(s) is/are busy or unavailable"); Prohibited allows none.  A warning only: it is the
+    administrator's setting, Strata never changes it."""
+    if not mode or mode.lower() == "default" or mode.lower().startswith("n/a") or mode.lower().startswith("[n/a"):
+        return None
+    return (f"GPU {index} is in the compute mode {mode}, not Default: a second process cannot use the card while "
+            "the first holds it, so the vision encoder or the tuning run can fail with \"CUDA-capable device(s) is/are "
+            f"busy or unavailable\". If it does, set it back with: sudo nvidia-smi -i {index} -c DEFAULT")
+
+
 def pcie_link(index: int) -> dict | None:
     """The NVIDIA card's PCIe link: {"gen": the generation card and board both run (an idle card drops to a lower
     one, so the current generation is not asked), "gpu_gen", "host_gen", "width", "max_width"}; None when nvidia-smi
@@ -1107,10 +1125,11 @@ def split_budget(cfg: dict, yes: bool = False, explicit: bool = False) -> bool:
 
 
 REMOTE_EXPERT_OPT = "--remote-expert-opt"
+HELPER_CACHE_FLAGS = ("--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
 
 
 def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
-    """0.1.39b (#578): a config on two or more GPUs gets --remote-expert-opt - the helper expert caches
+    """0.1.39b (#578): a config on two or more GPUs with a helper cache gets --remote-expert-opt - the helper expert caches
     (--expert-cache-device1..3) then stay complementary to the main GPU's, return their rows already weighted and skip
     the CPU's activation quantization where no expert is left to it (dual RTX 4090: +63% mixed, +132% code over the
     plain helper path).  The engine uses it only with a helper cache; a layer split runs as before.  A recommendation:
@@ -1122,6 +1141,23 @@ def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
     if off or cfg.get("remote_expert_opt") is False:
         if REMOTE_EXPERT_OPT in args:
             args.remove(REMOTE_EXPERT_OPT)
+        return
+    # #1352: --pipeline-windows (the first card starts the next window) is switched off by --remote-expert-opt (the
+    # helper caches), so a config that asks for it keeps its pipeline: one of the two, not both (docs/MULTI_GPU.md)
+    pw = args.index("--pipeline-windows") if "--pipeline-windows" in args else -1
+    if pw >= 0 and pw + 1 < len(args) and args[pw + 1] != "0":
+        if REMOTE_EXPERT_OPT in args:
+            warn("--pipeline-windows and --remote-expert-opt are both in this config: the engine turns the pipeline off "
+                 "beside the helper caches. Keep one - remove --remote-expert-opt for the pipeline "
+                 "(docs/MULTI_GPU.md, #1352)")
+        else:
+            ok("multi-GPU: --pipeline-windows is set, so --remote-expert-opt is not added (the helper caches turn the "
+               "pipeline off; docs/MULTI_GPU.md)")
+        return
+    # #1447: the flag acts only on the helper caches (--expert-cache-device1..3); without one the engine builds nothing
+    # from it, and a plain layer split gained a flag that says "helpers" for no reason. Setup adds it only beside a
+    # helper cache; a flag already in the config stays (the user's, or an earlier setup's - harmless).
+    if not any(a.split("=", 1)[0] in HELPER_CACHE_FLAGS for a in args):
         return
     if REMOTE_EXPERT_OPT not in args:
         args.append(REMOTE_EXPERT_OPT)
@@ -2660,6 +2696,7 @@ def verify_engine_archive(z: Path, asset: str, base: str) -> None:
         got = h.hexdigest()
         drop_download(z)
         raise UnverifiedEngine(f"{z.name} has the wrong SHA-256 ({got}, expected {sha})")
+    ok(f"{z.name}: SHA-256 checksum verified against GitHub's ({sha[:12]}...)")
 
 
 def engine_refused(asset: str, e: Exception, updating: bool) -> None:
@@ -2723,6 +2760,17 @@ def install_unpacked(tmp: Path, eng: Path) -> None:
             shutil.move(str(prev / dst.name), str(dst))
         shutil.rmtree(prev, ignore_errors=True)
         raise
+    # #1403 debt: get_prebuilt moved the old BUILD.json aside (BUILD.json.prev) instead of deleting it; it goes with the
+    # engine it describes, so engine_version_of(.previous) says the version instead of "?"
+    kept = eng / "BUILD.json.prev"
+    if kept.exists():
+        try:
+            if moved and not (prev / "BUILD.json").exists():
+                shutil.move(str(kept), str(prev / "BUILD.json"))
+            else:
+                kept.unlink()
+        except OSError:
+            pass
     if moved:
         ok(f"the engine it replaced ({engine_version_of(prev)}) is kept in {prev}; "
            "setup.py --rollback-engine puts it back")
@@ -2775,7 +2823,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             ok("ready-made engine already installed")
             return eng
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
-        info.unlink()
+        info.replace(eng / "BUILD.json.prev")   # kept for the .previous copy
     if not url_base:
         return None
     eng.mkdir(exist_ok=True)
@@ -3103,6 +3151,15 @@ def isa_floor_defs(floor: str, bdir: Path, meta: dict) -> list:
     return [f"-DSTRATA_ISA_FLOOR={floor}"] if floor else []
 
 
+def toolkit_root_defs(nvcc) -> list:
+    """CUDAToolkit_ROOT for the toolkit whose nvcc builds the engine.  Without it CMake can take cudart and cuBLAS from
+    another toolkit: with STRATA_NVCC=/opt/cuda-13.0/bin/nvcc on Ubuntu 24.04 that also has the distribution's CUDA
+    12.0 (nvidia-cuda-toolkit), the engine was compiled with the 13.0 headers but linked libcudart.so.12 from
+    /usr/lib/x86_64-linux-gnu.  The distribution's own nvcc (/usr/bin) keeps CMake's search as before."""
+    root = Path(nvcc).resolve().parent.parent
+    return [] if root == Path("/usr") else [f"-DCUDAToolkit_ROOT={root}"]
+
+
 def engine_defs(archs, toolkit=13) -> list:
     """Extra CMake definitions for the engine: the experimental Pascal/Volta build (#295) for cards below sm_75, and
     for every CUDA 12 engine (the same build as the ready-made CUDA 12 one: it admits the older cards)."""
@@ -3162,7 +3219,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs, toolkit),
+                     f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
+                     *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
@@ -3171,7 +3229,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
                 "-DSTRATA_PORTABLE=OFF"]                   # built here, for this PC: native, like the engine
         if vision == "gpu":
-            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
+            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                     *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
@@ -3875,7 +3934,7 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache). It takes about 10 minutes; the PC is busy meanwhile.")
+    say("  draft depth, the CPU threads, the expert cache). It takes roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -4547,7 +4606,7 @@ def main() -> int:
                     help="with two or more GPUs: leave out --remote-expert-opt, which setup adds there (#578)")
     ap.add_argument("--host", help="where the server listens: 127.0.0.1 = this PC only (default), 0.0.0.0 = also other "
                                    "devices on your network (issue #26; set --api-key too)")
-    ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0)")
+    ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0); several keys: key1,key2")
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None,
                     help="do not open the chat page in the browser when the model is ready (for a harness or an app "
                          "that uses the API; remembered for this model, also in run-<model>.bat/.sh)")
@@ -4582,7 +4641,7 @@ def main() -> int:
                     help="where the ready-made engine is (a URL folder or a local folder)")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
-                    help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
+                    help="tune the engine's settings for this PC (about 15-30 minutes, longer on a slow card), then start the model")
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
                     help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
@@ -5381,6 +5440,12 @@ def main() -> int:
     if not hip and not multi and a.vram_reserve_mib is None and gpu_drives_display(gpu):
         say("  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded "
             f"(#779), keep more VRAM free: run setup again with --vram-reserve-mib {DISPLAY_RESERVE_MIB}")   # a tip only
+    if not hip:
+        for gi in ([g for g in multi] if multi else [gpu.get("index", 0)]):
+            gi = gi["index"] if isinstance(gi, dict) else gi
+            w = compute_mode_warning(gi, gpu_compute_mode(gi))
+            if w:
+                warn(w)                                   # #1445: a warning only, never a refusal
     if esp is not None:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
@@ -5456,7 +5521,7 @@ def main() -> int:
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
     if cal is None and not hip and not a.no_start and not a.yes and ask(
-            "Tune Strata for this PC now? It measures a few engine settings (about 5-10 minutes; the PC is busy "
+            "Tune Strata for this PC now? It measures a few engine settings (about 15-30 minutes, longer on a slow card; the PC is busy "
             "meanwhile; later: START-HERE --calibrate)", ["y", "n"], "y", a.yes) == "y":
         tuned = calibrate_config(cfg_path)
     else:
