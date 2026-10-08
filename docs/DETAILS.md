@@ -1481,9 +1481,20 @@ never changes a result.
   N threads placed so far)`, or `(off at start; a request's aux_cpus=1 turns it on)`. A request that changes the state
   prints `strata serve: aux cpus ON/off for this request`.
 - **Not covered.** Other processes (the Python launcher, a container runtime) and the engine's host thread.
-- **Measured.** TODO-EVIDENCE (PREvidence: the machine and CPU, `--aux-cpus` off against `auto` in interleaved pairs of
-  whole engine runs, the number of pairs and the A/A control, the host thread's involuntary context switches and
-  decode and prompt tok/s, cold rounds and warm rounds separately).
+- **Measured.** One machine: 2x RTX 3080 20 GB at 220 W, Xeon E5-2696 v4 (24 logical CPUs in the container, 16 pool
+  workers each on its own CPU), UD-Q4_K_XL, layer split 23, `--batch-mtp`, two slots, adaptive tier on. `auto` put the
+  host thread on CPU 2 and the helper threads on CPU 24. Same binary in every arm, only the flag differs. Two pairs of
+  whole engine restarts in the order `auto`, off, `auto`, off (12 solo decodes and 10 two-stream rounds per restart,
+  medians): solo decode 79.7 and 80.4 tok/s with `auto` against 72.1 and 72.4 off (off / `auto` = 0.904 and 0.900), two
+  streams in aggregate 90.8 and 90.7 against 80.8 and 82.8 (0.890 and 0.912). The same configuration restarted twice
+  moved solo by 1.009 and 1.005 and two streams by 0.999 and 1.024. Live on one engine, switching per request with
+  `strata_tune` and rotating the order (20 solo requests per arm, 16 two-stream rounds): off / on = 0.888 solo and
+  0.917 two streams, against 0.985 and 0.990 for an A/A control of the same setting. The host thread's involuntary
+  context switches over a bench of about ten minutes were 43.8k and 42.8k with the flag off and 3.9k and 2.8k with
+  `auto`. Prompt reads (24K, 25K, 51K, 104K) do not depend on the flag: off is +0.7% to +1.5% against `auto`, inside the
+  restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
+  stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
+  loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
 
 ---
 
