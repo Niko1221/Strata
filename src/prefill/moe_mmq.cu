@@ -94,6 +94,52 @@ __global__ void swiglu_kernel(const float* __restrict__ gu, float* __restrict__ 
     h[i] = g / (1.0f + __expf(-g)) * u;
 }
 
+// swiglu_kernel (n_ff 640), then quantize_mmq_q8_1<D4>'s rows of its output, in one pass: a block per row (128
+// threads, 4 values each, blockIdx.y the row's 512-value half), H never stored.  Each value is swiglu_kernel's
+// expression and each 32-value block quantize_mmq_q8_1's (the same unit and flags: the same bits).
+template <bool IL>
+__global__ void __launch_bounds__(128) swiglu_quant_kernel(const float* __restrict__ gu, block_q8_1_mmq* __restrict__ y,
+                                                           int64_t rows) {
+    constexpr int64_t n_ff = 640, ne0 = 1024;   // the padded row: pad512(640)
+    const int64_t i0 = ((int64_t) blockDim.x * blockIdx.y + threadIdx.x) * 4;
+    if (i0 >= ne0) return;
+    const int64_t r = blockIdx.x;
+    float4 xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (i0 < n_ff) {
+        const float* row = gu + r * 2 * n_ff;
+        float4 g4, u4;
+        if constexpr (IL) {   // gate 2k, up 2k + 1
+            const float4 a = *reinterpret_cast<const float4*>(row + 2 * i0), b = *reinterpret_cast<const float4*>(row + 2 * i0 + 4);
+            g4 = make_float4(a.x, a.z, b.x, b.z);
+            u4 = make_float4(a.y, a.w, b.y, b.w);
+        } else {
+            g4 = *reinterpret_cast<const float4*>(row + i0);
+            u4 = *reinterpret_cast<const float4*>(row + n_ff + i0);
+        }
+        xi.x = g4.x / (1.0f + __expf(-g4.x)) * u4.x;
+        xi.y = g4.y / (1.0f + __expf(-g4.y)) * u4.y;
+        xi.z = g4.z / (1.0f + __expf(-g4.z)) * u4.z;
+        xi.w = g4.w / (1.0f + __expf(-g4.w)) * u4.w;
+    }
+    float amax = fabsf(xi.x);
+    amax = fmaxf(amax, fabsf(xi.y));
+    amax = fmaxf(amax, fabsf(xi.z));
+    amax = fmaxf(amax, fabsf(xi.w));
+#pragma unroll
+    for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+    const float d_inv = 127.0f / amax;
+    char4 c;
+    c.x = roundf(xi.x * d_inv);
+    c.y = roundf(xi.y * d_inv);
+    c.z = roundf(xi.z * d_inv);
+    c.w = roundf(xi.w * d_inv);
+    const float d = 1.0f / d_inv;
+    const int64_t k_block = i0 / QK8_1_MMQ, iqs = i0 % QK8_1_MMQ;
+    block_q8_1_mmq* yb = y + k_block * rows + r;
+    reinterpret_cast<char4*>(yb->qs)[iqs / 4] = c;
+    if (iqs % 32 == 0) yb->d4[iqs / 32] = d;
+}
+
 __global__ void iota_kernel(int32_t* dst, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = (int32_t) i;
@@ -274,6 +320,24 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
     if (rows <= 0) return;
     swiglu_kernel<<<blocks(rows * n_ff), 256, 0, (cudaStream_t) stream>>>(gu, h, rows, n_ff, interleaved);
     ck(cudaGetLastError(), "swiglu");
+}
+
+bool swiglu_quant_ok(int t) {
+#if defined(__HIPCC__)
+    (void) t;
+    return false;   // not checked against the HIP build's quantizer
+#else
+    // the q8_1 D4 rows quantize() writes for a down product's H (K 640)
+    return supported(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
+#endif
+}
+
+void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream) {
+    if (rows <= 0) return;
+    const dim3 grid((unsigned) rows, 2);
+    if (interleaved) swiglu_quant_kernel<true><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    else swiglu_quant_kernel<false><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    ck(cudaGetLastError(), "swiglu_quant");
 }
 
 void iota(int32_t* dst, int64_t n, void* stream) {
