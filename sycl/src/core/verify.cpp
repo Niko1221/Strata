@@ -602,7 +602,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: copy stream create failed";
         return false;
     }
-    if (ext_stream_ != &dpct::get_in_order_queue()) cs_ =
+    if (ext_stream_ != nullptr) cs_ =
         ext_stream_; // set_stream (pipelined windows): the stage's shared
                      // stream
     /*

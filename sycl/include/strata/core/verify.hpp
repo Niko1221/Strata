@@ -303,9 +303,9 @@ private:
     void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
     void accumulate_profile(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
     // pipelined windows (pl_launch ...)
-    dpct::queue_ptr ext_stream_ =
-        &dpct::get_in_order_queue(); ///< set_stream: the stage's shared stream
-                                     ///< (not destroyed here)
+    dpct::queue_ptr ext_stream_ = nullptr;  ///< set_stream: the stage's shared stream (not destroyed here);
+                                          ///< nullptr = none until set_stream() (#1555: a queue pointer captured
+                                          ///< at construction would be the *constructing* device's)
     bool always_publish_ = false;
     void pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2]);
     dpct::event_ptr ev_done_ = nullptr, ev_commit_ = nullptr;
