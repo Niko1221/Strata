@@ -368,7 +368,8 @@ int main(int argc, char** argv) {
                 for (int i = 0; i + 1 < (int) frames.size(); i += 2) {
                     const int a = base + i, b = base + std::min(i + 1, got - 1);
                     char ts[48];
-                    std::snprintf(ts, sizeof ts, "<%.1f seconds>", (a + b) / 2.0 / fps);
+                    // ffmpeg's fps filter (round=near) returns, for output frame k, the source frame at about (k + 0.5) / fps
+                    std::snprintf(ts, sizeof ts, "<%.1f seconds>", (a + b + 1) / 2.0 / fps);
                     prompt += ts + marker + marker;
                 }
                 mtmd_input_chunks* chunks = mtmd_input_chunks_init();
