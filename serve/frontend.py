@@ -50,6 +50,7 @@ class ChatTemplate:
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
         self.template = env.from_string(self.source)
+        self.glm_effort = "reasoning_effort in ['low', 'high']" in self.source
         self.caps = self._detect_caps()
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
@@ -60,8 +61,16 @@ class ChatTemplate:
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
                                                       and not _has_image(m.get("content")) and not m.get("tool_calls"))]
-        return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
-                                    **kwargs)
+        off = False
+        if self.glm_effort:
+            off = kwargs.pop("enable_thinking", True) is False
+            level = kwargs.pop("reasoning_effort", None)
+            kwargs["reasoning_effort"] = "low" if off else {"low": "low", "medium": "high", "high": "high"}.get(level, "max")
+        out = self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
+                                   **kwargs)
+        if off and add_generation_prompt and out.endswith("<think>"):
+            out += "</think>"
+        return out
 
     def _detect_caps(self) -> dict[str, bool]:
         """llama.cpp's capability names, checked at load time against this template and Strata's tool-call format.
@@ -203,7 +212,8 @@ THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
 # item; the same strings in a message's text (an agent reading chat_template.jinja, a tool result quoting it) became
 # the same special ids, so text with <|vision_start|><|image_pad|> before a picture took that picture's embeddings
 VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", "<|vision_end|>": "\U000F0E05",
-               "<|video_pad|>": "\U000F0E06"}
+               "<|video_pad|>": "\U000F0E06", "<|begin_of_image|>": "\U000F0E07",
+               "<|image|>": "\U000F0E08", "<|end_of_image|>": "\U000F0E09"}
 LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS}
 THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the two sets above

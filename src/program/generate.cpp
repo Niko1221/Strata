@@ -58,6 +58,9 @@
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
+#ifdef STRATA_ENABLE_GLM
+#include "strata/core/glm_model.hpp"
+#endif
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
@@ -311,6 +314,9 @@ bool resident_stage_swaps(strata::core::FileExpertSource& src, const std::vector
 
 struct Options {
     std::string pack = "pack/full";
+#ifdef STRATA_ENABLE_GLM
+    std::string glm_pack;
+#endif
     std::vector<int64_t> tokens;      // the prompt, PRE-TOKENIZED
     int64_t max_new = 16;
     int64_t max_context = 4096;
@@ -567,6 +573,9 @@ struct Options {
     double spec_min_p = 0.0;
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
+#ifdef STRATA_ENABLE_GLM
+    bool eos_given = false;
+#endif
     std::vector<int64_t> eos_ids = {248044, 248046};
     bool spec_split = false;   ///< opt-in split verify window (the overlap study: exact, ~7% slower)
     /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
@@ -649,6 +658,9 @@ void usage() {
                  "strata generate --pack DIR --tokens \"1,2,3\" [options]\n"
                  "\n"
                  "  --pack DIR           the pack directory (default pack/full)\n"
+#ifdef STRATA_ENABLE_GLM
+                 "  --glm-pack DIR       a GLM-5.3-Flash pack (CUDA build): supports text and image prompts\n"
+#endif
                  "  --tokens LIST        the prompt as comma-separated token IDS (required)\n"
                  "  --tokens-file PATH   pretokenized prompt, commas or whitespace (alternative to --tokens)\n"
                  "  --gpu LIST           run on these GPUs, comma-separated nvidia-smi/PCI indices (default: every\n"
@@ -1548,6 +1560,625 @@ double probe_pcie_h2d_gbps(std::string* samples = nullptr) {
     return bw;
 }
 
+#ifdef STRATA_ENABLE_GLM
+// ================================ the glm5-next pack path (Maya) ================================
+//
+// A GLM-5.3-Flash pack (tools/iq_pack.py output) runs the VERIFIED runner - Glm5Model, the same
+// path glm_pack_test drives (docs/GLM5-FLASH.md §9) - behind this driver's wire contract:
+// `T <id>` per generated token on stdout, `ERR <message>` when a request cannot run, the DONE
+// summary at the end, and --serve reading `GEN <max_new> <id,id,...>` lines (QUIT ends).
+//
+// The runner supports prefix snapshots, MTP, batched prefill, layer splits and image embeddings.
+// Sampling uses Strata's device sampler; the GLM expert/cache arithmetic stays in Glm5Model.
+// The stop set is GLM's own, from the GGUF metadata (the ids llama.cpp marks EOG): 154820
+// <|endoftext|> (eos), 154827 <|user|> (eot, the assistant yields the floor) and 154829 <|observation|> (a tool
+// call waits for its result); --eos-ids
+// overrides it.  Serve stops on them by default; non-serve stops only when asked (--stop-eos or
+// --eos-ids), like the qwen path.
+static int glm_pack_generate(const Options& o) {
+    strata::core::Glm5Model model;
+    std::string err;
+    // honours STRATA_GLM_SPLIT=<layer> (+STRATA_GLM_DEV1): the two-GPU layer split
+    if (!model.load_pack_env(o.glm_pack, o.max_context, err)) {
+        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        return 1;
+    }
+    const int64_t n_vocab = model.geometry().n_vocab;
+    // the driver samples on the device (sample_token), so the fast path never downloads the logits
+    model.set_host_logits(false);
+    if (model.fast()) {
+        // INFO facts for the server's Monitor tab (strata app): the expert tiers this engine runs with
+        const auto st = model.fast_stats();
+        std::printf("INFO context=%lld kv=f32 expert_slots=%lld expert_cache_mib=%lld engine_kind=glm-fast experts=%d "
+                    "vram_slots=%lld vram_gb=%.1f ram_slots=%lld ram_gb=%.1f mtp=%d vision_lend=%zu\n",
+                    (long long) o.max_context, (long long) st.pool_slots, (long long) (st.pool_gb * 1024.0),
+                    model.geometry().n_expert * (model.geometry().n_layers - model.geometry().dense_lead),
+                    (long long) st.pool_slots, st.pool_gb, (long long) st.ram_slots, st.ram_gb, model.has_mtp() ? 1 : 0,
+                    model.vision_lend_bytes());
+    }
+
+    strata::kernels::SamplerParams sp;
+    sp.greedy = o.greedy;
+    sp.top_k = o.top_k;
+    sp.top_p = o.top_p;
+    sp.temperature = o.temperature;
+    sp.seed = o.seed;
+
+    const std::vector<int64_t> glm_eos = {154820, 154827, 154829};
+    const std::vector<int64_t>& eos = o.eos_given ? o.eos_ids : glm_eos;
+    const bool stop_on_eos = o.eos_given || o.stop_eos || o.serve;
+
+    // ---- stdin on its own thread (the qwen serve's pattern): a STOP line must reach a request that is
+    // still running.  read(2), not std::cin - glibc's exit() flushes stdio and waits on stdin's lock,
+    // which getline holds while it waits for input.
+    std::atomic<bool> stop_req{false}, quit_req{false};
+    std::mutex in_mu;
+    std::condition_variable in_cv;
+    std::deque<std::string> in_lines;
+    bool in_eof = false;
+    if (o.serve) {
+        std::thread([&] {
+            std::string l, buf;
+            char chunk[4096];
+            auto getline_fd = [&](std::string& out) -> bool {
+                for (;;) {
+                    const size_t nlpos = buf.find('\n');
+                    if (nlpos != std::string::npos) {
+                        out.assign(buf, 0, nlpos);
+                        buf.erase(0, nlpos + 1);
+                        return true;
+                    }
+#if defined(_WIN32)
+                    const int n = _read(0, chunk, (unsigned) sizeof chunk);
+#else
+                    const ssize_t n = ::read(0, chunk, sizeof chunk);
+                    if (n < 0 && errno == EINTR) continue;
+#endif
+                    if (n <= 0) {
+                        if (buf.empty()) return false;
+                        out.swap(buf);
+                        buf.clear();
+                        return true;
+                    }
+                    buf.append(chunk, (size_t) n);
+                }
+            };
+            while (getline_fd(l)) {
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "QUIT") quit_req.store(true);   // cancel an in-flight request AND queue the line:
+                std::lock_guard<std::mutex> lk(in_mu);   // a GEN written before QUIT must still run (pipes)
+                in_lines.push_back(l);
+                in_cv.notify_one();
+            }
+            std::lock_guard<std::mutex> lk(in_mu);
+            in_eof = true;
+            in_cv.notify_one();
+        }).detach();
+    }
+    const auto next_line = [&](std::string& out) -> bool {
+        std::unique_lock<std::mutex> lk(in_mu);
+        in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof || quit_req.load(); });
+        if (in_lines.empty()) return false;   // EOF or QUIT with nothing queued behind it
+        out = std::move(in_lines.front());
+        in_lines.pop_front();
+        return true;
+    };
+
+    std::vector<int32_t> snap_tokens;   // the prompt prefix the model's saved state belongs to (conversation reuse)
+    // images (GENI): this request's <|image|> positions and rows, and a hash of the rows the saved state read - the
+    // same tokens with another picture must not reuse it
+    std::vector<int64_t> cur_img_pos;
+    std::vector<float> cur_img_rows;
+    // the thinking budget (GEN keys think_budget=<n> think_end=<id>, the server's run config): a reasoning block still
+    // open after n tokens is closed - the next token is </think> instead of the sampled one - and the answer follows
+    // in the same decode
+    int64_t req_think_budget = 0;
+    int32_t req_think_end = -1;
+    uint64_t snap_img_hash = 1469598103934665603ull;
+    const auto img_hash = [&](size_t len) {
+        uint64_t h = 1469598103934665603ull;   // FNV-1a over the positions and rows inside [0, len)
+        const size_t E = (size_t) model.geometry().n_embd;
+        for (size_t k = 0; k < cur_img_pos.size() && (size_t) cur_img_pos[k] < len; ++k) {
+            const unsigned char* b = (const unsigned char*) (cur_img_rows.data() + k * E);
+            for (size_t j = 0; j < E * sizeof(float); ++j) h = (h ^ b[j]) * 1099511628211ull;
+            h = (h ^ (uint64_t) cur_img_pos[k]) * 1099511628211ull;
+        }
+        return h;
+    };
+    const auto run_request = [&](const std::vector<int64_t>& ids, int64_t max_new,
+                                 const strata::kernels::SamplerParams& rq_in) -> int {
+        strata::kernels::SamplerParams sp = rq_in;   // per request (the server sends sampling keys per GEN)
+        stop_req.store(false);
+        model.force_next(-1);
+        bool in_think = req_think_budget > 0 && req_think_end >= 0;
+        std::vector<int32_t> prompt;
+        prompt.reserve(ids.size());
+        for (const int64_t t : ids) {
+            if (t < 0 || t >= n_vocab) {
+                std::printf("ERR token %lld out of range [0, %lld)\n", (long long) t, (long long) n_vocab);
+                return 1;
+            }
+            prompt.push_back((int32_t) t);
+        }
+        if (prompt.empty() || max_new <= 0) {
+            std::printf("ERR empty prompt or max_new\n");
+            return 1;
+        }
+        // CONVERSATION REUSE (the fast path): the previous prompt's state, saved just before its last token, is
+        // restored when this prompt extends it - a chat's next turn reads only what is new
+        size_t reuse = 0;
+        if (model.fast() && !snap_tokens.empty() && snap_tokens.size() < prompt.size() &&
+            std::equal(snap_tokens.begin(), snap_tokens.end(), prompt.begin()) &&
+            img_hash(snap_tokens.size()) == snap_img_hash &&
+            getenv("STRATA_GLM_NO_REUSE") == nullptr && model.snapshot_restore())
+            reuse = snap_tokens.size();
+        if (reuse == 0) model.reset();
+        std::vector<float> lg;
+        const auto t0 = std::chrono::steady_clock::now();
+        const char* finish = "length";
+        // the prompt one CHUNK at a time (PP reports per chunk: the server shows it and counts it as a heartbeat);
+        // the state is saved before the LAST prompt token, so an identical or extending prompt can reuse it
+        bool snapped = false;
+        // the batched prompt path (glm_prefill.cu) reads all but the last prompt token in chunks, layer by layer;
+        // the last one goes through the token path, which leaves the logits the first sample reads
+        const int pchunk = model.fast() ? model.prefill_chunk() : 0;
+        size_t i_first = reuse;
+        if (pchunk > 0 && prompt.size() - reuse > 1) {
+            // one call for everything but the last token: the two halves of a split pipeline the chunks; PP lines
+            // (the server's progress and heartbeat) come from the progress callback, possibly on the tail's thread
+            std::vector<int32_t> part(prompt.begin() + (long) reuse, prompt.end() - 1);
+            std::mutex pp_mu;
+            const auto pp_line = [&](size_t done) {
+                if (!o.serve) return;
+                std::lock_guard<std::mutex> lk(pp_mu);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("PP %zu %zu %.1f %.1f\n", reuse + done, prompt.size(), ms,
+                            (double) done / (ms / 1000.0 + 1e-9));
+                std::fflush(stdout);
+            };
+            model.prefill_progress = [&](int64_t done, int64_t total) {
+                (void) total;
+                pp_line((size_t) done);
+                return !stop_req.load();
+            };
+            const bool pok = model.prefill(part, err, prompt.back());   // (the NextN block's caches read it)
+            model.prefill_progress = nullptr;
+            if (pok) {
+                i_first = prompt.size() - 1;
+                pp_line(part.size());
+            } else if (err == "cancelled") {
+                snap_tokens.clear();
+                model.reset();
+                finish = "cancel";
+                i_first = prompt.size();
+            } else if (!err.empty()) {
+                snap_tokens.clear();
+                std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
+        }
+        for (size_t i = i_first; i < prompt.size();) {
+            if (model.fast() && !snapped && i == prompt.size() - 1) {
+                if (model.snapshot_save()) {
+                    snap_tokens.assign(prompt.begin(), prompt.end() - 1);
+                    snap_img_hash = img_hash(snap_tokens.size());
+                } else {
+                    snap_tokens.clear();
+                }
+                snapped = true;
+            }
+            size_t chunk = std::min<size_t>(8, prompt.size() - i);
+            if (model.fast() && !snapped && i + chunk > prompt.size() - 1) chunk = prompt.size() - 1 - i;
+            std::vector<int32_t> part(prompt.begin() + (long) i, prompt.begin() + (long) (i + chunk));
+            const bool ok = model.forward(part, lg, err);
+            if (!ok) {
+                snap_tokens.clear();
+                std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
+            i += chunk;
+            if (o.serve) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("PP %zu %zu %.1f %.1f\n", i, prompt.size(), ms,
+                            (double) (i - reuse) / (ms / 1000.0 + 1e-9));
+            }
+            if (stop_req.load()) { finish = "cancel"; break; }
+        }
+        if (stop_req.load()) finish = "cancel";
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto st1 = model.fast_stats();
+        int64_t produced = 0;
+        // one emitted token: the T line, the live tier counters every 8 tokens, the stop conditions (false: stop)
+        const auto on_token = [&](int tok) -> bool {
+            std::printf("T %d\n", tok);
+            ++produced;
+            if (in_think && (tok == req_think_end || produced >= req_think_budget)) {
+                if (tok != req_think_end) model.force_next(req_think_end);   // the budget: the next token closes it
+                in_think = false;
+            }
+            // live expert-tier counters for the server's Monitor (serve/server.py parses STAT lines), every 8 tokens
+            if (o.serve && model.fast() && produced % 8 == 0) {
+                const auto sn = model.fast_stats();
+                const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+                const double n = (double) produced;
+                const uint64_t h = sn.hits - st1.hits, m = sn.misses - st1.misses;
+                std::printf("STAT tok_s=%.2f ms_tok=%.2f vram_hit=%.4f ram_fetch=%.3f disk=%.3f promo=%.3f "
+                            "vram_used=%lld vram_slots=%lld ram_used=%lld ram_slots=%lld ram_gb=%.1f vram_gb=%.1f\n",
+                            n / std::max(1e-9, el), 1000.0 * el / n, (double) h / (double) std::max<uint64_t>(1, h + m),
+                            (double) (sn.ram_hits - st1.ram_hits) / n, (double) (sn.disk_reads - st1.disk_reads) / n,
+                            (double) (sn.promotions - st1.promotions) / n, (long long) sn.pool_used,
+                            (long long) sn.pool_slots, (long long) sn.ram_used, (long long) sn.ram_slots, sn.ram_gb,
+                            sn.pool_gb);
+            }
+            bool eos_hit = false;
+            for (const int64_t e : eos)
+                if (e == tok) eos_hit = true;
+            if (eos_hit && stop_on_eos) {
+                finish = "stop";
+                return false;
+            }
+            if (stop_req.load()) {
+                finish = "cancel";
+                return false;
+            }
+            return produced < max_new;
+        };
+        const uint64_t spec0 = model.spec_steps_, hits0 = model.spec_hits_;
+        if (std::strcmp(finish, "cancel") != 0 && model.fast() && model.spec_ready()) {
+            // the pipelined speculative decode: the two halves of the split work on consecutive tokens, the head
+            // running the NextN block's draft (same tokens as the loop below)
+            int64_t n_spec = 0;
+            if (!model.decode_spec(sp, max_new, on_token, n_spec, err)) {
+                std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
+        } else {
+            for (;;) {
+                if (stop_req.load()) {
+                    finish = "cancel";
+                    break;
+                }
+                int tok = model.sample_token(sp, err);
+                if (tok < 0) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                tok = model.forced(tok);
+                sp.counter += 1;
+                if (!on_token(tok)) break;
+                if (!model.forward({(int32_t) tok}, lg, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+            }
+        }
+        const auto t2 = std::chrono::steady_clock::now();
+        const double prompt_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double decode_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        // the decode phase's expert-tier counters (the fast path; zeros on the reference path)
+        const auto st2 = model.fast_stats();
+        const uint64_t d_hits = st2.hits - st1.hits, d_miss = st2.misses - st1.misses;
+        std::printf("DONE %lld %lld %.1f %.1f %s %llu %llu %zu %llu %llu\n", (long long) produced,
+                    (long long) prompt.size(), prompt_ms, decode_ms, finish,
+                    (unsigned long long) (model.spec_hits_ - hits0), (unsigned long long) (model.spec_steps_ - spec0),
+                    reuse, (unsigned long long) d_hits, (unsigned long long) (d_hits + d_miss));
+        std::fflush(stdout);
+        // this machine's expert usage, for the next start's warm-up (after DONE: the client is not kept waiting)
+        if (model.fast()) model.save_usage();
+        if (model.fast() && produced > 0) {
+            const double n = (double) produced;
+            std::fprintf(stderr,
+                         "glm stat: decode %.2f ms/tok (%.2f tok/s) | vram hit %.2f%% | ram fetches %.2f/tok | "
+                         "disk %.2f reads/tok in %.2f waits/tok, %.2f ms/tok | promotions %.2f/tok | cpu lane %.2f/tok "
+                         "in %.2f ms/tok | prompt %.1f ms/tok | vram %lld/%lld ram %lld/%lld\n",
+                         decode_ms / n, 1000.0 * n / decode_ms,
+                         100.0 * (double) d_hits / (double) std::max<uint64_t>(1, d_hits + d_miss),
+                         (double) (st2.ram_hits - st1.ram_hits) / n, (double) (st2.disk_reads - st1.disk_reads) / n,
+                         (double) (st2.miss_layers - st1.miss_layers) / n, (st2.disk_ms - st1.disk_ms) / n,
+                         (double) (st2.promotions - st1.promotions) / n,
+                         (double) (st2.cpu_experts - st1.cpu_experts) / n, (st2.cpu_ms - st1.cpu_ms) / n,
+                         prompt_ms / (double) std::max<size_t>(1, prompt.size()), (long long) st2.pool_used,
+                         (long long) st2.pool_slots, (long long) st2.ram_used, (long long) st2.ram_slots);
+            if (model.spec_steps_ > spec0)
+                std::fprintf(stderr, "glm spec: %llu of %llu drafts accepted (%.1f%%)\n",
+                             (unsigned long long) (model.spec_hits_ - hits0),
+                             (unsigned long long) (model.spec_steps_ - spec0),
+                             100.0 * (double) (model.spec_hits_ - hits0) / (double) (model.spec_steps_ - spec0));
+        }
+        return 0;
+    };
+
+    if (!o.serve) {
+        if (o.tokens.empty()) {
+            std::fprintf(stderr, "strata generate: --tokens is required (this build has no tokenizer; see the "
+                                 "header of src/program/generate.cpp)\n");
+            return 2;
+        }
+        // STRATA_GLM_SCORE=<c>: score --tokens instead of generating.  Every token goes through the one-token decode
+        // path (the tiers and the CPU lane as in a decode); the tokens after the first c are scored given the ones
+        // before: mean NLL, perplexity, top-1 hits.  STRATA_GLM_SCORE_DUMP=<file> writes each scored position's
+        // log-softmax (n_vocab floats); STRATA_GLM_SCORE_REF=<file> reads such a dump and reports KL(ref || this) and
+        // how often both pick the same top token - the quality yardstick for engine changes and for quants.
+        // STRATA_GLM_SCORE_TOPK=<file> is the compact reference (the FP8 model's, tools/maya_quant): an int32 k, then
+        // per scored position k int32 token ids (best first) and their k float log-probs.  KL over those k tokens plus
+        // one bucket for the rest of the vocabulary.
+        if (const char* sc = getenv("STRATA_GLM_SCORE")) {
+            const size_t c = (size_t) std::max(0L, std::atol(sc));
+            const char* dump = getenv("STRATA_GLM_SCORE_DUMP");
+            const char* ref = getenv("STRATA_GLM_SCORE_REF");
+            const char* tkf = getenv("STRATA_GLM_SCORE_TOPK");
+            std::FILE* df = dump && dump[0] ? std::fopen(dump, "wb") : nullptr;
+            std::FILE* rf = ref && ref[0] ? std::fopen(ref, "rb") : nullptr;
+            std::FILE* tf = tkf && tkf[0] ? std::fopen(tkf, "rb") : nullptr;
+            int32_t tk = 0;
+            if ((dump && dump[0] && !df) || (ref && ref[0] && !rf) || (tkf && tkf[0] && !tf) ||
+                (tf && (std::fread(&tk, sizeof tk, 1, tf) != 1 || tk <= 0 || tk > n_vocab))) {
+                std::fprintf(stderr, "strata generate: cannot open the score dump/reference\n");
+                return 1;
+            }
+            std::vector<int32_t> tid((size_t) std::max(tk, 1));
+            std::vector<float> tlp((size_t) std::max(tk, 1));
+            model.set_host_logits(true);
+            model.reset();
+            std::vector<float> lg, ls((size_t) n_vocab), rl((size_t) n_vocab);
+            double nll = 0.0, kl = 0.0, kl_max = 0.0;
+            size_t n = 0, top1 = 0, same = 0, nref = 0;
+            const auto ts = std::chrono::steady_clock::now();
+            for (size_t i = 0; i + 1 < o.tokens.size(); ++i) {
+                if (!model.forward({(int32_t) o.tokens[i]}, lg, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                if (i + 1 <= c) continue;
+                float mx = lg[0];
+                size_t am = 0;
+                for (size_t v = 1; v < (size_t) n_vocab; ++v)
+                    if (lg[v] > mx) {
+                        mx = lg[v];
+                        am = v;
+                    }
+                double se = 0.0;
+                for (size_t v = 0; v < (size_t) n_vocab; ++v) se += std::exp((double) lg[v] - mx);
+                const double lse = mx + std::log(se);
+                for (size_t v = 0; v < (size_t) n_vocab; ++v) ls[v] = (float) (lg[v] - lse);
+                const size_t nx = (size_t) o.tokens[i + 1];
+                nll -= ls[nx];
+                top1 += am == nx;
+                ++n;
+                if (df) std::fwrite(ls.data(), sizeof(float), ls.size(), df);
+                if (rf && std::fread(rl.data(), sizeof(float), rl.size(), rf) == rl.size()) {
+                    double k = 0.0;
+                    size_t ra = 0;
+                    for (size_t v = 0; v < (size_t) n_vocab; ++v) {
+                        const double p = std::exp((double) rl[v]);
+                        if (p > 0.0) k += p * ((double) rl[v] - (double) ls[v]);
+                        if (rl[v] > rl[ra]) ra = v;
+                    }
+                    kl += k;
+                    kl_max = std::max(kl_max, k);
+                    same += ra == am;
+                    ++nref;
+                }
+                if (tf && std::fread(tid.data(), sizeof(int32_t), (size_t) tk, tf) == (size_t) tk &&
+                    std::fread(tlp.data(), sizeof(float), (size_t) tk, tf) == (size_t) tk) {
+                    double k = 0.0, pr = 0.0, pt = 0.0;
+                    for (int32_t j = 0; j < tk; ++j) {
+                        const double p = std::exp((double) tlp[j]);
+                        k += p * ((double) tlp[j] - (double) ls[(size_t) tid[j]]);
+                        pr += p;
+                        pt += std::exp((double) ls[(size_t) tid[j]]);
+                    }
+                    const double rr = std::max(1.0 - pr, 1e-12), rt = std::max(1.0 - pt, 1e-12);
+                    if (pr < 1.0) k += rr * (std::log(rr) - std::log(rt));
+                    kl += k;
+                    kl_max = std::max(kl_max, k);
+                    same += (size_t) tid[0] == am;
+                    ++nref;
+                }
+            }
+            if (df) std::fclose(df);
+            if (rf) std::fclose(rf);
+            if (tf) std::fclose(tf);
+            const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count();
+            std::printf("SCORE %zu tokens: nll %.5f ppl %.4f top1 %.2f%%", n, nll / (double) std::max<size_t>(1, n),
+                        std::exp(nll / (double) std::max<size_t>(1, n)), 100.0 * (double) top1 / (double) std::max<size_t>(1, n));
+            if (nref > 0)
+                std::printf(" | vs ref: KL %.6f (max %.4f), same top token %.2f%%", kl / (double) nref, kl_max,
+                            100.0 * (double) same / (double) nref);
+            const auto stc = model.fast_stats();
+            std::printf(" | %.1f ms/token | cpu lane %llu experts, vram hit %.2f%%\n",
+                        1000.0 * sec / (double) std::max<size_t>(1, o.tokens.size() - 1),
+                        (unsigned long long) stc.cpu_experts,
+                        100.0 * (double) stc.hits / (double) std::max<uint64_t>(1, stc.hits + stc.misses));
+            return 0;
+        }
+        const int rc = run_request(o.tokens, o.max_new, sp);
+        return rc;
+    }
+
+    // the serve wire contract (serve/server.py): READY <max_context> [stop] once, then GEN <max_new>
+    // [<key>=<value> ...] <id,id,...> lines - the sampling keys are per request and the ids are the LAST
+    // token.  "stop" is NOT advertised: a request runs to its end (no mid-request cancel in Maya).
+    std::printf("READY %lld stop\n", (long long) o.max_context);
+    std::fprintf(stderr, "strata generate: glm5-next serve (Maya): GEN <max_new> [keys] <ids>, GENI <max_new> [keys] "
+                         "<embeddings> <ids>; QUIT to end\n");
+    // GENI: the embeddings file is one or more strata-vision records (int32 'SVE1', n, nx, ny, n_embd, then n x n_embd
+    // floats) in prompt order; their rows stand in for the prompt's <|image|> tokens, in order (GLM-5.3's image
+    // tokens take no positions of their own: the rows only replace the embeddings)
+    constexpr int64_t kGlmImageToken = 154854;   // <|image|>
+    std::vector<int32_t> lp_ctx;   // LOGP: the context the saved state belongs to (the state before its last token)
+    std::string line;
+    while (next_line(line)) {
+        std::istringstream ss(line);
+        std::string cmd;
+        ss >> cmd;
+        if (cmd == "QUIT") break;
+        if (cmd == "STOP") continue;   // a stray one between requests: ignore
+        // LOGP <n_ctx> <id,id,...>: the summed log-probability of the tokens from n_ctx on given those before
+        // ("LP <sum> <n> <1 if every one was the most likely>") - the multiple-choice scoring of the zero-shot suite
+        // (tools/maya_quant/zs_tasks.py).  A context identical to the previous request's is restored, not read again
+        // (the choices of one question share it).
+        // VLEND / VRECLAIM (between requests): the on-demand vision encoder is about to start on the first GPU - the
+        // expert pool's tail is emptied and freed for it ("VLENT <bytes>") - and has ended ("VRECLAIMED"; an ERR while
+        // its memory is not free yet: try again)
+        if (cmd == "VLEND") {
+            size_t lent = 0;
+            if (model.vision_lend(lent, err)) std::printf("VLENT %zu\n", lent);
+            else std::printf("ERR %s\n", err.c_str());
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "VRECLAIM") {
+            if (model.vision_reclaim(err)) std::printf("VRECLAIMED\n");
+            else std::printf("ERR %s\n", err.c_str());
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "LOGP") {
+            int64_t n_ctx = 0;
+            std::string ids_s;
+            ss >> n_ctx >> ids_s;
+            std::vector<int64_t> t64;
+            std::string e;
+            if (n_ctx < 2 || ids_s.empty() || !parse_i64_list(ids_s.c_str(), t64, e) || (int64_t) t64.size() <= n_ctx) {
+                std::printf("ERR malformed LOGP line\n");
+                std::fflush(stdout);
+                continue;
+            }
+            std::vector<int32_t> t(t64.begin(), t64.end());
+            snap_tokens.clear();                  // the saved state is LOGP's now, not a conversation's
+            model.set_host_logits(true);
+            const std::vector<int32_t> ctx(t.begin(), t.begin() + n_ctx);
+            bool ok = true;
+            if (!(model.fast() && ctx == lp_ctx && model.snapshot_restore())) {
+                model.reset();
+                std::vector<int32_t> head(t.begin(), t.begin() + n_ctx - 1);
+                ok = model.prefill(head, err, t[(size_t) n_ctx - 1]);
+                if (!ok && err.empty()) {   // no prompt path: the token path, 8 at a time
+                    ok = true;
+                    std::vector<float> lg0;
+                    for (size_t i = 0; ok && i < head.size(); i += 8) {
+                        const std::vector<int32_t> part(head.begin() + (long) i,
+                                                        head.begin() + (long) std::min(head.size(), i + 8));
+                        ok = model.forward(part, lg0, err);
+                    }
+                }
+                lp_ctx.clear();
+                if (ok && model.fast() && model.snapshot_save()) lp_ctx = ctx;
+            }
+            std::vector<float> lgv;
+            double lp = 0.0;
+            bool greedy = true;
+            for (int64_t j = n_ctx; ok && j < (int64_t) t.size(); ++j) {
+                ok = model.forward({t[(size_t) j - 1]}, lgv, err);
+                if (!ok) break;
+                float mx = lgv[0];
+                size_t am = 0;
+                for (size_t v = 1; v < lgv.size(); ++v)
+                    if (lgv[v] > mx) { mx = lgv[v]; am = v; }
+                double se = 0.0;
+                for (const float x : lgv) se += std::exp((double) x - mx);
+                lp += (double) lgv[(size_t) t[(size_t) j]] - mx - std::log(se);
+                greedy = greedy && am == (size_t) t[(size_t) j];
+            }
+            model.set_host_logits(false);
+            if (!ok) {
+                lp_ctx.clear();
+                std::printf("ERR %s\n", err.c_str());
+            } else {
+                std::printf("LP %.6f %lld %d\n", lp, (long long) (t.size() - (size_t) n_ctx), greedy ? 1 : 0);
+            }
+            std::fflush(stdout);
+            continue;
+        }
+        if (cmd == "GEN" || cmd == "GENI") {
+            int64_t max_new = 0;
+            ss >> max_new;
+            strata::kernels::SamplerParams rq = sp;
+            bool any_key = false, greedy_req = false;
+            req_think_budget = 0;
+            req_think_end = -1;
+            std::string tok2, ids, emb_path;
+            while (ss >> tok2) {
+                const size_t eq = tok2.find('=');
+                if (eq == std::string::npos) {
+                    if (cmd == "GENI" && emb_path.empty()) emb_path = tok2;   // GENI: the file, then the ids
+                    else ids = tok2;   // the ids list is the last token on the line
+                    continue;
+                }
+                const std::string k = tok2.substr(0, eq), v = tok2.substr(eq + 1);
+                if (k == "temperature") {   // temperature=0 (or below): greedy, whatever else the line says
+                    rq.temperature = (float) std::atof(v.c_str());
+                    if (rq.temperature <= 0.0f) greedy_req = true;
+                    else any_key = true;
+                }
+                else if (k == "top_p") { rq.top_p = (float) std::atof(v.c_str()); any_key = true; }
+                else if (k == "top_k") { rq.top_k = std::atoi(v.c_str()); any_key = true; }
+                else if (k == "min_p") { rq.min_p = (float) std::atof(v.c_str()); any_key = true; }
+                else if (k == "seed") { rq.seed = (uint64_t) std::atoll(v.c_str()); }
+                else if (k == "think_budget") { req_think_budget = std::atoll(v.c_str()); }
+                else if (k == "think_end") { req_think_end = std::atoi(v.c_str()); }
+                // penalty_* and the calibration keys need machinery this mode does not have (history rows,
+                // request-scoped engine settings): ignored rather than approximated
+            }
+            if (any_key) rq.greedy = false;   // any sampler key switches the request to the sampled path
+            if (greedy_req) rq.greedy = true;
+            std::vector<int64_t> toks;
+            std::string e;
+            if (max_new <= 0 || ids.empty() || !parse_i64_list(ids.c_str(), toks, e)) {
+                std::printf("ERR malformed GEN line\n");
+                continue;
+            }
+            lp_ctx.clear();   // a generation saves its own state over LOGP's
+            cur_img_pos.clear();
+            cur_img_rows.clear();
+            if (cmd == "GENI") {
+                const int64_t E = model.geometry().n_embd;
+                std::FILE* f = std::fopen(emb_path.c_str(), "rb");
+                std::string ge = f ? "" : "cannot open " + emb_path;
+                while (f && ge.empty()) {
+                    int32_t hdr[5];
+                    const size_t got = std::fread(hdr, 1, sizeof hdr, f);
+                    if (got == 0 && std::feof(f)) break;
+                    if (got != sizeof hdr || hdr[0] != 0x31455653 || hdr[1] <= 0 || hdr[4] != E ||
+                        (size_t) hdr[1] > toks.size() - cur_img_rows.size() / (size_t) E) {
+                        ge = "not a strata-vision record for this model";
+                        break;
+                    }
+                    const size_t at = cur_img_rows.size();
+                    cur_img_rows.resize(at + (size_t) hdr[1] * (size_t) E);
+                    if (std::fread(cur_img_rows.data() + at, sizeof(float) * (size_t) E, (size_t) hdr[1], f) !=
+                        (size_t) hdr[1])
+                        ge = "short embeddings file";
+                }
+                if (f) std::fclose(f);
+                for (size_t i = 0; ge.empty() && i < toks.size(); ++i)
+                    if (toks[i] == kGlmImageToken) cur_img_pos.push_back((int64_t) i);
+                if (ge.empty() && (int64_t) cur_img_pos.size() * E != (int64_t) cur_img_rows.size())
+                    ge = std::to_string(cur_img_pos.size()) + " image tokens, " +
+                         std::to_string(cur_img_rows.size() / (size_t) E) + " image rows";
+                if (!ge.empty()) {
+                    cur_img_pos.clear();
+                    cur_img_rows.clear();
+                    std::printf("ERR %s\n", ge.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+            }
+            model.set_image_rows(cur_img_pos, cur_img_rows);
+            run_request(toks, max_new, rq);
+            model.set_image_rows({}, {});
+            continue;
+        }
+        if (cmd.empty()) continue;
+        std::printf("ERR unsupported command '%s' (GLM supports GEN, GENI, LOGP, VLEND, VRECLAIM and QUIT)\n", cmd.c_str());
+    }
+    return 0;
+}
+
+#endif
+
 // The PCIe share of the missed experts for a link measured at `gbps`: `base` (the share measured on x16 links) from
 // 20 GB/s up, and below that in proportion to the bandwidth, so the time the link spends on its share stays about
 // what the x16 share costs.  Continuous (#485): before, 19.9 GB/s gave 0.42 and 20.0 the full 0.55 (and 4.0 GB/s
@@ -1630,6 +2261,9 @@ int main(int argc, char** argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
         else if (a == "--pack") o.pack = next("--pack");
+#ifdef STRATA_ENABLE_GLM
+        else if (a == "--glm-pack") o.glm_pack = next("--glm-pack");
+#endif
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
             std::string e;
@@ -1804,7 +2438,11 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
-        else if (a == "--stop-eos") o.stop_eos = true;
+        else if (a == "--stop-eos") { o.stop_eos = true;
+#ifdef STRATA_ENABLE_GLM
+            o.eos_given = true;
+#endif
+        }
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
         else if (a == "--split-device") o.split_device = next("--split-device");
@@ -1955,6 +2593,12 @@ int main(int argc, char** argv) {
         cudaDeviceProp ad{};
         if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName);
         else (void) cudaGetLastError();
+    }
+#endif
+#ifdef STRATA_ENABLE_GLM
+    if (!o.glm_pack.empty()) {
+        if (o.pack != "pack/full") std::fprintf(stderr, "strata generate: --glm-pack supersedes --pack (%s ignored)\n", o.pack.c_str());
+        return glm_pack_generate(o);
     }
 #endif
     strata::core::set_coupled_draft(o.coupled_draft);

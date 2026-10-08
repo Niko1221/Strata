@@ -4869,6 +4869,9 @@ class UntimedReads(unittest.TestCase):
             self.killed = True
             self.release.set()
 
+        def close(self):
+            self.release.set()
+
     def test_vision_encode_read_times_out(self):
         import serve.server as server
         silent = self.Silent()
@@ -4891,7 +4894,8 @@ class UntimedReads(unittest.TestCase):
     def test_vision_ready_read_times_out(self):
         import serve.server as server
         silent = self.Silent()
-        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill, poll=lambda: None)
+        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill, poll=lambda: None,
+                               wait=lambda timeout=None: 0)
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))

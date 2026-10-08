@@ -53,6 +53,12 @@ endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+execute_process(COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/glm5next_patch.py ${LLAMA_DIR}
+                RESULT_VARIABLE _glm_patch)
+if(NOT _glm_patch EQUAL 0)
+  message(FATAL_ERROR "Could not add the GLM vision projector to the pinned llama.cpp")
+endif()
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 
 add_executable(strata-vision strata_vision.cpp)
