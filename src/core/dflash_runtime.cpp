@@ -216,7 +216,7 @@ void DFlashDrafter::release() {
         }
     }
     for (void* a : arenas_) free_dev(a);
-    free_dev(tok_); free_dev(step_); free_dev(pos_); free_dev(ident_);
+    free_dev(tok_); free_dev(step_); free_dev(pos_);
     free_dev(tapin_); free_dev(xn16_); free_dev(attn16_);
     free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
     free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
@@ -229,7 +229,7 @@ void DFlashDrafter::release() {
     if (cs_) cudaStreamDestroy(cs_);
     w_ = nullptr; wf_.clear(); wt_.clear();
     st_.clear(); arenas_.clear();
-    tok_ = step_ = pos_ = ident_ = nullptr;
+    tok_ = step_ = pos_ = nullptr;
     tapin_ = xn16_ = attn16_ = nullptr;
     tapf_ = emb_ = h_ = xn_ = ctx_ = nullptr;
     q_ = kc_ = vc_ = attn_ = bo_ = nullptr;
@@ -427,7 +427,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     };
     const int64_t W16 = std::max(N, std::max(I, Q));   // the widest bf16 activation (MLP down's input)
     bool ok = take((R + 4) * 4, (void**) &tok_) && take(R * 4 * 4, (void**) &step_) &&
-              take(R * (int64_t) dg.n_head * 4, (void**) &pos_) && take(R * cap_ * 4, (void**) &ident_) &&
+              take(R * (int64_t) dg.n_head * 4, (void**) &pos_) &&
               take(R * F * 2, (void**) &tapin_) && take(R * W16 * 2, (void**) &xn16_) &&
               take(R * W16 * 2, (void**) &attn16_) && take(R * F * 4, (void**) &tapf_) &&
               take(R * N * 4, (void**) &emb_) && take(R * N * 4, (void**) &h_) &&
@@ -441,16 +441,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_) &&
               take((size_t) max_rows_ * (size_t) attn_scratch_floats_ * 4, (void**) &attn_scratch_);
     if (!ok) return bail(err);
-    // the identity cell selection, once, for EVERY query row: the batch attention offsets the
-    // table by row * cap (ids += blockIdx.z * cap), so rows 1..K-1 read garbage when only row 0
-    // is initialized - the constant-mask-row symptom.  [r][i] = i, duplicated per row on purpose
-    // (no optimization before correctness).
-    {
-        std::vector<int32_t> id_host((size_t) max_rows_ * (size_t) cap_);
-        dflash_identity_fill(id_host.data(), (int) max_rows_, cap_);
-        if (cudaMemcpy(ident_, id_host.data(), id_host.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess)
-            return bail("dflash: the identity selection upload failed");
-    }
+    // no selection table: the drafter's attention reads the identity cells straight from the
+    // block position (dflash_attn_batch); dflash_identity_fill stays for the load test
     if (cudaMemset(arg_scratch_, 0, strata::kernels::argmax_rows_scratch_bytes((int) R)) != cudaSuccess ||
         cudaStreamSynchronize(cs_) != cudaSuccess)
         return bail("dflash: the upload did not land");
@@ -911,7 +903,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         {
             DFlashSection s("L*.attn");
-            qsa_decode_attn_batch(q_, pools, ident_, step_, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
+            // the drafter's cells are the identity [0, pos+K): no selection table, and only their
+            // chunks launch (the configured window cap stays the scratch stride)
+            dflash_attn_batch(q_, pools, step_, pos + K, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
         }
         if (parity_want(cycle_)) {
             char name[32];
