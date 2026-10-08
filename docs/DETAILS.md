@@ -1004,8 +1004,17 @@ clean cache is what the credit gives back. There `--memory-limit-mib 102400` is 
 (`--conversation-cache-min-free-mib`) is measured against what is left under it: with the engine already near the cap,
 a floor of several GiB refuses every park; a few hundred MiB keeps a margin for the allocator and the kernel while
 letting a snapshot that really fits go through.
-TODO-EVIDENCE: the same check on the test machine (lm-server, container CT105, 90 GiB cap): the figure with and without
-`--memory-limit-mib`, a park that the old check let through and the guard refuses (or the reverse), n and the A/A.
+
+Measured on the test machine (2x RTX 3080 20 GB, UD-Q4_K_XL, a 90 GiB container, resident RAM mode, 2 slots), one restart
+per arm, `--conversation-cache-min-free-mib 2048`. With `--memory-limit-mib 101376` (the cap our deployment runs with)
+the engine parked on every attempt: 135 parks and 0 skips over one run of 308 requests. With `--memory-limit-mib 78000`
+the start line read `limit 76.2 GiB (source: flag) ... available 73.0 GiB (MemAvailable 88.6 GiB)`, and 8 of 8 parking
+attempts were skipped (`skip parking (physical RAM admission; need 226 MiB plus 2048 MiB floor, 0 MiB available, source
+flag)`), none parked. The container's `memory.current` sat at 89.7-89.9 GiB, above the 76.2 GiB cap, so the headroom
+under the cap is 0, while `MemAvailable` read 15.7-15.9 GiB in the same samples; a check on `MemAvailable` alone would
+have let those parks through (the old check was not run). The requests were served normally (median of 6 decodes
+79.6 tok/s); only parking is refused, and the log says so. The unit test `memory_guard_test` (CPU only, no model) passes
+130 checks. Not measured: a cap between 78000 and 101376, a run without the flag, any effect on throughput.
 
 The shared snapshot core validates all layers and checkpoints before applying any
 state. Invalid entries are discarded; transfer/synchronization failure is fatal
