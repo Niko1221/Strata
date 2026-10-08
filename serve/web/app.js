@@ -559,7 +559,23 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", budget: "", seed: "", show: true,
+                  esp: true, mcp: true};
+const ANSWER_ROOM = 64;               // tools/chat.py's: a thinking budget leaves at least this much of max tokens to answer
+// The thinking budget (#123's reasoning_budget_tokens): at most this many tokens of thinking, then the server closes it and
+// the model answers.  Empty or 0: no limit.  Thinking off: nothing to cap.
+function budgetFields(s) {
+  return +s.budget > 0 && s.thinking !== "none" ? {reasoning_budget_tokens: +s.budget} : {};
+}
+// what is wrong with a max tokens / budget pair, or "" (the budget counts toward max tokens)
+function budgetProblem(max, budget) {
+  if (!budget || budget === "0") return "";                  // no limit, as the server reads 0
+  if (!/^[1-9][0-9]*$/.test(budget)) return "The thinking budget is a whole number of tokens (empty: no limit).";
+  if (max && +budget > +max - ANSWER_ROOM)
+    return `The thinking counts toward max tokens: with ${max}, the budget can be at most ${Math.max(0, +max - ANSWER_ROOM)} so ` +
+           `${ANSWER_ROOM} tokens are left for the answer.`;
+  return "";
+}
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
@@ -796,6 +812,7 @@ async function send() {
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
+  Object.assign(body, budgetFields(settings));
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
@@ -992,7 +1009,7 @@ function openDrawer(open) {
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
-  $("s-max").value = s.max; $("s-seed").value = s.seed;
+  $("s-max").value = s.max; $("s-budget").value = s.budget || ""; $("s-seed").value = s.seed;
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
@@ -1014,6 +1031,7 @@ function sharedDefaults(s) {
   if (+s.temperature > 0) Object.assign(d, {top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
+  Object.assign(d, budgetFields(s));
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
   return d;
 }
@@ -1040,6 +1058,7 @@ function outputs() {
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
+  $("s-budget").disabled = !!sel && sel.dataset.v === "none";   // thinking off: no budget to set
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
@@ -1050,8 +1069,11 @@ $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($(
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+  const problem = budgetProblem($("s-max").value.trim(), $("s-budget").value.trim());
+  if (problem) { toast("error", "Not saved", problem, 6000); return; }
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
-              top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+              top_k: +$("s-topk").value, max: $("s-max").value.trim(), budget: $("s-budget").value.trim(),
+              seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};

@@ -217,6 +217,12 @@
       <input class="st-input" id="s-max" type="number" min="1" step="1" placeholder="Until done">
     </div>
     <div class="st-field">
+      <label class="st-label" for="s-budget">Thinking budget <output>empty = no limit</output></label>
+      <input class="st-input" id="s-budget" type="number" min="1" step="1" placeholder="No limit"
+        aria-describedby="s-budget-hint">
+      <span class="muted small" id="s-budget-hint">at most this many tokens of thinking, then it answers</span>
+    </div>
+    <div class="st-field">
       <label class="st-label" for="s-seed">Seed <output>empty = random</output></label>
       <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random">
     </div>

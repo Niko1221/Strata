@@ -300,5 +300,49 @@ class MonitorTiles(unittest.TestCase):
         self.assertEqual((t["pcie"]["value"], t["pcie"]["sub"]), ("Gen5<small>x16</small>", "to GPU 420 MB/s · idle Gen4"))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ChatThinkingBudget(unittest.TestCase):
+    """The chat's thinking budget (#123's reasoning_budget_tokens), through app.js's own send() and the shared defaults
+    (node, fixtures/chat_request.js)."""
+
+    def run_chat(self, settings):
+        here = Path(__file__).parent
+        out = subprocess.run(["node", str(here / "fixtures" / "chat_request.js"), str(here / "web" / "app.js"),
+                              json.dumps(settings)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def test_a_budget_goes_into_the_request_and_the_shared_defaults(self):
+        r = self.run_chat({"budget": "2048", "max": "4096"})
+        self.assertEqual((r["body"]["reasoning_budget_tokens"], r["body"]["max_tokens"]), (2048, 4096))
+        self.assertEqual(r["shared"]["reasoning_budget_tokens"], 2048)      # other apps get the same budget
+
+    def test_no_budget_sends_none(self):
+        for budget in ("", "0"):                                           # 0: no limit, as the server reads it
+            r = self.run_chat({"budget": budget})
+            self.assertNotIn("reasoning_budget_tokens", r["body"])
+            self.assertNotIn("reasoning_budget_tokens", r["shared"])
+
+    def test_thinking_off_sends_no_budget(self):
+        r = self.run_chat({"budget": "2048", "thinking": "none"})
+        self.assertEqual(r["body"]["reasoning_effort"], "none")
+        self.assertNotIn("reasoning_budget_tokens", r["body"])
+
+    def test_a_budget_must_leave_room_to_answer(self):
+        p = self.run_chat({})["problems"]   # (max, budget): ("",""), ("",2048), (4096,2048), (4096,4032), (4096,4033),
+        self.assertEqual(p[:4], ["", "", "", ""])                          # (100,50), ("",1.5), ("",-3), ("",0)
+        self.assertIn("at most 4032", p[4])                                 # 64 tokens left to answer
+        self.assertIn("at most 36", p[5])
+        self.assertIn("whole number", p[6])
+        self.assertIn("whole number", p[7])
+        self.assertEqual(p[8], "")
+
+    def test_the_field_is_on_the_page(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="s-budget"', html)
+        self.assertIn('$("s-budget")', js)
+
+
 if __name__ == "__main__":
     unittest.main()
