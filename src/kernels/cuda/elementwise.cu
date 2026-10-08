@@ -223,6 +223,35 @@ void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst,
     sync_if_needed(stream, "bf16_gather_strided");
 }
 
+template<typename T>
+__global__ void dflash_gather_taps_kernel(const T* src, uint16_t* dst, int taps, int hidden,
+                                         int64_t stride, int64_t count) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const int64_t col = i % hidden, tap = (i / hidden) % taps, row = i / ((int64_t) hidden * taps);
+    const auto value = src[tap * stride + row * hidden + col];
+    if constexpr (sizeof(T) == sizeof(float)) dst[i] = bf16_from_f32(value);
+    else dst[i] = value;
+}
+
+template<typename T>
+void gather_taps(const T* src, uint16_t* dst, int taps, int hidden, int rows, int64_t stride, void* stream) {
+    if (rows <= 0 || taps <= 0 || hidden <= 0) return;
+    const int64_t count = (int64_t) rows * taps * hidden;
+    dflash_gather_taps_kernel<<<grid_for(count), THREADS, 0, (cudaStream_t) stream>>>(
+        src, dst, taps, hidden, stride, count);
+    check_launch("dflash_gather_taps");
+    sync_if_needed(stream, "dflash_gather_taps");
+}
+void dflash_gather_taps(const uint16_t* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream) {
+    gather_taps(src, dst, taps, hidden, rows, stride, stream);
+}
+void dflash_gather_taps(const float* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream) {
+    gather_taps(src, dst, taps, hidden, rows, stride, stream);
+}
+
 /// THE DOORBELL.  One thread, one INCREMENT - the cost is the launch, and inside a graph that is paid once.
 ///
 /// **IT INCREMENTS THE MEMORY, AND IT DOES NOT TAKE THE VALUE AS AN ARGUMENT.**  The first version did -

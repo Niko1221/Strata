@@ -794,6 +794,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
 
+  # DFlash tap packing: padded planes, 1..8 rows, BF16 and F32 sources.
+  add_executable(dflash_taps_test src/kernels/dflash_taps_test.cpp)
+  target_include_directories(dflash_taps_test PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_taps_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_taps_test COMMAND dflash_taps_test)
+  set_tests_properties(dflash_taps_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
   # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
   add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
   target_include_directories(dflash_rope_parity PRIVATE ${_strata_gpu_include_directories})

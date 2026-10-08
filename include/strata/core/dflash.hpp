@@ -112,6 +112,8 @@ public:
         return artifact_.open(gguf_path, err);
     }
     const DFlashArtifact& artifact() const { return artifact_; }
+    /// Allocated logical draft context capacity (independent of target streaming).
+    int64_t capacity() const { return cap_; }
     /// Maximum candidates this artifact may propose per pass (its trained query count).
     int max_block() const { return (int) artifact_.geom().block_size; }
     bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
@@ -182,7 +184,8 @@ private:
     /// then each draft layer's context K/V appended at [pos0, pos0+rows).
     bool fusion_rows(int64_t pos0, int rows, std::string& err);
 
-    void project(const uint16_t* x, const uint16_t* w, float* y, int ni, int no, int rows, void* stream);
+    void project(const uint16_t* x, const uint16_t* w, float* y, int ni, int no, int rows, void* stream, bool prepared = false);
+    void prepare_projection(const uint16_t* x, int ni, int rows, void* stream);
     std::vector<std::pair<const uint16_t*, int>> quant_types_;
     float* proj_float_ = nullptr;
     uint8_t* proj_q8_ = nullptr;

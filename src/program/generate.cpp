@@ -5966,6 +5966,9 @@ int main(int argc, char** argv) {
     // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
     // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
     auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
+        // Draft growth is independent of target streaming. Safety lookahead may
+        // exceed a smaller explicit draft capacity, which needs no backing beyond its end.
+        if (dflash_elastic) cells = std::min(cells, dflash.capacity());
         if (!kvg.on || cells <= kvg.cells) return true;
         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
         const int64_t need = strata::core::qsa_kv_elastic_need(target) + dflash.scratch_chunks_needed(target);
@@ -6285,10 +6288,11 @@ int main(int argc, char** argv) {
         const bool use_mtp = !o.mtp.empty();
         const bool has_dflash = !o.dflash.empty();
         strata::prefill::Prefill sp;
+        bool df_request = false;   // set before prefill; sampled requests never inject draft KV
         if (has_dflash) {
             sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
-                return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+                return !df_request || dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
             };
         }
         void* borrow = nullptr;
@@ -8645,6 +8649,7 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
+        strata::spec::DFlashPolicy df_policy(dflash_k);
         for (;;) {
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
@@ -8991,6 +8996,13 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            df_request = req_dflash;
+            if (req_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n - 8)) {
+                std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
+                            (long long) dflash.capacity());
+                continue;
+            }
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -9083,7 +9095,7 @@ int main(int argc, char** argv) {
                 mrope_identity = !geni;
             }
             sp.embd_rows = geni ? row_ptr.data() : nullptr;
-            if (n + max_new + 8 > o.max_context) {
+            if (n > o.max_context || max_new > o.max_context - n - 8) {
                 std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
                             (long long) max_new, (long long) o.max_context);
                 continue;
@@ -9126,7 +9138,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             auto kv_quiesce = [&] { cudaDeviceSynchronize(); apply_pending(true); };
-            if (kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
+            if (kvg.on && (!has_dflash || req_dflash)) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
                 // a failed growth may leave the tier half-changed: the engine stops (as for any CUDA failure)
                 if (!kvg_ensure(n + 256, kv_quiesce)) {
                     std::printf("ERR the K/V cannot grow to this prompt: no VRAM is left\n");
@@ -9568,7 +9580,7 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
-                    if (has_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
+                    if (req_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
                         return false;
                     q += T;
                     pp_reached = q;   // #471
@@ -9799,7 +9811,6 @@ int main(int argc, char** argv) {
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
             req_sp.greedy = req_temperature <= 0.0f;
-            const bool req_dflash = has_dflash && req_sp.greedy;
             if (has_dflash && !req_dflash)
                 std::fprintf(stderr, "dflash: sampled request decoded without the drafter\n");
             req_sp.temperature = req_temperature;
@@ -9973,7 +9984,7 @@ int main(int argc, char** argv) {
             bool first_window = true;
             bool dflash_ready = false;
             const bool df_auto = req_dflash && o.dflash_block == 0;
-            strata::spec::DFlashPolicy df_policy(dflash_k);
+            df_policy.reset();
             int df_pending_k = 0;
             double df_pending_ms = 0;
             int64_t df_windows[8] = {};
@@ -10694,7 +10705,7 @@ int main(int argc, char** argv) {
                                cudaMemcpyHostToDevice);
                 }
                 // the elastic K/V: the window's cells and the drafter's beyond them
-                if (kvg.on && p + T + 64 > kvg.cells &&
+                if (kvg.on && (!has_dflash || req_dflash) && p + T + 64 > kvg.cells &&
                     !kvg_ensure(p + T + 64, [&] { cudaDeviceSynchronize(); apply_pending(true); })) {
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;

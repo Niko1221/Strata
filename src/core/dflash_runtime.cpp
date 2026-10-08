@@ -554,13 +554,15 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, F = dg.fusion_in();
     if (n_taps * N != F) { err = "dflash: the tap count does not match the fusion input"; return false; }
+    if (!taps || rows < 1 || stride_rows < rows || pos0 < 0 || rows > cap_ - pos0) {
+        err = "dflash: invalid prompt tap layout or context range"; return false;
+    }
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
         const int nr = (int) std::min<int64_t>(8, rows - r0);
         {
         DFlashSection section("prompt.tap_gather");
-        for (int t = 0; t < n_taps; ++t)
-            strata::kernels::bf16_gather_strided(taps + (size_t) ((int64_t) t * stride_rows + r0) * N, N,
-                                                 tapin_ + (size_t) t * N, F, (int) N, nr, cs_);
+        strata::kernels::dflash_gather_taps(taps + r0 * N, tapin_, n_taps, (int) N, nr,
+                                           stride_rows * N, cs_);
         }
         if (!fusion_rows(pos0 + r0, nr, err)) return false;
         if (df_timing().on) {
@@ -603,24 +605,12 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     const int64_t N = dg.hidden, F = dg.fusion_in();
     if (n_taps * N != F) { err = "dflash: the tap count does not match the fusion input"; return false; }
     if (rows > max_rows_) { err = "dflash: more context rows than the forward's width"; return false; }
-    // f32 source: the fusion input is [row][tap][hidden] (rows x F) - tap t's hidden goes at
-    // r * F + t * N, NOT [tap][row][hidden].  (Rows of one tap are consecutive in the window's
-    // buffer; a 2-D copy here trips the driver's pitch rules for no gain.)
+    if (!taps || rows < 1 || stride_floats < rows * N || pos0 < 0 || rows > cap_ - pos0) {
+        err = "dflash: invalid verify tap layout or context range"; return false;
+    }
     {
-        DFlashSection s("ctx.taps_d2d");
-        for (int t = 0; t < n_taps; ++t) {
-            for (int r = 0; r < rows; ++r) {
-                if (cudaMemcpyAsync(tapf_ + (size_t) ((int64_t) r * F + (int64_t) t * N),
-                                    taps + (size_t) ((int64_t) t * stride_floats + r * N), (size_t) N * 4,
-                                    cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
-                    err = std::string("dflash: the tap gather failed: ") + cudaGetErrorString(cudaGetLastError()) +
-                          " (t=" + std::to_string(t) + " r=" + std::to_string(r) + " stride=" +
-                          std::to_string(stride_floats) + " rows=" + std::to_string(rows) + ")";
-                    return false;
-                }
-            }
-        }
-        strata::kernels::f32_to_bf16_bulk(tapf_, tapin_, (int64_t) rows * F, cs_);
+        DFlashSection s("ctx.tap_gather");
+        strata::kernels::dflash_gather_taps(taps, tapin_, n_taps, (int) N, (int) rows, stride_floats, cs_);
     }
     if (!fusion_rows(pos0, (int) rows, err)) return false;
     {
@@ -635,13 +625,18 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     return true;
 }
 
+void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {
+    if (quant_types_.empty()) return;
+    strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
+    strata::kernels::native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
+}
+
 void DFlashDrafter::project(const uint16_t* x, const uint16_t* w, float* y,
-                            int ni, int no, int rows, void* stream) {
+                            int ni, int no, int rows, void* stream, bool prepared) {
     using namespace strata::kernels;
     for (const auto& entry : quant_types_) {
         if (entry.first != w) continue;
-        bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
-        native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
+        if (!prepared) prepare_projection(x, ni, rows, stream);
         native_mmvq(entry.second, w, proj_q8_, y, ni, no, rows, stream);
         return;
     }
@@ -681,6 +676,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
     }
     if (parity_want(cycle_)) {
+        bf16_to_f32_bulk(tapin_, tapf_, rows * F, cs_);
         parity_dump(parity_dir_, "tapsin", tapf_, rows * F, cs_);
         parity_dump(parity_dir_, "ctx", ctx_, rows * N, cs_);
     }
@@ -710,6 +706,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         DFlashSection section("fusion.to_bf16");
         f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
     }
+    prepare_projection(xn16_, (int) N, rows, cs_);   // all layers share the same context activation
     dflash_build_positions(poskv_, rows, (int) dg.n_head_kv, pos0, cs_);
     dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_);
 
@@ -718,11 +715,11 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         {
             {
                 DFlashSection section("fusion.k_proj");
-                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
+                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_, true);
             }
             {
                 DFlashSection section("fusion.v_proj");
-                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
+                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_, true);
             }
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
@@ -867,18 +864,19 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             }
             f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
         }
+        prepare_projection(xn16_, (int) N, K, cs_);   // Q/K/V reuse one Q8_1 activation
         {
             {
                 DFlashSection section("L*.q_proj");
-                project(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_, true);
             }
             {
                 DFlashSection section("L*.k_proj");
-                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_, true);
             }
             {
                 DFlashSection section("L*.v_proj");
-                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
+                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_, true);
             }
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
@@ -998,14 +996,15 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
             f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
         }
+        prepare_projection(xn16_, (int) N, K, cs_);   // gate/up share one Q8_1 activation
         {
             {
                 DFlashSection section("L*.gate_proj");
-                project(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
+                project(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_, true);
             }
             {
                 DFlashSection section("L*.up_proj");
-                project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
+                project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_, true);
             }
         }
         {

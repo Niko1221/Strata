@@ -4244,7 +4244,10 @@ def prepare_dflash(data, roots, source, quant, env):
                 g = GGUFFile(output)
                 if (g.metadata.get("strata.dflash.source_sha256") == sha and
                         g.metadata.get("strata.dflash.quantization") == kind and
-                        len(g.tensors) == len(GGUFFile(original).tensors) and
+                        g.metadata.get("general.architecture") == "dflash" and
+                        [(t.name, t.shape, t.type_id) for t in g.tensors] ==
+                        [(t.name, t.shape, {"Q8_0": 8, "Q5_0": 6, "Q4_0": 2}[kind] if len(t.shape) == 2 else 30)
+                         for t in GGUFFile(original).tensors] and
                         all(g.data_start + t.offset + t.expected_bytes() <= output.stat().st_size for t in g.tensors)):
                     ok(f"DFlash {kind} already prepared")
                     return output
