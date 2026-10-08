@@ -155,4 +155,6 @@ explicit packing conversion and is not an installer menu option.
 You can add another model any time with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux
 `./setup.sh --setup`). Files another model shares are not downloaded again (the Coder uses the original's shard 2 and
 vision encoder). With more than one model installed, `START-HERE.bat` asks which one to start; `run-<model>.bat`
-(Linux: `run-<model>.sh`) starts one directly.
+(Linux: `run-<model>.sh`) starts one directly. `LAUNCHER.bat` (Linux: `./launcher.sh`) shows the same choices in a
+window - the sizes and what they need on this PC, the models installed here, and settings you can save as a preset
+and reuse: [the launcher](LAUNCHER.md).

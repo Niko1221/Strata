@@ -43,8 +43,9 @@ where it left off) and **starts the model**. Your browser opens the Strata app a
 
 **Next time**, just double-click `START-HERE.bat` again: it starts right away (30-90 s to load the model), nothing is
 downloaded twice. Close its window to stop the model. `SETUP.bat` (the same as `START-HERE.bat --setup`) installs
-another model or changes the settings. Starting Strata from Task Scheduler at logon needs two task settings, or the
-start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
+another model or changes the settings; `LAUNCHER.bat` opens a window where you pick the model and its settings and
+keep them as presets ([the launcher](LAUNCHER.md)). Starting Strata from Task Scheduler at logon needs two task
+settings, or the start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
 
 ## Linux
 
@@ -54,7 +55,8 @@ start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-ta
 
 The same questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile, for
 the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
-start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
+start the model directly; `./setup.sh --setup` installs another model or changes the settings. `./launcher.sh` opens
+the same choices in a window ([the launcher](LAUNCHER.md)). Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
 
 ## AMD cards
@@ -234,6 +236,7 @@ NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
 ```
 START-HERE.bat --setup                          install another model, or change context / images
 SETUP.bat                                       the same (double-click it)
+LAUNCHER.bat   /   ./launcher.sh                a window to pick a model, a preset, and start it (docs/LAUNCHER.md)
 START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
 START-HERE.bat --gguf-dir D:\models\IQ2_XS       use GGUF files you already have
 START-HERE.bat --inspect D:\models\some.gguf     what a GGUF really holds and whether Strata runs it (no download)

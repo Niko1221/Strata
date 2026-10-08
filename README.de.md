@@ -140,7 +140,9 @@ stark komprimiert. Kleinere Größen sind schneller. Größere sind etwas klüge
   ein. Es steht nicht im Menü des Installers.
 
 Größen, Downloads und was wohin passt: [docs/MODELS.md](docs/MODELS.md). Um später ein weiteres Modell
-hinzuzufügen, starte `SETUP.bat` (Linux: `./setup.sh --setup`).
+hinzuzufügen, starte `SETUP.bat` (Linux: `./setup.sh --setup`). Um eine Größe auszuwählen und Einstellungen in
+einem Fenster als wiederverwendbare Presets zu halten statt Flags zu tippen: `LAUNCHER.bat`
+(Linux: `./launcher.sh`, [der Launcher](docs/LAUNCHER.md)).
 
 ## So benutzt du es
 

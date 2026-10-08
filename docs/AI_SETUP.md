@@ -109,6 +109,9 @@ The flags (all of them: `START-HERE.bat --help`):
 block your shell. Start it separately in step 6.
 
 Notes:
+- **The user wants to choose themselves:** `LAUNCHER.bat` (Linux: `./launcher.sh`) is the window for that - the
+  models installed and available, presets and the calibration. It runs the same setup and the
+  same server; see [the launcher](LAUNCHER.md).
 - **Linux:** setup uses `sudo apt` (or dnf/pacman) to install Python with venv if it is missing, and on AMD may need
   `build-essential` and `git`. You cannot type the user's password: if a `sudo` step is needed, ask the user to run it
   (e.g. `sudo apt install python3-venv build-essential git`) and then rerun setup.

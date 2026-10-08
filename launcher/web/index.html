@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata Launcher</title>
+<link rel="stylesheet" href="/ui/tokens.css">
+<link rel="stylesheet" href="/web/launcher.css">
+<script>
+  // the chat page's rule: follow the system unless the user chose a theme in this page
+  document.documentElement.dataset.theme =
+    localStorage.getItem("strata-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
+<script defer src="/web/launcher.js"></script>
+</head>
+<body>
+
+<header>
+  <div class="brand">Strata <span>Model launcher</span></div>
+  <div class="pc" id="pc">checking this PC&hellip;</div>
+  <div class="controls"><button id="refresh">Refresh</button><button id="theme" aria-label="Switch color theme">Light / dark</button></div>
+</header>
+
+<div id="status" class="status" role="status"><span class="dot"></span><span id="status-text">Connecting&hellip;</span>
+  <div class="controls" id="status-actions"></div>
+</div>
+
+<main>
+  <div class="cols">
+  <aside class="col-left">
+    <section class="panel">
+      <div class="panel-bar"><h2>On this PC</h2></div>
+      <div id="installed" class="list"><p class="empty">Loading&hellip;</p></div>
+      <div class="foot" id="data-dir"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-bar"><h2>Presets</h2><div class="controls"><button id="new-preset">New preset</button></div></div>
+      <div id="presets" class="list"></div>
+      <p class="foot">A preset is one model plus its settings: size, context, KV, images, cards, port. Nothing on this
+        PC changes until you download or start one.</p>
+    </section>
+  </aside>
+
+  <section class="panel preset" id="preset">
+    <div class="preset-head">
+      <div>
+        <h1 id="preset-name">Choose a preset</h1>
+        <p class="sub" id="preset-summary">Pick one on the left, or make a new one.</p>
+      </div>
+      <div class="controls" id="preset-actions"></div>
+    </div>
+    <p class="note" id="preset-note" hidden></p>
+    <div id="preset-warn" class="notice" hidden></div>
+    <div id="preset-diff" class="notice warn" hidden></div>
+    <form id="form" class="form" hidden></form>
+    <div id="plan" class="plan" hidden></div>
+  </section>
+
+  <aside class="col-right">
+    <section class="panel">
+      <div class="panel-bar"><h2>Model</h2></div>
+      <div id="info"><p class="empty">Nothing selected.</p></div>
+    </section>
+  </aside>
+  </div>
+
+  <section class="panel logs" id="logs">
+    <div class="panel-bar">
+      <h2>Logs</h2>
+      <div class="tabs" role="tablist">
+        <button data-pane="install" aria-selected="true">Download</button>
+        <button data-pane="calibrate" aria-selected="false">Measuring</button>
+        <button data-pane="server" aria-selected="false">Server</button>
+        <button data-pane="engine" aria-selected="false">Engine</button>
+      </div>
+      <div class="controls"><button id="log-cancel" hidden>Stop</button></div>
+    </div>
+    <pre id="log" class="log">Nothing running.</pre>
+    <p class="foot" id="log-foot"></p>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

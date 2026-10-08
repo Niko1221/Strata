@@ -137,7 +137,9 @@ compressées. Les petites tailles sont plus rapides. Les grandes sont un peu plu
   Il n'est pas dans le menu de l'installateur.
 
 Tailles, téléchargements et ce qui tient où : [docs/MODELS.md](docs/MODELS.md). Pour ajouter un autre modèle plus
-tard, lancez `SETUP.bat` (Linux : `./setup.sh --setup`).
+tard, lancez `SETUP.bat` (Linux : `./setup.sh --setup`). Pour choisir une taille et garder des réglages
+réutilisables dans une fenêtre au lieu de taper des options : `LAUNCHER.bat` (Linux : `./launcher.sh`,
+[le lanceur](docs/LAUNCHER.md)).
 
 ## Utilisation
 

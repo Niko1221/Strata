@@ -10,14 +10,20 @@ one-click installer (`setup.py`, started by `START-HERE.bat` / `setup.sh`).
 Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**: check the PC, pick the model by RAM, run setup non-interactively,
 start and verify the server, and connect the user's apps. Never expose the server beyond `127.0.0.1` without
 `--api-key`. As an alternative to shell commands, Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.md))
-offers the same steps as tools.
+offers the same steps as tools, and the launcher ([docs/LAUNCHER.md](docs/LAUNCHER.md), `LAUNCHER.bat` /
+`./launcher.sh`) offers them as a window the user can click through: models installed and available, presets, the
+calibration.
 
 ## Working on the code
 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
+- `launcher/` is a front-end, not a second engine: it asks `tools/strata_mcp.py` (the controller the MCP server
+  uses) what is installed and what fits, and runs setup and `serve/server.py` the way the start scripts do. A new
+  setting belongs in setup.py first; the launcher only shows it.
 - Setup's own tests run without a GPU or downloads: `python tools/test_setup_<name>.py` (for example
-  `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+  `tools/test_setup_amd.py`, `tools/test_setup_choices.py`). The launcher's: `python -m unittest
+  launcher.test_presets launcher.test_api`.
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
