@@ -1,0 +1,32 @@
+=== LIMITADO 16GB | contexto 262144 | prompt alvo 250000 tokens ===
+Subindo servidor (Strata/gfx906)... (log: <models-dir>/qwen38-strata-iq2xs-16gb.log ; motor: <strata-dir>/strata-iq2_xs-16gb.log)
+Pronto em 23s — http://localhost:8080 (PID 32252)
+ABORTADO: junction 104 C
+Traceback (most recent call last):
+  File "<strata-dir>/bench-ctx.py", line 23, in <module>
+    dt, u, txt = ask("Responda apenas com os três códigos dos cofres ALFA, BETA e GAMA, nessa ordem, separados por vírgula.", 60)
+                 ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<strata-dir>/bench-ctx.py", line 20, in ask
+    r = urllib.request.urlopen(urllib.request.Request(URL, json.dumps(body).encode(), {"Content-Type": "application/json"}), timeout=3000)
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+strata serve: decode expert cache hit rate: 93.0% (25366 hits / 27275 lookups); 1525 more read by the GPU over PCIe or from another GPU (5.3% of all 28800 routed)
+strata serve: prompt 252298 tokens = 245760 reused + 6538 read in 20185 ms (323.9 tok/s), 256 generated in 9563 ms (26.8 tok/s), drafts accepted 0 of 0, 6 checkpoints
+strata serve: decode expert cache hit rate: 99.9% (122724 hits / 122863 lookups); 17 more read by the GPU over PCIe or from another GPU (0.0% of all 122880 routed)
+strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring
+Não está rodando.
+SUITE_DONE

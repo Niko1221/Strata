@@ -1,0 +1,7 @@
+prompt=2029 tok  tempo=0.2s  prefill~8454 tok/s  agulha=OK  resp='439563'
+prompt=8253 tok  tempo=19.7s  prefill~419 tok/s  agulha=OK  resp='214250'
+prompt=16819 tok  tempo=39.6s  prefill~425 tok/s  agulha=OK  resp='375728'
+prompt=33854 tok  tempo=79.1s  prefill~428 tok/s  agulha=OK  resp='868750'
+prompt=67079 tok  tempo=158.8s  prefill~422 tok/s  agulha=OK  resp='691734'
+prompt=119205 tok  tempo=291.6s  prefill~409 tok/s  agulha=OK  resp='354640'
+DONE
