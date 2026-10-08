@@ -43,5 +43,14 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
 // stays wedged until a reboot - measured twice. With a bound the failure is a wrong window instead, which the
 // verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
-inline constexpr uint32_t kSpinMax = 20u * 1000u;   // experiment: 100x smaller
+// The bound is the build's (CMake STRATA_SYCL_SPIN_MAX): 20,000 reads for the B-series (bmg) AOT builds, whose
+// device-plan windows only spin in a failure and where a longer spin is what makes the xe driver reset the GT; 2,000,000
+// (a few seconds) elsewhere. On an Arc A-series (i915) the CPU computes the experts the card does not hold and the GPU
+// waits for it at every layer: 20,000 reads is a few tens of milliseconds, the first request after a start (cold pages,
+// slow CPU layers) is slower than that, the GPU gave up, went on with the experts' outputs missing, and the answer was
+// token 0 ("!!!!!") or the engine crashed in the CPU pool on the garbage routing it read next.
+#ifndef STRATA_SYCL_SPIN_MAX
+#define STRATA_SYCL_SPIN_MAX 20000u
+#endif
+inline constexpr uint32_t kSpinMax = STRATA_SYCL_SPIN_MAX;
 }  // namespace strata
