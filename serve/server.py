@@ -607,6 +607,7 @@ class StrataEngine:
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
+        self._process_group = False
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
@@ -622,6 +623,16 @@ class StrataEngine:
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
             self.info["version"] = None
+        # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
+        # while requests still wait on it (they hold these very objects), so it is made once and kept: new ones
+        # would leave the waiters on a lock and a condition nobody notifies, with their counts missing from the
+        # new lists.
+        if "slot_cv" not in self.__dict__:
+            self.slot_cv = threading.Condition()
+            self.waiting = 0                            # requests waiting for the control lines (ctl)
+            self.wait_lens: list[list[int]] = []        # ... their prompt lengths (a long read gives way to short ones)
+            self.ctl_epoch = 0                          # how often the control lines were taken
+            self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
         if lazy:
             return
         self.unloaded = False            # `ended` stays True until READY (below): not alive while starting (#344)
@@ -645,52 +656,56 @@ class StrataEngine:
                 pass
         self.max_context = 0                             # before the new process is visible: never its predecessor's
         self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
+                          stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env,
+                          start_new_session=os.name != "nt")
+        self._process_group = os.name != "nt"            # #1527: wrappers' children can inherit the stdout pipe
         contain(self.proc)                               # ends with the server, however it ends (Windows)
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
-        threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True).start()
+        self.pump = threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True)
+        self.pump.start()
         ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
         timed_out = False
-        while True:
-            left = None if ready_deadline is None else ready_deadline - time.monotonic()
-            if left is not None and left <= 0:
-                timed_out = True
-                break
-            try:
-                line = ready_q.get(timeout=left)
-            except queue.Empty:
-                continue
-            if line is None:
-                break
-            if line.startswith("INFO "):
-                for kv in line.split()[1:]:
-                    k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
-            if line.startswith("READY"):
-                f = line.split()
-                self.max_context = int(f[1])
-                self.can_stop = "stop" in f[2:]
-                break
-        loading.set()
-        if self.max_context <= 0:
-            if timed_out:                               # still loading, or hung: end it, so the turn is not held for good
+        try:
+            while True:
+                left = None if ready_deadline is None else ready_deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    timed_out = True
+                    break
                 try:
-                    self.proc.kill()
-                except OSError:
+                    line = ready_q.get(timeout=left)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                if line.startswith("INFO "):
+                    for kv in line.split()[1:]:
+                        k, _, v = kv.partition("=")
+                        self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                if line.startswith("READY"):
+                    f = line.split()
+                    self.max_context = int(f[1])
+                    self.can_stop = "stop" in f[2:]
+                    break
+        finally:
+            loading.set()
+            if self.max_context <= 0:
+                self._kill_process_group()                  # also end a wrapper's children, even if it already exited
+                if self.proc.poll() is None:
+                    try:
+                        self.proc.kill()
+                    except OSError:
+                        pass
+                try:
+                    self.proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
                     pass
-            try:                                        # its pipes and our handle on its log (the log stays)
-                self.proc.wait(timeout=5)
-                self.proc.stdin.close()
-                self.proc.stdout.close()
-                if log:
-                    self.log.close()
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+                self._close_pipes()
+        if self.max_context <= 0:
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
-            raise RuntimeError(why + (f" (see {log})" if log else "") +
+            raise EngineDied(why + (f" (see {log})" if log else "") +
                                start_failure_hint(log, log_start) + start_log_tail(log, log_start))
         self.known_ctx = self.max_context   # survives a failed restart: requests keep their limit and restart it
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
@@ -729,16 +744,6 @@ class StrataEngine:
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
-        # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
-        # while requests still wait on it (they hold these very objects), so it is made once and kept: new ones
-        # would leave the waiters on a lock and a condition nobody notifies, with their counts missing from the
-        # new lists.
-        if "slot_cv" not in self.__dict__:
-            self.slot_cv = threading.Condition()
-            self.waiting = 0                            # requests waiting for the control lines (ctl)
-            self.wait_lens: list[list[int]] = []        # ... their prompt lengths (a long read gives way to short ones)
-            self.ctl_epoch = 0                          # how often the control lines were taken
-            self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
@@ -1739,6 +1744,45 @@ class StrataEngine:
                 continue
             raise out_of_step(line)
 
+    def _kill_process_group(self):
+        """Only the POSIX session we started: a wrapper's child may still hold stdout after the wrapper exits."""
+        if self._process_group:
+            self._process_group = False                 # never signal this numeric group again after it can be reaped
+            # A cached returncode means the PID may already have been reused. Use Popen's own POSIX wait lock
+            # so no concurrent poll()/wait() can reap our child between the ownership check and the signal.
+            proc = self.proc
+            wait_lock = getattr(proc, "_waitpid_lock", None)
+            if wait_lock is None:                      # unknown Popen implementation: keep pipe cleanup bounded
+                return
+            with wait_lock:
+                if proc.returncode is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _close_stdout(proc, reader):
+        reader.join()
+        proc.stdout.close()
+
+    def _close_pipes(self):
+        reader = self.pump
+        if reader is not None and reader.ident is not None:
+            reader.join(timeout=2)
+        try:
+            self.proc.stdin.close()                     # a broken pipe may fail again while flushing buffered data
+        except OSError:
+            pass
+        if reader is not None and reader.is_alive():
+            # #1527: TextIOWrapper.close takes the reader's lock. An inherited writer (including on Windows)
+            # can hold it indefinitely. Let that reader finish before closing, without holding the HTTP request.
+            threading.Thread(target=self._close_stdout, args=(self.proc, reader), daemon=True).start()
+        else:
+            self.proc.stdout.close()
+        if self.log not in (None, subprocess.DEVNULL):
+            self.log.close()
+
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while), then terminate, then kill, each given 20 s.  Raises EngineStuck when it still runs after all three."""
@@ -1755,6 +1799,7 @@ class StrataEngine:
                     self.proc.terminate()
                     self.proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
+            self._kill_process_group()
             self.proc.kill()
             try:
                 self.proc.wait(timeout=20)
@@ -1764,15 +1809,8 @@ class StrataEngine:
             pass
         finally:
             if self.proc.poll() is not None:
-                if self.pump is not None and self.pump.ident is not None:   # a restart can stop before starting it
-                    self.pump.join(timeout=2)
-                try:
-                    self.proc.stdin.close()             # buffered data may flush again after the engine has exited
-                except OSError:
-                    pass
-                self.proc.stdout.close()
-                if self.log not in (None, subprocess.DEVNULL):
-                    self.log.close()
+                self._kill_process_group()
+                self._close_pipes()
                 self.proc = None
                 self.ended = True
                 self.progress, self.last = None, {}
@@ -5886,6 +5924,8 @@ def main() -> int:
                 close()
             except KeyboardInterrupt:                   # a second Ctrl+C: don't wait for the engine to free its memory
                 if getattr(engine, "proc", None):
+                    if isinstance(engine, StrataEngine):
+                        engine._kill_process_group()
                     engine.proc.kill()
         print("[strata] stopped", flush=True)
     return 0

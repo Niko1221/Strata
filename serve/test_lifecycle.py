@@ -59,6 +59,7 @@ class Lifecycle(unittest.TestCase):
                 self.addCleanup(proc.stdout.close)
                 proc.poll.side_effect = [None if running else 0, 0]
                 engine.proc, engine.pump, engine.log = proc, mock.Mock(), io.StringIO()
+                engine.pump.is_alive.return_value = False
                 self.addCleanup(engine.log.close)
                 engine.ended, engine.progress, engine.last = False, (1, 2), {"generated": 1}
 
