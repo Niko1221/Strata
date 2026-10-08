@@ -2950,15 +2950,29 @@ int main(int argc, char** argv) {
     //
     // `--prefill auto` has no meaning on this arch: the first family's rule scans for the largest chunk the
     // expert cache can lend buffers for, and a glm5-next chunk lives in the session's own carve, so the only
-    // question is how much amortization the CPU pool gets.  Measured off a 516-token router trace
-    // (`glm-analysis/prefill_amortize.py`): 5.6x fewer expert bytes read a token at 128, 9.3x at 256 - and past
-    // 128 the curve flattens because `MAXT` (8) starts splitting one expert's tokens into several jobs.  128.
+    // question is how much amortization the CPU pool gets.
+    //
+    // **512, MEASURED END TO END, AND IT SUPERSEDES THE MODELLED 128 THAT WAS HERE.**  That number came off a
+    // 516-token router trace (`glm-analysis/prefill_amortize.py`) as "5.6x fewer expert bytes read a token at
+    // 128, 9.3x at 256, and past 128 the curve flattens because `MAXT` (8) starts splitting one expert's tokens
+    // into several jobs".  The per-token BYTES do flatten there, but a chunk also pays a FIXED cost - it must
+    // read every expert its tokens touch before it can serve any of them, and 88 tokens already touch 263 of
+    // the 288 experts - so the thing that scales with chunk size is the number of times that fixed cost is
+    // paid, not the bytes a token.  On the four-card rig (UD-IQ4_XS, 16K context) a 1334-token prompt reads in
+    // 80.2 s at 128 (11 chunks), 71.8 s at 512 (3), 67.7 s at 2048 (1), 67.5 s at 4096 (1, the prompt fits one
+    // either way) - and a 344-token prompt in 20.0 / 18.6 / 18.6 s, where 512 already covers it.
+    //
+    // The price is the session carve, which is linear in the chunk: 30.2 MiB of rows at 128, 120.6 at 512,
+    // 482.5 at 2048.  512 buys 12% of a long prompt's read for +90 MiB, which is under 2% of what the smallest
+    // card in that rig has free after its weights; 2048 buys another 6% for +362 MiB more, and that memory is
+    // the expert tier's, which is the decode lever.
+    //
     // **ON BY DEFAULT, BECAUSE THE ALTERNATIVE IS A PROMPT AT DECODE SPEED.**  `--prefill CHUNK` has always been
     // the first family's flag and it has always been refused here, so no glm5-next run has ever been started
     // with one - which means "no flag" has to mean the chunk and not "off", or nothing changes.  `--prefill 1`
     // (or 0) is the way back to the one-token-at-a-time path, and it is the control arm of the verification: at
     // chunk 1 this and the decode step are the same call.
-    constexpr int64_t kGlmAutoChunkTokens = 128;
+    constexpr int64_t kGlmAutoChunkTokens = 512;
     auto glm_chunk_for = [&](int64_t lo, int64_t hi) -> int64_t {
         if (g.arch != strata::core::Arch::Glm5Next) return 1;
         // **A STAGE OF A LAYER SPLIT CARVES LIKE ANY OTHER RANGE NOW.**  This used to answer 1 for any strict
