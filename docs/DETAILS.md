@@ -1451,13 +1451,23 @@ layer was 0.28, so the bar sits in a 7.9× gap. `STRATA_GLM_GPU_CHECK=2` also pr
 One interaction worth knowing: with the tier on, `--expert-profile-save` counts only the experts the card did *not*
 hold, so the profile it writes is the misses' routing and not the router's.
 
-**A chunked prefill reads each projection's weights once per group of tokens, not once per token.** A `--prefill`
-chunk hands the layer its tokens eight at a time — eight is the widest the quantized projections take — so the
-layer's weight matrices are read once for the group instead of once for each token. Nothing about the arithmetic
-changes: every kernel in the block was already written to take a width, a group of one still takes the single-token
-path byte for byte, and greedy answers are identical either way. `STRATA_GLM_NO_GROUP=1` pins the group to one
-token, which is the arm that checks it: 48 greedy tokens byte-identical with it on and off, and identical across a
-repeat of the same arm, so the engine is deterministic and the comparison has power.
+**A chunked prefill reads each projection's weights once per group of tokens, not once per token — and the default
+chunk is 512 tokens.** A `--prefill` chunk hands the layer its tokens eight at a time — eight is the widest the
+quantized projections take — so the layer's weight matrices are read once for the group instead of once for each
+token. Nothing about the arithmetic changes: every kernel in the block was already written to take a width, a group
+of one still takes the single-token path byte for byte, and greedy answers are identical either way.
+`STRATA_GLM_NO_GROUP=1` pins the group to one token, which is the arm that checks it: 48 greedy tokens
+byte-identical with it on and off, and identical across a repeat of the same arm, so the engine is deterministic
+and the comparison has power.
+
+The chunk size matters because of the CPU pool, not the card: a chunk must read every expert its tokens touch
+before it can serve any of them, and 88 tokens already touch 263 of the model's 288 experts, so a larger chunk
+does not read fewer bytes a *token* — it pays that fixed cost fewer times. On the rig above a 1,334-token prompt
+reads in 80.2 s at `--prefill 128`, 71.8 s at 512, 67.7 s at 2048 and 67.5 s at 4096, and a 344-token one in
+20.0 / 18.6 / 18.6 / 18.6 s (at 512 and up the prompt fits one chunk, which is why those are the same run). The
+session rows that cost are 30.2 MiB at 128, 120.6 MiB at 512, 482.5 MiB at 2048 — so 512 is where a 12% faster
+read costs 90 MiB, about 2% of what the smallest card in that rig has free, while 2048's extra 6% costs 362 MiB
+more of the memory the expert tier wants. `--prefill 1` is the one-token-at-a-time control arm.
 
 Measured on the rig above, UD-IQ4_XS over four cards, 344-token prompt, `--prefill 256`:
 
