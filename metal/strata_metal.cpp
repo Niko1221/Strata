@@ -56,6 +56,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+const bool g_phases = std::getenv("STRATA_PHASES") != nullptr;   // per-phase timings of the MTP loop, to stderr
 
 // ---------------------------------------------------------------------------------------------- stdout / stdin
 // The protocol owns the real stdout.  llama.cpp's common library prints plain LOG() lines to stdout, so main() moves fd 1
@@ -587,6 +588,8 @@ struct Engine {
         int64_t produced = 0, drafted = 0, accepted = 0;
         double prompt_ms = ms_since(t0);
         const auto t1 = Clock::now();
+        double ph[4] = {0, 0, 0, 0};                         // STRATA_PHASES: draft, target, catch-up, sample
+        int ph_n = 0;
         common_sampler* smpl = nullptr;
         llama_token pending = P.ids[n - 1];
         llama_pos pending_pos = P.pos[n - 1][0];
@@ -604,7 +607,9 @@ struct Engine {
                     common_speculative_get_draft_params(spec, 0) = {
                         /* .drafting = */ true, /* .n_max = */ (int32_t) std::min<int64_t>(room, o.spec),
                         /* .pos0 = */ pending_pos, /* .id_last = */ pending, /* .prompt = */ &S.live, /* .result = */ &draft};
+                    const auto tp = Clock::now();
                     common_speculative_draft(spec);
+                    if (g_phases) ph[0] += ms_since(tp);
                     // drafting wrote the drafts into the draft context: out again, the verify pass feeds it the
                     // trunk's own (speculative-simple does the same)
                     llama_memory_seq_rm(llama_get_memory(ctx_dft), 0, pending_pos, -1);
@@ -612,14 +617,20 @@ struct Engine {
                 common_batch batch(ctx);
                 batch.add(pending, pending_pos, sq, true);
                 for (size_t i = 0; i < draft.size(); ++i) batch.add(draft[i], next + (llama_pos) i, sq, true);
-                if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0 ||
-                    (drafts && !common_speculative_process(spec, batch))) {
+                const auto tv = Clock::now();
+                const bool fail_tgt = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0;
+                if (g_phases && !fail_tgt) { llama_synchronize(ctx); ph[1] += ms_since(tv); }
+                const auto tc = Clock::now();
+                if (fail_tgt || (drafts && !common_speculative_process(spec, batch))) {
                     common_sampler_free(smpl);
                     clear(sq);
                     return refuse("the decode pass failed");
                 }
+                if (g_phases && ctx_dft) { llama_synchronize(ctx_dft); ph[2] += ms_since(tc); }
                 if (first) { prompt_ms = ms_since(t0); first = false; }
+                const auto ts = Clock::now();
                 const std::vector<llama_token> ids = common_sampler_sample_and_accept_n(smpl, ctx, draft);
+                if (g_phases) { ph[3] += ms_since(ts); ++ph_n; }
                 drafted += (int64_t) draft.size();
                 accepted += (int64_t) ids.size() - 1;
                 if (drafts) common_speculative_accept(spec, 0, (uint16_t) (ids.size() - 1));
@@ -664,6 +675,9 @@ struct Engine {
         const size_t read_n = cancelled ? at - resume : n - resume;
         // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused>
         //      <hits> <lookups> <RAM blobs> <file blobs> <file MB> <prompt tokens read> <offloaded>
+        if (g_phases && ph_n > 0)      // STRATA_PHASES=1: ms per verify pass, to stderr (the target and catch-up synced)
+            std::fprintf(stderr, "PHASES passes %d draft %.2f target %.2f catchup %.2f sample %.2f ms/pass\n", ph_n,
+                         ph[0] / ph_n, ph[1] / ph_n, ph[2] / ph_n, ph[3] / ph_n);
         out("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %zu 0\n", (long long) produced, n, prompt_ms,
             ms_since(t1), finish, (long long) accepted, (long long) drafted, resume, read_n);
         if (slot >= 0) {

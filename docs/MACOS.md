@@ -175,6 +175,15 @@ answer to the same prompt again and again:
   `--poll 0`), reading the n-gram file into the cache first, stopping a Time Machine backup and a busy System Settings
   storage scan. `GGML_METAL_NO_RESIDENCY=1` was tried only in a fast phase (56-66 against 59-65 tok/s).
 - `--spec 3` stayed the default: `--spec 2` was about the same or slower, `--spec 4` slower.
+- Where a verify step's time goes (`STRATA_PHASES=1` prints it per request to the engine's log; it adds two
+  synchronizations, so use it to compare phases, not for speed): in a fast phase, about 51 ms a step = 41 ms for the
+  target model to check 4 tokens, 7-8 ms for the 3 draft steps (each waits for the GPU), 2 ms for the MTP catch-up,
+  under 1 ms sampling. So the draft round trips are at most about 15% of a step: removing them all would gain less than
+  that, and most of their time is the draft head's own work (it has the full 248K-token output layer).
+- Stopping the drafts early when the draft head is unsure (`p_min` 0.5) was 5% slower and changed the answer's tokens.
+- `llama-bench` on the same file: a forward pass of 1, 2, 3, 4 and 8 tokens took about 21, 28, 34, 31 and 42 ms, so
+  checking 4 drafted tokens costs about 1.5x one token. The engine's 4-token check took about 41 ms against
+  `llama-bench`'s 31 ms (it also returns logits and hidden rows for all 4 tokens); that gap was not taken apart yet.
 - The llama.cpp update of 2026-10-08 (55 upstream commits, among them few-row matrix kernels and a Metal fusion fix)
   was faster in two A/Bs: +11.5% (4 rounds, p = 0.46) and +8.3% (6 rounds, p = 0.054; 15 of 18 runs faster), with
   the same tokens every run. Which upstream change gives it was not isolated.
