@@ -195,7 +195,7 @@ private:
     int64_t window_ = 0, cap_ = 0, attn_scratch_floats_ = 0;
 
     // buffers: at most 8 rows ride through the forward at once
-    int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr, *ident_ = nullptr;
+    int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr;
     uint16_t *tapin_ = nullptr, *xn16_ = nullptr, *attn16_ = nullptr;
     float *tapf_ = nullptr, *emb_ = nullptr, *h_ = nullptr, *xn_ = nullptr, *ctx_ = nullptr;
     float *q_ = nullptr, *kc_ = nullptr, *vc_ = nullptr, *attn_ = nullptr, *bo_ = nullptr;
