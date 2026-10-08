@@ -63,7 +63,7 @@ inline float row_dot_ggml_one(const uint8_t* row, int nblocks, const block_q8_K*
         const float d = h2f(u16(blk)) * y[i].d;
         accum = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(_mm256_add_epi32(sums[0], sums[1])), accum);
     }
-    if constexpr (TY == 16 || TY == 17) return 0.125f * ggml_hsum8(accum);
+    if constexpr (TY == 16 || TY == 17 || TY == 22 || TY == 122) return 0.125f * ggml_hsum8(accum);
     else if constexpr (TY == 18 || TY == 118) return 0.25f * ggml_hsum8(accum);
     else return ggml_hsum8(accum);
 }

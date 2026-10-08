@@ -93,7 +93,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             a[k] = act[k].data();
             ffp[k] = ff[k].data();
         }
-        if ((f.gu_type == 18 || f.gu_type == 21) && cpu::cpu_avx2_ok() && !cpu::cpu_avx512_ok()) {
+        if ((f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22) && cpu::cpu_avx2_ok() && !cpu::cpu_avx512_ok()) {
             const auto dot = ggml_get_type_traits_cpu((ggml_type) f.gu_type)->vec_dot;
             size_t differ = 0;
             std::vector<float> exact((size_t) FF);

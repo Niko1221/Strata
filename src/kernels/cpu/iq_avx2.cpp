@@ -470,6 +470,9 @@ void iq256_gu_rows_exact_one(int type, const uint8_t* blob, size_t gu_row, size_
         } else if (type == 21) {
             if (iq256_variant() & kIq256Gather) vnni::gu_ggml_one<121>(blob, gu_row, up_off, n, y, ff, r0, r1);
             else vnni::gu_ggml_one<21>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        } else if (type == 22) {
+            if (iq256_variant() & kIq256Gather) vnni::gu_ggml_one<122>(blob, gu_row, up_off, n, y, ff, r0, r1);
+            else vnni::gu_ggml_one<22>(blob, gu_row, up_off, n, y, ff, r0, r1);
         }
         return;
     }
@@ -482,6 +485,9 @@ void iq256_gu_rows_exact_one(int type, const uint8_t* blob, size_t gu_row, size_
     } else if (type == 21) {
         if (iq256_variant() & kIq256Gather) plain::gu_ggml_one<121>(blob, gu_row, up_off, n, y, ff, r0, r1);
         else plain::gu_ggml_one<21>(blob, gu_row, up_off, n, y, ff, r0, r1);
+    } else if (type == 22) {
+        if (iq256_variant() & kIq256Gather) plain::gu_ggml_one<122>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        else plain::gu_ggml_one<22>(blob, gu_row, up_off, n, y, ff, r0, r1);
     }
 }
 

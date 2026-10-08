@@ -248,7 +248,7 @@ int check_gate_up(int type) {
     const double r_ggml = rel(one_g.data(), ref.data(), one_g.size());
     std::printf("  %-8s gate rows vs ggml vec_dot: rel %.2e\n", type_name(type), r_ggml);
     if (!(r_ggml <= 1e-5)) { std::printf("  %-8s MISMATCH against ggml\n", type_name(type)); ++failures; }
-    if (type == 16 || type == 17 || type == 18 || type == 21) {
+    if (type == 16 || type == 17 || type == 18 || type == 21 || type == 22) {
         size_t different = 0;
         std::vector<float> exact(R);
         const ggml_vec_dot_t dot = traits_cpu(type)->vec_dot;
@@ -468,7 +468,7 @@ int bench(const std::vector<std::string>& pairs, const std::vector<int>& nts, in
                               for (int t = 0; t < nt; ++t)
                                   ddot((int) kFF, &out[t][r], 0, blob + f.down_off + (size_t) r * f.d_row, 0, a.dnp[t], 0, 1);
                       }});
-        if (gt == 16 || gt == 17 || gt == 18 || gt == 21)
+        if (gt == 16 || gt == 17 || gt == 18 || gt == 21 || gt == 22)
             ms.push_back({"exact1", [&, gt](const uint8_t* blob, int nt) {
                               for (int t = 0; t < nt; ++t)
                                   cpu::iq256_gu_rows_exact_one(gt, blob, f.gu_row, f.up_off, (int) kH,
