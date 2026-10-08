@@ -176,10 +176,26 @@ dies keep b/a 768 (355-356 against 219-220 tok/s in every round, +62%); two RTX 
 faster than off, b/a 768 20% slower). A first version that read a different stretch of text per value and confirmed in
 two rounds picked 1536 on the RTX 3090 Ti pair from one fast read - where the experts are streamed, the read speed
 depends on the text. `--prefill-pipe 1` needs no
-b/a: it only evens out today's chunk count, which in this model is never slower. 0 (the default) is today's split;
-`STRATA_PREFILL_PIPE=<R>` is the same as the flag where the config cannot carry it. A prompt's chunks depend on its
-length and R only, so the same prompt gives the same bits. The chunk geometry changes the rounding, which is why it is
-opt-in. One line in the log says what it chose:
+b/a: it only evens out today's chunk count. That is not always faster: a chunk of 1024 tokens or more (3072 with
+`STRATA_PREFILL_CPU_SHARE` set) streams every expert its card does not hold, a shorter one only the experts it routes
+to, so a prompt just past the chunk size reads
+as one full chunk and a nearly free tail, and evening it out adds a second full pass over the experts (two RTX 4090,
+MistyMoonR's calibration: off 2,129 tok/s, evened 1,601). 0 (the default) is today's split;
+`STRATA_PREFILL_PIPE=<R>` is the same as the flag where the config cannot carry it. The chunk geometry changes the
+rounding, which is why it is opt-in.
+
+A prompt segment (the prompt between two of its cuts: the system-prompt root, the last turn, a `pin=`) is planned once,
+on its whole length and R, and every run of it reads in that chunk. So its chunks, and the loan its buffers are laid
+out for, are the same whether it is read in one run, in pieces between the windows of decoding `--batch` slots, or goes
+on after a `BYIELD` or from a periodic checkpoint taken inside it (the slot and the checkpoint keep the plan; the read
+goes on in it when it continues the same segment, else it plans again and says so in the log). The output bits then
+match as far as the experts the cards hold do (`--adapt-swaps 0` for byte-identical repeats, as without the pipe).
+Before this, a read beside decoding slots re-planned every piece, and one that went on after a `BYIELD` re-planned what
+was left. A chunk the pipe planned takes no `STRATA_PREFILL_CPU_SHARE`: the stages read
+such chunks at the same time, and which stage got the CPU pool first would decide which experts the CPU computed. The
+DONE line ends with `chunk=` (the first chunk of the request's longest batched segment) and `experts_streamed=` (the
+expert blobs its prompt copied to the cards), and the INFO line carries `prefill_cap`, `prefill_stages`,
+`stream_all_min` and `prefill_pipe`. One line in the log says what a plan chose:
 
     strata prefill: 10058 tokens in 1280-token chunks over 4 stages (--prefill-pipe 706: b/a)
 

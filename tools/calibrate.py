@@ -276,7 +276,11 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         s.warm_up()
         # 0. a layer split's prompt chunks (prompt read speed; independent of the decode settings below)
         pipe = 0
-        if long_prompt is not None and "--layer-split" in base_args:
+        # the engine's own count of prompt stages where it reports one (a split can leave one, e.g.
+        # --split-skip-if-fits), else the flag
+        stages = info.get("prefill_stages")
+        split = stages > 1 if isinstance(stages, int) else "--layer-split" in base_args
+        if long_prompt is not None and split:
             say("  Measuring the prompt chunks of the layer split ...")
             pipe, rep_pipe = measure_pipe(eng, long_prompt, say)
             report.update(rep_pipe)

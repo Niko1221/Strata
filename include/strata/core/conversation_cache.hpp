@@ -29,6 +29,16 @@ struct ConversationCheckpoint {
     // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
     // mark only: it is not in the session file, a request that pins the same prefix again sets it.
     bool pinned = false;
+    // --prefill-pipe on a layer split: the plan a prompt segment [from, to) is read in - its chunk (0: none), the loan
+    // its buffers were laid out for (which experts the prompt reads in place and which it streams: that sets bits
+    // too), the pipe value it was planned with, whether it is one chunk and whether the plan changed the buffers'
+    // chunks.  A periodic checkpoint taken inside such a segment keeps it, so a read that goes on from there reads the
+    // rest in the same chunks with the same loan.  Run-time only, like `pinned` (a layer split saves no session files).
+    struct PromptPlan {
+        int64_t chunk = 0, from = -1, to = -1, lend = 0;
+        double pipe = 0.0;
+        bool single = false, chunked = false;
+    } plan;
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;

@@ -505,8 +505,10 @@ struct Options {
     int vram_reserve_later_mib = -1;
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
-    /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  Every expert a chunk
-    /// routes to is streamed once per chunk, so a bigger chunk streams fewer bytes per token (the "ubatch" effect).
+    /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  A chunk of
+    /// stream_all_min tokens or more (1024 by default) streams every expert the GPU does not hold once, routed or not
+    /// (a smaller one only the experts it routes to), so a bigger chunk streams fewer bytes per token (the "ubatch"
+    /// effect).
     bool prefill_auto = false;
     /// #282, opt-in: the largest chunk `--prefill auto` may take - 8192 by default; `--prefill auto:16384` or
     /// `auto:32768` (or STRATA_PREFILL_AUTO_MAX) lets it go further, never past the context
@@ -3216,7 +3218,7 @@ int main(int argc, char** argv) {
     // whole expert blobs, which a split without borrowing sizes at 96 (Prefill::set_ring_override below) and books
     // here - without it a `--no-prefill-borrow` split filled the cards and the draft head no longer fit)
     const int64_t split_ring_mib =
-        (multi_gpu && !pf_borrow && o.prefill_chunk >= 1024)
+        (multi_gpu && !pf_borrow && o.prefill_chunk >= strata::prefill::Prefill::stream_all_min_tokens())
             ? (int64_t) ((96ull * (uint64_t) strata::kernels::cpu::expert_layout().max_blob + (1ull << 20) - 1) >> 20)
             : 0;
     if (split_ring_mib > 0) strata::prefill::Prefill::set_ring_override(96);
@@ -6970,6 +6972,9 @@ int main(int argc, char** argv) {
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
+        // --prefill-pipe: the plan of the prompt segment being read (read_part sets it around its runs), for the
+        // checkpoints taken inside it
+        ConvCheckpoint::PromptPlan seg_plan;
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
@@ -7263,6 +7268,7 @@ int main(int argc, char** argv) {
                 }
             }
             c.used = ++check_clock;
+            if (seg_plan.chunk > 0 && L > seg_plan.from && L < seg_plan.to) c.plan = seg_plan;   // inside a planned segment
             if (as_tail) {   // only one tail checkpoint stays alive: the previous request's goes
                 const int64_t old_tail = tail_ckpt_len;
                 checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& k) {
@@ -8052,7 +8058,8 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d "
+                        "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -8064,6 +8071,11 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
+                        // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
+                        // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
+                        (long long) o.prefill_chunk, sp.stage_count(),
+                        (long long) strata::prefill::Prefill::stream_all_min_tokens(),
+                        strata::prefill::Prefill::pipe_setting(),
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
@@ -8282,6 +8294,7 @@ int main(int argc, char** argv) {
             // a prompt read that gave way to a waiting request (BYIELD): `ids` is the part read so far, and the same
             // request continues from it (the read goes on with the same chunks; `from0`: it had started at token 0)
             bool partial = false, partial_from0 = false;
+            ConvCheckpoint::PromptPlan partial_plan;   ///< --prefill-pipe: the segment it stopped in, read on in its chunks
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // timing of the batch windows since the slots were last all idle (one stderr line then)
@@ -9107,6 +9120,7 @@ int main(int argc, char** argv) {
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
+            const int64_t streamed0 = sp.chain_experts_streamed();   // the DONE line's experts_streamed= is the difference
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
             // exactly the start of this prompt - at most n - 1 of them, the last token is always the first window
             auto starts_with = [&](const std::vector<int32_t>& pre, const std::vector<ImgKey>& pre_imgs) -> bool {
@@ -9148,6 +9162,10 @@ int main(int argc, char** argv) {
             int slot_source = -1;
             int64_t slot_tokens = 0;
             bool resumed_from0 = false;   // a prompt read parked in a slot (BYIELD) that had started at token 0
+            // --prefill-pipe: the plan of the segment a read goes on in (a BYIELD park, a periodic checkpoint), and
+            // where it goes on; read_part reads the rest of that segment in its chunks
+            ConvCheckpoint::PromptPlan resume_plan;
+            int64_t resume_plan_at = -1, resume_plan_end = -1;   // where it goes on, and the segment end it needs
             const ConvCheckpoint* slot_ck = nullptr;   // the slot's checkpoint the prompt continues from (else its end)
             if (o.prompt_cache > 0 && req_imgs.empty())
                 for (int b = 0; b < (int) bs.size(); ++b) {
@@ -9225,8 +9243,12 @@ int main(int argc, char** argv) {
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
+                        resume_plan = bs[(size_t) slot_source].partial_plan;
+                        resume_plan_at = slot_tokens;
+                        resume_plan_end = resume_plan.to;
                         for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
+                        bs[(size_t) slot_source].partial_plan = {};
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
@@ -9375,6 +9397,28 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // --prefill-pipe: going on from a periodic checkpoint taken inside a planned segment (whatever restored it:
+            // a checkpoint of this session, of a slot or of a parked conversation), the rest of that segment is read
+            // in its chunks.  STRATA_CKPT_REREAD reads [0, resume) again in the chunks the saving read had, which it
+            // can only when that segment started at 0.  The BYIELD park set resume_plan above.
+            if (resume_plan.chunk <= 0 && resume > 0 && !stages.empty())
+                for (const ConvCheckpoint& k : checks)
+                    if ((int64_t) k.ids.size() == resume && k.plan.chunk > 0) {
+                        if (reread_to <= 0) {
+                            resume_plan = k.plan;
+                            resume_plan_at = resume;
+                            resume_plan_end = k.plan.to;
+                        } else if (k.plan.from == 0) {   // [0, resume) only: its end is the checkpoint
+                            resume_plan = k.plan;
+                            resume_plan_at = 0;
+                            resume_plan_end = resume;
+                        } else {
+                            std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: the checkpoint is inside a "
+                                                 "segment that started at %lld, so a read from 0 has other chunks\n",
+                                         (long long) k.plan.from);
+                        }
+                        break;
+                    }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
@@ -9645,15 +9689,19 @@ int main(int argc, char** argv) {
             // lend the slots `tokens` batched prompt tokens need: the prompt path's buffers for min(chunk, tokens
             // rounded up to 256), laid out in the last of the slots it may borrow - per participant, out of that
             // participant's own cache, and marking only that participant's own layers
-            auto lend = [&](int64_t tokens, std::string& e) -> bool {
+            int64_t seg_lend = 0;   // the loan the last lend left (the largest participant's chunk; 0: none)
+            auto lend = [&](int64_t tokens, std::string& e, int64_t exact) -> bool {
+                seg_lend = 0;
                 if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
                 const auto t_ln = Clock::now();
                 // what this segment needs, capped by the configured chunk: a request lends only what its own
                 // prompt needs, so a large chunk costs a short prompt nothing
                 const int64_t want_full = equal_chunk(tokens, o.prefill_chunk);
                 // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
-                const int64_t want = split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
-                                                                                 : want_full;
+                const int64_t want_seg = split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
+                                                                                     : want_full;
+                // `exact`: a planned segment read on - the loan it was read with (what is left would size another)
+                const int64_t want = exact > 0 ? std::min(exact, o.prefill_chunk) : want_seg;
                 if (want <= 0) {
                     e = "prefill: cannot lend buffers for an empty request segment";
                     return false;
@@ -9685,6 +9733,8 @@ int main(int argc, char** argv) {
                         }
                     p.lent_chunk = want;
                 }
+                for (const PfPart& p : pf_parts)
+                    if (p.first >= 0) seg_lend = std::max(seg_lend, p.lent_chunk);
                 if (any) res_upload();
                 if (trace) {
                     int64_t n_lent = 0;
@@ -9713,14 +9763,67 @@ int main(int argc, char** argv) {
             // far is copied into <slot> (this admission's own, or a free one the server reserved for a solo request),
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
+            int64_t req_chunk = 0, req_chunk_len = 0;   // the DONE line's chunk=: the longest batched segment's first chunk
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
+                // --prefill-pipe on a layer split: the segment's chunk is planned ONCE, on its whole length (or taken
+                // from the read it goes on from: resume_plan), and every run of it reads in that chunk (force_chunk) -
+                // the same chunks whether it is read in one run, in pieces beside decoding slots, or goes on after a
+                // BYIELD or from a checkpoint.  Without the pipe nothing here changes: runs read in the buffers' chunk.
+                ConvCheckpoint::PromptPlan plan;
+                if (!stages.empty()) {
+                    if (resume_plan.chunk > 0 && a0 == resume_plan_at) {
+                        using strata::prefill::Prefill;
+                        const ConvCheckpoint::PromptPlan& rp = resume_plan;
+                        if (b0 == resume_plan_end && rp.from >= 0 && rp.from <= a0 && (a0 - rp.from) % rp.chunk == 0 &&
+                            rp.chunk <= sp.chunk() && Prefill::pipe_key(rp.pipe) == Prefill::pipe_key(Prefill::pipe_setting())) {
+                            plan = rp;
+                        } else {
+                            std::fprintf(stderr, "strata prefill: the read going on at %lld is not the segment "
+                                                 "[%lld, %lld) it was planned in (%lld-token chunks): planned again\n",
+                                         (long long) a0, (long long) rp.from, (long long) rp.to, (long long) rp.chunk);
+                        }
+                        resume_plan = {};   // the first segment only
+                    }
+                    if (plan.chunk <= 0) {
+                        const int64_t c = sp.plan_chunk(b0 - a0);
+                        if (c > 0) {
+                            plan.chunk = c;
+                            plan.from = a0;
+                            plan.to = b0;
+                            plan.lend = seg_lend;
+                            plan.pipe = strata::prefill::Prefill::pipe_setting();
+                            plan.single = b0 - a0 <= c;
+                            plan.chunked = c < std::min(b0 - a0, sp.chunk());
+                            if (plan.chunked) strata::prefill::Prefill::log_plan(b0 - a0, c, sp.stage_count());
+                        }
+                    }
+                }
+                const bool planned = plan.chunk > 0;
+                const bool plan_single = planned && plan.single;
+                if (b0 - a0 > req_chunk_len) {
+                    req_chunk_len = b0 - a0;
+                    req_chunk = planned ? std::min(plan.chunk, b0 - a0) : std::min(sp.chunk(), b0 - a0);
+                }
+                seg_plan = plan;   // the checkpoints taken inside it keep it; cleared when the segment is done
+                struct SegPlanScope {
+                    ConvCheckpoint::PromptPlan& p;
+                    ~SegPlanScope() { p = {}; }
+                } seg_plan_scope{seg_plan};
+                auto run = [&](int64_t q, int64_t r) -> bool {
+                    if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
+                    return sp.run(ids.data() + q, r - q, q, e);
+                };
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
-                if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
-                const int64_t C = std::max<int64_t>(sp.chunk(), 1);
+                if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return run(a0, b0);
+                // the pieces: the buffers' chunk, or with a plan as many whole planned chunks as that holds (the
+                // stages still pipeline inside a piece, and every piece starts on the plan's grid)
+                const int64_t C = planned ? std::max<int64_t>(1, sp.chunk() / plan.chunk) * plan.chunk
+                                          : std::max<int64_t>(sp.chunk(), 1);
+                const int64_t C_read = planned ? plan.chunk : C;   // what the yield test calls a chunk
                 for (int64_t q = a0; q < b0;) {
                     const int64_t r = std::min(b0, q + C);
                     const auto tq = Clock::now();
-                    if (!sp.run(ids.data() + q, r - q, q, e)) return false;
+                    if (!run(q, r)) return false;
                     q = r;
                     if (q >= b0) continue;
                     int ys = -1;
@@ -9744,7 +9847,7 @@ int main(int argc, char** argv) {
                         // read left), text only, and into a slot that is not decoding
                         const bool can = ys < (int) bs.size() && !bs[(size_t) ys].active &&
                                          (admit_slot < 0 || ys == admit_slot) && req_imgs.empty() && o.prompt_cache > 0 &&
-                                         b0 - q > std::max<int64_t>(C, o.short_read);
+                                         b0 - q > std::max<int64_t>(C_read, o.short_read);
                         std::string ye;
                         const auto ty = Clock::now();
                         std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
@@ -9755,6 +9858,7 @@ int main(int argc, char** argv) {
                             sl.cached = true;
                             sl.partial = true;
                             sl.partial_from0 = read_from == 0 || resumed_from0;
+                            if (planned) sl.partial_plan = plan;   // the resend reads the rest in these chunks
                             sl.cvec = cvec_cached;
                             for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
                                 if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
@@ -9896,7 +10000,11 @@ int main(int argc, char** argv) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
-                if (!win && !lend(to - at, err)) {
+                // a read going on in a planned segment gets the loan it was read with (what is left would size
+                // another, and the loan decides which experts are read in place: bits)
+                const int64_t plan_lend = resume_plan.chunk > 0 && at == resume_plan_at && to == resume_plan_end
+                                              ? resume_plan.lend : 0;
+                if (!win && !lend(to - at, err, plan_lend)) {
                     std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
                     return 1;
                 }
@@ -10941,18 +11049,23 @@ int main(int argc, char** argv) {
             //                    not in [lookups])
             //      [lookup-chain accepted] [lookup-chain offered] [suffix accepted] [suffix offered] [windows]
             //      (only with --lookup-chain)
+            //      chunk=<tokens> experts_streamed=<blobs>   (key=value, last: the first chunk of the request's longest
+            //      batched segment, 0 when it read none; the expert blobs its prompt read copied host -> device on
+            //      every stage - not the CPU share's, the stage helper's or a --peer-device peer's)
             char chain_txt[128] = "";
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s\n",
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
+                        "experts_streamed=%lld\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
-                        (long long) req_offload, chain_txt);
+                        (long long) req_offload, chain_txt, (long long) req_chunk,
+                        (long long) (sp.chain_experts_streamed() - streamed0));
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&

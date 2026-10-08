@@ -105,6 +105,21 @@ class Calibrate(unittest.TestCase):
         # an old calibration's value goes when a new one does not keep it
         self.assertIsNone(CAL.arg_value(CAL.apply(BASE + ["--prefill-pipe", "800"], {}), "--prefill-pipe"))
 
+    def test_prefill_pipe_follows_the_engines_stage_count(self):
+        # --layer-split that left one prompt stage (the engine says prefill_stages=1): nothing to measure
+        reads = []
+
+        class OneStage(FakeEngine):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.info["prefill_stages"] = 1
+        res = CAL.measure(BASE + ["--layer-split", "auto"], [[1, 2, 3]] * 3,
+                          lambda a: OneStage(a, lambda f, p, w: 50.0, 6, None, None,
+                                             lambda v: 600.0 if v == 1536 else 500.0, reads),
+                          say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
+        self.assertEqual(reads, [])
+        self.assertNotIn("--prefill-pipe", res["settings"])
+
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
         self.assertEqual(res["settings"], {})

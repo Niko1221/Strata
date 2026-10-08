@@ -79,7 +79,9 @@ public:
     /// ring (a big one only pays when the copy engine, not the host copies, is the limit); set before bytes_needed.
     static void set_pinned_share(double share);
     static double pinned_share();
-    /// The chunk size from which a chunk streams every expert the GPU does not hold (1024; STRATA_PREFILL_STREAM_MIN).
+    /// The chunk size from which a chunk streams every expert the GPU does not hold, routed or not; a smaller one
+    /// stages only the experts it routes to.  1024, or STRATA_PREFILL_STREAM_MIN, or the CPU share's limit once that
+    /// is armed (3072 when STRATA_PREFILL_CPU_SHARE is set).
     static int64_t stream_all_min_tokens();
     /// --prefill-pipe (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
     /// stages, chunks of at most `cap` (the buffers' size) and a stage-chunk cost of b + a C with b/a = `ratio` tokens
@@ -92,6 +94,26 @@ public:
     static void set_pipe(double value);
     /// The same for the next prompts only (the `pipe=` request key, setup's calibration); < 0 = the run's own value.
     static void set_pipe_request(double value);
+    /// The --prefill-pipe value in force (the request's, else the run's).
+    static double pipe_setting();
+    /// What a --prefill-pipe value plans by: -1 off, 0 today's chunk count evened out, else b/a in whole tokens (two
+    /// spellings of one value, e.g. a request key and the flag, compare equal).
+    static int64_t pipe_key(double value);
+    /// The stages of the prompt path from this one on (1 without a layer split).
+    int stage_count() const;
+    /// --prefill-pipe on a layer split's first stage: the chunk an `n`-token segment is read in when it is read whole
+    /// (pipeline_chunk over chunk(), the stage count and pipe_setting()), or 0 when the pipe is off here (one stage,
+    /// value 0, or a later stage) and the buffers' chunk applies.  The engine plans a segment once, on its whole
+    /// length, and reads every part of it with force_chunk, so its chunks do not depend on how it is cut into runs.
+    int64_t plan_chunk(int64_t n) const;
+    /// The next run on this (first) stage only: chunks of `chunk` tokens (at most chunk()) instead of a plan, from
+    /// its first token; `single`: the segment is one chunk (the stage helper may bind); `planned`: the chunks came
+    /// from a --prefill-pipe plan (such a read takes no CPU share: its chunks overlap on the stages by design).
+    void force_chunk(int64_t chunk, bool single, bool planned);
+    /// One log line for a planned segment (the same as a whole read logs when its plan differs from chunk()).
+    static void log_plan(int64_t n, int64_t chunk, int stages);
+    /// The expert blobs this stage and the later ones copied host -> device so far (PrefillStats::experts_streamed).
+    int64_t chain_experts_streamed() const;
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);
@@ -205,6 +227,9 @@ private:
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
+    bool pipe_chunked_ = false;         ///< a later stage: the chunks came from a --prefill-pipe plan (set likewise)
+    int64_t force_chunk_ = 0;           ///< force_chunk, for the next run (0: none)
+    bool force_single_ = false, force_planned_ = false;
     bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
 

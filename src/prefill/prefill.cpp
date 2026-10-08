@@ -49,6 +49,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef STRATA_PREFILL_MMQ
@@ -139,11 +140,12 @@ constexpr int RING_MAX = 1024;          // the arrays; the ring itself is ring_s
 // chunk) 779 -> 912 / 766 -> 844, the same output.  Below ~1,000 tokens the output changed on Q2_0 (a smaller chunk
 // takes other kernels), so 1024 is the floor.  STRATA_PREFILL_STREAM_MIN overrides (A/B).  With the CPU share armed
 // (Prefill::arm_cpu_share) it is the share's own limit instead: the share applies to staged chunks only.
+constexpr int64_t kStreamAllMinDefault = 1024;   // the default above (and the CPU share's default limit)
 int64_t g_stream_min_share = 0;
 inline int64_t stream_all_min() {
     static const int64_t env = [] { const char* e = std::getenv("STRATA_PREFILL_STREAM_MIN"); return e ? (int64_t) std::atoll(e) : (int64_t) -1; }();
     if (env >= 0) return env;
-    return g_stream_min_share > 0 ? g_stream_min_share : (int64_t) 1024;
+    return g_stream_min_share > 0 ? g_stream_min_share : kStreamAllMinDefault;
 }
 // STRATA_PREFILL_CPU_SHARE (opt-in; set_cpu_pool): a chunk below stream_all_min() hands the decode CPU pool - idle
 // while a prompt is read - the non-resident experts few of its tokens route to, instead of streaming them over PCIe.
@@ -180,10 +182,10 @@ inline bool cpu_share_on() { return cpu_share_env() != 0.0; }
 inline int64_t cpu_share_max() {
     static const int64_t v = [] {
         const char* e = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX");
-        return e ? std::max<int64_t>(1024, (int64_t) std::atoll(e)) : (int64_t) 3072;
+        return e ? std::max<int64_t>(kStreamAllMinDefault, (int64_t) std::atoll(e)) : (int64_t) 3072;
     }();
     static const bool explicit_max = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX") != nullptr;
-    if (g_share_default && cpu_share_explicit() == -2.0 && !explicit_max) return 1024;   // the default's measured range
+    if (g_share_default && cpu_share_explicit() == -2.0 && !explicit_max) return kStreamAllMinDefault;   // its measured range
     return v;
 }
 // On a layer split every stage may have the pool (set_cpu_pool), and the stages read different chunks at the same time:
@@ -1756,7 +1758,10 @@ int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 // experts streamed per chunk), and a wrong r costs (1024 on two RTX 4090: 22-36% slower). The engine neither guesses r
 // nor learns it from the prompts it serves - that made a prompt's chunks, and so its output bits, depend on how busy
 // the PC happened to be: setup's --calibrate measures it once (tools/calibrate.py) and writes `--prefill-pipe <r>`.
-// `--prefill-pipe 1` needs no r: only today's chunk count is evened out, which in this model is never slower.
+// `--prefill-pipe 1` needs no r: only today's chunk count is evened out. The model calls that never slower, but a chunk
+// of stream_all_min() tokens or more streams every expert its stage does not hold, while a shorter one stages only the
+// experts it routes to: a tail of a few tokens is nearly free, and evening it out adds a full pass (two RTX 4090, a
+// prompt 25 tokens past 8192: 25% slower) - --calibrate tries it like the other values.
 namespace {
 double g_pipe = -1.0;       // --prefill-pipe; < 0: not given (STRATA_PREFILL_PIPE, else 0)
 double g_pipe_req = -1.0;   // the `pipe=` request key; < 0: none
@@ -1772,25 +1777,61 @@ double pipe_value() {
 }  // namespace
 void Prefill::set_pipe(double value) { g_pipe = value; }
 void Prefill::set_pipe_request(double value) { g_pipe_req = value; }
+double Prefill::pipe_setting() { return pipe_value(); }
+namespace {
+// b/a in whole tokens: 0 for none (or NaN), at most 2^20 (llround of an infinity is undefined - `pipe=inf` parses)
+int64_t ratio_tokens(double ratio) { return ratio > 0.0 ? (int64_t) std::llround(std::min(ratio, 1048576.0)) : 0; }
+}  // namespace
+int64_t Prefill::pipe_key(double value) { return !(value > 0.0) ? -1 : value <= 1.0 ? 0 : ratio_tokens(value); }
+// In whole tokens (r rounded): integer sums and a 97/100 test, so a near-tie cannot fall one way in one build and the
+// other way in another (the same chunks as the double version for every whole r: an exact 97% is not better).
 int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {
     if (stages < 2 || n <= 0 || cap <= 0) return cap;
-    const double r = ratio > 0.0 ? ratio : 0.0, S1 = (double) (stages - 1);
+    const int64_t r = ratio_tokens(ratio), S1 = stages - 1;
     auto cost = [&](int64_t c) {   // chunks of c tokens, the last the rest
         const int64_t k = (n + c - 1) / c;
-        return (double) k * r + (double) n + S1 * (r + (double) std::min(c, n));
+        return k * r + n + S1 * (r + std::min(c, n));
     };
     const int64_t today = std::min(n, cap);
-    const double today_cost = cost(today);
+    const int64_t today_cost = cost(today);
     const int64_t k_min = (n + cap - 1) / cap;
     const int64_t k_max = ratio > 0.0 ? std::max<int64_t>(k_min, std::min<int64_t>(64, (n + 511) / 512)) : k_min;
     int64_t best = today;
-    double best_cost = today_cost;
+    int64_t best_cost = today_cost;
     for (int64_t k = k_min; k <= k_max; ++k) {
         const int64_t c = std::min(cap, std::max<int64_t>(512, (((n + k - 1) / k + 255) / 256) * 256));
-        const double v = cost(c);
+        const int64_t v = cost(c);
         if (v < best_cost) { best_cost = v; best = c; }
     }
-    return (best < today && best_cost < 0.97 * today_cost) ? best : cap;
+    return (best < today && 100 * best_cost < 97 * today_cost) ? best : cap;
+}
+int Prefill::stage_count() const {
+    int stages = 1;
+    for (const Prefill* p = next_; p != nullptr; p = p->next_) ++stages;
+    return stages;
+}
+int64_t Prefill::plan_chunk(int64_t n) const {
+    const double pipe = pipe_value();
+    const int stages = stage_count();
+    if (pipe <= 0.0 || hand_in_ != nullptr || stages < 2) return 0;
+    return pipeline_chunk(n, impl_->T, stages, pipe > 1.0 ? pipe : 0.0);
+}
+void Prefill::force_chunk(int64_t chunk, bool single, bool planned) {
+    force_chunk_ = chunk;
+    force_single_ = single;
+    force_planned_ = planned;
+}
+void Prefill::log_plan(int64_t n, int64_t chunk, int stages) {
+    const double pipe = pipe_value();
+    std::fprintf(stderr, "strata prefill: %lld tokens in %lld-token chunks over %d stages (--prefill-pipe %s)\n",
+                 (long long) n, (long long) chunk, stages,
+                 pipe > 1.0 ? (std::to_string((long long) ratio_tokens(pipe)) + ": b/a").c_str()
+                            : "1: today's chunk count, evened out");
+}
+int64_t Prefill::chain_experts_streamed() const {
+    int64_t sum = 0;
+    for (const Prefill* p = this; p != nullptr; p = p->next_) sum += p->stats_.experts_streamed;
+    return sum;
 }
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
@@ -2014,6 +2055,9 @@ struct PeTimer {
 
 bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     err.clear();
+    // force_chunk is for this run only: taken before any early return can leave it to the next one
+    const int64_t forced = hand_in_ == nullptr ? std::exchange(force_chunk_, 0) : 0;
+    const bool forced_single = force_single_, forced_planned = force_planned_;
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
@@ -2054,19 +2098,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // place of a --peer-device peer, and gives the stage back its own buffers when the run ends
     // the chunk this prompt is read in: the buffers' size, or with --prefill-pipe on a layer split the one that keeps
     // every stage busy (pipeline_chunk: 1 evens today's chunk count out, a number > 1 is the rig's b/a). Only the first
-    // stage chooses: a later one is handed one chunk at a time.
-    int stages = 1;
-    for (const Prefill* p = next_; p != nullptr; p = p->next_) ++stages;
-    const double pipe = pipe_value();
-    const bool pipe_first = pipe > 0.0 && hand_in_ == nullptr && stages > 1;
-    const double pipe_ratio = pipe > 1.0 ? pipe : 0.0;
-    const int64_t C = pipe_first ? pipeline_chunk(n, m.T, stages, pipe_ratio) : m.T;
-    if (pipe_first && C < std::min(n, m.T))
-        std::fprintf(stderr, "strata prefill: %lld tokens in %lld-token chunks over %d stages (--prefill-pipe %s)\n",
-                     (long long) n, (long long) C, stages,
-                     pipe_ratio > 0.0 ? (std::to_string((long long) pipe_ratio) + ": b/a").c_str()
-                                      : "1: today's chunk count, evened out");
-    const bool single_chunk = hand_in_ == nullptr ? n <= C : single_chunk_;
+    // stage chooses: a later one is handed one chunk at a time. A run the engine forced (force_chunk: one part of a
+    // segment it planned on its whole length) reads in that chunk and keeps the segment's single/planned flags.
+    if (forced > m.T) {
+        err = "prefill: a forced chunk of " + std::to_string((long long) forced) + " tokens is larger than the buffers' " +
+              std::to_string((long long) m.T);
+        return false;
+    }
+    const int64_t planned_C = forced > 0 ? 0 : plan_chunk(n);
+    const int64_t C = forced > 0 ? forced : planned_C > 0 ? planned_C : m.T;
+    if (planned_C > 0 && C < std::min(n, m.T)) log_plan(n, C, stage_count());
+    const bool single_chunk = hand_in_ == nullptr ? (forced > 0 ? forced_single : n <= C) : single_chunk_;
+    // a read the pipe chunked takes no CPU share: its chunks overlap on the stages by design, and which stage won the
+    // pool would decide which experts the CPU computed (other bits) - timing, where the chunks are a function of n
+    const bool pipe_chunked = hand_in_ == nullptr ? (forced > 0 ? forced_planned : planned_C > 0 && C < std::min(n, m.T))
+                                                  : pipe_chunked_;
     const bool helped = single_chunk && bind_stage_helper(n);
     if (helped) std::swap(m.pp, m.help_pp);
     struct HelpScope {
@@ -2266,7 +2312,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             bool held = false;
             ~PoolHold() { if (held) g_cpu_pool_busy.store(false, std::memory_order_release); }
         } pool_hold;
-        if (cpu_pool_ != nullptr && cpu_share_on() && !stream_all) {
+        if (cpu_pool_ != nullptr && cpu_share_on() && !stream_all && !pipe_chunked) {
             bool expect = false;
             pool_hold.held = g_cpu_pool_busy.compare_exchange_strong(expect, true, std::memory_order_acq_rel);
         }
@@ -3971,6 +4017,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             next_err_.clear();
             next_->hand_in_ = h;
             next_->single_chunk_ = single_chunk;
+            next_->pipe_chunked_ = pipe_chunked;
             next_run_ = std::async(std::launch::async, [this, tokens, c0, T, p0] {
                 return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
