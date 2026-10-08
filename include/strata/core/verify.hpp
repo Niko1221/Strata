@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <cstdint>
 #include <string>
@@ -211,8 +212,12 @@ public:
     /// Every layer copies the token rows to the host (doorbell_publish), not only the layers with a routed expert
     /// outside the VRAM tier by the device's residency table: with windows in flight the adaptive tier marks an
     /// expert evicted on the host (the pool then computes it on the CPU) before the device table follows.  Also turns
-    /// the device-planned layers (E-6) off.  Before `init`.
-    void set_always_publish(bool on) { always_publish_ = on; }
+    /// the device-planned layers (E-6) off, which read the device table this mode lets lag.  Before the first window
+    /// (its graphs are captured there).
+    void set_always_publish(bool on) {
+        always_publish_ = on;
+        if (on) device_plan_ = false;
+    }
     cudaStream_t stream() const { return cs_; }
     int device() const { return device_; }
     /// Capture every window size and the commit graph now (a capture syncs the stream: never with a window in flight).
@@ -261,6 +266,10 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// Called before every window this verifier launches (run, the batch and pipelined launches): the device's
+    /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight).
+    /// It gets this verifier's stream; false (with the message in `err`) fails the launch.
+    void set_pre_launch(std::function<bool(cudaStream_t cs, std::string& err)> f) { pre_launch_ = std::move(f); }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
@@ -435,6 +444,7 @@ private:
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
+    std::function<bool(cudaStream_t, std::string&)> pre_launch_;   // set_pre_launch
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
 

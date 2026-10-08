@@ -398,6 +398,18 @@ struct ExpertDispatch {
     /// Plan v0.3 P6: decayed routing counts per (layer, expert) during decode (sized by the caller; empty = off),
     /// which the driver uses to swap the most-routed missing experts into the VRAM tier between rounds.
     std::vector<float> usage;
+    /// The adaptive tier's evictions reach the device's table before the next window, not when the round's copies
+    /// land: until then doorbell_publish_res can skip a layer's activation while the pool computes an evicted expert
+    /// from the one published before.  The driver sets it where the tier does not wait for its copies
+    /// (STRATA_ADAPT_NOWAIT=1, STRATA_ADAPT_LAG > 1; STRATA_ADAPT_EVICT_SYNC=0: off, for an A/B).  `res_dirty` asks the
+    /// driver to patch the device's copy before the next window, `res_dirty_idx` lists the entries changed since.
+    bool evict_sync = false;
+    bool res_dirty = false;
+    std::vector<int32_t> res_dirty_idx;
+    /// STRATA_ADAPT_CHECKRES: the device's residency table as read back before the window; a layer with CPU experts
+    /// whose routed ids all look resident there publishes no activation (doorbell_publish_res) - counted
+    const int32_t* dres_check = nullptr;
+    int64_t stale_x = 0;
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).

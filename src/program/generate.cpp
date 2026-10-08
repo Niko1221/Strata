@@ -1222,6 +1222,67 @@ int adapt_lag() {
     return v;
 }
 
+/// ExpertDispatch::evict_sync where the tier does not wait for its copies; STRATA_ADAPT_EVICT_SYNC=0 turns it off.
+bool adapt_evict_sync() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_EVICT_SYNC"); return e == nullptr || std::atoi(e) != 0; }();
+    return v;
+}
+
+/// STRATA_ADAPT_CHECKRES=1: before a verify window, the device's residency table read back into `back` and
+/// compared with the host's (the pool's plan); the mismatched entries, the first ones reported.
+int64_t res_check(const int32_t* d_res, const std::vector<int32_t>& host_res, std::vector<int32_t>& back,
+                  int64_t n_expert, int64_t window) {
+    if (cudaMemcpy(back.data(), d_res, host_res.size() * sizeof(int32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        std::fprintf(stderr, "strata: res check: the read-back failed: %s\n", cudaGetErrorString(cudaGetLastError()));
+        return 0;
+    }
+    static int printed = 0;
+    int64_t bad = 0;
+    for (size_t i = 0; i < host_res.size(); ++i)
+        if (back[i] != host_res[i]) {
+            ++bad;
+            if (printed < 20) {
+                ++printed;
+                std::fprintf(stderr, "strata: res check: window %lld layer %lld expert %lld: host %d, device %d\n",
+                             (long long) window, (long long) (i / (size_t) n_expert), (long long) (i % (size_t) n_expert),
+                             (int) host_res[i], (int) back[i]);
+            }
+        }
+    return bad;
+}
+
+/// The pre-launch hook's patch: the changed entries of the host's residency table (`idx`) as (index, entry) pairs into
+/// the mapped `pairs` (room for `cap`); their count, or -1 when they do not fit (then the whole table goes up).
+int64_t res_patch_pairs(const std::vector<int32_t>& idx, const std::vector<int32_t>& host_res, int32_t* pairs, size_t cap) {
+    if (pairs == nullptr || idx.size() > cap) return -1;
+    for (size_t k = 0; k < idx.size(); ++k) {
+        pairs[2 * k] = idx[k];
+        pairs[2 * k + 1] = host_res[(size_t) idx[k]];
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    return (int64_t) idx.size();
+}
+
+/// Mapped host memory for res_patch_pairs (portable: every card of a layer split reads it), or null.  The kernels read
+/// it at the host's address: each of `devs` (-1: the current device) must map it there, else the whole table goes up.
+int32_t* res_pairs_alloc(size_t cap, const std::vector<int>& devs) {
+    void* p = nullptr;
+    if (cudaHostAlloc(&p, cap * 2 * sizeof(int32_t), cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    for (int dev : devs) {
+        const strata::core::OnDevice on(dev);
+        void* d = nullptr;
+        if (cudaHostGetDevicePointer(&d, p, 0) != cudaSuccess || d != p) {
+            (void) cudaGetLastError();
+            cudaFreeHost(p);
+            return nullptr;
+        }
+    }
+    return (int32_t*) p;
+}
+
 /// --adapt-async: one background job at a time (the asynchronous adaptive tier's copies and memcpys).  `post` hands
 /// it over, `idle` says whether it has finished; the owner never posts while a job runs.
 class JobThread {
@@ -7240,13 +7301,14 @@ int main(int argc, char** argv) {
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
-        auto res_upload = [&]() {
-            if (d_res != nullptr)
-                res_put(d_res);
+        auto res_upload = [&]() -> cudaError_t {   // the first error, every table tried
+            cudaError_t r = d_res != nullptr ? res_put(d_res) : cudaSuccess;
             for (auto& st : stages) {
                 const strata::core::OnDevice on(st->dev);
-                res_put(st->d_res);
+                const cudaError_t e = res_put(st->d_res);
+                if (r == cudaSuccess) r = e;
             }
+            return r;
         };
         auto apply_pending = [&](bool wait) {
             if (peer.valid()) peer.apply_pending(wait);
@@ -7265,10 +7327,116 @@ int main(int argc, char** argv) {
                 host_res[(size_t) i] = slot;
                 srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // in VRAM now: RAM not needed
             }
+            if (drive.d.evict_sync) {   // a failed upload leaves them to the pre-launch hook
+                for (const auto& pr : pending) drive.d.res_dirty_idx.push_back(pr.first);
+                drive.d.res_dirty = true;
+            }
             pending.clear();
             pending_age = 0;
-            res_upload();
+            if (res_upload() == cudaSuccess) {   // the whole table: the hook has nothing left
+                drive.d.res_dirty = false;
+                drive.d.res_dirty_idx.clear();
+            }
         };
+        // Where the tier does not wait for its copies (STRATA_ADAPT_NOWAIT=1, STRATA_ADAPT_LAG > 1), its evictions reach
+        // the device's tables before the next window: adapt() marks them non-resident at once, apply_pending uploads
+        // only when the round's copies land - a window or more later, and until then doorbell_publish_res skips the
+        // activation of a layer whose routed experts all look resident, while the pool computes an evicted one from the
+        // activation published before.  The hook runs at each verifier's launch; the serial windows (one at a time,
+        // the batch windows included, a layer split's stages one after another) take it.
+        //   --batch-groups with a layer split launches a group while another is in flight on the other stage, which
+        //   waits on this thread: a synchronous upload there could wait on that window, so those verifiers publish
+        //   every activation instead (set_always_publish; the device table then decides nothing a stale entry breaks).
+        //   --pipeline-windows is exempt: its verifiers always publish, and the tier fences the windows in flight
+        //   before it overwrites a slot (adapt_fence).  --adapt-async uploads at each of its steps.
+        // STRATA_ADAPT_CHECKRES=1 reads the tables back at each launch and compares them with the host's.
+        const bool piped_groups = o.batch > 0 && o.batch_groups > 1 && !stages.empty();
+        const bool serial_windows = !pipe && !piped_groups;
+        const bool tier_lags = !drive.d.usage.empty() && (adapt_nowait() || adapt_lag() > 1);
+        drive.d.evict_sync = serial_windows && tier_lags && adapt_evict_sync();
+        if (piped_groups && tier_lags && adapt_evict_sync()) {
+            ver.set_always_publish(true);
+            for (auto& st : stages) st->ver.set_always_publish(true);
+        }
+        const bool res_checking = std::getenv("STRATA_ADAPT_CHECKRES") != nullptr && serial_windows;
+        std::vector<int32_t> res_back;
+        int64_t res_windows = 0, res_bad = 0, res_bad_windows = 0;
+        if (res_checking) {
+            res_back.assign(host_res.size(), 0);
+            drive.d.dres_check = res_back.data();
+        }
+        // The changed entries go up by a kernel on each card's verifier stream, reading them from mapped memory: a
+        // synchronous upload waits for the copy engine, which the tier's swaps of the round before still hold (~4 ms
+        // on 33 swaps; measured +0.9 ms a chat round).  Too many changes, or no mapped memory: the whole table.
+        constexpr size_t kResPatchCap = 16384;
+        std::vector<int> res_devs{-1};
+        for (auto& st : stages) res_devs.push_back(st->dev);
+        int32_t* res_pairs = drive.d.evict_sync ? res_pairs_alloc(kResPatchCap, res_devs) : nullptr;
+        auto res_sync = [&](bool check, std::string& e) -> bool {
+            if (drive.d.res_dirty) {
+                const int64_t n = res_patch_pairs(drive.d.res_dirty_idx, host_res, res_pairs, kResPatchCap);
+                cudaError_t r = cudaSuccess;
+                if (n >= 0) {
+                    if (d_res != nullptr) {
+                        strata::kernels::res_patch(d_res, res_pairs, (int) n, ver.stream());
+                        r = cudaGetLastError();
+                    }
+                    for (size_t k = 0; k < stages.size() && r == cudaSuccess; ++k) {
+                        const strata::core::OnDevice on(stages[k]->dev);
+                        strata::kernels::res_patch(stages[k]->d_res, res_pairs, (int) n, stages[k]->ver.stream());
+                        r = cudaGetLastError();
+                    }
+                } else {
+                    r = res_upload();
+                }
+                if (r != cudaSuccess) {
+                    e = std::string("the residency table update failed: ") + cudaGetErrorString(r);
+                    return false;
+                }
+                drive.d.res_dirty = false;
+                drive.d.res_dirty_idx.clear();
+            }
+            if (!check) return true;
+            cudaStreamSynchronize(ver.stream());   // the patches landed (the verifier streams do not block the read)
+            for (auto& st : stages) {
+                const strata::core::OnDevice on(st->dev);
+                cudaStreamSynchronize(st->ver.stream());
+            }
+            int64_t bad = 0;
+            for (auto& st : stages) {   // the later stages' copies first: res_back ends with CUDA0's (the pool's check)
+                const strata::core::OnDevice on(st->dev);
+                bad += res_check(st->d_res, host_res, res_back, g.n_expert, res_windows);
+            }
+            bad += res_check(d_res, host_res, res_back, g.n_expert, res_windows);
+            ++res_windows;
+            res_bad += bad;
+            res_bad_windows += bad > 0;
+            if ((res_windows & 255) == 0 || (bad > 0 && res_bad_windows <= 4))
+                std::fprintf(stderr, "strata serve: res check: %lld windows, %lld with mismatches (%lld entries), "
+                                     "%lld layer-windows with CPU experts and no activation published\n",
+                             (long long) res_windows, (long long) res_bad_windows, (long long) res_bad,
+                             (long long) drive.d.stale_x);
+            return true;
+        };
+        struct PreLaunchOff {   // the hooks' captures die before the verifiers
+            strata::core::Verifier& v;
+            std::vector<std::unique_ptr<GpuStage>>& stages;
+            strata::core::ExpertDispatch& d;
+            int32_t* pairs;
+            ~PreLaunchOff() {
+                v.set_pre_launch(nullptr);
+                for (auto& st : stages) st->ver.set_pre_launch(nullptr);
+                d.dres_check = nullptr;
+                if (pairs != nullptr) cudaFreeHost(pairs);
+            }
+        } pre_launch_off{ver, stages, drive.d, res_pairs};
+        if (drive.d.evict_sync || res_checking) {
+            ver.set_pre_launch([&](cudaStream_t, std::string& e) { return res_sync(res_checking, e); });
+            for (auto& st : stages) st->ver.set_pre_launch([&](cudaStream_t, std::string& e) { return res_sync(false, e); });
+            if (drive.d.evict_sync)
+                std::fprintf(stderr, "strata serve: the adaptive tier's evictions reach the device's table before the next "
+                                     "window (STRATA_ADAPT_EVICT_SYNC=0: when its copies land)\n");
+        }
         // --pipeline-windows: set while the tier adapts beside windows in flight (see its use in adapt)
         std::function<void()> adapt_fence;
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
@@ -7368,6 +7536,10 @@ int main(int argc, char** argv) {
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+            }
+            if (drive.d.evict_sync && !swaps.empty()) {   // the evicted ones are misses now (see the pre-launch hook)
+                for (const Swap& s : swaps) drive.d.res_dirty_idx.push_back((int32_t) (s.layer * g.n_expert + s.out));
+                drive.d.res_dirty = true;
             }
             if (!cp_dst.empty() && strata::core::copy_blobs(cp_dst.data(), cp_src.data(), cp_bytes.data(), cp_dst.size(),
                                                             adapt_stream, dma_mode) != cudaSuccess) {
@@ -11330,6 +11502,57 @@ int main(int argc, char** argv) {
         const uint64_t fbytes0 = src.file_blob_bytes(), fall0 = src.file_read_bytes();
         const double fms0 = src.file_ms();
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
+        // before every window: the device's table follows the host's (the tier's evictions while its copies are in
+        // flight - see the serve path); the hook's captures live in this block, so it is taken off the verifier when the
+        // block ends
+        const bool res_checking = std::getenv("STRATA_ADAPT_CHECKRES") != nullptr && d_res != nullptr;
+        std::vector<int32_t> res_back;
+        int64_t res_windows = 0, res_bad = 0, res_bad_windows = 0;
+        if (res_checking) {
+            res_back.assign(host_res.size(), 0);
+            drive.d.dres_check = res_back.data();
+        }
+        drive.d.evict_sync = d_res != nullptr && !drive.d.usage.empty() && (adapt_nowait() || adapt_lag() > 1) &&
+                             adapt_evict_sync();
+        // the changed entries by a kernel on the verifier's stream (see the serve path)
+        constexpr size_t kResPatchCap = 16384;
+        int32_t* res_pairs = drive.d.evict_sync ? res_pairs_alloc(kResPatchCap, {-1}) : nullptr;
+        struct PreLaunchOff {
+            strata::core::Verifier& v;
+            strata::core::ExpertDispatch& d;
+            int32_t* pairs;
+            ~PreLaunchOff() {
+                v.set_pre_launch(nullptr);
+                d.dres_check = nullptr;
+                if (pairs != nullptr) cudaFreeHost(pairs);
+            }
+        } pre_launch_off{ver, drive.d, res_pairs};
+        if (drive.d.evict_sync || res_checking)
+            ver.set_pre_launch([&](cudaStream_t cs, std::string& e) -> bool {
+                if (drive.d.res_dirty) {
+                    const int64_t n = res_patch_pairs(drive.d.res_dirty_idx, host_res, res_pairs, kResPatchCap);
+                    cudaError_t r;
+                    if (n >= 0) {
+                        strata::kernels::res_patch(d_res, res_pairs, (int) n, cs);
+                        r = cudaGetLastError();
+                    } else {
+                        r = res_put(d_res);
+                    }
+                    if (r != cudaSuccess) {
+                        e = std::string("the residency table update failed: ") + cudaGetErrorString(r);
+                        return false;
+                    }
+                    drive.d.res_dirty = false;
+                    drive.d.res_dirty_idx.clear();
+                }
+                if (!res_checking) return true;
+                cudaStreamSynchronize(cs);   // the patch landed
+                const int64_t bad = res_check(d_res, host_res, res_back, g.n_expert, res_windows);
+                ++res_windows;
+                res_bad += bad;
+                res_bad_windows += bad > 0;
+                return true;
+            });
         int64_t swaps_total = 0;
         double ms_adapt = 0;
         cudaStream_t adapt_stream = nullptr;
@@ -11363,10 +11586,16 @@ int main(int argc, char** argv) {
                 host_res[(size_t) i] = slot;
                 srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // in VRAM now: RAM not needed
             }
+            if (drive.d.evict_sync) {   // a failed upload leaves them to the pre-launch hook
+                for (const auto& pr : pending) drive.d.res_dirty_idx.push_back(pr.first);
+                drive.d.res_dirty = true;
+            }
             pending.clear();
             pending_age = 0;
-            if (d_res != nullptr)
-                res_put(d_res);
+            if (d_res != nullptr && res_put(d_res) == cudaSuccess) {   // the whole table: the hook has nothing left
+                drive.d.res_dirty = false;
+                drive.d.res_dirty_idx.clear();
+            }
         };
         // Plan v0.3 P6: the VRAM tier follows the conversation.  Candidates are missing experts routed at least
         // twice (decayed); each is paired with its layer's least-routed resident expert and swapped when it was
@@ -11449,6 +11678,10 @@ int main(int argc, char** argv) {
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+            }
+            if (drive.d.evict_sync && !swaps.empty()) {   // the evicted ones are misses now (see the pre-launch hook)
+                for (const Swap& s : swaps) drive.d.res_dirty_idx.push_back((int32_t) (s.layer * g.n_expert + s.out));
+                drive.d.res_dirty = true;
             }
             if (!cp_dst.empty() && strata::core::copy_blobs(cp_dst.data(), cp_src.data(), cp_bytes.data(), cp_dst.size(),
                                                             adapt_stream, dma_mode) != cudaSuccess) {
@@ -11705,6 +11938,10 @@ int main(int argc, char** argv) {
         if (rounds > 0 && !drive.d.usage.empty())
             std::printf("%-24s %lld experts swapped into the VRAM tier (every %d rounds, %.3f ms/round)\n", "adaptive tier",
                         (long long) swaps_total, o.adapt_every, ms_adapt / rounds);
+        if (res_checking)
+            std::printf("%-24s %lld windows, %lld with mismatches (%lld entries), %lld layer-windows with CPU experts and "
+                        "no activation published\n", "residency check", (long long) res_windows,
+                        (long long) res_bad_windows, (long long) res_bad, (long long) drive.d.stale_x);
         if (src.complement_ready())
             std::printf("%-24s %.2f GiB of experts in RAM, %lld exchanged with the VRAM tier, %lld blob reads from "
                         "the file\n", "resident RAM", (double) src.resident_bytes() / 1073741824.0,
