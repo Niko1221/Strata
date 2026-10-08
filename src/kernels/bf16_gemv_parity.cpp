@@ -138,6 +138,33 @@ int main(int argc, char** argv) {
                         visible ? "yes" : "*** NO ***", r * 100);
             if (!visible) ++bad;
         }
+        // ---- 4. THE BATCH KERNEL IS BIT-IDENTICAL PER ROW.  The drafter's whole speedup rests on
+        // reading each weight row once for the batch; if a batch row's dot product differed from
+        // its own single-row call by even one bit, the reference-forward parity would drift.
+        {
+            constexpr int B = 7;
+            std::vector<uint16_t> xb((size_t) B * s.n_in);
+            for (size_t i = 0; i < xb.size(); ++i) xb[i] = bf16_from_f32(g(rng));
+            uint16_t* d_xb = nullptr;
+            float* d_yb = nullptr;
+            check(cudaMalloc(&d_xb, xb.size() * 2), "xb");
+            check(cudaMalloc(&d_yb, (size_t) B * s.n_out * 4), "yb");
+            check(cudaMemcpy(d_xb, xb.data(), xb.size() * 2, cudaMemcpyHostToDevice), "cxb");
+            std::vector<float> per_row((size_t) B * s.n_out), batched((size_t) B * s.n_out);
+            for (int b = 0; b < B; ++b) {
+                // the WARP path is the batch kernel's reference order (bf16_gemv itself drops to
+                // the naive kernel below 64 outputs, whose summation order differs by design)
+                strata::kernels::bf16_gemv_split(d_xb + (size_t) b * s.n_in, d_w, d_y, s.n_in, s.n_out, 32, nullptr);
+                check(cudaMemcpy(per_row.data() + (size_t) b * s.n_out, d_y, (size_t) s.n_out * 4,
+                                 cudaMemcpyDeviceToHost), "cyb1");
+            }
+            strata::kernels::bf16_gemv_batch(d_xb, d_w, d_yb, s.n_in, s.n_out, B, nullptr);
+            check(cudaMemcpy(batched.data(), d_yb, batched.size() * 4, cudaMemcpyDeviceToHost), "cyb2");
+            const bool bits = per_row == batched;
+            std::printf("      %-30s %s\n", "batch7 == per-row (bitwise)", bits ? "yes" : "*** NO ***");
+            if (!bits) ++bad;
+            cudaFree(d_xb); cudaFree(d_yb);
+        }
         cudaFree(d_x); cudaFree(d_w); cudaFree(d_y);
     }
 
