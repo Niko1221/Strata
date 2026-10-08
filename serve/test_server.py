@@ -713,7 +713,7 @@ class VideoParts(unittest.TestCase):
         line = v.proc.stdin.write.call_args_list[0].args[0]
         # fps, frames, max side, tokens per pair, the whole video's budget, min per pair, then names relative to the
         # encoder's directory (#480)
-        self.assertRegex(line, r"^ENCV 2 4 0 448 12288 128 [0-9a-f]{32}\.vid [0-9a-f]{32}\.sve\n$")
+        self.assertRegex(line, r"^ENCV 2 4 0 768 12288 128 [0-9a-f]{32}\.vid [0-9a-f]{32}\.sve\n$")
         self.assertEqual((n, layout), (6, [[5], 2, [6], 4]))
         self.assertEqual(again, (path, n, layout))
         self.assertEqual(v.proc.stdin.write.call_count, 1)
