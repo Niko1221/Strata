@@ -1,0 +1,66 @@
+{
+  "exe": "<STRATA_ROOT>\\engine-cuda12\\strata.exe",
+  "args": [
+    "--pack",
+    "<DATA_ROOT>\\packs\\iq2_xs",
+    "--native",
+    "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "--expert-profile",
+    "<STRATA_ROOT>\\data\\expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<DATA_ROOT>\\mtp\\rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
+  ],
+  "cwd": "<STRATA_ROOT>",
+  "tokenizer": "<DATA_ROOT>\\packs\\iq2_xs\\tokenizer",
+  "model_name": "qwen3.8-flash-next-iq2_xs",
+  "log": "<RESULTS_ROOT>\\engine.log",
+  "lib_dirs": [
+    "<STRATA_ROOT>\\.venv\\Lib\\site-packages\\nvidia\\cublas\\bin",
+    "<STRATA_ROOT>\\.venv\\Lib\\site-packages\\nvidia\\cuda_runtime\\bin"
+  ],
+  "port": 8080,
+  "cuda": 12,
+  "gpu": [
+    1,
+    2
+  ],
+  "gpus_asked": true,
+  "layer_split": "auto",
+  "host": "127.0.0.1",
+  "draft_vocab": "cjk",
+  "open_browser": false,
+  "parallel": 1,
+  "env": {
+    "CUDA_VISIBLE_DEVICES": "GPU-f145a48f-ccc7-cccf-94ad-acf680ff0891,GPU-3753e6c9-3189-164f-a329-507d9a4a16f6",
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+  },
+  "split_skip_if_fits": false,
+  "vision": {
+    "exe": "<STRATA_ROOT>\\engine-cuda12\\strata-vision.exe",
+    "mmproj": "<DATA_ROOT>\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 1024,
+    "threads": 16,
+    "cuda_device": "GPU-f145a48f-ccc7-cccf-94ad-acf680ff0891"
+  }
+}

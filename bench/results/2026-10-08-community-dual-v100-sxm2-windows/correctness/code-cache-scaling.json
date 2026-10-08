@@ -1,0 +1,34 @@
+{
+  "rows": [
+    {
+      "capacity": 128,
+      "median_ns_per_eviction": 348.6022954746204,
+      "samples": [
+        348.6022954746204,
+        347.21069397392057,
+        351.33056641711846
+      ]
+    },
+    {
+      "capacity": 4096,
+      "median_ns_per_eviction": 380.487058748713,
+      "samples": [
+        382.20825260282254,
+        380.487058748713,
+        379.5593279676268
+      ]
+    },
+    {
+      "capacity": 65536,
+      "median_ns_per_eviction": 437.92419646138114,
+      "samples": [
+        432.3577904585818,
+        437.92419646138114,
+        441.4245609041245
+      ]
+    }
+  ],
+  "large_to_small_ratio": 1.2562286655776302,
+  "flag_for_complexity_review": false,
+  "method": "3 repeats, 32768 new insertions each, prefilled cache; measured implementation scaling, not a proof of complexity."
+}
