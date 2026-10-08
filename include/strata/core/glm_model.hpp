@@ -95,12 +95,18 @@ public:
     /// this instance to layers [l0, l1) (l1 == 0 means "to the end") - the layer split's halves.
     bool load_pack(const std::string& pack_dir, int64_t max_ctx, std::string& err, int dev = 0, int l0 = 0,
                    int l1 = 0);
-    /// The split entry the driver/test use: STRATA_GLM_SPLIT=<layer> (0/absent = one device) and
-    /// STRATA_GLM_DEV1=<n> (default 1) build two halves - layers [0,split) on device 0 and the rest
-    /// on device 1 - joined by a per-token 64 KB host hop of the residual (no peer access needed).
-    bool load_pack_env(const std::string& pack_dir, int64_t max_ctx, std::string& err);
-    /// The explicit split form behind load_pack_env.
-    bool load_pack_split(const std::string& pack_dir, int64_t max_ctx, int split, int dev1, std::string& err);
+    /// The split entry the driver/test use: STRATA_GLM_SPLIT (else `layer_split`, the driver's --layer-split) =
+    /// "0" one device; "<layer>" two parts - layers [0,layer) on device 0, the rest on STRATA_GLM_DEV1 (default
+    /// 1); "K1,K2,.." one part per visible device, each later one starting at its K; "auto"/absent: every visible
+    /// device (STRATA_GLM_DEVS="0,2,.." picks and orders them).  The parts are joined by a per-token 64 KB host
+    /// hop of the residual at each boundary (no peer access needed).
+    bool load_pack_env(const std::string& pack_dir, int64_t max_ctx, std::string& err,
+                       const std::string& layer_split = "");
+    /// The explicit split form behind load_pack_env: devs[i] runs layers [bounds[i-1], bounds[i]) (bounds holds
+    /// the first layer of each later part, devs.size() - 1 of them).
+    bool load_pack_split(const std::string& pack_dir, int64_t max_ctx, const std::vector<int>& bounds,
+                         const std::vector<int>& devs, std::string& err);
+    static constexpr int kMaxParts = 16;
     /// The fast decode path (src/core/glm_fast_path.cu) is the default for packs; STRATA_GLM_SLOW=1
     /// keeps the correctness-first per-op path (the reference the fast path is checked against).
     bool fast() const { return fast_ != nullptr; }
@@ -115,6 +121,16 @@ public:
         double pool_gb = 0, ram_gb = 0;
     };
     FastStats fast_stats() const;
+    /// The CPU LANE (a decode's RAM-tier experts): the share of them copied over PCIe to the GPU instead of computed
+    /// on the CPU - 0: the CPU takes every one, 1: none (of f such experts in a route, f - round(share f) go to the
+    /// CPU).  pcie_share(): the split in use, as a share; set_pcie_share(s): this split from the next token on, s < 0
+    /// the one the engine started with (STRATA_GLM_PCIE_SHARE, else measured at start).  cpu_lane_threads(): the
+    /// threads taking its jobs; set_cpu_lane_threads(n): at most n of the pool's, n <= 0 all of them.  Both are for
+    /// setup's calibration (per request, no restart); false when this engine has no CPU lane.
+    double pcie_share() const;
+    bool set_pcie_share(double share);
+    int cpu_lane_threads() const;
+    bool set_cpu_lane_threads(int n);
     /// Conversation reuse (the fast path): save the sequence state at the current position - the recurrent KDA
     /// states and conv histories (the DSA caches are append-only, so the position alone restores them) - and
     /// restore it later to continue a prompt that extends the saved one.  false when unsupported.
@@ -124,6 +140,11 @@ public:
     std::string usage_path() const;
     bool snapshot_restore();
     int64_t snapshot_pos() const { return snap_pos_; }
+    /// Conversation slots: the snapshot (its KDA states) and every DSA cache's rows up to its position, every half,
+    /// written to a file; slot_load puts them back as the live state and the snapshot, so a conversation set aside
+    /// while others ran continues where it was.  The bytes written, or 0 + err.
+    uint64_t slot_save(const std::string& path, std::string& err);
+    bool slot_load(const std::string& path, int64_t n_pos, std::string& err);
     /// Runs the engine's sampler on the last forward's logits and returns the picked token id
     /// (-1 + err on failure).  Handles the device bookkeeping: with a split the logits (and the
     /// sampler buffer) live on the tail half's device, where peer reads are not available.
@@ -189,6 +210,7 @@ public:
     // next half continue through its own layers (and, if it is the last, the head).
     int l0_ = 0, l1_ = 0;
     int dev_ = 0;
+    int n_parts_ = 1;                                      // the devices the layers are split across (the CPU lane's share)
     std::unique_ptr<Glm5Model> split_next_;
     std::vector<float> hop_;                               // the boundary residual staging buffer
     int* d_tok_ = nullptr;                                 // the sampler's one-int output, on dev_
@@ -383,6 +405,7 @@ public:
     PrefillState* pf_ = nullptr;
     bool prefill_setup(std::string& err);                  // in fast_setup: sizes, host buffers (no device memory)
     size_t prefill_borrow_bytes() const;                   // device bytes the prompt path borrows from the pool's tail
+    size_t prefill_trim_prestage(size_t max_borrow);       // ... at most this many: a smaller prestage buffer (the new bytes)
     bool prefill_bind(uint8_t* region, size_t bytes, std::string& err);   // its buffers inside the borrowed region
     size_t prefill_carve(int T);                           // ... laid out for chunks of T (the bytes it uses)
     void prefill_lend();                                   // the tail slots -> the prompt path (drops their experts)

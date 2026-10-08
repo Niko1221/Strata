@@ -238,6 +238,7 @@ void test_case(int n_head, int head_dim, int T, float lower_bound, uint32_t seed
     const float* d_a = put(f.ssm_a);
     const float* d_beta = put(f.beta);
     float* d_rec_state = a.d + off; off += (size_t) dk * dk * n_head;   // zeros: a fresh sequence
+    check(cudaMemset(d_rec_state, 0, dk * dk * n_head * sizeof(float)), "zero recurrence state");
     float* d_g1 = a.d + off; off += seq;
     float* d_rec = a.d + off; off += seq;
     const float* d_nw = put(f.norm_w);
@@ -279,7 +280,8 @@ void test_case(int n_head, int head_dim, int T, float lower_bound, uint32_t seed
     check(cudaMemcpy(k_rec.data(), d_rec, k_rec.size() * sizeof(float), cudaMemcpyDeviceToHost), "rec D2H");
     std::vector<float> r_rec;
     ref_recurrence(f, r_g1, r_rec);
-    require(max_abs(k_rec, r_rec) < 2e-4, "recurrence diverges from ref/glm.py");
+    require(max_abs(k_rec, r_rec) < 2e-4,
+            "recurrence diverges from ref/glm.py (max error " + std::to_string(max_abs(k_rec, r_rec)) + ")");
 
     // the state must have advanced: a fresh sequence's zero state is gone after T tokens
     std::vector<float> k_rec_state((size_t) dk * dk * n_head);

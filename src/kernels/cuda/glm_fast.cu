@@ -7,7 +7,9 @@
 // glm_pack_test pins on the real model.
 #include "strata/kernels/glm_fast.hpp"
 
+#if !defined(STRATA_USE_HIP)
 #include <cuda_bf16.h>
+#endif
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -20,6 +22,15 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+
+#if defined(STRATA_USE_HIP)
+// The HC grid exchanges FP32 partials between workgroups. An agent-scope
+// acquire load preserves visibility after their publication fences; HIP only
+// supplies CUDA's __ldcg spelling for half types.
+__device__ __forceinline__ float __ldcg(const float* p) {
+    return __hip_atomic_load(p, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT);
+}
+#endif
 
 namespace strata::kernels::glmf {
 namespace {
@@ -802,16 +813,17 @@ __device__ __forceinline__ void rows_dot(const uint8_t* const* rows, const block
 #pragma unroll
             for (int r = 0; r < NR; ++r) acc[r] += dwk<T>(rows[r], kbx, iqs, xk);
         }
+    } else if constexpr (T == 2 || T == 12 || T == 13 || T == 14) {
+        // Q4_0 / Q4_K / Q5_K / Q6_K experts (K-quant GGUFs other than Maya's): no shared-activation form yet - each row
+        // takes the dense GEMV's dot (row_dot), the activation re-read per row
+        for (int k = lane; k < nb * Fm::ipb; k += 32) {
+            const int kbx = k / Fm::ipb, iqs = Fm::step * (k % Fm::ipb);
 #pragma unroll
-        for (int r = 0; r < NR; ++r) s[r] = warp_sum(acc[r]);
-        return;
-    }
-    for (int k = lane; k < nb * Fm::ipb; k += 32) {
-        const int kbx = k / Fm::ipb, ki = k % Fm::ipb, iqs = Fm::step * ki;
-        if constexpr (T == 2) {
-#pragma unroll
-            for (int r = 0; r < NR; ++r) acc[r] += dot_t<T>(rows[r], x + kbx, kbx, iqs, tab);
-        } else {
+            for (int r = 0; r < NR; ++r) acc[r] += Fm::dot(rows[r], x + kbx * (Fm::qk / 32), kbx, iqs);
+        }
+    } else {
+        for (int k = lane; k < nb * Fm::ipb; k += 32) {
+            const int kbx = k / Fm::ipb, ki = k % Fm::ipb, iqs = Fm::step * ki;
             const XV xv = load_xv(x + kbx * (Fm::qk / 32) + ki);
 #pragma unroll
             for (int r = 0; r < NR; ++r) acc[r] += dw<T>(rows[r], kbx, iqs, xv, tab);
@@ -866,6 +878,23 @@ __global__ void __launch_bounds__(256) mv_kernel(const __grid_constant__ MvBatch
     const int lane = threadIdx.x & 31;
     if (row >= J.n_out) return;
     const float s = any_row_dot(J.type, J.w, row, J.xq, J.xf, J.n_in, lane);
+    if (lane == 0) J.y[row] = J.alpha * s + (J.bias ? J.bias[row] : 0.0f);
+}
+
+// ... the same for jobs of ONE quantized type: compiled for that type alone (the switch over every type costs the
+// generic kernel registers and occupancy - a Q6_K 8192 x 4096 GEMV on a V100: 53.4 -> 47.8 us, the same arithmetic)
+template<int T>
+__global__ void __launch_bounds__(256) mv_kernel_t(const __grid_constant__ MvBatch b) {
+    const int bid = blockIdx.x;
+    int ji = 0;
+    while (ji < b.n - 1 && bid >= b.blk_end[ji]) ++ji;
+    const MvJob& J = b.j[ji];
+    const int blk0 = ji ? b.blk_end[ji - 1] : 0;
+    const int row = (bid - blk0) * MV_ROWS + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= J.n_out) return;
+    const float s = row_dot<T>((const uint8_t*) J.w + (size_t) row * rbytes<T>(J.n_in), (const block_q8_1*) J.xq,
+                               J.n_in, lane);
     if (lane == 0) J.y[row] = J.alpha * s + (J.bias ? J.bias[row] : 0.0f);
 }
 
@@ -1638,14 +1667,15 @@ __global__ void __launch_bounds__(256) mla_attn_kernel(const float* __restrict__
 // selected cells this reads the latents once per layer instead of once per head (64x less).
 // The grid is (chunks, head groups of MLA_HPB): ~20 chunks at 600 cells would leave most SMs idle with every head in
 // one block (208 us a call on a V100); a group re-reads its chunk's latents, which is cheap next to the arithmetic.
+// The latents stay FP16 in shared memory, as in the cache (34 KB at kv_lora 512; F32 rows were over Turing's 64 KB).
 constexpr int MLA_CHUNK = 32;
 constexpr int MLA_HPB = 16;
 __global__ void __launch_bounds__(256) mla_split_kernel(const float* __restrict__ q_abs, const uint16_t* __restrict__ lat,
                                                         const int* __restrict__ cells, int n_sel, int n_head, int qk_nope,
                                                         int kv_lora, float* __restrict__ part) {
     extern __shared__ float smem[];
-    float* sL = smem;                                  // MLA_CHUNK x kv_lora
-    float* sS = sL + MLA_CHUNK * kv_lora;              // MLA_HPB x MLA_CHUNK scores -> weights
+    uint16_t* sL = (uint16_t*) smem;                   // MLA_CHUNK x kv_lora, FP16
+    float* sS = smem + MLA_CHUNK * kv_lora / 2;        // MLA_HPB x MLA_CHUNK scores -> weights
     __shared__ int s_cell[MLA_CHUNK];
     const int b = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, nw = blockDim.x >> 5;
     const int h0 = blockIdx.y * MLA_HPB, nh = min(MLA_HPB, n_head - h0);
@@ -1656,7 +1686,7 @@ __global__ void __launch_bounds__(256) mla_split_kernel(const float* __restrict_
     for (int i = tid; i < MLA_CHUNK * kv_lora; i += blockDim.x) {
         const int s = i / kv_lora, c = i - s * kv_lora;
         const int cell = s_cell[s];
-        sL[i] = cell >= 0 ? lat_f(lat[(size_t) kv_lora * cell + c]) : 0.0f;
+        sL[i] = cell >= 0 ? lat[(size_t) kv_lora * cell + c] : (uint16_t) 0;
     }
     __syncthreads();
     const float scale = rsqrtf((float) qk_nope);
@@ -1670,7 +1700,7 @@ __global__ void __launch_bounds__(256) mla_split_kernel(const float* __restrict_
             float acc = 0.0f;
 #pragma unroll
             for (int j = 0; j < 16; ++j)
-                if (lane + 32 * j < kv_lora) acc += q[j] * sL[s * kv_lora + lane + 32 * j];
+                if (lane + 32 * j < kv_lora) acc += q[j] * lat_f(sL[s * kv_lora + lane + 32 * j]);
             acc = warp_sum(acc);
             if (lane == 0) sS[hh * MLA_CHUNK + s] = s_cell[s] >= 0 ? acc * scale : -INFINITY;
         }
@@ -1695,7 +1725,7 @@ __global__ void __launch_bounds__(256) mla_split_kernel(const float* __restrict_
         const int hh = i / kv_lora, c = i - hh * kv_lora;
         float acc = 0.0f;
 #pragma unroll 8
-        for (int s = 0; s < MLA_CHUNK; ++s) acc += sS[hh * MLA_CHUNK + s] * sL[s * kv_lora + c];
+        for (int s = 0; s < MLA_CHUNK; ++s) acc += sS[hh * MLA_CHUNK + s] * lat_f(sL[s * kv_lora + c]);
         pm[(size_t) hh * (kv_lora + 2) + c] = acc;
     }
 }
@@ -2033,6 +2063,11 @@ __global__ void __launch_bounds__(ROUTE_THREADS) moe_route_kernel(const __grid_c
     if (tid == 0) {
         __threadfence_system();
         rq->seq = s_seq;
+#if defined(__HIPCC__)
+        // The CPU polls this signal without a stream query. As in Strata #697,
+        // publish the signal itself after publishing the request payload.
+        __threadfence_system();
+#endif
     }
 }
 
@@ -2652,6 +2687,11 @@ void launch_check(const char* what) {
 
 bool mv_supported(int type) { return mv_type_ok(type) != 0; }
 
+bool moe_supported(int type) {   // moe_gate_up's and moe_down's instantiations
+    return type == 2 || type == 10 || type == 11 || type == 12 || type == 13 || type == 14 || type == 16 || type == 17 ||
+           type == 18 || type == 19 || type == 21 || type == 22 || type == 23 || type == 29;
+}
+
 int launch_errors() { return g_launch_errors.load(std::memory_order_relaxed); }
 
 size_t row_bytes(int type, int64_t n_in) {
@@ -2679,19 +2719,49 @@ size_t row_bytes(int type, int64_t n_in) {
 
 bool mv(const MvJob* jobs, int n, cudaStream_t s) {
     if (n <= 0 || n > kMaxMvJobs) return false;
-    MvBatch b{};
-    int acc = 0;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
         if (!mv_type_ok(jobs[i].type)) {
             std::fprintf(stderr, "glm_fast mv: type %d unsupported\n", jobs[i].type);
             return false;
         }
-        b.j[i] = jobs[i];
-        acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
-        b.blk_end[i] = acc;
+    // the jobs of the common dense types go to a kernel compiled for their type (one launch per type present), the
+    // rest to the generic one; the jobs are independent, so their order does not matter
+    static const bool typed = getenv("STRATA_GLM_MV_GENERIC") == nullptr;
+    constexpr int kTyped[] = {14, 8, 12, 13};
+    bool done[kMaxMvJobs] = {};
+    if (typed) {
+        for (const int T : kTyped) {
+            MvBatch b{};
+            int acc = 0, m = 0;
+            for (int i = 0; i < n; ++i)
+                if (jobs[i].type == T) {
+                    b.j[m] = jobs[i];
+                    acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
+                    b.blk_end[m++] = acc;
+                    done[i] = true;
+                }
+            if (m == 0) continue;
+            b.n = m;
+            switch (T) {
+                case 14: mv_kernel_t<14><<<acc, 256, 0, s>>>(b); break;
+                case 8: mv_kernel_t<8><<<acc, 256, 0, s>>>(b); break;
+                case 12: mv_kernel_t<12><<<acc, 256, 0, s>>>(b); break;
+                case 13: mv_kernel_t<13><<<acc, 256, 0, s>>>(b); break;
+            }
+        }
     }
-    b.n = n;
-    mv_kernel<<<acc, 256, 0, s>>>(b);
+    MvBatch b{};
+    int acc = 0, m = 0;
+    for (int i = 0; i < n; ++i) {
+        if (done[i]) continue;
+        b.j[m] = jobs[i];
+        acc += (jobs[i].n_out + MV_ROWS - 1) / MV_ROWS;
+        b.blk_end[m++] = acc;
+    }
+    if (m > 0) {
+        b.n = m;
+        mv_kernel<<<acc, 256, 0, s>>>(b);
+    }
     launch_check("mv");
     return true;
 }
@@ -2811,7 +2881,7 @@ void mla(const float* q, const uint16_t* wk_b, const uint16_t* wv_b, const uint1
     static float* part[16] = {};
     static int part_chunks[16] = {};
     const int n_chunks = (n_sel + MLA_CHUNK - 1) / MLA_CHUNK;
-    const size_t smem = ((size_t) MLA_CHUNK * kv_lora + (size_t) MLA_HPB * MLA_CHUNK) * sizeof(float);
+    const size_t smem = (size_t) MLA_CHUNK * kv_lora * sizeof(uint16_t) + (size_t) MLA_HPB * MLA_CHUNK * sizeof(float);
     // the opt-in must be EXACTLY what the launch needs (or at most the device's opt-in minus the kernel's static
     // shared memory): asking for the whole 96 KB fails on a V100 (s_cell is static), and every launch then failed
     // with "invalid argument" - the attention silently contributed nothing (fixed 2026-10-06)
@@ -2926,7 +2996,9 @@ void moe_gate_up(int gu_type, const MoeDev& d, int k, int n_embd, int n_ff, floa
 #define GLMF_GU(T) \
         case T: moe_gate_up_kernel<T><<<grid, GU_WARPS * 32, 0, s>>>(d, kk, n_embd, n_ff, limit, X, H, SD, sh_type, SH, \
                                                                      n_ff_sh, sh_out); break;
-        GLMF_GU(16) GLMF_GU(18) GLMF_GU(19) GLMF_GU(23) GLMF_GU(10) GLMF_GU(11) GLMF_GU(17) GLMF_GU(22) GLMF_GU(21) GLMF_GU(29) GLMF_GU(2)
+        GLMF_GU(16) GLMF_GU(18) GLMF_GU(19) GLMF_GU(23) GLMF_GU(10) GLMF_GU(11) GLMF_GU(17) GLMF_GU(22) GLMF_GU(21) GLMF_GU(29)
+        GLMF_GU(12) GLMF_GU(13) GLMF_GU(14)
+        GLMF_GU(2)
 #undef GLMF_GU
         default: std::fprintf(stderr, "glm_fast moe_gate_up: type %d unsupported\n", gu_type); return;
     }
@@ -2967,7 +3039,9 @@ void moe_down(int d_type, const MoeDev& d, int k, int n_embd, int n_ff, size_t d
     switch (d_type) {
 #define GLMF_DN(T) \
         case T: moe_down_kernel<T><<<blocks, 256, 0, s>>>(d, k, n_embd, n_ff, down_off, H, sh_out, out); break;
-        GLMF_DN(16) GLMF_DN(18) GLMF_DN(19) GLMF_DN(23) GLMF_DN(10) GLMF_DN(11) GLMF_DN(17) GLMF_DN(22) GLMF_DN(21) GLMF_DN(29) GLMF_DN(2)
+        GLMF_DN(16) GLMF_DN(18) GLMF_DN(19) GLMF_DN(23) GLMF_DN(10) GLMF_DN(11) GLMF_DN(17) GLMF_DN(22) GLMF_DN(21) GLMF_DN(29)
+        GLMF_DN(12) GLMF_DN(13) GLMF_DN(14)
+        GLMF_DN(2)
 #undef GLMF_DN
         default: std::fprintf(stderr, "glm_fast moe_down: type %d unsupported\n", d_type); return;
     }

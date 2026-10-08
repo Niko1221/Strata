@@ -16,6 +16,8 @@ int launch_errors();
 void bf16_to_f32(const uint16_t* src, float* dst, int64_t n, cudaStream_t s);
 /// dst[i] = half(src[i]) (FP16 bits).
 void f32_to_f16(const float* src, void* dst, int64_t n, cudaStream_t s);
+/// dst[i] = half(src[i]) for BF16 bits (FP16 bits out).
+void bf16_to_f16(const uint16_t* src, void* dst, int64_t n, cudaStream_t s);
 /// R[t][s][e] = emb[t][e] for the 4 streams.
 void embed_rows(const float* emb, float* R, int T, int n_embd, cudaStream_t s);
 
@@ -54,6 +56,13 @@ void kda_conv_state(const float* const proj[3], float* conv_state, int T, int d_
 void kda_rec(const float* q, const float* k, const float* v, const float* g1_raw, const float* dt_bias,
              const float* ssm_a, float lower_bound, const float* beta_raw, float* state, const float* g2_raw,
              const float* norm_w, float eps, int n_head, int T, void* out16, cudaStream_t s);
+/// The same in three parts: q/k's l2 norms and the decay over every (token, head) at once (in place: q, k and g1_raw
+/// become the normalised q, k and the decay), the recurrence with each head's value columns over kv_split blocks (a
+/// column's state, delta and output need only its column; the key dims are shared) - its raw output over v - and the
+/// output gate.  kv_split 4 or 8 (0: 4).  Equal to kda_rec up to float summation order.
+void kda_rec_split(float* q, float* k, float* v, float* g1_raw, const float* dt_bias, const float* ssm_a,
+                   float lower_bound, const float* beta_raw, float* state, const float* g2_raw, const float* norm_w,
+                   float eps, int n_head, int T, void* out16, cudaStream_t s, int kv_split = 0);
 
 /// DSA after the first projections, per token t at position p0 + t: q_a norm (-> qr F32 + FP16), kv_a norm into the
 /// FP16 latent cache, the indexer key's layer norm and the compressor gate into their caches.
@@ -97,14 +106,22 @@ void route(const float* logits, const float* bias, int n_expert, int k, float w_
            float* w, cudaStream_t s);
 /// Per expert: counts[e] and the stable rank (in (t, j) order) of every routed entry (rank[t*k + j]).
 void expert_count(const int* ids, int n, int n_expert, int* counts, int* rank, cudaStream_t s);
+/// dst[i] = src[i] by the SMs: dst may be pinned host memory, written over the bus without a copy engine (a small
+/// readback that must not queue behind a large device-to-host copy on another stream).
+void copy_i32(const int* src, int* dst, int n, cudaStream_t s);
 /// row = base[ids[i]] + rank[i]: row_tok[row] = i / k, pos[i] = row.
 void expert_scatter(const int* ids, const int* rank, const int* base, int n, int k, int* row_tok, int* pos,
                     cudaStream_t s);
 /// h[r][c] = silu(min(gu[r][c], limit)) * clamp(gu[r][n_ff + c], +-limit), rows of [gate | up].
-void swiglu_rows(const float* gu, float* h, int rows, int n_ff, float limit, cudaStream_t s);
+void swiglu_rows(const float* gu, float* h, int rows, int n_ff, float limit, cudaStream_t s, int ld_h = 0);
+// (ld_h: h's row stride, n_ff when 0; h = gu with ld_h = 2 n_ff writes each row's result over its gate half)
 /// The same from separate gate/up arrays, FP16 out.
 void swiglu_f16(const float* gate, const float* up, void* h16, int64_t n, float limit, cudaStream_t s);
 /// ffn[t] = sum_j w[t][j] * out[pos[t*k + j]] + sh[t] (plan order, like the one-token combine).
+/// ffn[t] += sum_j w[t][j] * out[pos[t][j] - base] over the routes j of t whose sorted row pos[t][j] is in [lo, hi):
+/// a window of expert rows added as it fills (out holds sorted rows base, base + 1, ...).
+void moe_combine_add(const float* out, int base, int lo, int hi, const int* pos, const float* w, int T, int k, int n_embd,
+                     float* ffn, cudaStream_t s);
 void moe_combine(const float* out, const int* pos, const float* w, const float* sh, int T, int k, int n_embd,
                  float* ffn, cudaStream_t s);
 

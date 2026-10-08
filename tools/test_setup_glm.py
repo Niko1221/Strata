@@ -53,9 +53,58 @@ class GlmSetup(unittest.TestCase):
     def test_yes_does_not_authorize_model_download(self):
         for windows in (False, True):
             with patch.object(S, "WIN", windows):
-                self.assertEqual(S.setup_glm(args()), 0)
+                for model in S.GLM_MODELS:
+                    self.assertEqual(S.setup_glm(args(model=model)), 0)
         self.download.assert_not_called()
         self.ask.assert_not_called()
+
+    def test_models_have_pinned_revisions_and_hashes(self):
+        import re
+        for spec in S.GLM_MODELS.values():
+            self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", spec["revision"]))
+            self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", h) for h in spec["files"].values()))
+
+    def test_explicit_calibration_uses_installed_config_only(self):
+        cfg = self.root / "strata-glm-maya-m.json"
+        cfg.write_text("{}")
+        with patch.object(S, "calibrate_config", return_value=True) as calibrate:
+            self.assertEqual(S.setup_glm(args(model="Maya-M", calibrate=True)), 0)
+        calibrate.assert_called_once_with(cfg)
+        self.download.assert_not_called()
+
+    def test_calibration_saves_env_and_preserves_args(self):
+        import calibrate_glm as CAL
+        cfg = dict(args=["--glm-pack", "pack", "--max-context", "32768"], gpu=[0],
+                   model_name="glm-5.3-flash-maya-m", env={CAL.THREADS_ENV: "12", "CUDA_MODULE_LOADING": "LAZY"})
+        path = self.root / "strata-glm-maya-m.json"
+        path.write_text(json.dumps(cfg))
+        with patch.object(CAL, "run", return_value=dict(settings={CAL.SHARE_ENV: "0.25"}, report={})), \
+             patch.object(S, "load_settings", return_value={}), patch.object(S, "save_settings") as save, \
+             patch.object(S, "gpu_info", return_value=dict(name="test NVIDIA", vram_gb=24)):
+            self.assertTrue(S.calibrate_config(path))
+        written = json.loads(path.read_text())
+        self.assertEqual(written["args"], cfg["args"])
+        self.assertEqual(written["env"], {CAL.SHARE_ENV: "0.25", "CUDA_MODULE_LOADING": "LAZY"})
+        self.assertTrue(save.call_args.args[0]["calibration"])
+
+    def test_gsq_selection_has_one_pinned_download(self):
+        spec = S.GLM_MODELS["GSQ-RCO-3.5bit"]
+        eng = self.root / "engine-glm"
+        eng.mkdir()
+        (eng / "BUILD.json").write_text('{"cuda_dirs": []}')
+        def download(url, path):
+            self.assertIn(spec["revision"], url)
+            self.assertIn(spec["repo"], url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_gguf(path, [("general.architecture", kv_str("glm5-next"))], [])
+        with patch.object(S, "download", side_effect=download) as fetch, \
+             patch.object(S, "glm_sha256_ok", return_value=True), \
+             patch.object(S, "pip_install"), patch.object(S, "get_llama_cpp"), \
+             patch.object(S, "build_engine", return_value=eng), patch.object(S, "run"):
+            self.assertEqual(S.setup_glm(args(model="GSQ-RCO-3.5bit", download_model=True)), 0)
+        self.assertEqual(fetch.call_count, 1)
+        cfg = json.loads((self.root / "strata-glm-gsq-rco-3.5bit.json").read_text())
+        self.assertEqual(cfg["model_name"], "glm-5.3-flash-gsq-rco-3.5bit")
 
     def test_check_is_read_only(self):
         self.assertEqual(S.setup_glm(args(check=True, download_model=True)), 0)

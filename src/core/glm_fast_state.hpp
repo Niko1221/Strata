@@ -44,8 +44,8 @@ inline void cpu_relax() {
 class Workers {
 public:
     // spin_us: how long an idle worker spins for the next batch before it sleeps
-    explicit Workers(int n, int spin_us = 300) : spin_us_(spin_us) {
-        for (int i = 0; i < n; ++i) th_.emplace_back([this] { loop(); });
+    explicit Workers(int n, int spin_us = 300) : spin_us_(spin_us), active_(n + 1) {
+        for (int i = 0; i < n; ++i) th_.emplace_back([this, i] { loop(i); });
     }
     ~Workers() {
         quit_.store(true);
@@ -73,6 +73,10 @@ public:
         while (done_.load(std::memory_order_acquire) < n) cpu_relax();
     }
     int size() const { return (int) th_.size() + 1; }
+    // only the caller and the first n - 1 workers take jobs (fewer threads without a restart: setup's calibration);
+    // a batch's job count should be active() for one job a thread
+    void set_active(int n) { active_.store(std::max(1, std::min(n, size())), std::memory_order_release); }
+    int active() const { return active_.load(std::memory_order_acquire); }
 
 private:
     void work(uint64_t g) {
@@ -86,7 +90,7 @@ private:
             done_.fetch_add(1, std::memory_order_acq_rel);
         }
     }
-    void loop() {
+    void loop(int id) {
         uint64_t seen = gen_.load();
         for (;;) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -104,7 +108,7 @@ private:
             }
             if (quit_.load()) return;
             seen = gen_.load(std::memory_order_acquire);
-            work(seen);
+            if (id + 1 < active_.load(std::memory_order_acquire)) work(seen);
         }
     }
     int spin_us_;
@@ -112,7 +116,7 @@ private:
     std::mutex mu_;
     std::condition_variable cv_;
     const std::function<void(int)>* volatile fn_ = nullptr;
-    std::atomic<int> total_{0}, done_{0}, sleeping_{0};
+    std::atomic<int> total_{0}, done_{0}, sleeping_{0}, active_;
     std::atomic<uint64_t> ticket_{0}, gen_{0};
     std::atomic<bool> quit_{false};
 };
@@ -237,7 +241,8 @@ struct Glm5Model::FastState {
     // ---- the VRAM tier: per-layer partitions.  A slot is FREE, RESIDENT (in tab), a SPARE (handed to the
     //      device, which may fill it during a token and mark it resident itself) or DRAINING (its old expert
     //      is being demoted to the RAM tier by a D2H; it becomes free when that copy lands).
-    enum : char { kFree = 0, kResident = 1, kSpare = 2, kDraining = 3, kLent = 4 };
+    // kLanding: a background promotion's copy is on its way into the slot (fast_boundary step 5)
+    enum : char { kFree = 0, kResident = 1, kSpare = 2, kDraining = 3, kLent = 4, kLanding = 5 };
     // A layer's slots [0, n_main) are at base, [n_main, n) at xbase: every layer's tail lies in ONE region (xpool),
     // which the prompt path borrows for its buffers while a prompt runs (those slots are kLent then) - and an
     // on-demand vision encoder while it encodes (the region is freed; xbase is null until it comes back).
@@ -278,11 +283,13 @@ struct Glm5Model::FastState {
     size_t xpool_bytes = 0;
     // ---- the RAM tier: pinned host slots per blob size class, holding experts that are NOT in VRAM
     //      (exclusive tiers).  rtab (on the device) points at HOLDING slots only.
-    enum : char { kRFree = 0, kRHold = 1, kRRelease = 2, kRDemote = 3, kRNew = 4, kRLoad = 5 };
+    // kRPin: still the expert's live copy, being promoted (never a victim until the copy landed)
+    enum : char { kRFree = 0, kRHold = 1, kRRelease = 2, kRDemote = 3, kRNew = 4, kRLoad = 5, kRPin = 6 };
     struct RamClass {
         size_t stride = 0;
         uint8_t* base = nullptr;
         int n = 0;
+        bool registered = false;   // numa_pinned's (mmap + cudaHostRegister), not cudaHostAlloc's
         std::vector<int> key;   // slot -> il * n_expert + e, -1 none
         std::vector<uint64_t> tick;   // the route clock when a route last used it (or it arrived): eviction's recency
         std::vector<char> st;   // kRFree / kRHold / kRRelease (promoted: free at the boundary) /
@@ -295,7 +302,7 @@ struct Glm5Model::FastState {
     // STRATA_GLM_TIER_DIAG=1 (debug): how each expert last left the tiers (0 never held, 1 dropped from VRAM, 2 evicted
     // from RAM, 3 dropped by the prompt path's lending), and the disk reads by that cause
     std::vector<uint8_t> left;
-    uint64_t diag_disk[4] = {0, 0, 0, 0}, diag_drop = 0, diag_ram_evict = 0, diag_lend = 0, diag_b = 0;
+    uint64_t diag_disk[4] = {0, 0, 0, 0}, diag_drop = 0, diag_ram_evict = 0, diag_lend = 0, diag_lend_park = 0, diag_b = 0;
     uint64_t diag_dup = 0, diag_adopt = 0;   // the boundary's clean-up: duplicate RAM copies freed, lost ones adopted
     size_t ram_bytes = 0;
     // ---- demotions VRAM -> RAM (copy stream, D2H) of the victims that make room for spares
@@ -304,6 +311,16 @@ struct Glm5Model::FastState {
         cudaEvent_t ev;
     };
     std::vector<Drain> draining;
+    // ---- background moves between the tiers (fast_boundary step 5): a promotion (up, RAM -> VRAM) or a demotion
+    //      (VRAM -> RAM), both on the copy stream; the expert stays live where it was until its copy landed
+    struct BgMove {
+        int il, vslot, key, rclass, rslot;
+        bool up;
+        cudaEvent_t ev;
+    };
+    std::vector<BgMove> bg;
+    bool bg_hold = false;   // lend_tail: no new moves while the pool's tail is lent
+    uint64_t bg_up = 0, bg_down = 0;
     std::vector<cudaEvent_t> ev_free;
     int* upd_key_h = nullptr;
     unsigned long long* upd_val_h = nullptr;
@@ -324,7 +341,10 @@ struct Glm5Model::FastState {
     //      PCIe pulls and this pool, which computes its share from the pinned blobs meanwhile; the device adds the
     //      weighted sum (cpu_ans_h) before its down combine.  cpu_plan: how many of f RAM-tier experts go to the host.
     std::unique_ptr<glmfast::Workers> cpu_pool;
+    double cpu_c_ms = 0.0, cpu_p_ms = 0.0;   // the lane's calibration: an expert on the CPU, one over PCIe
+    double cpu_ps_ms = 0.0;                  // ... one in a stream of copies (the prompt's staging)
     unsigned long long cpu_plan = 0;
+    unsigned long long cpu_plan_start = 0;   // ... the plan the engine started with (set_pcie_share(-1) restores it)
     gf::CpuAnswer* cpu_ans_h = nullptr;                      // host-mapped
     unsigned int* cpu_seq_d = nullptr;
     unsigned int* dcnt_d = nullptr;                          // the device's route counts (the coldest go to the host)

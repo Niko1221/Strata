@@ -19,15 +19,21 @@ template<class T> static T* upload(const std::vector<T>& x) {
 }
 
 int main(int argc, char** argv) {
-    const bool tensor = argc > 1 && std::strcmp(argv[1], "--tensor") == 0;
+    const char* mode = argc > 1 && std::strcmp(argv[1], "--tcreg") == 0 ? "tcreg"
+                     : argc > 1 && std::strcmp(argv[1], "--mma") == 0 ? "auto"
+                     : argc > 1 && std::strcmp(argv[1], "--tensor") == 0 ? "wmma" : "f32";
+    const bool tensor = std::strcmp(mode, "f32") != 0;
 #ifdef _WIN32
-    _putenv_s("STRATA_GLM_PREFILL_ATTN", tensor ? "" : "f32");
+    _putenv_s("STRATA_GLM_PREFILL_ATTN", mode);
 #else
-    setenv("STRATA_GLM_PREFILL_ATTN", tensor ? "" : "f32", 1);
+    setenv("STRATA_GLM_PREFILL_ATTN", mode, 1);
 #endif
     cudaDeviceProp prop{}; ck(cudaGetDeviceProperties(&prop, 0));
-    // WMMA needs the production kernel's 91 KiB shared arena. Refuse a silent F32 fallback.
-    if (tensor && (prop.major < 7 || prop.sharedMemPerBlockOptin < 91136)) return 77;
+    // Each requested tensor kernel needs its architecture and shared arena.
+    const int arch = prop.major * 10 + prop.minor;
+    const int min_arch = std::strcmp(mode, "tcreg") == 0 ? 75 : std::strcmp(mode, "auto") == 0 ? 80 : 70;
+    const size_t smem = std::strcmp(mode, "tcreg") == 0 ? 58688 : std::strcmp(mode, "auto") == 0 ? 73728 : 91456;
+    if (tensor && (arch < min_arch || (size_t) prop.sharedMemPerBlockOptin < smem)) return 77;
     constexpr int T = 5, H = 32, KV = 512, ROWS = 101, SEL = 97;
     const float scale = 1.0f / std::sqrt(128.0f);
     std::vector<float> query(T * H * KV), latent(ROWS * KV), result(query.size());
@@ -77,5 +83,5 @@ int main(int argc, char** argv) {
     }
     for (void* p : { (void*) dq, (void*) dl, (void*) out, (void*) dh, (void*) dc, (void*) dn }) ck(cudaFree(p));
     require(worst < 2e-3, "attention differs from F32 softmax oracle");
-    std::printf("glm_batch_attention_test: PASS (%s, %zu values, max %.3e)\n", tensor ? "WMMA" : "F32", result.size(), worst);
+    std::printf("glm_batch_attention_test: PASS (%s, %zu values, max %.3e)\n", mode, result.size(), worst);
 }

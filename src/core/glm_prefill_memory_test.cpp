@@ -11,8 +11,8 @@ int main() {
         if (!okay) { std::fprintf(stderr, "glm_prefill_memory_test: failed check %d\n", checks); std::exit(1); }
     };
     check(landing_slots(0, 1024, nullptr) == 12);
-    check(landing_slots(1600000, 1000, nullptr) == 32);
-    check(landing_slots(INT64_MAX, 1024, nullptr) == 64);
+    check(landing_slots(1600000, 1000, nullptr) == 48);
+    check(landing_slots(INT64_MAX, 1024, nullptr) == 96);
     check(landing_slots(1024, 0, nullptr) == 12);
     check(landing_slots(0, 1024, "1") == 12);
     check(landing_slots(0, 1024, "64") == 64);

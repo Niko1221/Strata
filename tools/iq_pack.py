@@ -112,6 +112,8 @@ GLM_NATIVE = (
 
 def index_shape(shape) -> tuple[int, int]:
     """Flatten GGUF's contiguous 3-D tensor into the pack index's 2-D view."""
+    if len(shape) == 4 and int(shape[3]) == 1:
+        shape = shape[:3]
     if len(shape) == 3:
         return int(shape[0]) * int(shape[1]), int(shape[2])
     return int(shape[0]), int(shape[1]) if len(shape) > 1 else 0
@@ -310,7 +312,8 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False, arch: st
             continue
         if trunk is not None and name.startswith("blk.") and name.split(".")[1].isdigit() and int(name.split(".")[1]) >= trunk:
             continue  # NextN/MTP reads directly from the GGUF; it is not a trunk tensor.
-        if len(t.shape) > 2 and not (arch in GLM_ARCHES and len(t.shape) == 3):
+        dims = len(t.shape) - (len(t.shape) == 4 and int(t.shape[3]) == 1)
+        if len(t.shape) > 2 and not (arch in GLM_ARCHES and dims == 3):
             print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
             return 1
         # quantized: served from the GGUF unless the engine reads it from the pack (FORM), which takes

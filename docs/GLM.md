@@ -2,7 +2,8 @@
 
 Strata can also run GLM-5.3-Flash using the GLM engine from
 [Project Maya](https://github.com/mw00/project-maya). Qwen remains the default model family.
-This integration targets native Linux with one or two NVIDIA GPUs; native Windows support is experimental.
+This integration targets native Linux with NVIDIA GPUs; native Windows support is experimental.
+The GLM engine can split layers across up to 16 visible GPUs; multi-GPU inference is unverified here.
 WSL2, AMD and Intel are not supported for GLM. Full-model inference has not been tested on either platform in
 this checkout. Windows CUDA compilation has not been verified here either.
 
@@ -19,7 +20,8 @@ this checkout. Windows CUDA compilation has not been verified here either.
 - Allow about 108 GB free for a fresh installation with images (96.5 GB of weights, 1.14 GB of vision files,
   and 10 GB reserved for the pack/build), plus at least 5 GB free in the source checkout.
 
-These requirements follow the [Maya v1.0.4 reference](https://github.com/mw00/project-maya/blob/cfd2f45b506be6c02d715e3198b3ff9719de25fc/README.md).
+These minimum requirements are for Maya-S v2. Larger model files need additional SSD space.
+The source reference is [Maya v1.0.14](https://github.com/mw00/project-maya/blob/327cfa60d46f9d8eea33a1b38e76284646fbad86/README.md).
 They are not a performance measurement of this Strata integration.
 
 ## Install
@@ -79,10 +81,13 @@ starting from a saved configuration.
 
 ## Prompt memory and read-ahead
 
-The prompt path sizes its GPU scratch budget at about 6% of VRAM, bounded to 1-2 GiB. It starts at an
-8,192-token chunk and reduces the chunk until its scratch fits. Its pinned SSD landing buffer uses about 2% of
-currently available RAM per GPU, bounded to 12-64 expert slots by default. If pinning fails, it halves the
-requested slots down to 12; if even that fails, it falls back to processing tokens individually.
+The current GLM prompt path windows routed expert rows to reduce scratch memory. On one GPU it starts at
+32,768-token chunks and borrows up to 40% of free VRAM after a 1 GiB reserve, with a 1-8 GiB budget. With two
+GPUs it starts at 8,192 tokens and about 6% of VRAM, bounded to 1-2 GiB. With more GPUs it starts at 512 tokens
+for the layer pipeline. Each chunk is reduced until its scratch fits. Its pinned SSD landing buffer uses about
+3% of available RAM per GPU, bounded to 12-96 expert slots by default. On Windows the available commit limit
+also bounds the RAM estimate. If pinning fails, it halves the requested slots down to 12; if even that fails,
+it falls back to processing tokens individually.
 
 From 1,024-token chunks, it reads the next MoE layer's disk-only experts while the current layer computes.
 These controls go in the configuration's `env` object:
@@ -115,6 +120,38 @@ the toolkit, model or logs are missing, and does not download, build or start an
 The report stays on this PC. It excludes API keys, conversations and raw log tails, and masks personal paths.
 Only recognized numeric engine messages and supported settings are retained, so an unrelated error may not
 appear in the report. The file is ignored by Git; inspect it before attaching it to an issue.
+
+## Changes reviewed through Maya v1.0.14
+
+The NVIDIA GLM port includes typed dense GEMV dispatch, windowed MoE prefill, prefill CPU/PCIe balancing,
+next-layer expert reads, Turing register-accumulator attention, contiguous CPU work pieces and the Windows,
+Volta and Turing compile guards. The F32 attention fallback and synthetic Q4_0 test path remain.
+Native GLM tool calls use `NAME<arg_key>...</arg_key><arg_value>...</arg_value>` inside `<tool_call>`;
+complete and streamed responses keep the existing OpenAI/Anthropic API formats. Qwen remains the default.
+
+Model selection is explicit: `--family glm --model Maya-M` or `--family glm --model GSQ-RCO-3.5bit`.
+Their files are about 116.1 GB and 137.1 GB respectively; these are file sizes, not RAM recommendations.
+Maya-S v2 remains the GLM installer default. GSQ-RCO-3.5bit has no MTP weights.
+Every model and image-file URL uses an immutable Hub revision
+and every file is checked by SHA-256. `--yes` does not authorize downloads.
+
+For an installed GLM configuration, `START-HERE.bat --family glm --calibrate` (Linux: `./setup.sh`) measures
+CPU-lane threads and PCIe share only when requested. It needs the model and a working CUDA build, starts
+an engine for the measurement and saves settings only after an interleaved improvement check. No calibration
+was run with a model here. `STRATA_GLM_CPU_SPLIT` controls contiguous CPU work pieces (default 48).
+`STRATA_GLM_PREFILL_WINDOW` and `STRATA_GLM_PREFILL_SUB` control expert windows and sub-batches.
+
+Text conversation slots on SSD are opt-in in Strata: set `STRATA_GLM_SLOTS` to a count (maximum 64).
+`STRATA_GLM_SLOT_MIN` defaults to 1,024 tokens, `STRATA_GLM_SLOT_GB` to 16 GiB and `STRATA_GLM_SLOT_DIR` to
+`<pack>/slots`. Each engine owns a private run directory and removes only its own files on normal exit.
+Slots with images are excluded; the cache preserves an 8 GiB free-space reserve. A crashed process may leave
+its directory behind. Slot save/restore, including multiple GPUs, still needs CUDA parity validation.
+
+The Maya AMD/ROCm extension is not enabled here: its HIP headers, architecture-specific tuning and GLM GEMM
+linkage differ from Strata's backend. Installer and CMake continue to reject GLM with HIP/Intel.
+Maya's separate launcher, benchmark command and extra long-segment tokenizer cache are not copied;
+Strata keeps its installer, diagnostics and upstream piece cache. Server request-body limits, backlog,
+stall recovery and multiple API keys arrived from Strata 0.1.41 and are reused.
 
 ## Build and validation
 
@@ -180,16 +217,34 @@ attention test prepares 81,920 context values per mode; the prefill test prepare
 Turing fallback, full-model quality and one/two-GPU MTP remain pending. No weights were downloaded or production
 engine/server started.
 
+Fresh v1.0.14-update validation on Windows on 2026-10-08: 1,116 distinct Python cases completed, with 1,106
+passed and 10 skipped (605 server cases: 596 passed/9 skipped; 444 installer cases passed; 67 additional
+pack/oracle/tokenizer/calibration cases: 66 passed/1 skipped). The initial full-server run exposed an existing
+Windows short-name versus long-name path comparison in a test; path normalization fixed that test, and the
+final full run passed. Five C++ CPU tests passed, including 19 prefill-memory checks and 12 device-list checks.
+The new Q2_K/Q3_K AVX-512 kernel and synthetic test compiled with MSVC 19.51; arithmetic was skipped because
+this CPU lacks AVX-512. The synthetic Q4_0 pack generated on CPU (184 tensors, 15 routed expert tensors,
+5 disk-backed MoE layers). The CPU image encoder built; Python/JavaScript syntax and Git whitespace checks
+passed. CMake rejected GLM with SYCL and without CUDA. Native Windows GLM configuration stopped at
+"No CUDA toolset found". No weights were downloaded and no production engine/server was started.
+
+Prepared attention parity now covers F32, WMMA, Turing register WMMA and Ampere mma.sync separately. Device
+compilation/parity, pinned-allocation cleanup, SSD slot round-trips, multiple GPU pipelines, model calibration,
+full-model text/image/MTP quality and performance remain unverified. No upstream speed measurements are
+presented as measurements of this Strata integration.
+
 `STRATA_GLM_SLOW=1` selects the diagnostic CPU-expert path. Its older GPU expert pool has not been ported;
 use the default fast path for the GPU/RAM/SSD tiers.
 
 ## Source and licenses
 
-The port uses Strata `main` at `d5ea7133741e67743c0e886bb426c0ce8d69cf6c`. Its initial Maya reference was
+The port includes Strata 0.1.41 `main` at `fb58e0dbc8399662c0e47c76578c6e878b14f6cf`. Its initial Maya reference was
 `444030a3f2afc01515d4d067d663377329efb5b5`; the prefill and Windows update used
 [`5932f601373f53fc021f75dc55159a722c772571`](https://github.com/mw00/project-maya/commit/5932f601373f53fc021f75dc55159a722c772571).
-The current reference is Maya v1.0.4 at
+The previous reference was Maya v1.0.4 at
 [`cfd2f45b506be6c02d715e3198b3ff9719de25fc`](https://github.com/mw00/project-maya/commit/cfd2f45b506be6c02d715e3198b3ff9719de25fc).
+The current selective reference is Maya v1.0.14 at
+[`327cfa60d46f9d8eea33a1b38e76284646fbad86`](https://github.com/mw00/project-maya/commit/327cfa60d46f9d8eea33a1b38e76284646fbad86).
 Maya renumbered its earlier releases: the previous v1.2.0 is now v1.0.2, the report update is v1.0.3, and the
 tensor-core/FP16-cache update is v1.0.4. This does not change Strata's own version number.
 Project Maya and Strata use the MIT license; the copyright notice remains in [LICENSE](../LICENSE).

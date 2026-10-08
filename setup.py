@@ -237,6 +237,7 @@ MODELS = {
 # MODELS/FAMILIES because its architecture, engine flags and pack are different.
 GLM_MODEL = "Maya-S-v2-IQ2_XXS"
 GLM_REPO = "peasantsmith/GLM-5.3-Flash-Maya-GGUF"
+GLM_REVISION = "04670131d9576b2b223d5d7f2303734b1d24a37d"
 GLM_FILES = {
     "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf": "a507f2b7b25e04624ee55c631d3b281caea7cfffc747e5247970cd5a7ea91b3f",
     "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00002-of-00003.gguf": "2d65d88a69f8dc124c8d24bd33b33161ddab218918b4253ad4f500aeede84df5",
@@ -245,6 +246,20 @@ GLM_FILES = {
 GLM_VISION_FILES = {
     "mmproj-GLM-5.3-Flash-F16.gguf": "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
     "GLM-5.3-Flash-vocab.gguf": "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912",
+}
+# Immutable Hub revisions and LFS hashes verified on 2026-10-08; choices remain explicit.
+GLM_MODELS = {
+    GLM_MODEL: dict(repo=GLM_REPO, revision=GLM_REVISION, folder=GLM_MODEL, files=GLM_FILES,
+                    download_gb=96.5, data_folder="glm-maya-s-v2"),
+    "Maya-M": dict(repo=GLM_REPO, revision=GLM_REVISION, folder="Maya-M", download_gb=116.1,
+                   data_folder="glm-maya-m", files={
+        "GLM-5.3-Flash-Maya-M-00001-of-00003.gguf": "3ac0f066ec45af3432d59b33de49bdfb29156432b627240b35769c7d02cc6c02",
+        "GLM-5.3-Flash-Maya-M-00002-of-00003.gguf": "285951d2afa0cd98285b03d0dc4aa68d83daf1a6f4a2594fe40b0cdd27ade485",
+        "GLM-5.3-Flash-Maya-M-00003-of-00003.gguf": "ebf1ce713f71207747e10eeebed87597969d8b5e1d9dd817420d2c2f7ca51e0e"}),
+    "GSQ-RCO-3.5bit": dict(repo="pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF",
+        revision="892aabe2e45835f58f3f24bf03dc5427d345e230", folder="", download_gb=137.1,
+        data_folder="glm-gsq-rco-3.5bit", files={
+        "GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf": "12c32d32c284337d0e9da759dbd559fb41567a4b1c57ede0259057e6f8658f1b"}),
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -3942,18 +3957,26 @@ def hardware_key(cfg: dict) -> str:
     a = cfg.get("args", [])
     ctx = a[a.index("--max-context") + 1] if "--max-context" in a else "?"
     return "|".join([g.get("name", "?"), f"{g.get('vram_gb', 0):.0f}GB", cpu_info()[0], f"{ram_gb():.0f}GB",
-                     cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
+                     cfg.get("model_name", "?"), ctx,
+                     "images" if "--vision" in a or ("--glm-pack" in a and cfg.get("vision")) else "text"])
 
 
 def calibrate_config(cfg_path: Path) -> bool:
     """Measure the engine's hardware-dependent settings on this PC (tools/calibrate.py), write them into the run
     config and remember them per PC and model in the settings file, so an update or a reinstall keeps them."""
     sys.path.insert(0, str(ROOT / "tools"))
-    import calibrate as CAL
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    glm = "--glm-pack" in cfg.get("args", [])
+    if glm:
+        import calibrate_glm as CAL
+    else:
+        import calibrate as CAL
     say()
-    say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache). It takes roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
+    if glm:
+        say("  Tuning GLM decode for this PC: PCIe share and CPU lane threads (the PC is busy meanwhile).")
+    else:
+        say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
+        say("  draft depth, the CPU threads, the expert cache). It takes roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -3966,7 +3989,10 @@ def calibrate_config(cfg_path: Path) -> bool:
         if why:
             say(f"       the engine said: {why}")
         return False
-    cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    if glm:
+        cfg["env"] = CAL.apply(cfg.get("env") or {}, res["settings"])
+    else:
+        cfg["args"] = CAL.apply(cfg["args"], res["settings"])
     write_config(cfg_path, cfg)
     st = load_settings()
     st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
@@ -4649,7 +4675,7 @@ def glm_report() -> int:
         f"system {platform.system()} {platform.release()}, machine {platform.machine()}")
     commit = probe(lambda: out(["git", "-C", str(ROOT), "log", "-1", "--format=%h"]).strip())
     add("Source", f"Strata commit {commit if re.fullmatch(r'[0-9a-f]{7,40}', commit) else '?'}, "
-        "Maya reference cfd2f45b506be6c02d715e3198b3ff9719de25fc")
+        "Maya selective reference 327cfa60")
     add("GPUs", probe(lambda: out(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,driver_version,"
                                   "pcie.link.gen.max,pcie.link.width.current,power.limit,temperature.gpu",
                                   "--format=csv"])) or "nvidia-smi unavailable")
@@ -4677,7 +4703,7 @@ def glm_report() -> int:
         "DISK_QD", "READ_CHUNKS", "TIER_GC", "TIMING", "AHEAD", "AHEAD_READ", "BOUNCE", "CPU_EXPERTS",
         "LEND_DROP", "MTP_MISS", "NO_STAGE", "PIPE", "POOL_STATS", "PREFETCH_N", "PREFILL_MIN",
         "PREFILL_SERIAL", "PREFILL_VERBOSE", "PROF", "SPEC_PROF", "TIER_DIAG", "UNIFORM_SLOTS",
-        "VISION_LEND_MB", "WARM", "PREFILL_ATTN", "PREFILL_ATTN_CHECK")}
+        "VISION_LEND_MB", "WARM", "PREFILL_ATTN", "PREFILL_ATTN_CHECK", "PCIE_SHARE")}
     env_names |= {"STRATA_IO_THREADS", "STRATA_GLM_RAM_EVICT", "CUDA_MODULE_LOADING"}
     num = r"\d+(?:\.\d+)?"
     metric = re.compile(
@@ -4741,11 +4767,18 @@ def glm_report() -> int:
 
 
 def setup_glm(a) -> int:
-    """Maya-S v2 installation; its architecture has no Qwen setup defaults."""
+    """GLM installation; its architecture has no Qwen setup defaults."""
     if (not WIN and not sys.platform.startswith("linux")) or is_wsl():
         fail("GLM-5.3-Flash setup requires native Windows or Linux and NVIDIA CUDA")
-    if a.backend not in (None, "cuda") or a.model not in (None, GLM_MODEL):
-        fail(f"--family glm supports CUDA and {GLM_MODEL} only")
+    if a.backend not in (None, "cuda") or a.model not in (None, *GLM_MODELS):
+        fail("--family glm supports CUDA and " + ", ".join(GLM_MODELS))
+    model = a.model or GLM_MODEL
+    spec = GLM_MODELS[model]
+    if getattr(a, "calibrate", False) and not a.check:
+        config = ROOT / f"strata-glm-{model.lower()}.json"
+        if not config.is_file():
+            fail("install this GLM model before calibrating it")
+        return 0 if calibrate_config(config) else 1
     if platform.machine().lower() not in ("x86_64", "amd64") or not cpu_info()[1]:
         fail("GLM-5.3-Flash needs an x86-64 CPU with AVX2")
     if ram_gb() < 30:
@@ -4781,7 +4814,7 @@ def setup_glm(a) -> int:
     need_driver = 580 if cuda_v >= (13, 0) else 525
     if any(driver_major(g) < need_driver for g in selected):
         fail(f"GLM with CUDA {cuda_v[0]}.{cuda_v[1]} needs NVIDIA driver {need_driver} or newer")
-    say("GLM-5.3-Flash Maya-S v2: " + " + ".join(g["name"] for g in selected))
+    say(f"GLM-5.3-Flash {model}: " + " + ".join(g["name"] for g in selected))
     if WIN:
         warn("GLM on Windows is experimental; CUDA Toolkit 12.8 or newer and Visual Studio 2022 are recommended")
         pf = page_file_gb()
@@ -4798,18 +4831,19 @@ def setup_glm(a) -> int:
         fail("--context must be at least 1")
     data, _ = data_folder(a.data_dir)
     folder = Path(a.gguf_dir).expanduser().resolve() if a.gguf_dir else \
-        (Path(a.models_dir).expanduser().resolve() if a.models_dir else data / "models") / "glm-maya-s-v2"
-    shards = [folder / name for name in GLM_FILES]
+        (Path(a.models_dir).expanduser().resolve() if a.models_dir else data / "models") / spec["data_folder"]
+    shards = [folder / name for name in spec["files"]]
+    model_url = f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/" + (spec["folder"] + "/" if spec["folder"] else "")
     if not a.gguf_dir and any(not p.is_file() for p in shards):
-        say(f"Maya-S v2: 96.5 GB from https://huggingface.co/{GLM_REPO}/tree/main/Maya-S-v2-IQ2_XXS")
+        say(f"{model}: {spec['download_gb']} GB from {model_url}")
         if not (a.download_model or (not a.yes and ask("Download the missing model shards?", ["y", "n"], "n", False) == "y")):
-            say("Model download skipped. Put all three GGUF shards in " + str(folder) + " or pass --gguf-dir.")
+            say(f"Model download skipped. Put all {len(shards)} GGUF files in " + str(folder) + " or pass --gguf-dir.")
             return 0
     disk = folder
     while not disk.exists() and disk != disk.parent:
         disk = disk.parent
     # Reserve 10 GB for the pack and source build, plus the missing shards and vision files.
-    need_disk = 10 + (0 if a.no_vision else 1.14) + 96.5 * sum(not p.is_file() for p in shards) / len(shards)
+    need_disk = 10 + (0 if a.no_vision else 1.14) + spec["download_gb"] * sum(not p.is_file() for p in shards) / len(shards)
     if shutil.disk_usage(disk).free / 1e9 < need_disk:
         fail(f"GLM setup needs {need_disk:.1f} GB free on {disk} for missing files, the pack and build")
     if shutil.disk_usage(ROOT).free / 1e9 < 5:
@@ -4817,10 +4851,10 @@ def setup_glm(a) -> int:
     for shard in shards:
         if not shard.is_file():
             if a.gguf_dir:
-                fail(f"missing {shard}; --gguf-dir needs the three Maya-S v2 shards")
-            download(f"https://huggingface.co/{GLM_REPO}/resolve/main/Maya-S-v2-IQ2_XXS/{shard.name}", shard)
-        if not glm_sha256_ok(shard, GLM_FILES[shard.name]):
-            fail(f"{shard.name}: SHA-256 differs from Maya-S v2's published hash")
+                fail(f"missing {shard}; --gguf-dir needs all {model} files")
+            download(model_url + shard.name, shard)
+        if not glm_sha256_ok(shard, spec["files"][shard.name]):
+            fail(f"{shard.name}: SHA-256 differs from {model}'s published hash")
     check_shards(shards)
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile
@@ -4837,7 +4871,7 @@ def setup_glm(a) -> int:
                 fail("vision files missing; rerun with --no-vision for text only")
         for name, p in files.items():
             if not p.is_file():
-                download(f"https://huggingface.co/{GLM_REPO}/resolve/main/vision/{name}", p)
+                download(f"https://huggingface.co/{GLM_REPO}/resolve/{GLM_REVISION}/vision/{name}", p)
             if not glm_sha256_ok(p, GLM_VISION_FILES[name]):
                 fail(f"{name}: SHA-256 differs from Maya's published hash")
     pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES, "Strata Python packages")
@@ -4863,10 +4897,17 @@ def setup_glm(a) -> int:
         cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(files["mmproj-GLM-5.3-Flash-F16.gguf"]),
                          "model": str(files["GLM-5.3-Flash-vocab.gguf"]),
                          "gpu": True, "no_flash_attn": True, "max_tokens": 4096}
-    cfg_path = ROOT / "strata-glm-maya-s-v2-iq2_xxs.json"
+    if model != GLM_MODEL:
+        cfg["model_name"] += "-" + model.lower()
+    cal = saved_calibration(cfg)
+    if cal:
+        import calibrate_glm as CAL
+        cfg["env"] = CAL.apply({}, cal["settings"])
+    name = "glm-" + model.lower()
+    cfg_path = ROOT / f"strata-{name}.json"
     cfg["log"] = str(cfg_path.with_suffix(".log"))
     write_config(cfg_path, cfg)
-    script = write_run_script("glm-maya-s-v2-iq2_xxs", cfg_path, cfg["port"], cfg["open_browser"])
+    script = write_run_script(name, cfg_path, cfg["port"], cfg["open_browser"])
     ok(f"GLM config: {cfg_path}; start script: {script}")
     if a.no_start:
         return 0
@@ -4877,7 +4918,7 @@ def setup_glm(a) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=[*FAMILIES, "glm"], help="qwen, swift, coder, unsloth, or glm = GLM-5.3-Flash")
-    ap.add_argument("--model", choices=[*MODELS, GLM_MODEL])
+    ap.add_argument("--model", choices=[*MODELS, *GLM_MODELS])
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4922,7 +4963,7 @@ def main() -> int:
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
                                        "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
-    ap.add_argument("--download-model", action="store_true", help="GLM: download missing Maya-S v2 files without asking")
+    ap.add_argument("--download-model", action="store_true", help="GLM: download the selected model's missing files without asking")
     ap.add_argument("--no-vision", action="store_true", help="GLM: install text only")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
@@ -4985,8 +5026,8 @@ def main() -> int:
         return glm_report()
     if a.family == "glm":
         return setup_glm(a)
-    if a.model == GLM_MODEL:
-        ap.error(f"{GLM_MODEL} requires --family glm")
+    if a.model in GLM_MODELS:
+        ap.error(f"{a.model} requires --family glm")
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -5052,14 +5093,14 @@ def main() -> int:
     run_gpu = start_gpus(a.gpus) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
     if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
-        if not a.build:
-            update_installed_engine(a.prebuilt)
         pick_cfg = have[0]
         if len(have) > 1:
             say()
             for i, c in enumerate(have, 1):
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
+        if not a.build and "--glm-pack" not in json.loads(pick_cfg.read_text(encoding="utf-8-sig")).get("args", []):
+            update_installed_engine(a.prebuilt)
         if not calibrate_config(pick_cfg):             # #447: said again where it is not lost above the start
             say()
             warn("this PC is NOT tuned: the tuning failed (the reason is above); the model "

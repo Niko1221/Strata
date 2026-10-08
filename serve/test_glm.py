@@ -1,13 +1,16 @@
 """GLM API/template and vision protocol checks without a model, GPU or downloads."""
 import io
+import json
 from pathlib import Path
 import queue
+import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
-from serve.frontend import ChatTemplate, effort_kwargs
+from serve import server as server_module
+from serve.frontend import ChatTemplate, OutputParser, effort_kwargs, forced_call, parse_tool_call
 from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, StrataEngine, Vision, serve, vision_footprint
 
 
@@ -31,6 +34,59 @@ class GlmIntegration(unittest.TestCase):
         self.template = ChatTemplate(template)
         self.tok = GlmTokenizer()
         self.engine = MockEngine(self.tok, "ok", max_context=16384)
+
+    def test_native_tools_whole_and_streamed(self):
+        tools = [{"name": "write", "parameters": {"properties": {
+            "text": {"type": "string"}, "n": {"type": "integer"}}}}]
+        bodies = ["write<arg_key>text</arg_key><arg_value>\nhello </tool_call>\n</arg_value>"
+                  "<arg_key>n</arg_key><arg_value>2</arg_value>", "write"]
+        for body, expected in zip(bodies, [{"text": "\nhello </tool_call>\n", "n": 2}, {}]):
+            self.assertEqual(parse_tool_call(body, tools[0]).arguments, expected)
+            text = "<tool_call>\n  " + body + "</tool_call>"
+            for thinking in (False, True):
+                source = text + "</think>" if thinking else text
+                for step in (1, 2, len(source)):
+                    parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+                    events = []
+                    for i in range(0, len(source), step):
+                        events += parser.feed(source[i:i + step])
+                    events += parser.finish()
+                    calls = [e.call for e in events if e.kind == "tool_call"]
+                    self.assertEqual([(c.name, c.arguments) for c in calls], [("write", expected)])
+                    if not thinking:
+                        streamed = "".join(e.text for e in events if e.kind == "tool_args")
+                        self.assertEqual(json.loads(streamed), expected)
+                        starts = [e.call for e in events if e.kind == "tool_start"]
+                        self.assertEqual([c.id for c in starts], [calls[0].id])
+        for body in ("write<arg_key>text", "write<arg_key>text</arg_key>missing"):
+            with self.assertRaises(ValueError):
+                parse_tool_call(body, tools[0])
+
+    def test_native_tool_caps_and_forced_opening(self):
+        source = self.SRC + """{% for t in tools or [] %}{{ t.name }}{{ t.description }}{% endfor %}
+<tool_call><arg_key>{% for m in messages %}{% for c in m.tool_calls or [] %}
+<tool_call>{{ c.function.name }}{% for k, v in c.function.arguments.items() %}<arg_key>{{ k }}</arg_key><arg_value>{{ v }}</arg_value>{% endfor %}</tool_call>
+{% endfor %}{% endfor %}"""
+        path = self.path / "native.jinja"
+        path.write_text(source, encoding="utf-8")
+        template = ChatTemplate(path)
+        for capability in ("supports_tools", "supports_tool_calls", "supports_parallel_tool_calls"):
+            self.assertTrue(template.caps[capability])
+        tools = [{"name": "write"}]
+        self.assertEqual(forced_call("required", tools, glm=True), "<tool_call>\nwrite\n")
+        self.assertEqual(forced_call("required", tools + [{"name": "read"}], glm=True), "<tool_call>\n")
+
+    def test_server_loads_glm_tokenizer_metadata(self):
+        for filename, value in [("vocab.json", {"a": 0}), ("token_type.json", [1]),
+                                ("tokenizer.json", {"pre": "glm5", "special_ids": {"eos_token_id": 7}})]:
+            (self.path / filename).write_text(json.dumps(value), encoding="utf-8")
+        (self.path / "merges.txt").write_text("", encoding="utf-8")
+        with mock.patch.object(sys, "argv", ["server.py", "--tokenizer", str(self.path)]), \
+                mock.patch("serve.server.Server"), \
+                mock.patch("strata_tokenizer.Tokenizer", side_effect=RuntimeError("constructor reached")) as ctor:
+            with self.assertRaisesRegex(RuntimeError, "constructor reached"):
+                server_module.main()
+        ctor.assert_called_once_with(["a"], [], [1], pre="glm5", special_ids={"eos_token_id": 7})
 
     def test_effort_levels(self):
         for effort, expected in [(None, "max"), ("low", "low"), ("medium", "high"), ("high", "max"), ("none", "low")]:

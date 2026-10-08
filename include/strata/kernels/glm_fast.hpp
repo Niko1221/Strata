@@ -37,6 +37,8 @@ constexpr int kMaxMvJobs = 8;
 bool mv(const MvJob* jobs, int n, cudaStream_t s);
 /// Whether mv() serves this weight type.
 bool mv_supported(int type);
+/// Whether moe_gate_up() / moe_down() serve routed experts of this type.
+bool moe_supported(int type);
 /// Kernel launches of this family that failed since the process started (each is also printed); the forward
 /// that sees the count grow reports an error instead of computing on.
 int launch_errors();

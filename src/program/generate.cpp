@@ -1578,8 +1578,8 @@ double probe_pcie_h2d_gbps(std::string* samples = nullptr) {
 static int glm_pack_generate(const Options& o) {
     strata::core::Glm5Model model;
     std::string err;
-    // honours STRATA_GLM_SPLIT=<layer> (+STRATA_GLM_DEV1): the two-GPU layer split
-    if (!model.load_pack_env(o.glm_pack, o.max_context, err)) {
+    // the layer split across the visible GPUs: STRATA_GLM_SPLIT, else --layer-split (auto | K1,K2,..)
+    if (!model.load_pack_env(o.glm_pack, o.max_context, err, o.layer_split)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -1589,12 +1589,14 @@ static int glm_pack_generate(const Options& o) {
     if (model.fast()) {
         // INFO facts for the server's Monitor tab (strata app): the expert tiers this engine runs with
         const auto st = model.fast_stats();
+        // (+ the CPU lane setup's calibration reads: its threads and its PCIe share, as the engine started)
         std::printf("INFO context=%lld kv=f32 expert_slots=%lld expert_cache_mib=%lld engine_kind=glm-fast experts=%d "
-                    "vram_slots=%lld vram_gb=%.1f ram_slots=%lld ram_gb=%.1f mtp=%d vision_lend=%zu\n",
+                    "vram_slots=%lld vram_gb=%.1f ram_slots=%lld ram_gb=%.1f mtp=%d vision_lend=%zu cpu_threads=%d "
+                    "pcie_share=%.2f\n",
                     (long long) o.max_context, (long long) st.pool_slots, (long long) (st.pool_gb * 1024.0),
                     model.geometry().n_expert * (model.geometry().n_layers - model.geometry().dense_lead),
                     (long long) st.pool_slots, st.pool_gb, (long long) st.ram_slots, st.ram_gb, model.has_mtp() ? 1 : 0,
-                    model.vision_lend_bytes());
+                    model.vision_lend_bytes(), model.cpu_lane_threads(), model.pcie_share());
     }
 
     strata::kernels::SamplerParams sp;
@@ -1686,6 +1688,132 @@ static int glm_pack_generate(const Options& o) {
         }
         return h;
     };
+    // CONVERSATION SLOTS (the fast path): a request that does not continue the conversation in the model first sets
+    // that conversation aside in a file (Glm5Model::slot_save: its snapshot and DSA caches), then takes back the slot
+    // it does continue (slot_load) - chats, and an agent's side requests, that interleave no longer re-read each
+    // other's prompts.  STRATA_GLM_SLOTS=<n> files (default 0, opt-in), for conversations of STRATA_GLM_SLOT_MIN tokens
+    // or more (1024), in a private run directory under STRATA_GLM_SLOT_DIR (default <pack>/slots), at most STRATA_GLM_SLOT_GB on
+    // disk (16) and never below 8 GB free.  Text only: a conversation with pictures is not set aside.
+    struct Slot {
+        std::vector<int32_t> tokens;
+        std::string path;
+        uint64_t bytes = 0, used = 0;
+    };
+    constexpr uint64_t kNoImages = 1469598103934665603ull;   // img_hash() of a prefix without pictures
+    std::vector<Slot> slots;
+    uint64_t slot_clock = 0, slot_seq = 0;
+    bool snap_in_slot = false;   // the model's snapshot is one of the slots, unchanged since
+    const auto env_num = [](const char* k, double d, double lo, double hi) {
+        const char* v = getenv(k);
+        if (!v) return d;
+        char* end = nullptr;
+        const double n = std::strtod(v, &end);
+        return end != v && *end == '\0' && std::isfinite(n) ? std::clamp(n, lo, hi) : d;
+    };
+    int slot_max = model.fast() && getenv("STRATA_GLM_NO_REUSE") == nullptr
+                       ? (int) env_num("STRATA_GLM_SLOTS", 0, 0, 64) : 0;
+    const size_t slot_min = (size_t) env_num("STRATA_GLM_SLOT_MIN", 1024, 64, std::max(64.0, (double) o.max_context));
+    const uint64_t slot_budget = (uint64_t) (env_num("STRATA_GLM_SLOT_GB", 16, 0, 1024) * 1073741824.0);
+    std::filesystem::path slot_dir;
+    struct SlotFiles {
+        const std::vector<Slot>& slots;
+        std::filesystem::path dir;
+        ~SlotFiles() {
+            std::error_code ec;
+            for (const auto& s : slots) std::filesystem::remove(s.path, ec);
+            if (!dir.empty()) std::filesystem::remove(dir, ec);
+        }
+    } slot_files{slots, {}};
+    if (slot_max > 0) {
+        slot_dir = getenv("STRATA_GLM_SLOT_DIR") ? std::filesystem::path(getenv("STRATA_GLM_SLOT_DIR"))
+                                                 : std::filesystem::path(o.glm_pack) / "slots";
+        std::error_code ec;
+        std::filesystem::create_directories(slot_dir, ec);
+        slot_dir /= "strata-" + std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+        if (!std::filesystem::create_directory(slot_dir, ec)) {
+            std::fprintf(stderr, "glm slots: %s is not writable - conversations are not set aside\n",
+                         slot_dir.string().c_str());
+            slot_max = 0;
+        } else slot_files.dir = slot_dir;
+    }
+    const auto slot_drop = [&](size_t i) {
+        std::error_code ec;
+        std::filesystem::remove(slots[i].path, ec);
+        slots.erase(slots.begin() + (long) i);
+    };
+    const auto slot_lru = [&](size_t keep) {   // the least recently used slot other than `keep`
+        size_t lru = SIZE_MAX;
+        for (size_t i = 0; i < slots.size(); ++i)
+            if (i != keep && (lru == SIZE_MAX || slots[i].used < slots[lru].used)) lru = i;
+        return lru;
+    };
+    // the conversation in the model (its snapshot, snap_tokens) into a slot
+    const auto slot_put = [&]() {
+        if (slot_max <= 0 || snap_in_slot || snap_tokens.size() < slot_min || snap_img_hash != kNoImages) return;
+        for (size_t i = slots.size(); i-- > 0;)   // an earlier state of this conversation is superseded
+            if (slots[i].tokens.size() <= snap_tokens.size() &&
+                std::equal(slots[i].tokens.begin(), slots[i].tokens.end(), snap_tokens.begin()))
+                slot_drop(i);
+        while (!slots.empty() && slots.size() >= (size_t) slot_max) slot_drop(slot_lru(SIZE_MAX));
+        std::error_code ec;
+        const auto space = std::filesystem::space(slot_dir, ec);
+        if (ec || space.available < ((uint64_t) 8 << 30)) {
+            std::fprintf(stderr, "glm slots: under 8 GB free in %s - the conversation is not set aside\n",
+                         slot_dir.string().c_str());
+            return;
+        }
+        const std::string path = (slot_dir / ("slot-" + std::to_string(++slot_seq) + ".bin")).string();
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string e;
+        const uint64_t bytes = model.slot_save(path, e);
+        if (bytes == 0 || bytes > slot_budget || bytes > space.available - ((uint64_t) 8 << 30)) {
+            std::filesystem::remove(path, ec);
+            std::fprintf(stderr, "glm slots: setting the conversation aside failed (%s)\n", e.c_str());
+            return;
+        }
+        slots.push_back({snap_tokens, path, bytes, ++slot_clock});
+        snap_in_slot = true;
+        uint64_t total = 0;
+        for (const auto& s : slots) total += s.bytes;
+        while (slots.size() > 1 && total > slot_budget) {
+            const size_t i = slot_lru(slots.size() - 1);
+            total -= slots[i].bytes;
+            slot_drop(i);
+        }
+        std::fprintf(stderr, "glm slots: set aside a conversation of %zu tokens (%.2f GB, %.2f s); %zu kept, %.1f GB\n",
+                     snap_tokens.size(), (double) bytes / 1073741824.0,
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), slots.size(),
+                     (double) total / 1073741824.0);
+    };
+    // the longest slot this prompt continues, back in the model: the tokens it covers (0: none)
+    const auto slot_take = [&](const std::vector<int32_t>& prompt) -> size_t {
+        if (slot_max <= 0 || !cur_img_pos.empty()) return 0;
+        size_t best = SIZE_MAX, len = 0;
+        for (size_t i = 0; i < slots.size(); ++i) {
+            const auto& t = slots[i].tokens;
+            if (t.size() > len && t.size() < prompt.size() && std::equal(t.begin(), t.end(), prompt.begin())) {
+                best = i;
+                len = t.size();
+            }
+        }
+        if (best == SIZE_MAX) return 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string e;
+        if (!model.slot_load(slots[best].path, (int64_t) len, e)) {
+            std::fprintf(stderr, "glm slots: taking a conversation back failed (%s) - reading its prompt again\n",
+                         e.c_str());
+            slot_drop(best);
+            snap_tokens.clear();
+            return 0;
+        }
+        snap_tokens = slots[best].tokens;
+        snap_img_hash = kNoImages;
+        snap_in_slot = true;
+        slots[best].used = ++slot_clock;
+        std::fprintf(stderr, "glm slots: took back a conversation of %zu tokens (%.2f s)\n", len,
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return len;
+    };
     const auto run_request = [&](const std::vector<int64_t>& ids, int64_t max_new,
                                  const strata::kernels::SamplerParams& rq_in) -> int {
         strata::kernels::SamplerParams sp = rq_in;   // per request (the server sends sampling keys per GEN)
@@ -1713,6 +1841,19 @@ static int glm_pack_generate(const Options& o) {
             img_hash(snap_tokens.size()) == snap_img_hash &&
             getenv("STRATA_GLM_NO_REUSE") == nullptr && model.snapshot_restore())
             reuse = snap_tokens.size();
+        if (reuse == 0 && slot_max > 0) {
+            slot_put();                // the conversation in the model, before this prompt overwrites it
+            reuse = slot_take(prompt);
+        } else if (reuse > 0 && slot_max > 0 && getenv("STRATA_GLM_SLOT_ROUNDTRIP") != nullptr) {
+            // a test: the restored state goes through a slot file and back - the same tokens must follow
+            snap_in_slot = false;
+            slot_put();
+            const size_t back = slot_take(prompt);
+            if (back != reuse) {
+                std::fprintf(stderr, "glm slots: ROUNDTRIP took back %zu of %zu tokens\n", back, reuse);
+                reuse = back;
+            }
+        }
         if (reuse == 0) model.reset();
         std::vector<float> lg;
         const auto t0 = std::chrono::steady_clock::now();
@@ -1763,6 +1904,7 @@ static int glm_pack_generate(const Options& o) {
                 if (model.snapshot_save()) {
                     snap_tokens.assign(prompt.begin(), prompt.end() - 1);
                     snap_img_hash = img_hash(snap_tokens.size());
+                    snap_in_slot = false;
                 } else {
                     snap_tokens.clear();
                 }
@@ -2099,6 +2241,8 @@ static int glm_pack_generate(const Options& o) {
             bool any_key = false, greedy_req = false;
             req_think_budget = 0;
             req_think_end = -1;
+            double req_pcie = -1.0;   // setup's calibration: this request's CPU lane (as the engine started: -1 / 0)
+            int req_threads = 0;
             std::string tok2, ids, emb_path;
             while (ss >> tok2) {
                 const size_t eq = tok2.find('=');
@@ -2119,11 +2263,15 @@ static int glm_pack_generate(const Options& o) {
                 else if (k == "seed") { rq.seed = (uint64_t) std::atoll(v.c_str()); }
                 else if (k == "think_budget") { req_think_budget = std::atoll(v.c_str()); }
                 else if (k == "think_end") { req_think_end = std::atoi(v.c_str()); }
-                // penalty_* and the calibration keys need machinery this mode does not have (history rows,
-                // request-scoped engine settings): ignored rather than approximated
+                else if (k == "pcie_frac") { req_pcie = std::atof(v.c_str()); }
+                else if (k == "cpu_threads") { req_threads = std::atoi(v.c_str()); }
+                // penalty_* need machinery this mode does not have (history rows): ignored rather than approximated
             }
             if (any_key) rq.greedy = false;   // any sampler key switches the request to the sampled path
             if (greedy_req) rq.greedy = true;
+            // the CPU lane for this request: what it names, else what the engine started with
+            model.set_pcie_share(req_pcie >= 0.0 && req_pcie <= 1.0 ? req_pcie : -1.0);
+            model.set_cpu_lane_threads(req_threads > 0 ? req_threads : 0);
             std::vector<int64_t> toks;
             std::string e;
             if (max_new <= 0 || ids.empty() || !parse_i64_list(ids.c_str(), toks, e)) {

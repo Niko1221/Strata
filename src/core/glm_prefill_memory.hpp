@@ -21,7 +21,7 @@ inline int64_t latent_start(int64_t offset, bool fast) {
 
 inline int landing_slots(int64_t available, size_t stride, const char* override_slots) {
     if (override_slots) return std::max(kMinLand, std::atoi(override_slots));
-    return stride ? (int) std::clamp(0.02 * (double) available / (double) stride, (double) kMinLand, 64.0)
+    return stride ? (int) std::clamp(0.03 * (double) available / (double) stride, (double) kMinLand, 96.0)
                   : kMinLand;
 }
 

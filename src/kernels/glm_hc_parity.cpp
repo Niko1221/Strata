@@ -21,12 +21,14 @@
 // structural one (hc_eps 1e-2, so the eps readings separate) and the real-epsilon one (1e-6, the released
 // value - the floor and guards vanish below the f32 noise there, which is itself worth knowing).
 #include "strata/kernels/glm_hc.hpp"
+#include "strata/kernels/glm_fast.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <random>
 #include <string>
@@ -311,6 +313,100 @@ void test_fixture(int n_embd, int hc, int iters, float hc_eps, bool structural) 
     require(max_abs(r_pre, w_pre) > 10 * tol, "the pre-gate floor is invisible - enlarge hc_eps");
 }
 
+// Real decode uses the fused BF16-weight kernel, including its cross-workgroup
+// barriers and publication loads. Exercise the 4096-wide path and the in-place
+// post/comb updates, independently of the full-model download.
+void test_fast_fixture() {
+    namespace fast = strata::kernels::glmf;
+    constexpr int E = 4096, H = 4;
+    Fixture f = make_fixture(E, H, 20, 1e-5f, 1e-6f, 43);
+    std::vector<uint16_t> weights(f.w_fn.size());
+    for (size_t i = 0; i < weights.size(); ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, &f.w_fn[i], sizeof(bits));
+        weights[i] = (uint16_t) (bits >> 16);
+        bits &= 0xffff0000u;
+        std::memcpy(&f.w_fn[i], &bits, sizeof(bits));
+    }
+    std::vector<float> norm(E), block(E);
+    for (int e = 0; e < E; ++e) {
+        norm[e] = 0.8f + 0.2f * std::sin((float) e);
+        block[e] = 0.3f * std::cos(0.1f * e);
+    }
+    Device arena(4 << 20);
+    size_t off = 0;
+    auto take = [&](size_t bytes) {
+        off = (off + 15) & ~size_t(15);
+        float* ptr = arena.at(off);
+        off += bytes;
+        require(off <= (4 << 20), "fast HC fixture arena overflow");
+        return ptr;
+    };
+    auto upload_values = [&](const auto& values) {
+        const size_t bytes = values.size() * sizeof(values[0]);
+        float* ptr = take(bytes);
+        check(cudaMemcpy(ptr, values.data(), bytes, cudaMemcpyHostToDevice), "fast HC upload");
+        return ptr;
+    };
+    fast::HcArgs a;
+    a.R_old = upload_values(f.R);
+    a.R_new = take(H * E * sizeof(float));
+    a.w_fn = (uint16_t*) upload_values(weights);
+    a.w_scale = upload_values(f.w_scale);
+    a.w_base = upload_values(f.w_base);
+    a.norm_w = upload_values(norm);
+    a.pre = take(H * sizeof(float));
+    a.post = take(H * sizeof(float));
+    a.comb = take(H * H * sizeof(float));
+    a.x = take(E * sizeof(float));
+    a.xq = take(E * 2); // q8_1: 36 bytes per 32 elements
+    a.part = take((26 * E / 128 + 64) * sizeof(float));
+    a.counter = (unsigned int*) take(64);
+    check(cudaMemset(a.counter, 0, 64), "fast HC counter");
+    const float* d_block = upload_values(block);
+    auto read = [&](const float* ptr, size_t n) {
+        std::vector<float> result(n);
+        check(cudaMemcpy(result.data(), ptr, n * sizeof(float), cudaMemcpyDeviceToHost), "fast HC read");
+        for (float v : result) require(std::isfinite(v), "nonfinite fast HC result");
+        return result;
+    };
+    std::vector<float> mixed, pre, post, comb;
+    for (int step = 0; step < 8; ++step) {
+        if (step) {
+            const std::vector<float> old = f.R;
+            for (int d = 0; d < H; ++d)
+                for (int e = 0; e < E; ++e) {
+                    double value = block[e] * post[d];
+                    for (int s = 0; s < H; ++s) value += comb[d * H + s] * old[s * E + e];
+                    f.R[d * E + e] = (float) value;
+                }
+            a.block_out = d_block;
+            a.post_in = a.post; // deliberately alias the output gates
+            a.comb_in = a.comb;
+        }
+        fast::hc(a, nullptr);
+        check(cudaDeviceSynchronize(), "fast HC sync");
+        require(fast::launch_errors() == 0, "fast HC launch failed");
+        ref_hc_pre(f, mixed, pre, post, comb);
+        double ss = 0.0;
+        for (float v : mixed) ss += (double) v * v;
+        const double inv = 1.0 / std::sqrt(ss / E + f.norm_eps);
+        for (int e = 0; e < E; ++e) mixed[e] = (float) (mixed[e] * inv * norm[e]);
+        constexpr double tol = 5e-4;
+        require(max_abs(read(a.pre, H), pre) < tol, "fast HC pre diverges from reference");
+        require(max_abs(read(a.post, H), post) < tol, "fast HC post diverges from reference");
+        require(max_abs(read(a.comb, H * H), comb) < tol, "fast HC comb diverges from reference");
+        require(max_abs(read(a.x, E), mixed) < tol, "fast HC normalized input diverges from reference");
+        if (step) {
+            require(max_abs(read(a.R_new, H * E), f.R) < tol, "fast HC fused residual diverges from reference");
+            const float* old = a.R_old;
+            a.R_old = a.R_new;
+            a.R_new = const_cast<float*>(old);
+        }
+    }
+    std::printf("glm_hc_parity: fast 4096-wide HC agrees over 8 fused steps\n");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -323,6 +419,7 @@ int main(int argc, char** argv) {
     test_fixture(128, 4, 3, 3e-2f, true);
     test_fixture(128, 4, 20, 1e-6f, false);   // the real shape of the constants: 20 Sinkhorn iterations
     test_fixture(256, 4, 20, 1e-6f, false);   // and a wider stack
+    test_fast_fixture();
     std::printf("glm_hc_parity: PASS\n");
     return 0;
 }
