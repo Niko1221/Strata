@@ -16,6 +16,7 @@ emoji (4-byte), combining marks, whitespace runs, and C0 control bytes.
 from __future__ import annotations
 
 import bisect
+import codecs
 import threading
 import json
 import pathlib
@@ -314,7 +315,9 @@ class PromptEncoder:
     It is local to one service and independent of engine KV or cancellation.
     """
 
-    def __init__(self, tok, keep: int = 4, max_chars: int = 262144, max_tokens: int = 65536):
+    # Limits raised from 256K characters / 64K tokens - an agent's prompt reaches 150K+ tokens, and those are
+    # the turns where re-reading a reply costs the most
+    def __init__(self, tok, keep: int = 4, max_chars: int = 1 << 20, max_tokens: int = 1 << 18):
         self.tok = tok
         self.keep, self.max_chars, self.max_tokens = keep, max_chars, max_tokens
         if min(keep, max_chars, max_tokens) < 0:
@@ -333,8 +336,14 @@ class PromptEncoder:
         for entry in entries:
             if text == entry[0]:
                 return list(entry[1])
-            limit = common_prefix_len(entry[0], text) - margin
-            k = bisect.bisect_right(entry[2], limit) - 1
+            cp = common_prefix_len(entry[0], text)
+            k = bisect.bisect_right(entry[2], cp - margin) - 1
+            # A reply's own token boundaries (entry[4]: where the reply starts) need no margin - the engine
+            # holds those ids, and the text from the cut on is encoded afresh - unless a tag could straddle the cut
+            if len(entry) > 4 and cp >= entry[4]:
+                k2 = bisect.bisect_right(entry[2], cp) - 1
+                if k2 > k and entry[2][k2] >= entry[4] and not self._straddles(text, entry[2][k2]):
+                    k = k2
             if k >= 0 and (src is None or entry[2][k] > src[2][cut_k]):
                 src, cut_k = entry, k
         if src is None:
@@ -353,6 +362,50 @@ class PromptEncoder:
                 # duplicates, and never mutate the snapshot a reader is using.
                 self.entries = [entry] + [e for e in self.entries if e is not src and e[0] != text][:self.keep - 1]
         return ids
+
+    def _straddles(self, text: str, c: int) -> bool:
+        """A special literal that starts before `c` and ends after it: a cut there would split the tag."""
+        specials = getattr(self.tok, "special_tokens", None) or {}
+        lo = max(0, c - self.tok.max_special_len + 1)
+        p = text.find("<", lo, c)
+        while p >= 0:
+            if any(len(s) > c - p and text.startswith(s, p) for s in specials):
+                return True
+            p = text.find("<", p + 1, c)
+        return False
+
+    def remember_reply(self, prompt_ids, gen_ids) -> bool:
+        """The engine's session after a request is the prompt plus the reply's OWN ids - which are not always
+        what the reply's text encodes to (a model writes `çğıöşü` or a number in pieces BPE would merge).  The next
+        turn's prompt renders that text again: encoded afresh, it left the engine's ids at the first such piece and
+        the engine read the whole reply again from the turn's start.  Kept as an entry whose cuts are every token
+        boundary of the reply, the next prompt takes the reply's own ids up to where its text really differs."""
+        if not self.keep or not self.supported or not gen_ids:
+            return False
+        prompt_ids = tuple(int(t) for t in prompt_ids)
+        with self.lock:
+            entries = self.entries
+        base = next((e for e in entries if e[1] == prompt_ids), None)
+        if base is None:
+            return False
+        dec = codecs.getincrementaldecoder("utf-8")("replace")
+        chars, ends, counts = len(base[0]), list(base[2]), list(base[3])
+        pieces = []
+        for j, t in enumerate(gen_ids):
+            s = dec.decode(self.tok.token_bytes(int(t)))
+            pieces.append(s)
+            chars += len(s)
+            if not dec.getstate()[0]:                   # no character split across this boundary
+                ends.append(chars)
+                counts.append(len(prompt_ids) + j + 1)
+        text = base[0] + "".join(pieces)
+        ids = prompt_ids + tuple(int(t) for t in gen_ids)
+        if len(text) > self.max_chars or len(ids) > self.max_tokens:
+            return False
+        entry = (text, ids, tuple(ends), tuple(counts), len(base[0]))
+        with self.lock:
+            self.entries = [entry] + [e for e in self.entries if e[0] != text][:self.keep - 1]
+        return True
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory

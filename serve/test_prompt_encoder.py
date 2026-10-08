@@ -155,4 +155,52 @@ assert svc.prepare([{'role': 'user', 'content': 'hi'}], None, {}, 8)[0]
             self.assertLess(sum(len(c.args[0]) for c in encode.call_args_list), 100)
 
 
+class ReplyReuse(unittest.TestCase):
+    """A reply's own ids (what the engine holds) are reused by the next turn up to where its text differs -
+    the one place prompt ids may differ from full BPE, and the text they decode to is always the prompt's."""
+
+    def setUp(self):
+        self.tok = tokenizer()
+        self.enc = PromptEncoder(self.tok)
+        self.prompt = '<|im_start|>user\nabc<|im_end|>\n<|im_start|>assistant\n<think>\n'
+        self.pids = self.enc.encode(self.prompt)
+        # the model wrote 'abc' in pieces BPE would merge, then a hidden wrap-up the next turn will not have
+        self.gen = (self.tok.encode('a') + self.tok.encode('b') + self.tok.encode('c') + self.tok.encode(' a') +
+                    self.tok.encode('ZZZ') + self.tok.encode('</think>', parse_special=True))
+
+    def common(self, a, b):
+        n = 0
+        while n < min(len(a), len(b)) and a[n] == b[n]:
+            n += 1
+        return n
+
+    def test_the_next_turn_keeps_the_reply_ids_up_to_the_difference(self):
+        self.assertTrue(self.enc.remember_reply(self.pids, self.gen))
+        text = self.prompt + 'abc a' + '\n</think>\n\nabc<|im_end|>'
+        ids = self.enc.encode(text)
+        self.assertEqual(self.tok.decode(ids), text)
+        self.assertEqual(ids[:len(self.pids) + 4], list(self.pids) + self.gen[:4])   # 'a' 'b' 'c' ' a', as written
+        self.assertLess(self.common(self.tok.encode(text, parse_special=True), list(self.pids) + self.gen),
+                        len(self.pids) + 4)   # full BPE merges 'abc' and leaves the engine's ids earlier
+
+    def test_without_its_prompt_nothing_is_kept(self):
+        self.assertFalse(self.enc.remember_reply([1, 2, 3], self.gen))
+        text = self.prompt + 'abc'
+        self.assertEqual(self.enc.encode(text), self.tok.encode(text, parse_special=True))
+
+    def test_a_tag_across_the_cut_is_encoded_whole(self):
+        gen = self.tok.encode('ab') + self.tok.encode('<') + self.tok.encode('x')   # '<x' as plain text
+        self.assertTrue(self.enc.remember_reply(self.pids, gen))
+        text = self.prompt + 'ab<x>tail' + '<|im_end|>'
+        ids = self.enc.encode(text)
+        self.assertEqual(self.tok.decode(ids), text)
+        self.assertIn(self.tok.encode('<x>tail', parse_special=True)[0], ids)   # the tag, not '<' 'x' '>' 't'...
+
+    def test_a_split_character_is_never_a_cut(self):
+        gen = [self.tok.ids[BYTE_TO_UNICODE[b]] for b in '中'.encode()] + self.tok.encode('abc')
+        self.assertTrue(self.enc.remember_reply(self.pids, gen))
+        for text in (self.prompt + '中abc', self.prompt + '中ab!', self.prompt + '文'):
+            self.assertEqual(self.tok.decode(self.enc.encode(text)), text)
+
+
 if __name__ == '__main__':unittest.main()

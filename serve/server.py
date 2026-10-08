@@ -1426,6 +1426,7 @@ class StrataEngine:
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
+        self.drained = []        # tokens the engine sent after a STOP (its session holds them)
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
@@ -1440,6 +1441,10 @@ class StrataEngine:
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
+        # STRATA_PROMPT_DUMP=<file> (diagnosis) - every GEN's prompt ids and every token the engine sent back,
+        # drained ones too, one JSON line per request; consecutive lines show where a prompt left the engine's state
+        dump_path = os.environ.get("STRATA_PROMPT_DUMP")
+        got: list[int] = []
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
         silence = float(self.silence_s or 0)
@@ -1473,6 +1478,7 @@ class StrataEngine:
                 beat = heard
                 if line.startswith("T "):
                     allow = silence
+                    got.append(int(line[2:]))
                     if cancel.is_set():
                         return
                     yield int(line[2:])
@@ -1529,6 +1535,14 @@ class StrataEngine:
                         break
                     if not self.can_stop:
                         heard = time.monotonic()
+                    if line.startswith("T "):
+                        got.append(int(line[2:]))
+                        self.drained.append(int(line[2:]))
+            if dump_path:
+                with contextlib.suppress(OSError):
+                    with open(dump_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"ids": [int(t) for t in ids], "out": got, "reused": self.reused,
+                                            "drained": not done}) + "\n")
 
     def _silent(self, what: str) -> EngineSilent:
         """#481: end an engine that lost step with the server (its main thread waits for a command the server never
@@ -3422,6 +3436,30 @@ class Service:
                         # A forced call (tool_choice) is opened the same way: after the wrap-up, or where the
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
+                            # The engine had generated a few tokens past the budget's stop before the STOP reached
+                            # it, and its session holds them.  Dropped, the wrap-up continuation left the session
+                            # there and the engine read the whole thinking again (a reply has no checkpoint inside
+                            # it).  They join the thinking - when they are plain text: no stop or tag, no split
+                            # character - so the continuation extends the engine's own state.
+                            spill = list(getattr(self.engine, "drained", None) or [])
+                            spill_text = self.tok.decode(spill) if spill else ""
+                            if spill and not any(t in self.stop_ids for t in spill) and "<" not in spill_text \
+                                    and "\ufffd" not in spill_text and max_new - n - len(spill) > 1:
+                                for t in spill:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    seg.append(t)
+                                    thought += 1
+                                    thinking_n += parser.state in ("reasoning", "rcall")
+                                    piece = detok.push(t)
+                                    tail = (tail + piece)[-2:]
+                                    evs = cut(parser.feed(piece))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        if self.reasoning_loop_recovery and ev.kind == "reasoning":
+                                            reasoning_text += ev.text or ""
+                                        yield "event", ev
+                        if wrap:
                             budget = None
                             text = REASONING_WRAP_UP + (force or "")
                         else:
@@ -3445,6 +3483,12 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                    # The engine now holds this prompt plus the reply's own ids; the next turn's prompt reuses
+                    # them up to where its text differs (PromptEncoder.remember_reply), not up to the first piece of
+                    # the reply BPE would have split another way
+                    if self.prompt_encoder is not None and raw_ids and not emb and not recovery_count:
+                        with contextlib.suppress(Exception):
+                            self.prompt_encoder.remember_reply(ids, raw_ids)
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
