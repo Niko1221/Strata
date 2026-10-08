@@ -1,0 +1,13 @@
+{
+  "samples": 273,
+  "gpu_used_mib_peak": 23927,
+  "ram_used_gib_peak": 72.14,
+  "ram_raw_used_gib_peak": 125.01,
+  "cached_gib_peak": 116.88,
+  "shmem_gib_peak": 62.65,
+  "engine_pss_gib_peak": 118.4,
+  "engine_pss_anon_gib_peak": 3.21,
+  "engine_pss_file_gib_peak": 53.35,
+  "swap_used_kib_first": 634648,
+  "swap_used_kib_peak": 634648
+}

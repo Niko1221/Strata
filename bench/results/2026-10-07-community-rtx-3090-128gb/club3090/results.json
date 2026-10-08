@@ -1,0 +1,202 @@
+[
+  {
+    "label": "warmup",
+    "stream_request_sha256": "91f8e96b1cb2a345f7c9a7aeac50a66f976949b992f3ba9e8621624b8ac74923",
+    "request_sha256": "84d627f21ef5ca6a7baffedefa1a975598d2cad5c3a136c1bd20ac77feae83de",
+    "prompt_tokens": 19,
+    "generated_tokens": 2,
+    "client_ttft_s": 0.25955543300005957,
+    "client_elapsed_s": 0.35778647900042415,
+    "prompt_ms": 179.397,
+    "predicted_ms": 36.368,
+    "prefill_tok_s": 105.91035524562841,
+    "decode_tok_s": 27.496700395952484,
+    "draft_n": 2,
+    "draft_n_accepted": 2,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "GO"
+  },
+  {
+    "label": "tokens-4096-run-1",
+    "stream_request_sha256": "f01238957949152f30f88e688ddd4135114b98d9c773eb1458cae6c55a59e49f",
+    "request_sha256": "bbb83eed7b81e0955ae96ebaf97658ace3afd45d7734cc3d2f0f415672e669af",
+    "prompt_tokens": 4046,
+    "generated_tokens": 256,
+    "client_ttft_s": 3.5194555620000756,
+    "client_elapsed_s": 6.920996812001249,
+    "prompt_ms": 3326.083,
+    "predicted_ms": 3439.854,
+    "prefill_tok_s": 1216.4458914585114,
+    "decode_tok_s": 74.13105323656178,
+    "draft_n": 203,
+    "draft_n_accepted": 153,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module presents a collection of one hundred and eleven distinct functions, each following a highly regular, deterministic pattern. At first glance, the code appears to be a simple sequence of arithmetic operations, but a deeper analysis reveals significant implications for software design, performance, and maintainability. Each function, named sequentially from `task_00000` to "
+  },
+  {
+    "label": "tokens-4096-run-2",
+    "stream_request_sha256": "eba86a196d95ef2f0bd4bf071818c64ab960efb5f250940552806da671f794e5",
+    "request_sha256": "cde2b9492893d527da259645ca7c30e7e7e58aa222fa478a3cc1064cce94a371",
+    "prompt_tokens": 4046,
+    "generated_tokens": 256,
+    "client_ttft_s": 3.5865796170000976,
+    "client_elapsed_s": 7.2499090830006025,
+    "prompt_ms": 3294.316,
+    "predicted_ms": 3398.613,
+    "prefill_tok_s": 1228.1760462566433,
+    "decode_tok_s": 75.03060807452923,
+    "draft_n": 201,
+    "draft_n_accepted": 154,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module presents a collection of one hundred and eleven distinct functions, each following a highly regular, deterministic pattern. At first glance, the code appears to be a simple sequence of arithmetic operations, but a deeper analysis reveals significant implications for software design, performance, and maintainability. Each function, named sequentially from `task_00000` to "
+  },
+  {
+    "label": "tokens-4096-run-3",
+    "stream_request_sha256": "54066576206e8d38eb59f6fd5a8bb4af7a3998731a491599226bfb91b56696bb",
+    "request_sha256": "677564ff63a54525c87fe20782af01fc8eecc600bfbc84bcee4c8b363b536c69",
+    "prompt_tokens": 4046,
+    "generated_tokens": 256,
+    "client_ttft_s": 3.5820576830010395,
+    "client_elapsed_s": 7.305622956000661,
+    "prompt_ms": 3297.14,
+    "predicted_ms": 3355.798,
+    "prefill_tok_s": 1227.1241136257486,
+    "decode_tok_s": 75.98788723278338,
+    "draft_n": 200,
+    "draft_n_accepted": 155,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module presents a collection of one hundred and eleven distinct functions, each following a highly regular, deterministic pattern. At first glance, the code appears to be a simple sequence of arithmetic operations, but a deeper analysis reveals significant implications for software design, maintainability, and performance. The core logic of every function is a linear congruenti"
+  },
+  {
+    "label": "tokens-32768-run-1",
+    "stream_request_sha256": "1223e0270b00edbd63f5d51db4aed4136e2109ce6290250744867c96486167d5",
+    "request_sha256": "dd339b5073a8c855858e92fbed6cbc9ddfa8029f84ba5b3749a02cf5ef7a8def",
+    "prompt_tokens": 32718,
+    "generated_tokens": 256,
+    "client_ttft_s": 29.311773714998708,
+    "client_elapsed_s": 33.20511666600032,
+    "prompt_ms": 29016.031,
+    "predicted_ms": 3890.754,
+    "prefill_tok_s": 1127.5835761272795,
+    "decode_tok_s": 65.53999558954382,
+    "draft_n": 196,
+    "draft_n_accepted": 156,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module represents a collection of 888 distinct functions, each named sequentially from `task_00000` to `task_00887`. At first glance, the code appears to be a massive block of boilerplate, but upon closer inspection, it reveals a highly structured, deterministic pattern designed for specific computational or testing purposes. Each function follows the exact same signature: `def"
+  },
+  {
+    "label": "tokens-32768-run-2",
+    "stream_request_sha256": "ffb4ffcd6229e053fee65dbc2c9b7b2c13d65d487cff71d227aa2fe0fb68c2b2",
+    "request_sha256": "dc75b515e5ffc96d22b35bc3bd76baf25459d2b8988ae9925e0193dfbdfa106b",
+    "prompt_tokens": 32718,
+    "generated_tokens": 256,
+    "client_ttft_s": 29.765393046998724,
+    "client_elapsed_s": 33.9733531210004,
+    "prompt_ms": 29021.041,
+    "predicted_ms": 4205.489,
+    "prefill_tok_s": 1127.3889175788008,
+    "decode_tok_s": 60.635041489824374,
+    "draft_n": 212,
+    "draft_n_accepted": 148,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module is a collection of 888 distinct functions, each named sequentially from `task_00000` to `task_00887`. Each function follows a strict, uniform pattern: it accepts a single integer argument `value`, performs a linear arithmetic operation, and returns the result modulo 100,003. Specifically, for the function `task_000NN`, the operation is `(value * multiplier + offset) % 10"
+  },
+  {
+    "label": "tokens-32768-run-3",
+    "stream_request_sha256": "63613e526db5bae84c767aeda72fd8742dbe6a1bc3f271fa97ac9120b6754cd8",
+    "request_sha256": "51045e0317087394afb667408cb2fb4cce330def1833b493860930388f7eb9b7",
+    "prompt_tokens": 32718,
+    "generated_tokens": 256,
+    "client_ttft_s": 29.836921768001048,
+    "client_elapsed_s": 33.84879492100117,
+    "prompt_ms": 29003.187,
+    "predicted_ms": 4133.221,
+    "prefill_tok_s": 1128.0829241283036,
+    "decode_tok_s": 61.69522510410163,
+    "draft_n": 210,
+    "draft_n_accepted": 150,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module represents a collection of 888 distinct functions, each named sequentially from `task_00000` to `task_00887`. Each function implements a simple deterministic integer transformation defined by the formula:\n\n$$ f_n(x) = (x \\cdot a_n + b_n) \\pmod{100003} $$\n\nwhere $n$ is the function index (0 to 887), $a_n$ is a multiplier, $b_n$ is an additive constant, and 100003 is a fix"
+  },
+  {
+    "label": "tokens-128000-run-1",
+    "stream_request_sha256": "9e987cad02518b254f4716dd2bcd11f5f4137fb35657ecfe18d614065133b121",
+    "request_sha256": "689e1f0d424b6fa34531c29225e1f52589bcad6e34cb6a62795c09c074f136ff",
+    "prompt_tokens": 127950,
+    "generated_tokens": 256,
+    "client_ttft_s": 164.6480561139997,
+    "client_elapsed_s": 170.50432850200013,
+    "prompt_ms": 163771.014,
+    "predicted_ms": 6135.259,
+    "prefill_tok_s": 781.2737851156005,
+    "decode_tok_s": 41.56303751805751,
+    "draft_n": 206,
+    "draft_n_accepted": 151,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module is a collection of 3,403 distinct functions, each named sequentially from `task_00000` to `task_03402`. Despite the sheer volume of code, the underlying logic is remarkably uniform, relying on a simple deterministic integer transformation combined with modulo arithmetic. This structure suggests the module was likely generated programmatically for benchmarking, testing, o"
+  },
+  {
+    "label": "tokens-128000-run-2",
+    "stream_request_sha256": "f8538ab67938c996001b294c5c14a6300801d7c892ec963f993a69764e95e231",
+    "request_sha256": "5d8c8f734863199a999b4629c129e419aa89f4dec388485b8825f8d43b16bbcf",
+    "prompt_tokens": 127950,
+    "generated_tokens": 256,
+    "client_ttft_s": 166.5702961349998,
+    "client_elapsed_s": 172.31276277600045,
+    "prompt_ms": 163872.048,
+    "predicted_ms": 6210.855,
+    "prefill_tok_s": 780.7920970146171,
+    "decode_tok_s": 41.05714913647155,
+    "draft_n": 209,
+    "draft_n_accepted": 150,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module is a collection of 3,403 distinct functions, each named sequentially from `task_00000` to `task_03402`. Despite the sheer volume of code, the underlying logic is remarkably uniform, relying on a simple deterministic integer transformation combined with modulo arithmetic. This structure suggests the module was likely generated programmatically for benchmarking, testing, o"
+  },
+  {
+    "label": "tokens-128000-run-3",
+    "stream_request_sha256": "b82b94dc9c9087b1019d81938607a365c7a7f2094a42a46461839e9f462254d8",
+    "request_sha256": "7e55363c138484e67cd9901100fef2282bbc639d5e51e7ba05afe1bfeddc730a",
+    "prompt_tokens": 127950,
+    "generated_tokens": 256,
+    "client_ttft_s": 166.47113177300162,
+    "client_elapsed_s": 172.2718667900008,
+    "prompt_ms": 163969.573,
+    "predicted_ms": 6259.636,
+    "prefill_tok_s": 780.3277014083582,
+    "decode_tok_s": 40.737193025281336,
+    "draft_n": 210,
+    "draft_n_accepted": 149,
+    "metrics_delta": {
+      "tokens_evaluated": 0,
+      "predictions": 0
+    },
+    "text": "The provided Python module is a collection of 3,403 distinct functions, each named sequentially from `task_00000` to `task_03402`. Despite the sheer volume of code, the underlying logic is remarkably uniform, relying on a single deterministic integer transformation pattern. Each function accepts a single integer argument `value` and returns the result of a linear congruential formula: `(value * mu"
+  }
+]

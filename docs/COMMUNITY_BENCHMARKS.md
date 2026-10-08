@@ -26,6 +26,17 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-07: 2x NVIDIA Quadro RTX 4000 8 GB, Xeon E5-2620 v3, 96 GB RAM](../bench/results/2026-10-07-community-2x-rtx-4000/README.md):
   Strata 0.1.38, Swift-Qwen3.8-Flash-Next IQ2_XS, 131,072-token context, layer split across dual GPUs with RAM-tiered expert cache;
   measured deep-context prompt ingestion (73k–74k tokens at 100–250 tok/s, 18–23 tok/s decode) and production pipeline comparison against a 12B model.
+- [2026-10-07: RTX 3090 24 GB, Ryzen 9 5900X, 128 GB RAM](../bench/results/2026-10-07-community-rtx-3090-128gb/README.md):
+  Strata 0.1.40.3 source build, three Strata models on one GPU dedicated to Strata plus an IQ3_S elastic run (ComfyUI and
+  the openclaw-gateway stopped for dedicated runs; ComfyUI idle and openclaw-gateway stopped for the elastic run; server
+  bound to loopback, a guard confirms zero foreign requests), 262,144-token context; three runs each at 4,096, 32,768,
+  and 128,000 prompt tokens, plus six recall checks. Decode (and engine PSS) at 4K/32K/128K: original Flash-Next IQ3_S 88.0 /
+  92.7 / 90.4 tok/s (53 GiB); Unsloth UD-IQ4_XS (first NVIDIA numbers for that quant) 53.1 / 54.3 / 56.9 (95 GiB); Unsloth
+  UD-Q4_K_XL (experimental, the largest file this RAM holds fully resident) 38.4 / 36.5 / 37.5 (118 GiB). All experts
+  resident, no SSD reads; same 24 GB VRAM throughout. A separate llama.cpp Qwen3.8-27B UD-IQ4_XS check gives 75.0 / 61.7 /
+  41.1 tok/s decode at the same prompt lengths, with 6/6 recall checks. An IQ3_S elastic run with 10,240 MiB reserved for
+  Flux leaves 9,967 MiB free after shrink, peaks at 14,291 MiB GPU used, and gives 50.5 / 48.7 / 51.9 tok/s decode with 6/6
+   recall checks.
 
 ## What to record
 

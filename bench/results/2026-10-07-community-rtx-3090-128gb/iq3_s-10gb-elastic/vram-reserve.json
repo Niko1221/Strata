@@ -1,0 +1,10 @@
+{
+  "status": "ok",
+  "reserve_mib": 10240,
+  "expert_slots": 2870,
+  "expert_slots_full": 7795,
+  "expert_cache_mib": 5632,
+  "expert_cache_full_mib": 15136,
+  "vram_free_mib": 9967,
+  "prompt_chunk": 8192
+}

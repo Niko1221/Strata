@@ -1,0 +1,68 @@
+{
+  "service": "strata",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "loaded": true,
+  "auto_load": true,
+  "structured_output": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "prompt_and_validate",
+    "constrained_decoding": false,
+    "stream_buffered": true
+  },
+  "engine": "0.1.40.3",
+  "started": 1791455738,
+  "uptime_s": 5,
+  "cache_max_tokens": 262144,
+  "context": {
+    "native": 262144,
+    "max_positions": 262144
+  },
+  "concurrency": {
+    "serving": 1,
+    "requested": 1
+  },
+  "dialects": [
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/responses"
+  ],
+  "vision": {
+    "enabled": true,
+    "available": true,
+    "error": null
+  },
+  "activity": {
+    "requests": 0,
+    "in_flight": 0,
+    "last_request_at": null
+  },
+  "last_timings": null,
+  "vram": {
+    "reserve_mib": 10240,
+    "expert_slots": 2870,
+    "expert_slots_full": 7795,
+    "expert_cache_mib": 5632,
+    "expert_cache_full_mib": 15136,
+    "vram_free_mib": 9967,
+    "prompt_chunk": 8192,
+    "elastic": true
+  },
+  "machine": {
+    "at": 1791455743,
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "used_mib": 14609.0,
+      "total_mib": 24576.0,
+      "util_pct": 97,
+      "temp_c": 56,
+      "power_w": 134.301
+    },
+    "ram": {
+      "used_gib": 58.8,
+      "total_gib": 125.7
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{"model": "qwen3.8-27b", "messages": [{"role": "user", "content": "Reply with exactly the word READY."}], "temperature": 0, "max_tokens": 256, "stream": false}

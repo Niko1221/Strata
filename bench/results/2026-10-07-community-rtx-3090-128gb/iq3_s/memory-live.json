@@ -1,0 +1,11 @@
+{
+  "samples": 52,
+  "engine_pss_gib_peak": 53.15,
+  "engine_pss_gib_median": 52.91,
+  "engine_pss_anon_gib_peak": 49.06,
+  "engine_pss_file_gib_peak": 0.22,
+  "ram_used_gib_peak": 60.23,
+  "ram_raw_used_gib_peak": 122.31,
+  "cached_gib_peak": 66.77,
+  "shmem_gib_peak": 3.96
+}

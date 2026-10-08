@@ -1,0 +1,96 @@
+{
+  "units": {
+    "strata": "active",
+    "comfyui": "active",
+    "openclaw-gateway": "active"
+  },
+  "build_json": {
+    "source": "local",
+    "version": "0.1.40.3",
+    "archs": [
+      86
+    ],
+    "vision": "gpu",
+    "cuda_dirs": [
+      "/usr/local/cuda-13.2/bin",
+      "/usr/local/cuda-13.2/lib64"
+    ],
+    "src": "3950c1f221aa6e1b",
+    "vision_src": "1fb2b3fb797ec402"
+  },
+  "config_sha256": "c8afd17ab838a0109aa8a5eff4e384e10bd0e928732611dcbeb40f90fc19ae3a",
+  "status": {
+    "service": "strata",
+    "model": "qwen3.8-flash-next-iq3_s",
+    "loaded": true,
+    "auto_load": true,
+    "structured_output": {
+      "formats": [
+        "json_object",
+        "json_schema"
+      ],
+      "method": "prompt_and_validate",
+      "constrained_decoding": false,
+      "stream_buffered": true
+    },
+    "engine": "0.1.40.3",
+    "started": 1791455603,
+    "uptime_s": 111,
+    "cache_max_tokens": 262144,
+    "context": {
+      "native": 262144,
+      "max_positions": 262144
+    },
+    "concurrency": {
+      "serving": 1,
+      "requested": 1
+    },
+    "dialects": [
+      "/v1/chat/completions",
+      "/v1/messages",
+      "/v1/responses"
+    ],
+    "vision": {
+      "enabled": true,
+      "available": true,
+      "error": null
+    },
+    "activity": {
+      "requests": 1,
+      "in_flight": 0,
+      "last_request_at": 1791455714
+    },
+    "last_timings": {
+      "cache_n": 0,
+      "prompt_n": 206738,
+      "prompt_ms": 91131.0,
+      "prompt_per_token_ms": 0.441,
+      "prompt_per_second": 2268.6,
+      "predicted_n": 435,
+      "predicted_ms": 6123.1,
+      "predicted_per_token_ms": 14.076,
+      "predicted_per_second": 71.0,
+      "draft_n": 271,
+      "draft_n_accepted": 230,
+      "at": 1791455714
+    },
+    "vram": {
+      "elastic": true
+    },
+    "machine": {
+      "at": 1791455714,
+      "gpu": {
+        "name": "NVIDIA GeForce RTX 3090",
+        "used_mib": 24257.0,
+        "total_mib": 24576.0,
+        "util_pct": 100,
+        "temp_c": 68,
+        "power_w": 278.442
+      },
+      "ram": {
+        "used_gib": 60.6,
+        "total_gib": 125.7
+      }
+    }
+  }
+}

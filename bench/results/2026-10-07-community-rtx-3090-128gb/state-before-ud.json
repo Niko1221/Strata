@@ -1,0 +1,24 @@
+{
+  "units": {
+    "strata": "active",
+    "comfyui": "active",
+    "openclaw-gateway": "active"
+  },
+  "build_json": {
+    "source": "local",
+    "version": "0.1.40.3",
+    "archs": [
+      86
+    ],
+    "vision": "gpu",
+    "cuda_dirs": [
+      "/usr/local/cuda-13.2/bin",
+      "/usr/local/cuda-13.2/lib64"
+    ],
+    "src": "3950c1f221aa6e1b",
+    "vision_src": "1fb2b3fb797ec402"
+  },
+  "iq3_s_config_sha256": "651e1661969167f463505cc4eb1a341338c40f29a198746bc4032d92daeef5f1",
+  "q4k_config_sha256": "57a8cd7c28e68b3182e62c7a26fb41a82f9a123275bc96d2c20028737ae6783f",
+  "engine_version": "0.1.40.3"
+}

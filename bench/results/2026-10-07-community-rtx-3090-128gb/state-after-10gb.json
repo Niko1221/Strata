@@ -1,0 +1,8 @@
+{
+  "units": {
+    "strata": "active",
+    "comfyui": "active",
+    "openclaw-gateway": "active"
+  },
+  "status_error": "<urlopen error [Errno 111] Connection refused>"
+}

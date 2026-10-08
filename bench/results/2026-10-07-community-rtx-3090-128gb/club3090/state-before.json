@@ -1,0 +1,7 @@
+{
+  "units": {
+    "strata": "active",
+    "comfyui": "active",
+    "openclaw-gateway": "active"
+  }
+}
