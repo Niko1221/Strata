@@ -54,6 +54,9 @@ void add_inplace(float* dst, const float* src, int64_t n, void* stream);
 /// `y[i] = f16(x[i])`, round-to-nearest-even, using the shared conversion in `f16_bits.hpp`.
 void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 
+/// Exact widening of BF16 activations before native Q8_1 activation quantization.
+void bf16_to_f32_bulk(const uint16_t* x, float* y, int64_t n, void* stream);
+
 /// `y[i] = bf16(x[i])`, for the weights whose contract is a bf16 activation - the BF16 `hc_*`, `ssm_alpha`,
 /// `ssm_beta`, `indexer.*` and `ple_value` tensors.
 ///
