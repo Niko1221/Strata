@@ -1612,6 +1612,62 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     bo[i] = make_float4(s.x + sh.x * g, s.y + sh.y * g, s.z + sh.z * g, s.w + sh.w * g);
 }
 
+// moe_combine4_kernel's sum for one token, then gr_write_norm_rs_kernel for its four rows (t, c): a block per token,
+// bo kept in registers (each thread's elements d = tid + 256 k, the mapping both kernels use) instead of written and
+// read back.  Every value is the two kernels' expression in their order: the same R, rs and BF16 image.
+__global__ void __launch_bounds__(256) moe_combine_write_norm_rs_kernel(
+    const float* __restrict__ Dm, const int32_t* __restrict__ slot, const float* __restrict__ w,
+    const float* __restrict__ shared, const float* __restrict__ sg, float* __restrict__ R,
+    const float* __restrict__ inj, int64_t inj_ld, const float* __restrict__ wn, float eps, float* __restrict__ rs_out,
+    uint16_t* __restrict__ xn16, uint16_t* __restrict__ xn16_lo, int64_t ldx) {
+    __shared__ float sh[32];
+    __shared__ int64_t s_row[10];
+    __shared__ float s_w[10];
+    const int64_t t = blockIdx.x;
+    if (threadIdx.x < 10) {
+        s_row[threadIdx.x] = slot[t * 10 + threadIdx.x];
+        s_w[threadIdx.x] = w[t * 10 + threadIdx.x];
+    }
+    __syncthreads();
+    const float g = sigm(sg[t]);
+    float bo[GRW_PER];
+    int k = 0;
+#pragma unroll
+    for (int d = threadIdx.x; d < N; d += 256, ++k) {
+        float s = 0.0f;
+#pragma unroll
+        for (int q = 0; q < 10; ++q) s = fmaf(s_w[q], Dm[s_row[q] * N + d], s);
+        bo[k] = s + shared[t * N + d] * g;
+    }
+#pragma unroll 1
+    for (int c = 0; c < HC; ++c) {
+        const int64_t row = t * HC + c;
+        float* r = R + row * N;
+        const int64_t xo = t * ldx + (int64_t) c * N;
+        const float sc = 2.0f * sigm(inj[t * inj_ld + c] / (float) HC);
+        float v[GRW_PER];
+        float ss = 0.0f;
+        k = 0;
+#pragma unroll
+        for (int d = threadIdx.x; d < N; d += 256, ++k) {
+            const float x = fmaf(bo[k], sc, r[d]);
+            r[d] = x;
+            v[k] = x;
+            ss += x * x;
+        }
+        const float rs = rsqrtf(block_sum(ss, sh) / (float) N + eps);
+        if (threadIdx.x == 0) rs_out[row] = rs;
+        k = 0;
+#pragma unroll
+        for (int d = threadIdx.x; d < N; d += 256, ++k) {
+            const float x = v[k] * rs * wn[c * N + d];
+            const uint16_t h = act16(x);
+            xn16[xo + d] = h;
+            if (xn16_lo) xn16_lo[xo + d] = bf_lo(x, h);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- QSA helpers
 __global__ void rms_rows_kernel(float* __restrict__ x, const float* __restrict__ w, int64_t cols, int64_t ld, float eps) {
     __shared__ float sh[32];
@@ -2174,6 +2230,23 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
 #endif
     moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T);
     check("moe_combine");
+}
+bool moe_combine_write_norm_rs(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg,
+                               float* R, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps, float* rs,
+                               uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx) {
+#if !defined(STRATA_W_NO_COMB) && !defined(__HIPCC__)
+    // where moe_combine takes moe_combine4_kernel (16-byte aligned Dm, shared and bo; bo is not needed here)
+    if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared)) & 15) == 0) {
+        if (T > 0) {
+            moe_combine_write_norm_rs_kernel<<<(unsigned) T, 256, 0, (cudaStream_t) stream>>>(
+                Dm, slot, w, shared, sg, R, inj, inj_ld, w_norm_next, eps, rs, xn16, xn16_lo, ldx > 0 ? ldx : D);
+            check("moe_combine_write_norm_rs");
+        }
+        return true;
+    }
+#endif
+    // STRATA_W_NO_COMB: moe_combine_kernel's path, not the expression this kernel copies; HIP: not checked there
+    return false;
 }
 void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, float eps, void* stream) {
     if (rows <= 0) return;
