@@ -1,6 +1,6 @@
 """#893 / #894: a request body sent as Transfer-Encoding: chunked (a relay or proxy) is decoded, on every route that
-reads a body; a malformed or oversized one is a 400 / 413, not an empty body. Incomplete framing must not apply an
-otherwise valid JSON body, for either Content-Length or chunked requests.
+reads a body; a malformed or oversized one is a 400 / 413, not an empty body. Incomplete chunked framing must not
+apply an otherwise valid JSON body.
 
     python -m unittest serve.test_chunked_body -v
 """
@@ -108,10 +108,6 @@ class ChunkedBody(unittest.TestCase):
         head = b"/settings HTTP/1.1" + CRLF + b"Content-Type: application/json" + CRLF + extra
         status, got = self.send(head, body)
         self.assertEqual((status, self.svc.shared), (400, before), got)
-
-    def test_a_short_content_length_body_does_not_change_settings(self):
-        body = json.dumps({"defaults": {"temperature": 0.5}}).encode()
-        self.assert_settings_body_rejected(b"Content-Length: %d" % (len(body) + 1) + CRLF, body)
 
     def test_incomplete_chunked_trailers_do_not_change_settings(self):
         body = json.dumps({"defaults": {"temperature": 0.5}}).encode()

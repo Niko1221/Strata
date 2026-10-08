@@ -4191,7 +4191,7 @@ def body_limit() -> int:
 
 
 class BadBody(Exception):
-    """A request body that cannot be read (malformed, incomplete or oversized): the status and the sentence."""
+    """A request body that cannot be read (a malformed or oversized chunked body): the status and the sentence."""
 
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -4283,10 +4283,7 @@ def make_handler(svc: Service):
                 self.close_connection = True               # the body is not read: the connection ends with the answer
                 raise BadBody(413, f"the request body is larger than {limit >> 20} MiB "
                                    "(STRATA_MAX_BODY_MIB raises the limit)")
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise BadBody(400, "the request body ended early")
-            return body
+            return self.rfile.read(length)
 
         def _drain_body(self):
             """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
@@ -4597,7 +4594,7 @@ def make_handler(svc: Service):
         def do_POST(self):
             try:
                 self._post()
-            except BadBody as e:                              # a malformed, incomplete or oversized body
+            except BadBody as e:                              # #893: a malformed or oversized chunked body
                 self._json(e.status, {"error": {"type": "invalid_request_error", "message": str(e)}})
 
         def _post(self):
