@@ -1101,29 +1101,45 @@ const char* const PRE_SECTION_NAMES[] = {
 constexpr int PRE_SECTIONS = (int) (sizeof(PRE_SECTION_NAMES) / sizeof(PRE_SECTION_NAMES[0]));
 constexpr int PRE_BOUNDARIES = PRE_SECTIONS + 1;   // one before each section and one after the last
 
+/// The switch, read once.  False on every normal run, which is what keeps `section_mark` down to a `bool` test
+/// - the device lookup below is not free and must not happen per `pre` call.
+bool sections_wanted() {
+    static const bool on = std::getenv("STRATA_GLM_PREFILL_TIME") != nullptr;
+    return on;
+}
+
 /// One `cudaEvent_t` per boundary per call, so a layer's `T` calls are read together at the layer's sync.  The
 /// pool grows to the first chunk that needs it and is then reused; nothing here is thread-safe and a session's
 /// layers are strictly sequential, so nothing needs to be.
 struct SectionTimer {
-    bool on = false;
-    bool asked = false;
+    bool on = true;
     std::vector<cudaEvent_t> ev;
     size_t used = 0;            // boundaries recorded since the last flush
     double ms[PRE_SECTIONS]{};
     long long calls = 0;
 };
 
+/// **ONE TIMER PER CUDA DEVICE, BECAUSE A LAYER SPLIT IS ONE PROCESS ACROSS SEVERAL CARDS.**  The engine
+/// `cudaSetDevice`s per stage, and a `cudaEvent_t` belongs to the context that created it: a single shared pool
+/// records the first card's events on the second card's stream, which fails with
+/// `cudaErrorInvalidResourceHandle` - and while `section_mark` then turns the timer off rather than report
+/// garbage, the failure also LATCHES a CUDA error that the next unrelated `check_launch` prints as if its own
+/// kernel had failed.  So the pool is indexed by device; each stage gets its own, and a stage change is
+/// invisible to the section accounting either way, since a stage never shares a chunk's boundaries with
+/// another.  The events are deliberately never destroyed: a destructor would run after the CUDA context is
+/// gone, which is the very error this avoids, and they go with the context anyway.
 SectionTimer& section_timer() {
-    static SectionTimer t;
-    if (!t.asked) {
-        t.asked = true;
-        t.on = std::getenv("STRATA_GLM_PREFILL_TIME") != nullptr;
-    }
-    return t;
+    static std::vector<SectionTimer*> per_device;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0) dev = 0;
+    if ((size_t) dev >= per_device.size()) per_device.resize((size_t) dev + 1, nullptr);
+    if (per_device[(size_t) dev] == nullptr) per_device[(size_t) dev] = new SectionTimer();
+    return *per_device[(size_t) dev];
 }
 
 /// Records the next boundary.  Silently does nothing when the switch is off, which is every normal run.
 void section_mark(void* stream) {
+    if (!sections_wanted()) return;
     SectionTimer& t = section_timer();
     if (!t.on) return;
     if (t.used == t.ev.size()) {
@@ -1139,6 +1155,7 @@ void section_mark(void* stream) {
 }  // namespace
 
 void glm_pre_sections_reset() {
+    if (!sections_wanted()) return;
     SectionTimer& t = section_timer();
     t.used = 0;
     t.calls = 0;
@@ -1146,6 +1163,7 @@ void glm_pre_sections_reset() {
 }
 
 void glm_pre_sections_flush() {
+    if (!sections_wanted()) return;
     SectionTimer& t = section_timer();
     if (!t.on || t.used == 0) return;
     const size_t calls = t.used / (size_t) PRE_BOUNDARIES;
@@ -1162,6 +1180,7 @@ void glm_pre_sections_flush() {
 }
 
 void glm_pre_sections_report(int64_t tokens, int64_t layers) {
+    if (!sections_wanted()) return;
     SectionTimer& t = section_timer();
     if (!t.on) return;
     if (t.calls == 0) {
@@ -1171,12 +1190,18 @@ void glm_pre_sections_report(int64_t tokens, int64_t layers) {
     }
     double total = 0.0;
     for (double v : t.ms) total += v;
-    std::fprintf(stderr, "strata glm prefill: sections over %lld layer-tokens in %.3f s on the card:\n",
-                 t.calls, total / 1000.0);
+    // **A CALL IS NOT A TOKEN ONCE `pre` TAKES GROUPS.**  One call covers up to `GLM_MAX_NTOK` tokens, so the
+    // per-line figure below is milliseconds a CALL and would read eight times too large if it were labelled a
+    // token.  What a caller means by "a token's cost" is this divided by the group width, and the width follows
+    // from the totals it handed in: `tokens * layers` is how many layer-tokens those calls covered.  Computed
+    // rather than passed, so it cannot disagree with them.
+    const double per_call = (t.calls > 0) ? (double) (tokens * layers) / (double) t.calls : 1.0;
+    std::fprintf(stderr, "strata glm prefill: sections over %lld pre calls (%.1f tokens each) in %.3f s on the card:\n",
+                 t.calls, per_call, total / 1000.0);
     for (int s = 0; s < PRE_SECTIONS; ++s)
-        std::fprintf(stderr, "strata glm prefill:   %-38s %7.3f s  %5.1f%%  %7.3f ms a layer-token\n",
+        std::fprintf(stderr, "strata glm prefill:   %-38s %7.3f s  %5.1f%%  %7.3f ms a call  %7.3f ms a token\n",
                      PRE_SECTION_NAMES[s], t.ms[s] / 1000.0, total > 0 ? 100.0 * t.ms[s] / total : 0.0,
-                     t.ms[s] / (double) t.calls);
+                     t.ms[s] / (double) t.calls, t.ms[s] / (double) t.calls / per_call);
     std::fflush(stderr);
     glm_pre_sections_reset();
 }
