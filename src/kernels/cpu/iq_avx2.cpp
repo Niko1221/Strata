@@ -457,6 +457,34 @@ bool iq256_supported(int type) noexcept {
     return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
 }
 
+void iq256_gu_rows_exact_one(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                             const void* act, float* ff, int r0, int r1) {
+    const auto* y = (const block_q8_K*) act;
+#if STRATA_AVXVNNI
+    if (vnni_on()) {
+        if (type == 16) vnni::gu_ggml_one<16>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        else if (type == 17) vnni::gu_ggml_one<17>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        else if (type == 18) {
+            if (iq256_variant() & kIq256Gather) vnni::gu_ggml_one<118>(blob, gu_row, up_off, n, y, ff, r0, r1);
+            else vnni::gu_ggml_one<18>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        } else if (type == 21) {
+            if (iq256_variant() & kIq256Gather) vnni::gu_ggml_one<121>(blob, gu_row, up_off, n, y, ff, r0, r1);
+            else vnni::gu_ggml_one<21>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        }
+        return;
+    }
+#endif
+    if (type == 16) plain::gu_ggml_one<16>(blob, gu_row, up_off, n, y, ff, r0, r1);
+    else if (type == 17) plain::gu_ggml_one<17>(blob, gu_row, up_off, n, y, ff, r0, r1);
+    else if (type == 18) {
+        if (iq256_variant() & kIq256Gather) plain::gu_ggml_one<118>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        else plain::gu_ggml_one<18>(blob, gu_row, up_off, n, y, ff, r0, r1);
+    } else if (type == 21) {
+        if (iq256_variant() & kIq256Gather) plain::gu_ggml_one<121>(blob, gu_row, up_off, n, y, ff, r0, r1);
+        else plain::gu_ggml_one<21>(blob, gu_row, up_off, n, y, ff, r0, r1);
+    }
+}
+
 int iq256_variant() noexcept {
     // STRATA_IQ256_GATHER=0/1 for every core; unset, where the calling thread's core gathers faster (per thread: a
     // hybrid CPU's pool runs on P- and E-cores).  AVX-VNNI where cpu_avxvnni_ok().  The same bits either way.

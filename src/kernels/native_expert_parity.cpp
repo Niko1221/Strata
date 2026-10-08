@@ -93,6 +93,25 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             a[k] = act[k].data();
             ffp[k] = ff[k].data();
         }
+        if ((f.gu_type == 18 || f.gu_type == 21) && cpu::cpu_avx2_ok() && !cpu::cpu_avx512_ok()) {
+            const auto dot = ggml_get_type_traits_cpu((ggml_type) f.gu_type)->vec_dot;
+            size_t differ = 0;
+            std::vector<float> exact((size_t) FF);
+            for (int k = 0; k < NT; ++k) {
+                cpu::iq256_gu_rows_exact_one(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a[k],
+                                              exact.data(), 0, (int) FF);
+                for (int r = 0; r < FF; ++r) {
+                    float g = 0.f, u = 0.f;
+                    dot((int) H, &g, 0, blob.data() + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    dot((int) H, &u, 0, blob.data() + f.up_off + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    const float want = (g / (1.f + std::exp(-g))) * u;
+                    differ += std::memcmp(&want, &exact[(size_t) r], sizeof(float)) != 0;
+                }
+            }
+            std::printf("%s exact singleton: %zu of %lld real gate/up rows differ from ggml\n",
+                        label.c_str(), differ, (long long) (NT * FF));
+            if (differ) ++failures;
+        }
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
         // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
         // iq512_supported alone - that would leave the format untested on every CPU.

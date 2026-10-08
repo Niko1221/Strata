@@ -12,6 +12,7 @@
 #include "ggml-cpu.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 
@@ -124,6 +125,17 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // baseline the build selected (AVX1 here) and covers the same types - IQ2_XXS and IQ2_S among
     // them.  That path loops over tokens itself, so it is correct for any `nt`, not just one.
     static const bool avx2 = cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
+    static const bool exact_one = [] {
+        const char* v = std::getenv("STRATA_CPU_IQ_ALL_EXACT1");
+        return v && v[0] == '1' && v[1] == '\0';
+    }();
+    if (exact_one && nt == 1 && avx2 && !cpu_avx512_ok() &&
+        (f.gu_type == 16 || f.gu_type == 17 || f.gu_type == 18 || f.gu_type == 21)) {
+        static std::once_flag announced;
+        std::call_once(announced, [] { std::fprintf(stderr, "strata ab: GATE=STRATA_CPU_IQ_ALL_EXACT1 active=1\n"); });
+        iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
+        return;
+    }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
