@@ -307,6 +307,8 @@ class Telemetry:
             c = self.ps.disk_io_counters()
         except (OSError, RuntimeError):
             return None, None
+        if c is None:   # psutil found no disk (a gVisor container, Windows with its disk counters off)
+            return None, None
         t = time.time()
         prev, self._disk_prev = self._disk_prev, (t, c.read_bytes, c.write_bytes)
         if prev is None or t <= prev[0]:

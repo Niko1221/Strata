@@ -3912,6 +3912,31 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
+class TelemetryNoDisks(unittest.TestCase):
+    """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
+    off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left
+    /metrics' hardware empty and the frozen-engine check's GPU reading at 0."""
+
+    def test_sampler_runs_without_disk_counters(self):
+        from serve import telemetry
+        vm = SimpleNamespace(total=64 * 2**30, available=40 * 2**30)
+        fake = SimpleNamespace(cpu_count=lambda logical=True: 8, cpu_percent=lambda interval=None: 12.5,
+                               virtual_memory=lambda: vm, disk_io_counters=lambda: None)
+        with mock.patch.dict(sys.modules, {"psutil": fake}):
+            t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.5})
+            try:
+                deadline = time.monotonic() + 5.0
+                while not t.snapshot()["now"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                now = t.snapshot()["now"]
+                self.assertEqual(now.get("tok_s"), 1.5)
+                self.assertEqual(now.get("ram_used"), 24 * 2**30)
+                self.assertIsNone(now.get("disk_read_mb"))
+                self.assertIsNone(t.sample()["disk_write_mb"])
+            finally:
+                t.close()
+
+
 class SilentEngine(unittest.TestCase):
     """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
     lost step with the server: it is ended and the request fails with EngineDied, instead of waiting forever."""
