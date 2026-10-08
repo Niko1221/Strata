@@ -11,6 +11,15 @@ struct LiveMemoryRequest {
     uint64_t id = 0, resident_mib = 0, vram_reserve_mib = 0;
 };
 
+// A queued recovery must not make new foreground pressure wait for allocations. Retargeting is
+// permitted only toward release in BOTH tiers, with no new RAM growth and a new acknowledgement ID.
+inline bool live_memory_supersedes(const LiveMemoryRequest& next, const LiveMemoryRequest& old,
+                                   uint64_t resident_bytes) {
+    return next.id != old.id && next.resident_mib <= old.resident_mib &&
+           next.resident_mib <= (resident_bytes >> 20) && next.vram_reserve_mib >= old.vram_reserve_mib &&
+           (next.resident_mib < old.resident_mib || next.vram_reserve_mib > old.vram_reserve_mib);
+}
+
 // Completion belongs to the whole request. In particular, a shrink may finish below its
 // target after releasing a whole block; later GPU steps must not refill that rounded gap.
 template<class Resize>

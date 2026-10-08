@@ -2,8 +2,25 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 
 namespace strata::core {
+
+// Only call after Prefill::run_cooperative has returned: on_chunk alone is not a lifetime boundary.
+// Return the old loan before exposing resize permission, and never lend again after cancellation or
+// a failed service. The caller preserves the exact next prompt position throughout this operation.
+template <class Drain, class ReturnLoan, class Service, class Cancelled, class Lend>
+bool live_prefill_pause(bool& active, Drain drain, ReturnLoan return_loan, Service service,
+                       Cancelled cancelled, Lend lend, std::string& err) {
+    if (!drain(err) || !return_loan(err)) return false;
+    active = false;
+    if (cancelled()) { err = "cancelled"; return false; }
+    if (!service(err)) return false;
+    if (cancelled()) { err = "cancelled"; return false; }
+    if (!lend(err)) return false;
+    active = true;
+    return true;
+}
 
 // Sized-slot loans must fit wholly within the active prefix. The offsets themselves stay stable under VMM.
 inline int64_t live_prefill_first(const uint64_t* offsets, int64_t slots, uint64_t bytes, int64_t keep = 128) {

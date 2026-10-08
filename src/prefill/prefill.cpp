@@ -1758,7 +1758,8 @@ struct PeTimer {
 };
 }  // namespace
 
-bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err,
+                       const std::function<bool()>* yield, int64_t* progress_out) {
     err.clear();
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
@@ -1851,6 +1852,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    int64_t completed = 0;
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
@@ -3546,6 +3548,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
         }
+        // The final residuals have been consumed by the drafter/checkpoint callbacks. Do not resize
+        // here: run-local PLE futures, stagers and stream readers still need their normal unwind.
+        completed = c0 + T;
+        ss.ple_prev[0] = prev[0];
+        ss.ple_prev[1] = prev[1];
+        if (progress_out) *progress_out = completed;
+        if (yield && completed < n && (*yield)()) break;
     }
     // Do not drain the successor here. This is the overlap: an intermediate
     // stage can return while later GPUs are still processing the previous chunk.
@@ -3561,7 +3570,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             for (float v : h) { c += !std::isfinite(v); if (std::isfinite(v)) mx = std::max(mx, (double) std::fabs(v)); }
             std::fprintf(stderr, " %lld non-finite (max |x| %.3g)", (long long) c, mx);
         };
-        const int64_t last = (n - 1) % m.T;
+        const int64_t last = (std::max<int64_t>(yield ? completed : n, 1) - 1) % m.T;
         std::fprintf(stderr, "strata dbg: prompt end: last residual row");
         bad(m.R + last * D, D);
         if (ss.ple.ready()) { std::fprintf(stderr, "; PLE history"); bad(ss.ple.hist, (int64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM); }
@@ -3599,7 +3608,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             line += b;
         }
         std::fprintf(stderr, "strata prefill timing: %lld tokens, GPU timeline %.0f ms, wall %.0f ms, host staging %.0f ms:%s\n",
-                     (long long) n, total, ms_since(t_start), stats_.ms_experts_host, line.c_str());
+                     (long long) (yield ? completed : n), total, ms_since(t_start), stats_.ms_experts_host, line.c_str());
         std::fprintf(stderr, "strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) %.0f ms, "
                              "waiting for each chunk %.0f ms, after each chunk (the draft layer, progress) %.0f ms, "
                              "PLE %.0f ms\n", host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple);
@@ -3668,6 +3677,30 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         err = drain_err;
         return false;
     }
+    return true;
+}
+
+bool Prefill::run_cooperative(const int64_t* tokens, int64_t n, int64_t pos0,
+                              const std::function<bool()>& yield, int64_t& consumed, std::string& err) {
+    consumed = 0;
+    if (next_ != nullptr || hand_in_ != nullptr || stage_lb_ != 0 ||
+        impl_->g == nullptr || stage_le_ != impl_->g->n_layers) {
+        err = "prefill: cooperative yielding requires the complete single-device prompt path";
+        return false;
+    }
+    const bool body_ok = run_impl(tokens, n, pos0, err, &yield, &consumed);
+    // run_impl's local futures are now gone; finish the persistent expert stager too before its
+    // owners can be released. Ordinary run() retains its existing overlap behavior.
+    drain_expert_reads();
+    std::string drain_err;
+    const bool drained = drain_pipeline(drain_err);
+    // Cancellation can leave the normal run_impl epilogue early. Its caller still has to return
+    // borrowed slots, so finish device readers here too (including draft callbacks on another stream).
+    const core::OnDevice on_device(impl_->device);
+    const cudaError_t synced = cudaDeviceSynchronize();
+    if (!body_ok) return false;
+    if (!drained) { err = drain_err; return false; }
+    if (synced != cudaSuccess) { err = std::string("prefill: cooperative drain: ") + cudaGetErrorString(synced); return false; }
     return true;
 }
 

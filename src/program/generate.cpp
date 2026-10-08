@@ -22,6 +22,8 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/live_memory.hpp"
 #include "strata/core/live_prefill.hpp"
+#include "strata/core/request_stop.hpp"
+#include "strata/core/background_control.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -2004,7 +2006,7 @@ int main(int argc, char** argv) {
         }
         o.vram_reserve_mib = std::max(o.vram_reserve_mib, 256);
         std::fprintf(stderr, "strata serve: live memory: %s\n", o.no_prefill_borrow
-                     ? "separate prompt buffers" : "guarded prompt borrowing; controls wait for refill");
+                     ? "separate prompt buffers" : "guarded prompt borrowing; controls yield between completed chunks");
     }
     // A layer split keeps the resident RAM mode: every stage's GPU cache is left out of the RAM copy, and an adaptive
     // swap copies an evicted expert back from the card that owns its layer (resident_stage_swaps).
@@ -6588,12 +6590,15 @@ int main(int argc, char** argv) {
                     chunk = c; first = at; break;
                 }
             }
-            if (first < 0) { why = "live prefill: no bounded loan fits"; return false; }
+            if (first < 0 || first > std::numeric_limits<int32_t>::max()) {
+                why = "live prefill: no bounded loan fits"; return false;
+            }
+            const int32_t first_slot = (int32_t) first;
             const uint64_t bytes = xcache.slot_offsets()[slots] - xcache.slot_offsets()[first];
-            if (!sp.relayout(chunk, xcache.device_slot(first), bytes, why)) return false;
+            if (!sp.relayout(chunk, xcache.device_slot(first_slot), bytes, why)) return false;
             PfPart& p = pf_parts[0];
-            p.first = p.first_now = (int32_t) first; p.lent_chunk = 0;
-            lend_first = p.first; borrow = xcache.device_slot(first); borrow_bytes = bytes;
+            p.first = p.first_now = first_slot; p.lent_chunk = 0;
+            lend_first = p.first; borrow = xcache.device_slot(first_slot); borrow_bytes = bytes;
             if (o.prefill_chunk != chunk)
                 std::fprintf(stderr, "strata live memory: prompt loan now %lld tokens / %llu MiB with %lld cache slots\n",
                              (long long) chunk, (unsigned long long) (bytes >> 20), (long long) slots);
@@ -7877,13 +7882,33 @@ int main(int argc, char** argv) {
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
+        strata::core::RequestStop stop_req;
+        std::atomic<bool> quit_requested{false}; // unlike per-request STOP, admission must never clear QUIT
         std::mutex in_mu;
         std::condition_variable in_cv;
-        std::deque<std::string> in_lines;
+        struct InputLine { std::string text; uint64_t stop_epoch; };
+        std::deque<InputLine> in_lines;
+        uint64_t admitted_stop_epoch = 0;
         std::deque<std::string> memory_lines;
+        std::optional<std::string> background_line; // newest lease supersedes older unread controls
+        strata::core::BackgroundControl background;
+        auto monotonic_ms = []() -> int64_t {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+        };
+        auto poll_background = [&]() {
+            std::optional<std::string> line;
+            {
+                std::lock_guard<std::mutex> lk(in_mu);
+                line.swap(background_line);
+            }
+            if (!line) return;
+            const bool accepted = o.live_memory && background.ingest(*line, monotonic_ms());
+            std::printf("BACKGROUND status=%s\n", accepted ? "accepted" : "rejected");
+            std::fflush(stdout);
+        };
         bool in_eof = false;
         std::optional<strata::core::LiveMemoryRequest> memory_request;
+        uint64_t memory_last_terminal_id = 0;
         bool memory_gpu_growth = false, memory_gpu_capped = false, memory_ram_done = false;
         Clock::time_point memory_step_at{};
         // Call only after readers and CUDA work have drained. Both startup admission and live control remove
@@ -7910,6 +7935,8 @@ int main(int argc, char** argv) {
             size_t free_b = 0, total_b = 0;
             const bool measured = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
             if (!measured) { status = "error"; code = "telemetry"; }
+            if (id != 0 && (std::strcmp(status, "applied") == 0 || std::strcmp(status, "error") == 0))
+                memory_last_terminal_id = id;
             std::printf("MEMORY %llu status=%s resident_mib=%llu expert_cache_mib=%llu expert_slots=%lld "
                         "vram_free_mib=%lld vram_reserve_mib=%llu error=%s\n",
                         (unsigned long long) id, status, (unsigned long long) (src.resident_bytes() >> 20),
@@ -7921,7 +7948,25 @@ int main(int argc, char** argv) {
         // Main-thread only. The reader queues control lines even while GEN is running; the actual mutation
         // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
         Clock::time_point capacity_at{};
-        auto service_memory = [&]() {
+        // WDDM's local residency budget is distinct from CUDA's allocator free count. Use the current
+        // CUDA device's adapter LUID; adapter 0 could be the laptop's iGPU. Unavailable budgets are omitted.
+        auto local_gpu_budget = [&](uint64_t& budget, uint64_t& usage) {
+#if defined(_WIN32) && !defined(STRATA_USE_HIP)
+            int device = 0;
+            cudaDeviceProp prop{};
+            std::string why;
+            return cudaGetDevice(&device) == cudaSuccess && cudaGetDeviceProperties(&prop, device) == cudaSuccess &&
+                   strata::platform::gpu_local_memory_budget(prop.luid, budget, usage, why);
+#else
+            return false;
+#endif
+        };
+        auto admissible_gpu_free = [&](uint64_t cuda_free) {
+            uint64_t budget = 0, usage = 0;
+            if (!local_gpu_budget(budget, usage)) return cuda_free;
+            return std::min(cuda_free, budget > usage ? budget - usage : 0);
+        };
+        auto service_memory = [&](bool pressure_pause = false) {
           try {
             // The engine's allocator view can differ substantially from NVML on WDDM.
             // Observe on this CUDA-owning thread at existing boundaries; no extra synchronization.
@@ -7929,15 +7974,23 @@ int main(int argc, char** argv) {
                 capacity_at = Clock::now();
                 size_t available = 0, total = 0;
                 const bool ok = cudaMemGetInfo(&available, &total) == cudaSuccess;
-                std::printf("CAPACITY free_mib=%lld total_mib=%lld resident_mib=%llu cache_mib=%llu\n",
+                std::printf("CAPACITY free_mib=%lld total_mib=%lld resident_mib=%llu cache_mib=%llu memory_pending_id=%llu memory_reserve_mib=%d memory_last_terminal_id=%llu",
                             ok ? (long long) (available >> 20) : -1ll,
                             ok ? (long long) (total >> 20) : -1ll,
                             (unsigned long long) (src.resident_bytes() >> 20),
-                            (unsigned long long) (xcache.committed_bytes() >> 20));
+                            (unsigned long long) (xcache.committed_bytes() >> 20),
+                            (unsigned long long) (memory_request ? memory_request->id : 0), o.vram_reserve_mib,
+                            (unsigned long long) memory_last_terminal_id);
+                uint64_t budget = 0, usage = 0;
+                if (local_gpu_budget(budget, usage))
+                    std::printf(" budget_mib=%llu usage_mib=%llu budget_free_mib=%llu",
+                                (unsigned long long) (budget >> 20), (unsigned long long) (usage >> 20),
+                                (unsigned long long) ((budget > usage ? budget - usage : 0) >> 20));
+                std::printf("\n");
                 std::fflush(stdout);
             }
-            // Prefill owns the borrowed addresses from lend through the final refill. In particular on_chunk
-            // is not a resize boundary: later chunks and draft-KV callbacks still use those raw views.
+            // on_chunk is not a resize boundary. A cooperative run must return, all readers must drain,
+            // and its loan must be returned before this guard can be cleared between prompt chunks.
             if (live_prompt_active) return;
             std::deque<std::string> commands;
             {
@@ -7952,10 +8005,14 @@ int main(int argc, char** argv) {
                 if (!o.live_memory) {
                     memory_reply(request.id, "error", "unsupported", (uint64_t) o.vram_reserve_mib); continue;
                 }
-                if (memory_request) {
-                    memory_reply(request.id, "error", "busy", (uint64_t) o.vram_reserve_mib); continue;
-                }
                 request.vram_reserve_mib = std::max<uint64_t>(request.vram_reserve_mib, 256);
+                if (memory_request) {
+                    if (!strata::core::live_memory_supersedes(request, *memory_request, src.resident_bytes())) {
+                        memory_reply(request.id, "error", "busy", (uint64_t) o.vram_reserve_mib); continue;
+                    }
+                    memory_reply(memory_request->id, "error", "superseded", memory_request->vram_reserve_mib);
+                    memory_request.reset();
+                }
                 memory_gpu_growth = strata::core::live_memory_gpu_growth_allowed(
                     request, src.resident_bytes(), (uint64_t) o.vram_reserve_mib);
                 memory_gpu_capped = false;
@@ -7963,7 +8020,8 @@ int main(int argc, char** argv) {
                 memory_request = request;
                 memory_step_at = Clock::time_point{};
             }
-            if (!memory_request || Clock::now() - memory_step_at < std::chrono::milliseconds(100)) return;
+            if (!memory_request || ((!pressure_pause || memory_gpu_growth) &&
+                Clock::now() - memory_step_at < std::chrono::milliseconds(100))) return;
             memory_step_at = Clock::now();
             const auto request = *memory_request;
             auto fail_memory = [&](const char* code, const std::string& why) {
@@ -7996,7 +8054,7 @@ int main(int argc, char** argv) {
             const uint64_t reserve = request.vram_reserve_mib << 20;
             const uint64_t committed = xcache.committed_bytes();
             const uint64_t quantum = xcache.live_block_bytes();
-            const uint64_t budget = strata::core::live_memory_gpu_budget(free_b, committed, reserve, quantum,
+            const uint64_t budget = strata::core::live_memory_gpu_budget(admissible_gpu_free(free_b), committed, reserve, quantum,
                                                                         memory_gpu_growth);
             int64_t target_slots = std::max(live_cache_floor, xcache.slots_for_bytes(budget));
             const int64_t old_slots = xcache.slots();
@@ -8055,7 +8113,7 @@ int main(int argc, char** argv) {
                     // Touching WDDM mappings can consume more apparent room than the earlier free snapshot.
                     size_t touched_free = 0, touched_total = 0;
                     const bool measured = cudaMemGetInfo(&touched_free, &touched_total) == cudaSuccess;
-                    if (!measured || touched_free < reserve) {
+                    if (!measured || admissible_gpu_free(touched_free) < reserve) {
                         std::string rollback;
                         if (!xcache.resize_live(old_slots, rollback)) std::abort();
                         if (!measured) { fail_memory("telemetry", "VRAM telemetry unavailable after growth"); return; }
@@ -8082,13 +8140,14 @@ int main(int argc, char** argv) {
             if (cudaMemGetInfo(&final_free, &final_total) != cudaSuccess) {
                 fail_memory("telemetry", "VRAM telemetry unavailable after resize"); return;
             }
-            const bool unreachable = final_free < reserve && xcache.slots() == live_cache_floor;
-            if (final_free < reserve && memory_gpu_growth) {
+            const uint64_t available_final = admissible_gpu_free(final_free);
+            const bool unreachable = available_final < reserve && xcache.slots() == live_cache_floor;
+            if (available_final < reserve && memory_gpu_growth) {
                 memory_gpu_growth = false; memory_gpu_capped = true;
             }
             // RAM pinning can change WDDM's free-memory report too. A terminal success must retain its reserve
             // after both tiers changed; otherwise the next bounded tick trims the remaining GPU cache.
-            const bool done = next_slots == target_slots && memory_ram_done && (final_free >= reserve || unreachable);
+            const bool done = next_slots == target_slots && memory_ram_done && (available_final >= reserve || unreachable);
             o.vram_reserve_mib = (int) request.vram_reserve_mib;
             const char* result = "none";
             if (done && unreachable) result = live_borrow ? "prefill_cache_floor" : "reserve_unreachable";
@@ -8106,6 +8165,57 @@ int main(int argc, char** argv) {
             }
           }
         };
+        auto drain_live_readers = [&](std::string& why) {
+            sp.drain_expert_reads();
+            lookahead.drain();
+            src.drain_io_prefetch();
+            apply_pending(true);
+            if (!ver.wait_commit(why) || cudaDeviceSynchronize() != cudaSuccess) {
+                if (why.empty()) why = "background: cannot drain GPU readers";
+                return false;
+            }
+            return true;
+        };
+        // Only enter with no prompt loan active. A short lease is refreshed by the server, and expires
+        // monotonically if that server disappears. STOP/QUIT still reach this loop through the reader.
+        auto service_background = [&](std::string& why, bool apply_delay = true) {
+            poll_background();
+            int64_t now = monotonic_ms();
+            const bool waiting = background.waiting(now);
+            const int delay = apply_delay ? background.delay_ms(now) : 0;
+            if ((!waiting && delay == 0) || stop_req.load() || quit_requested.load()) return true;
+            if (live_prompt_active) { why = "background: prompt still owns its buffers"; return false; }
+            if (!drain_live_readers(why)) return false;
+            strata::kernels::cpu::ExpertPool::BackgroundIdleScope idle_workers(pool);
+            int64_t next_report = 0;
+            bool reported = false;
+            while (background.waiting(now) && !stop_req.load() && !quit_requested.load()) {
+                service_memory(true);
+                if (now >= next_report) {
+                    // Unlike CAPACITY metadata, this line is a request heartbeat for the server.
+                    std::printf("BACKGROUND status=waiting lease_remaining_ms=%d\n", background.remaining_ms(now));
+                    std::fflush(stdout);
+                    next_report = now + 1000;
+                    reported = true;
+                }
+                strata::core::progress_at("waiting for foreground memory pressure", -1);
+                strata::core::progress_beat();
+                std::unique_lock<std::mutex> lk(in_mu);
+                in_cv.wait_for(lk, std::chrono::milliseconds(50), [&] { return background_line.has_value() || stop_req.load(); });
+                lk.unlock();
+                poll_background();
+                now = monotonic_ms();
+            }
+            if (reported) {
+                std::printf("BACKGROUND status=running\n");
+                std::fflush(stdout);
+            }
+            if (delay > 0 && !stop_req.load()) {
+                std::unique_lock<std::mutex> lk(in_mu);
+                in_cv.wait_for(lk, std::chrono::milliseconds(delay), [&] { return stop_req.load() || in_eof; });
+            }
+            return true;
+        };
         if (o.live_memory) {
             // Initial cache sizing precedes the prompt/verifier/drafter allocations. Under WDDM these later
             // buffers can consume the estimate's reserve. Admit READY only against the final measured state.
@@ -8119,7 +8229,7 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata live memory: startup refused: VRAM telemetry/synchronization failed\n");
                         return 1;
                     }
-                    if ((uint64_t) free_b >= reserve) {
+                    if (admissible_gpu_free(free_b) >= reserve) {
                         std::fprintf(stderr, "strata live memory: startup admitted with %llu MiB VRAM free, reserve %d MiB; expert cache %llu MiB (released %llu MiB)\n",
                                      (unsigned long long) (free_b >> 20), o.vram_reserve_mib,
                                      (unsigned long long) (xcache.committed_bytes() >> 20),
@@ -8172,10 +8282,15 @@ int main(int argc, char** argv) {
             };
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "STOP") { stop_req.request(); in_cv.notify_all(); continue; }
                 std::lock_guard<std::mutex> lk(in_mu);
                 if (l == "MEMORY" || l.rfind("MEMORY ", 0) == 0) memory_lines.push_back(l);
-                else in_lines.push_back(l);
+                else if (l == "BACKGROUND" || l.rfind("BACKGROUND ", 0) == 0) background_line = l;
+                else if (l == "QUIT") {
+                    quit_requested.store(true); stop_req.request();
+                    in_lines.push_back({l, stop_req.epoch()});
+                }
+                else in_lines.push_back({l, stop_req.epoch()});
                 in_cv.notify_one();
             }
             std::lock_guard<std::mutex> lk(in_mu);
@@ -8187,24 +8302,39 @@ int main(int argc, char** argv) {
             for (;;) {
                 lk.unlock();
                 service_memory();
+                std::string background_error;
+                if (!service_background(background_error, false)) {
+                    std::fprintf(stderr, "strata serve: %s\n", background_error.c_str());
+                    return false;
+                }
                 lk.lock();
                 if (!in_lines.empty() || in_eof) break;
                 in_cv.wait_for(lk, std::chrono::milliseconds(100), [&] {
-                    return !in_lines.empty() || !memory_lines.empty() || in_eof;
+                    return !in_lines.empty() || !memory_lines.empty() || background_line.has_value() || in_eof;
                 });
             }
             if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
+            admitted_stop_epoch = in_lines.front().stop_epoch;
+            out = std::move(in_lines.front().text);
             in_lines.pop_front();
             return true;
         };
-        sp.should_stop = [&] { return stop_req.load(); };
+        sp.should_stop = [&] { return stop_req.load() || quit_requested.load(); };
         if (o.live_memory) {
             auto chunk = std::move(sp.on_chunk);
             sp.on_chunk = [&, chunk = std::move(chunk)](const float* rows, int64_t n, int64_t at,
                                                        std::string& e) -> bool {
                 if (chunk && !chunk(rows, n, at, e)) return false;
                 service_memory();
+                poll_background();
+                // A delay needs no loan turnover or relayout. Wait-mode yields out of run_impl below.
+                const int delay = background.waiting(monotonic_ms()) ? 0 : background.delay_ms(monotonic_ms());
+                if (delay > 0 && !stop_req.load()) {
+                    strata::kernels::cpu::ExpertPool::BackgroundIdleScope idle_workers(pool);
+                    std::unique_lock<std::mutex> lk(in_mu);
+                    in_cv.wait_for(lk, std::chrono::milliseconds(delay), [&] { return stop_req.load() || in_eof; });
+                    strata::core::progress_beat();
+                }
                 return true;
             };
         }
@@ -8276,7 +8406,7 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld live_memory=%d memory_protocol=%d "
+                        "conversation_cache_min_free_mib=%lld live_memory=%d memory_protocol=%d background_control=%d memory_supersede=%d "
                         "vram_reserve_mib=%d tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -8289,6 +8419,7 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
+                        o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
                         o.vram_reserve_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
@@ -8498,7 +8629,8 @@ int main(int argc, char** argv) {
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
             if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
+            admitted_stop_epoch = in_lines.front().stop_epoch;
+            out = std::move(in_lines.front().text);
             in_lines.pop_front();
             return true;
         };
@@ -8882,7 +9014,7 @@ int main(int argc, char** argv) {
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
-            if (line == "QUIT") break;
+            if (line == "QUIT" || quit_requested.load()) break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
                 BusyScope() {
@@ -8896,7 +9028,10 @@ int main(int argc, char** argv) {
                     strata::core::progress_at("idle");
                 }
             } busy_scope;
-            stop_req.store(false);   // a STOP that arrived between requests is stale
+            stop_req.begin(admitted_stop_epoch); // clear only STOPs older than this queued request
+            // QUIT may race the clear above after an earlier GEN was already dequeued. Never admit
+            // that GEN once shutdown is requested; a later QUIT sets stop_req for the running request.
+            if (quit_requested.load()) { stop_req.request(); break; }
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
@@ -9732,6 +9867,8 @@ int main(int argc, char** argv) {
                 for (int64_t q = a; q < b;) {
                     if (stop_req.load()) { e = "cancelled"; return false; }
                     service_memory();
+                    if (!service_background(e)) return false;
+                    if (stop_req.load()) { e = "cancelled"; return false; }
                     const int T = (int) std::min<int64_t>(S, b - q);
                     for (int t = 0; t < T; ++t) {
                         win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
@@ -9959,6 +10096,55 @@ int main(int argc, char** argv) {
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
+                if (o.live_memory) {
+                    // Cooperative yielding keeps the ordinary whole-run PLE prefetch until a control
+                    // actually arrives. The callback only requests a yield; every borrowed view stays
+                    // protected until run_impl returns with exact consumed-token and PLE state.
+                    auto control_pending = [&] {
+                        poll_background();
+                        if (memory_request || background.waiting(monotonic_ms())) return true;
+                        std::lock_guard<std::mutex> lk(in_mu);
+                        return !memory_lines.empty();
+                    };
+                    for (int64_t q = a0; q < b0;) {
+                        if (stop_req.load()) { e = "cancelled"; return false; }
+                        int64_t consumed_now = 0;
+                        if (!sp.run_cooperative(ids.data() + q, b0 - q, q, control_pending, consumed_now, e)) return false;
+                        if (consumed_now <= 0 || consumed_now > b0 - q) {
+                            e = "live prefill: invalid cooperative progress"; return false;
+                        }
+                        q += consumed_now;
+                        if (q == b0) break;
+                        const auto pause_at = Clock::now();
+                        auto service = [&](std::string& why) {
+                            service_memory(true);
+                            // A pressure request releases one bounded block per step. Finish its relief
+                            // here instead of making every 32-MiB release wait through another long chunk.
+                            // Growth remains rate-limited and advances only once before inference resumes.
+                            auto relief_needed = [&] {
+                                if (!memory_request) return false;
+                                if (!memory_ram_done && (memory_request->resident_mib << 20) < src.resident_bytes()) return true;
+                                size_t free_b = 0, total_b = 0;
+                                return xcache.slots() > live_cache_floor && cudaMemGetInfo(&free_b, &total_b) == cudaSuccess &&
+                                       admissible_gpu_free(free_b) < (memory_request->vram_reserve_mib << 20);
+                            };
+                            while (relief_needed() && !stop_req.load()) {
+                                service_memory(true);
+                                poll_background();
+                                strata::core::progress_beat();
+                                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            }
+                            return service_background(why, false);
+                        };
+                        if (!strata::core::live_prefill_pause(live_prompt_active, drain_live_readers, refill,
+                                service, [&] { return stop_req.load(); },
+                                [&](std::string& why) { return lend(b0 - q, why); }, e)) return false;
+                        std::fprintf(stderr, "strata live memory: prompt resumed at %lld after %.1f ms control pause; next chunk %lld\n",
+                                     (long long) q, std::chrono::duration<double, std::milli>(Clock::now() - pause_at).count(),
+                                     (long long) sp.chunk());
+                    }
+                    return true;
+                }
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
                 if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
                 const int64_t C = std::max<int64_t>(sp.chunk(), 1);
@@ -9972,12 +10158,12 @@ int main(int argc, char** argv) {
                     {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
                         std::lock_guard<std::mutex> lk(in_mu);
                         for (auto it = in_lines.begin(); it != in_lines.end();) {
-                            if (it->rfind("BSTOP ", 0) == 0) {
-                                const int b = std::atoi(it->c_str() + 6);
+                            if (it->text.rfind("BSTOP ", 0) == 0) {
+                                const int b = std::atoi(it->text.c_str() + 6);
                                 if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
                                 it = in_lines.erase(it);
-                            } else if (it->rfind("BYIELD ", 0) == 0) {
-                                ys = std::atoi(it->c_str() + 7);
+                            } else if (it->text.rfind("BYIELD ", 0) == 0) {
+                                ys = std::atoi(it->text.c_str() + 7);
                                 it = in_lines.erase(it);
                             } else {
                                 ++it;
@@ -10065,7 +10251,7 @@ int main(int argc, char** argv) {
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
-            live_prompt_active = live_borrow;
+            live_prompt_active = o.live_memory;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -10142,6 +10328,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
+                live_prompt_active = o.live_memory && !win;
                 if (!win && !lend(to - at, err)) {
                     std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
                     return 1;
@@ -10922,6 +11109,11 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 service_memory();
+                if (!service_background(err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                if (stop_req.load()) { cancelled = true; finish = "cancel"; break; }
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts

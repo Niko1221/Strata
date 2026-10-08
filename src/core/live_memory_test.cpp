@@ -50,6 +50,35 @@ void protocol() {
                              "MEMORY 18446744073709551616 1 2", "MEMORY 1 2 3.5"})
         require(!parse_live_memory_request(line, request), std::string("reject malformed: ") + line);
 }
+void prompt_pause() {
+    using strata::core::live_prefill_pause;
+    for (int fail = 0; fail <= 6; ++fail) {
+        bool active = true;
+        bool cancel = fail == 1;
+        bool returned = false, resized = false, rebound = false;
+        std::string order, err;
+        const bool ok = live_prefill_pause(active,
+            [&](std::string&) { order += 'D'; return fail != 3; },
+            [&](std::string&) { order += 'R'; returned = fail != 4; return returned; },
+            [&](std::string&) {
+                require(!active && returned, "resize is permitted only after readers drain and loan returns");
+                order += 'S'; resized = true; cancel = fail == 2; return fail != 5;
+            },
+            [&] { return cancel; },
+            [&](std::string&) {
+                require(!active && resized, "rebind/lend follows the completed resize transaction");
+                order += 'L'; rebound = fail != 6; return rebound;
+            }, err);
+        require(ok == (fail == 0), "pause success follows all required steps");
+        if (fail == 0) require(order == "DRSL" && active && rebound, "resume lends once after a safe resize");
+        if (fail == 1) require(order == "DR" && !active && err == "cancelled", "cancellation returns loan without resizing or relending");
+        if (fail == 2) require(order == "DRS" && !active && err == "cancelled", "cancellation arriving during resize never relends");
+        if (fail == 3) require(order == "D" && active, "drain failure cannot release an in-flight loan");
+        if (fail == 4) require(order == "DR" && active, "loan-return failure cannot authorize resize");
+        if (fail == 5) require(order == "DRS" && !active, "failed control service leaves no borrowed views active");
+        if (fail == 6) require(order == "DRSL" && !active, "failed rebind cannot advertise an active prompt loan");
+    }
+}
 void pressure_direction() {
     using namespace strata::core;
     constexpr uint64_t MiB = 1ull << 20, quantum = 32 * MiB;
@@ -76,6 +105,13 @@ void pressure_direction() {
             "legitimate growth retains one additional granule of headroom");
     require(live_memory_gpu_budget(1632 * MiB, 2752 * MiB, 1536 * MiB, quantum, true) == 2816 * MiB,
             "growth admits only the space beyond reserve and granule margin");
+    const LiveMemoryRequest recovering{8, 40000, 512};
+    require(live_memory_supersedes({9, 31000, 512}, recovering, 32000 * MiB), "new RAM pressure cancels unfinished recovery");
+    require(live_memory_supersedes({9, 32000, 1024}, recovering, 32000 * MiB), "higher reserve and non-growing RAM may preempt recovery");
+    require(!live_memory_supersedes({9, 35000, 1024}, recovering, 32000 * MiB), "retarget cannot conceal additional RAM growth");
+    require(!live_memory_supersedes({9, 31000, 256}, recovering, 32000 * MiB), "RAM pressure cannot supersede while reducing GPU reserve");
+    require(!live_memory_supersedes({8, 31000, 1024}, recovering, 32000 * MiB), "reused acknowledgement ID cannot supersede");
+    require(!live_memory_supersedes({9, 40000, 512}, recovering, 45000 * MiB), "identical target remains busy rather than resetting progress");
 }
 void loan_geometry() {
     using namespace strata::core;
@@ -178,8 +214,20 @@ void device_arena() {
     const int64_t new_slots = 12;
     const int64_t rebound_first = strata::core::live_prefill_first(offsets, new_slots, loan_bytes, 2);
     auto* rebound_view = cache.device_slot(rebound_first);
-    require(rebound_view != original_view && rebound_first >= 2 && cache.resize_live(new_slots, err),
-            "raw view rebind precedes retirement of the old tail");
+    // The same pause coordinator as a real prompt: an in-flight reader references the old tail.
+    // Its copy must finish before that mapping retires, while the replacement view lives in the
+    // retained prefix. This checks real VMM lifetime ordering rather than just a mocked sequence.
+    require(cudaMemcpyAsync(readback, original_view, 256, cudaMemcpyDeviceToHost, stream) == cudaSuccess,
+            "queue old prompt-view reader before the resize boundary");
+    bool prompt_active = true;
+    require(strata::core::live_prefill_pause(prompt_active,
+        [&](std::string&) { return cudaStreamSynchronize(stream) == cudaSuccess; },
+        [&](std::string&) { return readback[0] == 0x23; }, // all residual consumers have completed
+        [&](std::string& why) {
+            return rebound_view != original_view && rebound_first >= 2 && cache.resize_live(new_slots, why);
+        }, [] { return false; },
+        [&](std::string&) { return cudaMemset(rebound_view, 0x6a, (size_t) loan_bytes) == cudaSuccess; }, err) && prompt_active,
+        "drained prompt-view rebind precedes retirement of the old VMM tail: " + err);
     require(cudaMemset(rebound_view, 0x6a, (size_t) loan_bytes) == cudaSuccess &&
             cudaMemcpy(readback, rebound_view, 256, cudaMemcpyDeviceToHost) == cudaSuccess && readback[0] == 0x6a,
             "rebound prompt view survives physical shrink");
@@ -351,6 +399,7 @@ void ram_blocks(bool pin, bool mixed = false) {
 int main(int argc, char** argv) {
     try {
         protocol();
+        prompt_pause();
         pressure_direction();
         loan_geometry();
         loan_donors();

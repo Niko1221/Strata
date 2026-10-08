@@ -29,6 +29,13 @@ void unlock_resident(void* p, uint64_t bytes);
 /// `why` says so) when the query is not possible - always elsewhere than Windows.
 bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why);
 
+/// Windows WDDM's local (VRAM) budget for THIS process on the CUDA adapter's LUID.
+/// Distinct from physical CUDA free memory: use the smaller headroom for growth.
+/// CurrentUsage may exceed Budget. False means unavailable, not unlimited memory.
+/// Based on the QueryVideoMemoryInfo API contract, not another process's reading:
+/// https://learn.microsoft.com/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo
+bool gpu_local_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why);
+
 /// The machine's physical RAM in bytes (0 when unknown).
 uint64_t total_physical_memory();
 
