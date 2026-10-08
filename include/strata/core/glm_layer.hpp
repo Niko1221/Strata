@@ -242,6 +242,29 @@ bool glm_block_layer_post(const WeightTable& tables, const ModelGeometry& g, int
                           const GlmBuffers& b, const MoEBuffers& mb, const BlockBuffers& bb, const float* parts,
                           void* stream, std::string& err);
 
+// ================================ where a chunk's `pre` time goes ================================
+
+/// **THE SECTIONS OF `pre`, TIMED ON THE CARD.**
+///
+/// `STRATA_GLM_PREFILL_TIME=1` makes `glm_block_layer_pre` and `glm_block_layer_post` record a CUDA event at each
+/// section boundary, and `glm_pre_sections_flush` reads the gaps once the caller has synchronized.  Events rather
+/// than wall-clock because every section only ENQUEUES: a `printf` around the calls would report the launch cost
+/// and nothing else.
+///
+/// It exists to answer one question that the arms outside the engine cannot.  The chunk's own line says how much
+/// of a prefill is the card and how much is the CPU pool; it cannot say whether the card's share is the quantized
+/// weight reads (the thing `ntok` batching fixes) or the per-token elementwise work around them (which it does
+/// not).  The two want different changes, and this is the measurement that tells them apart.
+///
+/// The accumulator is a file-scope static, so a report covers every layer and token since the last reset - the
+/// chunk.  Reset it before the chunk and report after; nothing is thread-safe and nothing needs to be, because a
+/// session's layers run one at a time.
+void glm_pre_sections_reset();
+/// Reads the events recorded since the last call and adds them to the totals.  Call after a stream sync.
+void glm_pre_sections_flush();
+/// Prints the totals and resets them.  `tokens` and `layers` are what the totals cover.
+void glm_pre_sections_report(int64_t tokens, int64_t layers);
+
 /// The whole block, for a caller that already has `parts`.
 bool glm_block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos,
                      int32_t pos_base, const GlmBuffers& b, const GlmLayerState& st, const MoEBuffers& mb, int64_t k,
@@ -357,7 +380,8 @@ struct GlmChunkBuffers {
     float* comb = nullptr;       ///< T rows of (hc, hc)
     float* weights = nullptr;    ///< T rows of k
     int32_t* ids = nullptr;      ///< T rows of k
-    int64_t n_embd = 0, hc = 0, k = 0, T = 0;
+    float* logits = nullptr;     ///< T rows of n_expert, the router's raw output before the top-k
+    int64_t n_embd = 0, hc = 0, k = 0, n_expert = 0, T = 0;
 };
 
 /// Bytes `glm_chunk_init` needs for a `T`-token chunk at routing width `k`.  Zero when `T < 1`.
@@ -371,6 +395,24 @@ uint64_t glm_chunk_init(const ModelGeometry& g, int64_t k, int64_t T, void* base
 /// `glm_block_layer_post` itself.
 void glm_chunk_view(const GlmChunkBuffers& c, const GlmBuffers& b, const MoEBuffers& mb, const BlockBuffers& bb,
                     int64_t t, GlmBuffers& out_b, MoEBuffers& out_mb, BlockBuffers& out_bb);
+
+/// **THE WIDEST TOKEN GROUP ONE `glm_block_layer_pre` CALL MAY BE HANDED.**  The bound is the quantized
+/// projections': `native_mmvq` takes at most `NATIVE_MMVQ_MAX_NCOLS` columns, so a wider group would split the
+/// very weight read the group exists to amortize.
+constexpr int64_t GLM_MAX_NTOK = 8;
+
+/// The same as `glm_chunk_view`, for a GROUP of `ntok` tokens starting at `t0`: `b` is the session's group
+/// carve (`glm_buffers_init(g, GLM_MAX_NTOK, ...)`), which already holds every projection's scratch at a group
+/// width, and only the fields that outlive the call - the residual, the normed FFN input, the mHC maps, the
+/// router's two rows - are redirected into the chunk's rows `t0 .. t0 + ntok - 1`.
+///
+/// **THE CHUNK'S ROWS ARE WHAT MAKES A GROUP SAFE TO REUSE ONE CARVE FOR.**  Two consecutive groups at the
+/// same layer write the same scratch, so nothing a later group needs may live there: `c.cur`, `c.post`,
+/// `c.comb`, `c.shared`, `c.ids`, `c.weights` and `c.logits` are per token and in the chunk arena, and the
+/// projection scratch is only ever read by the call that wrote it.
+void glm_chunk_group_view(const GlmChunkBuffers& c, const GlmBuffers& group, const MoEBuffers& mb,
+                          const BlockBuffers& bb, int64_t t0, int64_t ntok, GlmBuffers& out_b, MoEBuffers& out_mb,
+                          BlockBuffers& out_bb);
 
 /// The collapse before the head: the MEAN of the `hc` streams, then the caller's `output_norm` + projection.
 /// Separate from `lm_head` because the first architecture's head starts from a single-stream residual.

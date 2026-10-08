@@ -67,6 +67,12 @@ struct SessionState {
     GlmChunkBuffers glm_chunk;
     void* glm_chunk_arena = nullptr;
     int64_t glm_chunk_tokens = 1;   ///< the `T` it was carved for (1 = the field above is empty)
+    /// The GROUP carve: the same scratch as `glm`, at `GLM_MAX_NTOK` columns instead of one, so a chunked pass
+    /// can hand `glm_block_layer_pre` a group of tokens and have the weights read once for all of them.  Null
+    /// and zero-sized unless the session was carved with a chunk greater than one; the decode path keeps using
+    /// `glm` at one token and cannot tell this exists.
+    GlmBuffers glm_group;
+    void* glm_group_arena = nullptr;
     /// ONE ENTRY PER TRUNK LAYER, INDEXED BY THE GLOBAL LAYER NUMBER - not packed, because a KDA layer and an
     /// MLA layer want different things and a packed array would need a second index to tell them apart.
     /// Entries outside [layer_lo, layer_hi) stay value-initialised nulls.

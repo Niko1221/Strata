@@ -18,8 +18,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 // `_mm_pause` for the doorbell spin.  Guarded because it is x86-only; a target without it still builds, the
@@ -83,7 +85,10 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
         // them, so a decode run's session stays byte-for-byte the size it was - which is what makes the
         // `--prefill 1` arm of the verification a genuine control rather than "the same code with a 240 KiB
         // tail".  `glm_chunk_bytes` itself is happy with any T >= 1; the guard is the caller's.
-        if (glm_chunk > 1) n += glm_chunk_bytes(g, k, glm_chunk);
+        if (glm_chunk > 1) {
+            n += glm_chunk_bytes(g, k, glm_chunk);
+            n += glm_buffers_bytes(g, GLM_MAX_NTOK, max_cells);
+        }
         for (int64_t l = layer_lo; l < layer_hi; ++l) n += glm_layer_state_bytes(g, max_cells, l);
         // The draft block's own state, on the stage that holds the trunk's end.  `layer_hi == g.n_layers`
         // after the clamp above, so this is "the last stage" and not "the last layer" - on one card the two
@@ -163,6 +168,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // memset without knowing which layers are which.
     s.glm_arena = nullptr;
     s.glm_chunk_arena = nullptr;
+    s.glm_group_arena = nullptr;
     s.glm_chunk_tokens = 1;
     s.glm_states = nullptr;
     s.glm_state_arena = nullptr;
@@ -176,6 +182,10 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
             s.glm_chunk_arena = take(glm_chunk_bytes(g, k, glm_chunk));
             glm_chunk_init(g, k, glm_chunk, s.glm_chunk_arena, s.glm_chunk);
             s.glm_chunk_tokens = glm_chunk;
+            // The group carve, in the same two places `session_bytes` adds it - the sizes there and here are the
+            // same expression, which is what keeps a stage's arena byte-for-byte what the allocator reserved.
+            s.glm_group_arena = take(glm_buffers_bytes(g, GLM_MAX_NTOK, max_cells));
+            glm_buffers_init(g, GLM_MAX_NTOK, max_cells, s.glm_group_arena, s.glm_group);
         }
         s.glm_states = new GlmLayerState[(size_t) g.n_layers]();   // entries outside the range stay null
         uint64_t total = 0;
@@ -1169,6 +1179,20 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
         if (out_host.size() < (size_t) (T * k * n)) out_host.resize((size_t) (T * k * n));
     }
 
+    // **WHERE A CHUNK'S TIME GOES.**  `STRATA_GLM_PREFILL_TIME=1` prints one line per chunk: the dense
+    // projections on the card, the CPU expert pool, and the copies between them, as wall seconds.  It exists
+    // because that split is the one number a GLM prefill change needs and nothing measured it directly - the two
+    // arms that move only one of the two (`--prefill 256` against `--prefill 1`) leave two unknowns and one
+    // equation, and the arms that move the pool's own kernels (`STRATA_NO_SLICE_MT`) give a difference, not a
+    // share.  The line is printed on stderr, so a serve run's log keeps it out of the token stream.
+    const bool timing = std::getenv("STRATA_GLM_PREFILL_TIME") != nullptr;
+    double t_gpu = 0.0, t_pool = 0.0, t_post = 0.0, t_dense = 0.0;
+    auto secs = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+        return std::chrono::duration<double>(b - a).count();
+    };
+    const auto chunk_t0 = std::chrono::steady_clock::now();
+    if (timing) glm_pre_sections_reset();
+
     for (int64_t l = s.layer_lo; l < s.layer_hi; ++l) {
         const bool moe = !g.is_dense_ffn_layer(l);
         if (moe && glm_pool == nullptr) {
@@ -1182,14 +1206,28 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
         // t` and token `t` attends over everything below it.  Layer-major makes both true with no new maths:
         // every token finishes layer `l-1` before any token starts layer `l`.
         err.clear();
-        for (int64_t t = 0; t < T; ++t) {
+        const auto l0 = std::chrono::steady_clock::now();
+        auto l2 = l0;   // the pool's exit; only a MoE layer moves it off `l0`
+        // **IN GROUPS OF UP TO `GLM_MAX_NTOK` WHERE THE SESSION CARVED FOR IT.**  Every projection inside `pre`
+        // reads its weight matrix once per call, so a group of eight reads the same bytes that one token did and
+        // the card's biggest cost - 60% of a chunk's `pre` is the attention mixer, and it is a 1-column GEMV per
+        // token at a third of the card's bandwidth - divides by up to eight.  `STRATA_GLM_NO_GROUP=1` pins the
+        // group to one token, which is the arm that checks the two produce the same ids.
+        static const bool no_group = std::getenv("STRATA_GLM_NO_GROUP") != nullptr;
+        const int64_t gmax = (s.glm_group_arena != nullptr && !no_group) ? GLM_MAX_NTOK : 1;
+        for (int64_t t0 = 0; t0 < T; t0 += gmax) {
+            const int64_t nt = (T - t0 < gmax) ? (T - t0) : gmax;
             GlmBuffers vb;
             MoEBuffers vmb;
             BlockBuffers vbb;
-            glm_chunk_view(c, s.glm, s.moe, s.block, t, vb, vmb, vbb);
-            if (!glm_block_layer_pre(tables, g, l, pos + t, pos_base, vb, s.glm_states[l], vmb, k, vbb, stream, err,
+            // A group of one uses the session's own single-token scratch, byte for byte the path the decode
+            // step and every `--prefill 1` run take.  Only a real group touches the widened carve.
+            if (nt == 1) glm_chunk_view(c, s.glm, s.moe, s.block, t0, vb, vmb, vbb);
+            else glm_chunk_group_view(c, s.glm_group, s.moe, s.block, t0, nt, vb, vmb, vbb);
+            if (!glm_block_layer_pre(tables, g, l, pos + t0, pos_base, vb, s.glm_states[l], vmb, k, vbb, stream, err,
                                      nullptr)) {
-                err = "layer " + std::to_string(l) + " token " + std::to_string(t) + ": " + err;
+                err = "layer " + std::to_string(l) + " tokens " + std::to_string(t0) + ".." +
+                      std::to_string(t0 + nt - 1) + ": " + err;
                 return false;
             }
         }
@@ -1211,10 +1249,16 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
                 err = "layer " + std::to_string(l) + ": waiting for the chunk's expert handoff";
                 return false;
             }
+            // This sync is the only one in the layer, and it waits for the whole `pre` loop above: the loop only
+            // enqueues.  So `l0` to here IS the card's dense work for the layer, plus the 16 MiB staging copy.
+            const auto l1 = std::chrono::steady_clock::now();
+            t_gpu += secs(l0, l1);
             if (!glm_pool(glm_pool_user, l, x_host.data(), ids_host.data(), T, k, out_host.data(), err)) {
                 err = "layer " + std::to_string(l) + ": " + err;
                 return false;
             }
+            l2 = std::chrono::steady_clock::now();
+            t_pool += secs(l1, l2);
             // `c.parts` is this session's own carve, so nothing outside can be holding the old contents.
             if (cudaMemcpyAsync(c.parts, out_host.data(), (size_t) (T * k * n) * sizeof(float),
                                 cudaMemcpyHostToDevice, cs) != cudaSuccess) {
@@ -1238,6 +1282,31 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
                 return false;
             }
         }
+        // The post loop only enqueues too, so without this the last layer's post would be counted nowhere and
+        // every other layer's would land in the NEXT layer's `pre`.  Only taken when the line is being printed:
+        // the sync is not free and this is a diagnostic, not a new steady state.
+        if (timing) {
+            if (cudaStreamSynchronize(cs) != cudaSuccess) {
+                err = "layer " + std::to_string(l) + ": waiting for the chunk's post";
+                return false;
+            }
+            const auto l3 = std::chrono::steady_clock::now();
+            // A dense lead layer has no hand-off and so no sync of its own; its whole turn is one number.
+            if (moe) t_post += secs(l2, l3);
+            else t_dense += secs(l0, l3);
+            // The stream is drained here, so this layer's section events have all completed and can be read.
+            glm_pre_sections_flush();
+        }
+    }
+    if (timing) {
+        const double all = secs(chunk_t0, std::chrono::steady_clock::now());
+        std::fprintf(stderr,
+                     "strata glm prefill: chunk of %lld tokens over layers %lld..%lld: %.2f s cpu pool, %.2f s card "
+                     "(%.2f s pre + %.2f s post), %.2f s dense lead, %.2f s all\n",
+                     (long long) T, (long long) s.layer_lo, (long long) (s.layer_hi - 1), t_pool, t_gpu + t_post,
+                     t_gpu, t_post, t_dense, all);
+        std::fflush(stderr);
+        glm_pre_sections_report(T, s.layer_hi - s.layer_lo);
     }
 
     // **THE CHUNK LEAVES ONE RESIDUAL BEHIND, NOT T.**  Every token's stack is in its own row and only the LAST

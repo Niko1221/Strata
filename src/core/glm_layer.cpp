@@ -35,6 +35,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -203,10 +204,16 @@ uint64_t glm_dsa_state_bytes(const ModelGeometry& g, int64_t max_cells) {
 /// projection whose input in a chunk is `ntok` columns.  `glm_buffers_bytes(g, 1)` is what the decode path
 /// carves and it is byte for byte the shape that was there before the chunk existed.
 ///
-/// The slot is `ntok * align16(one token's field)` rather than `align16(ntok * field)` so that this function
-/// and `glm_buffers_init` can share one list and cannot drift: `init` takes the same list through the same
-/// `slot()`.  Either spelling is a valid layout - nothing here needs the field to be `ntok`-contiguous at a
-/// boundary - and the one that is checkable against a single list is the one to keep.
+/// **THE SLOT IS `align16(ntok * one token's field)`, SO A FIELD'S TOKENS ARE CONTIGUOUS.**  The earlier
+/// spelling was `ntok * align16(field)`, which pads EACH token's slot to 16 bytes; the two agree at `ntok == 1`
+/// and diverge for any field whose one-token byte count is not a multiple of 16 - `pre` and `post` at
+/// `hc * 4 = 12`, `comb` at 36, `idx_pos` at 4.  That is exactly the layout the kernels cannot read: every
+/// kernel that takes an `ntok` here reads column `j` at `base + j * width` and nothing else (`project` says so
+/// in its own comment), so a padded slot would have it read token `j`'s neighbour.  Contiguous is what the
+/// callers already assume; this makes the carve agree with them.
+///
+/// The one place the padded rule would have been safe is the first token of every field, which is why the
+/// decode path cannot tell the two apart - and why this had to be fixed before anything could batch a chunk.
 ///
 /// **THE DSA SELECTION'S THREE ROWS ARE THE EXCEPTION: THEY ARE ONCE PER CARVE, NOT ONCE PER TOKEN.**  `idx_iq`
 /// and `idx_iw` are projections and scale with `ntok` like everything else; `idx_score`, `idx_cells` and `idx_pos`
@@ -267,7 +274,7 @@ uint64_t glm_buffers_bytes(const ModelGeometry& g, int64_t ntok, int64_t max_cel
         (uint64_t) 4,                                           // idx_pos
     };
     uint64_t total = 0;
-    for (uint64_t v : parts) total += (uint64_t) ntok * align16(v);
+    for (uint64_t v : parts) total += align16((uint64_t) ntok * v);
     // THE THREE THAT ARE ONCE PER CARVE - see the note above and `GlmBuffers`.
     const uint64_t once[] = {
         glm_dsa_score_bytes(g, max_cells),                        // idx_score
@@ -287,7 +294,7 @@ uint64_t glm_buffers_init(const ModelGeometry& g, int64_t ntok, int64_t max_cell
     Arena a{(uint8_t*) base, 0};
     // The SAME slot rule `glm_buffers_bytes` uses, applied in one place so the two lists cannot disagree.
     const auto take = [&](uint64_t one_token) -> void* {
-        return a.take((uint64_t) ntok * align16(one_token));
+        return a.take(align16((uint64_t) ntok * one_token));
     };
     b.res_scratch = (float*) take((uint64_t) hc * n * 4);
     b.normed_bf16 = (uint16_t*) take((uint64_t) hc * n * 2);
@@ -368,6 +375,7 @@ uint64_t glm_chunk_bytes(const ModelGeometry& g, int64_t k, int64_t T) {
         hc * hc * 4,       // comb
         kk * 4,            // weights
         kk * 4,            // ids
+        (uint64_t) g.n_expert * 4,   // logits
     };
     uint64_t per = 0;
     for (uint64_t v : parts) per += align16(v);
@@ -388,9 +396,11 @@ uint64_t glm_chunk_init(const ModelGeometry& g, int64_t k, int64_t T, void* base
     c.comb = (float*) a.take((uint64_t) T * hc * hc * 4);
     c.weights = (float*) a.take((uint64_t) T * k * 4);
     c.ids = (int32_t*) a.take((uint64_t) T * k * 4);
+    c.logits = (float*) a.take((uint64_t) T * (uint64_t) g.n_expert * 4);
     c.n_embd = n;
     c.hc = hc;
     c.k = k;
+    c.n_expert = g.n_expert;
     c.T = T;
     return a.used;
 }
@@ -410,8 +420,28 @@ void glm_chunk_view(const GlmChunkBuffers& c, const GlmBuffers& b, const MoEBuff
     out_mb.shared = c.shared + (size_t) t * n;
     out_mb.weights = c.weights + (size_t) t * k;
     out_mb.ids = (int*) (c.ids + (size_t) t * k);
+    out_mb.logits = c.logits + (size_t) t * (size_t) c.n_expert;
     out_bb.R = c.R + (size_t) t * hc * n;
     out_bb.block_out = c.block_out + (size_t) t * n;
+}
+
+void glm_chunk_group_view(const GlmChunkBuffers& c, const GlmBuffers& group, const MoEBuffers& mb,
+                          const BlockBuffers& bb, int64_t t0, int64_t ntok, GlmBuffers& out_b, MoEBuffers& out_mb,
+                          BlockBuffers& out_bb) {
+    const size_t n = (size_t) c.n_embd, hc = (size_t) c.hc, k = (size_t) c.k, ex = (size_t) c.n_expert;
+    out_b = group;
+    out_mb = mb;
+    out_bb = bb;
+    out_b.ntok = ntok;
+    out_b.cur = c.cur + (size_t) t0 * n;
+    out_b.post = c.post + (size_t) t0 * hc;
+    out_b.comb = c.comb + (size_t) t0 * hc * hc;
+    out_mb.shared = c.shared + (size_t) t0 * n;
+    out_mb.weights = c.weights + (size_t) t0 * k;
+    out_mb.ids = (int*) (c.ids + (size_t) t0 * k);
+    out_mb.logits = c.logits + (size_t) t0 * ex;
+    out_bb.R = c.R + (size_t) t0 * hc * n;
+    out_bb.block_out = c.block_out + (size_t) t0 * n;
 }
 
 // ================================ the per-layer persistent state ================================
@@ -1015,6 +1045,12 @@ bool ffn3(const WeightTable& tables, int64_t layer, const GlmBuffers& b, const c
 /// The weight is **F32 in this family's files** where qwen4exp's is BF16, so this is `glm_f32_gemv` and not the
 /// shared bf16 projection.  Reading 4096x288 of F32 as bf16 gives 288 finite, plausible logits and a different
 /// top-8 - a different model, with no error anywhere to see.
+///
+/// **ONE TOKEN AT A TIME, EVEN INSIDE A GROUP, AND THAT IS NOT AN OVERSIGHT.**  The router is `n_embd x n_expert`
+/// of F32 - 4.7 MB against the layer's ~160 MB of quantized weights - so batching it would amortize 3% of the
+/// read for the price of a new kernel for both the GEMV and the top-k.  The group path exists for the quantized
+/// projections; the router rides along at its own width, and `mb.logits`/`ids`/`weights` are `ntok`-contiguous
+/// rows for exactly this loop.
 bool glm_router(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const GlmBuffers& b,
                 const MoEBuffers& mb, int64_t k, void* stream, std::string& err) {
     const LayerView v(tables, layer);
@@ -1026,8 +1062,6 @@ bool glm_router(const WeightTable& tables, const ModelGeometry& g, int64_t layer
               std::to_string(g.n_expert) + "x" + std::to_string(g.n_embd) + " router is " + std::to_string(need) + " B";
         return false;
     }
-    kernels::glm_f32_gemv(b.cur, (const float*) w->data, mb.logits, g.n_embd, g.n_expert, stream);
-
     // `exp_probs_b` steers the SELECTION and is then dropped: the weights are the un-biased probabilities.  A
     // port that biases the weights too still routes to the right experts and scales them wrongly.
     const WeightRef* bias = v.get("exp_probs_b.bias");
@@ -1035,12 +1069,117 @@ bool glm_router(const WeightTable& tables, const ModelGeometry& g, int64_t layer
         err = v.name("exp_probs_b.bias") + ": not f32 of the expert count";
         return false;
     }
-    kernels::glm_router_sigmoid_topk(mb.logits, bias != nullptr ? (const float*) bias->data : nullptr, mb.ids,
-                                     mb.weights, g.n_expert, k, (float) g.expert_weights_scale, stream);
+    const float* bias_f = bias != nullptr ? (const float*) bias->data : nullptr;
+    for (int64_t t = 0; t < b.ntok; ++t) {
+        const float* cur = b.cur + (size_t) t * (size_t) g.n_embd;
+        float* logits = mb.logits + (size_t) t * (size_t) g.n_expert;
+        kernels::glm_f32_gemv(cur, (const float*) w->data, logits, g.n_embd, g.n_expert, stream);
+        kernels::glm_router_sigmoid_topk(logits, bias_f, mb.ids + (size_t) t * (size_t) k,
+                                         mb.weights + (size_t) t * (size_t) k, g.n_expert, k,
+                                         (float) g.expert_weights_scale, stream);
+    }
     return true;
 }
 
 }  // namespace
+
+// ================================ where a chunk's `pre` time goes ================================
+
+namespace {
+
+// The six sections `pre` is cut into, in the order the boundaries are recorded.  The cutting points are the ones
+// a change can act on: the mHC read and write are per-token elementwise work, the mixer and `ffn3` are the
+// quantized projections, and the router is the one thing a group entry point would still run per token.
+const char* const PRE_SECTION_NAMES[] = {
+    "hc_read(attn)",                                  // norm + quantize + the 24-wide projection + Sinkhorn + mix
+    "attn: norm, KDA|MLA, hc_write",                  // the attention mixer and the mHC write-back
+    "hc_read(ffn)",
+    "ffn norm + quantize",
+    "ffn3 (dense FFN | shared expert)",
+    "router",
+};
+constexpr int PRE_SECTIONS = (int) (sizeof(PRE_SECTION_NAMES) / sizeof(PRE_SECTION_NAMES[0]));
+constexpr int PRE_BOUNDARIES = PRE_SECTIONS + 1;   // one before each section and one after the last
+
+/// One `cudaEvent_t` per boundary per call, so a layer's `T` calls are read together at the layer's sync.  The
+/// pool grows to the first chunk that needs it and is then reused; nothing here is thread-safe and a session's
+/// layers are strictly sequential, so nothing needs to be.
+struct SectionTimer {
+    bool on = false;
+    bool asked = false;
+    std::vector<cudaEvent_t> ev;
+    size_t used = 0;            // boundaries recorded since the last flush
+    double ms[PRE_SECTIONS]{};
+    long long calls = 0;
+};
+
+SectionTimer& section_timer() {
+    static SectionTimer t;
+    if (!t.asked) {
+        t.asked = true;
+        t.on = std::getenv("STRATA_GLM_PREFILL_TIME") != nullptr;
+    }
+    return t;
+}
+
+/// Records the next boundary.  Silently does nothing when the switch is off, which is every normal run.
+void section_mark(void* stream) {
+    SectionTimer& t = section_timer();
+    if (!t.on) return;
+    if (t.used == t.ev.size()) {
+        const size_t grow = t.ev.empty() ? 512 : t.ev.size() * 2;
+        t.ev.resize(grow);
+        for (size_t i = t.used; i < grow; ++i)
+            if (cudaEventCreate(&t.ev[i]) != cudaSuccess) { t.on = false; return; }
+    }
+    if (cudaEventRecord(t.ev[t.used], (cudaStream_t) stream) != cudaSuccess) { t.on = false; return; }
+    ++t.used;
+}
+
+}  // namespace
+
+void glm_pre_sections_reset() {
+    SectionTimer& t = section_timer();
+    t.used = 0;
+    t.calls = 0;
+    for (double& v : t.ms) v = 0.0;
+}
+
+void glm_pre_sections_flush() {
+    SectionTimer& t = section_timer();
+    if (!t.on || t.used == 0) return;
+    const size_t calls = t.used / (size_t) PRE_BOUNDARIES;
+    // A partial call - a layer that failed between two marks - is dropped rather than read off the end.
+    for (size_t i = 0; i < calls; ++i)
+        for (int s = 0; s < PRE_SECTIONS; ++s) {
+            float ms = 0.f;
+            if (cudaEventElapsedTime(&ms, t.ev[i * PRE_BOUNDARIES + s], t.ev[i * PRE_BOUNDARIES + s + 1]) ==
+                cudaSuccess)
+                t.ms[s] += ms;
+        }
+    t.calls += (long long) calls;
+    t.used = 0;
+}
+
+void glm_pre_sections_report(int64_t tokens, int64_t layers) {
+    SectionTimer& t = section_timer();
+    if (!t.on) return;
+    if (t.calls == 0) {
+        std::fprintf(stderr, "strata glm prefill: sections: nothing recorded (%lld layers, %lld tokens)\n",
+                     (long long) layers, (long long) tokens);
+        return;
+    }
+    double total = 0.0;
+    for (double v : t.ms) total += v;
+    std::fprintf(stderr, "strata glm prefill: sections over %lld layer-tokens in %.3f s on the card:\n",
+                 t.calls, total / 1000.0);
+    for (int s = 0; s < PRE_SECTIONS; ++s)
+        std::fprintf(stderr, "strata glm prefill:   %-38s %7.3f s  %5.1f%%  %7.3f ms a layer-token\n",
+                     PRE_SECTION_NAMES[s], t.ms[s] / 1000.0, total > 0 ? 100.0 * t.ms[s] / total : 0.0,
+                     t.ms[s] / (double) t.calls);
+    std::fflush(stderr);
+    glm_pre_sections_reset();
+}
 
 // ================================ the block ================================
 
@@ -1048,17 +1187,20 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
                          int32_t pos_base, const GlmBuffers& b, const GlmLayerState& st, const MoEBuffers& mb,
                          int64_t k, const BlockBuffers& bb, void* stream, std::string& err, const Doorbell* db) {
     if (bb.R == nullptr) { err = "glm5-next: the block has no residual"; return false; }
-    // **THE GROUP ENTRY POINT IS NOT THIS ONE YET.**  Everything this calls is `ntok`-aware, but the two things
-    // that are still per token - the router's `mb.logits`/`ids`/`weights` and `moe_combine_parts` - live in
-    // `MoEBuffers`, which the Qwen path shares and which is carved at one token.  Rather than let a `ntok > 1`
-    // carve reach them and quietly compute the first token's route for all of them, it is refused here until
-    // `glm_block_group_pre` gives the group its own MoE scratch.
-    if (b.ntok != 1) {
-        err = "glm5-next: `glm_block_layer_pre` is the single-token entry point and was handed a "
-              "multi-token scratch";
+    // **THIS IS NOW THE GROUP ENTRY POINT TOO.**  It used to refuse `ntok > 1`, because the router's
+    // `mb.logits`/`ids`/`weights` live in the Qwen path's `MoEBuffers` and were carved at one token.  They are
+    // `ntok`-wide in a chunk now - `GlmChunkBuffers` carries the three rows and `glm_chunk_group_view` points a
+    // group's `mb` at them - so a caller with a group carve can hand this 1..GLM_MAX_NTOK columns and get the
+    // same arithmetic with the weights read once.
+    //
+    // **WHAT A GROUP CHANGES IS ONLY HOW OFTEN A WEIGHT IS READ.**  Every kernel below takes `b.ntok`; the two
+    // norms that used to be written `rows = 1` now take it too.  Nothing here reads another token's column, so
+    // a group is the same computation as `ntok` single-token calls, and `--prefill`'s own ids comparison is what
+    // checks that rather than this comment.
+    if (b.ntok < 1) {
+        err = "glm5-next: `glm_block_layer_pre` was handed a zero-token scratch";
         return false;
     }
-    (void) mb;
     (void) k;
     (void) db;
 
@@ -1066,20 +1208,25 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
     const int64_t n = g.n_embd;
     const float eps = (float) g.rms_eps;
 
+    // The section boundaries `STRATA_GLM_PREFILL_TIME` reports.  Each is a `cudaEventRecord` and nothing else -
+    // no sync, no wait - so the numbers are the card's own, and the switch costs a normal run nothing.
+    section_mark(stream);
+
     // ---- the attention half ------------------------------------------------------------------------------
     if (!hc_read(tables, g, layer, "hc_attn_fn.weight", "hc_attn_base.weight", "hc_attn_scale.weight", bb.R, b, stream,
                  err)) {
         return false;
     }
+    section_mark(stream);
     const WeightRef* w_attn_norm = req(v, "attn_norm.weight", err);
     if (w_attn_norm == nullptr) return false;
     if (w_attn_norm->bytes < (uint64_t) n * 4) {
         err = v.name("attn_norm.weight") + ": not f32 of the hidden width";
         return false;
     }
-    kernels::rms_norm_weighted(b.cur, (const float*) w_attn_norm->data, 1, n, eps, stream);
-    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n, stream);
-    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n, stream);
+    kernels::rms_norm_weighted(b.cur, (const float*) w_attn_norm->data, b.ntok, n, eps, stream);
+    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n * b.ntok, stream);
+    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n * b.ntok, stream);
 
     // WHICH MIXER IS A PROPERTY OF THE LAYER, never of a tensor name: `attn_output.weight` is KDA's output
     // projection on 34 layers and MLA's on 11, and reading the wrong one gives a right-shaped wrong answer.
@@ -1095,21 +1242,24 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
 
     hc_write(g, b.attn_out, b, bb.R, stream);
     if (!hc_write_commit(bb.R, b, g, stream, err)) return false;
+    section_mark(stream);
 
     // ---- the FFN half ------------------------------------------------------------------------------------
     if (!hc_read(tables, g, layer, "hc_ffn_fn.weight", "hc_ffn_base.weight", "hc_ffn_scale.weight", bb.R, b, stream,
                  err)) {
         return false;
     }
+    section_mark(stream);
     const WeightRef* w_ffn_norm = req(v, "ffn_norm.weight", err);
     if (w_ffn_norm == nullptr) return false;
     if (w_ffn_norm->bytes < (uint64_t) n * 4) {
         err = v.name("ffn_norm.weight") + ": not f32 of the hidden width";
         return false;
     }
-    kernels::rms_norm_weighted(b.cur, (const float*) w_ffn_norm->data, 1, n, eps, stream);
-    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n, stream);
-    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n, stream);
+    kernels::rms_norm_weighted(b.cur, (const float*) w_ffn_norm->data, b.ntok, n, eps, stream);
+    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n * b.ntok, stream);
+    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n * b.ntok, stream);
+    section_mark(stream);
 
     if (g.is_dense_ffn_layer(layer)) {
         // DENSE: the whole FFN runs here, straight into `bb.block_out`, which is where `hc_post` reads the
@@ -1120,7 +1270,10 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
         // ...AND THE RESIDUAL WRITE TOO.  A dense layer has no host pool between the halves, so the block is
         // not actually split and `post` has nothing left to do.
         hc_write(g, bb.block_out, b, bb.R, stream);
-        return hc_write_commit(bb.R, b, g, stream, err);
+        const bool ok = hc_write_commit(bb.R, b, g, stream, err);
+        section_mark(stream);   // and the last one again: a dense layer has no router, and the pool per call is fixed
+        section_mark(stream);
+        return ok;
     }
 
     // MOE: `pre` ends at the SHARED EXPERT AND THE ROUTER, and the residual write happens in `post` - because
@@ -1134,7 +1287,10 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
     if (!ffn3(tables, layer, b, "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight", n, g.n_ff,
               g.swiglu_limit_shexp_or_off(), mb.shared, stream, err))
         return false;
-    return glm_router(tables, g, layer, b, mb, k, stream, err);
+    section_mark(stream);
+    const bool ok = glm_router(tables, g, layer, b, mb, k, stream, err);
+    section_mark(stream);
+    return ok;
 }
 
 bool glm_block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,
