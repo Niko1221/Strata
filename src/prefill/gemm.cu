@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -81,6 +82,13 @@ __global__ void bf16_to_f16_rows(const uint16_t* __restrict__ s, __half* __restr
 void ck(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) {
         std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d\n", what, (int) s);
+        std::exit(1);
+    }
+}
+
+void cache_ck(cudaError_t s, const char* what) {
+    if (s != cudaSuccess) {
+        std::fprintf(stderr, "prefill gemm: BF16 conversion cache %s: %s\n", what, cudaGetErrorString(s));
         std::exit(1);
     }
 }
@@ -375,6 +383,15 @@ bool prompt_f16() {
 }
 
 Gemm::~Gemm() {
+    if (bf16_cache_arena_) {
+        int device = -1;
+        cache_ck(cudaGetDevice(&device), "get device at destruction");
+        if (device != bf16_cache_device_) cache_ck(cudaSetDevice(bf16_cache_device_), "set device at destruction");
+        report_bf16_cache();
+        invalidate_bf16_cache();
+        cache_ck(cudaFree(bf16_cache_arena_), "free arena");
+        if (device != bf16_cache_device_) cache_ck(cudaSetDevice(device), "restore device at destruction");
+    }
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
     if (mmq_buf_) cudaFree(mmq_buf_);
@@ -393,6 +410,9 @@ Gemm::~Gemm() {
 
 bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
                          std::string& err) {
+    if (handle_ && (bf16_cache_arena_ || bf16_cache_budget_bytes())) {
+        err = "prefill gemm: cache-enabled init called twice; destroy the old model's Gemm first"; return false;
+    }
     cublasHandle_t h = nullptr;
     if (const cublasStatus_t s = cublasCreate(&h); s != CUBLAS_STATUS_SUCCESS) {
         err = "prefill gemm: cublasCreate: cuBLAS status " + std::to_string((int) s);
@@ -410,7 +430,7 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws_bytes).release();
 #endif
-    return true;
+    return init_bf16_cache(err);
 }
 
 void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes) {
@@ -428,6 +448,9 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
 }
 
 bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
+    if (handle_ && (bf16_cache_arena_ || bf16_cache_budget_bytes())) {
+        err = "prefill gemm: cache-enabled init called twice; destroy the old model's Gemm first"; return false;
+    }
     // #240: every failure names the call and the real status, so "no VRAM" can be told from a broken install
     cublasHandle_t h = nullptr;
     if (const cublasStatus_t s = cublasCreate(&h); s != CUBLAS_STATUS_SUCCESS) {
@@ -456,7 +479,7 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
         }
     }
     scratch_elems_ = scratch_elems;
-    return true;
+    return init_bf16_cache(err);
 }
 
 #if !defined(__HIPCC__)
@@ -529,18 +552,101 @@ int bf16_path() {
     if (forced >= 0) return forced != 0 ? 1 : 0;
     return cc < 75 ? 1 : 0;
 }
-bool grow(uint16_t*& p, int64_t& have, int64_t want) {   // `have`, `want`: 2-byte elements
+bool grow(uint16_t*& p, int64_t& have, int64_t want, const char* diagnostic = nullptr) {
     if (have >= want) return true;
     if (p) cudaFree(p);
     p = nullptr;
     have = 0;
-    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }
+    if (const cudaError_t e = cudaMalloc((void**) &p, (size_t) want * 2); e != cudaSuccess) {
+        if (diagnostic)
+            std::fprintf(stderr, "prefill gemm: %s of %zu bytes: %s; falling back to cuBLAS BF16 GEMM\n",
+                         diagnostic, (size_t) want * 2, cudaGetErrorString(e));
+        cudaGetLastError(); p = nullptr; return false;
+    }
     have = want;
     return true;
 }
 constexpr int64_t kXSliceElems = 16ll << 20;   // 32 MiB of FP16 activations per slice (64 MiB as fp32)
 }  // namespace
 #endif
+size_t Gemm::bf16_cache_budget_bytes() {
+#if !defined(__HIPCC__)
+    const char* on = std::getenv("STRATA_BF16_TC_CACHE");
+    if (!on || std::strcmp(on, "1") != 0) return 0;
+    const char* value = std::getenv("STRATA_BF16_TC_CACHE_MIB");
+    if (!value) return 256u << 20;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long mib = std::strtoull(value, &end, 10);
+    if (errno || value[0] < '0' || value[0] > '9' || !end || *end || mib < 1 || mib > 65536) {
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true))
+            std::fprintf(stderr, "prefill gemm: invalid STRATA_BF16_TC_CACHE_MIB='%s' (expected 1..65536); "
+                                 "BF16 conversion cache disabled\n", value);
+        return 0;
+    }
+    return (size_t) mib << 20;
+#else
+    return 0;
+#endif
+}
+
+size_t Gemm::bf16_cache_reserve_bytes() {
+#if !defined(__HIPCC__)
+    const size_t budget = bf16_cache_budget_bytes();
+    return budget && bf16_path() == 1 ? budget : 0;
+#else
+    return 0;
+#endif
+}
+
+bool Gemm::init_bf16_cache(std::string& err) {
+#if !defined(__HIPCC__)
+    const size_t budget = bf16_cache_reserve_bytes();
+    if (!budget) return true;
+    if (const cudaError_t e = cudaGetDevice(&bf16_cache_device_); e != cudaSuccess) {
+        err = std::string("prefill gemm: BF16 conversion cache device: ") + cudaGetErrorString(e);
+        return false;
+    }
+    if (const cudaError_t e = cudaMalloc((void**) &bf16_cache_arena_, budget); e != cudaSuccess) {
+        err = "prefill gemm: BF16 conversion cache arena of " + std::to_string(budget >> 20) +
+              " MiB: " + cudaGetErrorString(e) + "; reduce STRATA_BF16_TC_CACHE_MIB or leave more VRAM free";
+        return false;
+    }
+    bf16_cache_stats_.budget = budget;
+    std::fprintf(stderr, "prefill gemm: STRATA_BF16_TC_CACHE=1 device=%d budget=%zu MiB: immutable weights only; "
+                         "first-admitted retention, full/oversize misses convert per call; BF16_TC rounding unchanged\n",
+                 bf16_cache_device_, budget >> 20);
+#else
+    (void) err;
+#endif
+    return true;
+}
+
+void Gemm::invalidate_bf16_cache() {
+    if (!bf16_cache_arena_) return;
+    int device = -1;
+    cache_ck(cudaGetDevice(&device), "get device at invalidation");
+    if (device != bf16_cache_device_) {
+        std::fprintf(stderr, "prefill gemm: BF16 conversion cache invalidation on the wrong device\n");
+        std::exit(1);
+    }
+    cache_ck(cudaStreamSynchronize((cudaStream_t) stream_), "wait at invalidation");
+    bf16_cache_.clear();
+    bf16_cache_stats_.bytes = 0;
+    ++bf16_cache_stats_.invalidations;
+}
+
+void Gemm::report_bf16_cache() const {
+    const auto& s = bf16_cache_stats_;
+    if (!s.budget) return;
+    std::fprintf(stderr, "prefill gemm: BF16 cache device=%d hits=%llu misses=%llu conversions=%llu "
+                         "budget_misses=%llu invalidations=%llu bytes=%zu budget=%zu (cumulative)\n",
+                 bf16_cache_device_, (unsigned long long) s.hits, (unsigned long long) s.misses,
+                 (unsigned long long) s.conversions, (unsigned long long) s.budget_misses,
+                 (unsigned long long) s.invalidations, s.bytes, s.budget);
+}
+
 bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K) {
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     static std::atomic<bool> told{false};
@@ -570,6 +676,19 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta, int64_t ldx) {
+    bf16_impl(X, W, Y, T, N, K, ldy, beta, ldx, false);
+}
+
+void Gemm::bf16_immutable(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                         int64_t ldy, float beta, int64_t ldx) {
+    bf16_impl(X, W, Y, T, N, K, ldy, beta, ldx, true);
+}
+
+void Gemm::bf16_impl(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                    int64_t ldy, float beta, int64_t ldx, bool immutable) {
+#if defined(__HIPCC__)
+    (void) immutable;
+#endif
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;
@@ -609,12 +728,47 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (const int path = K > 0 ? bf16_path() : 0; path == 1 && N > 1 && beta == 0.0f) {
         // a single output row stays cuBLAS's GEMV, faster than the conversions; beta = 1: see above
         const int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
-        if (grow(tc_w_, tc_w_elems_, N * K) && grow(tc_x_, tc_x_elems_, x_rows * K)) {
-            bf16_to_f16(W, tc_w_, N * K, (cudaStream_t) stream_);
+        uint16_t* cached_w = nullptr;
+        if (immutable && bf16_cache_arena_) {
+            if (N > INT_MAX || K > INT_MAX || T > INT_MAX) {
+                std::fprintf(stderr, "prefill gemm: BF16 conversion cache shape exceeds cuBLAS integer dimensions\n");
+                std::exit(1);
+            }
+            int device = -1;
+            cache_ck(cudaGetDevice(&device), "get device at lookup");
+            if (device != bf16_cache_device_) {
+                std::fprintf(stderr, "prefill gemm: BF16 conversion cache used on the wrong device\n");
+                std::exit(1);
+            }
+            const auto key = std::make_tuple(reinterpret_cast<uintptr_t>(W), N, K);
+            const auto found = bf16_cache_.find(key);
+            if (found != bf16_cache_.end()) {
+                cached_w = found->second;
+                ++bf16_cache_stats_.hits;
+            } else {
+                ++bf16_cache_stats_.misses;
+                const size_t bytes = (size_t) N * (size_t) K * sizeof(uint16_t);
+                // Match cudaMalloc's alignment so caching cannot change cuBLAS's pointer-alignment eligibility.
+                const size_t reserved = (bytes + 255) & ~size_t(255);
+                if (reserved <= bf16_cache_stats_.budget - bf16_cache_stats_.bytes) {
+                    cached_w = bf16_cache_arena_ + bf16_cache_stats_.bytes / sizeof(uint16_t);
+                    bf16_to_f16(W, cached_w, N * K, (cudaStream_t) stream_);
+                    cache_ck(cudaGetLastError(), "weight conversion launch");
+                    bf16_cache_.emplace(key, cached_w);
+                    bf16_cache_stats_.bytes += reserved;
+                    ++bf16_cache_stats_.conversions;
+                } else {
+                    ++bf16_cache_stats_.budget_misses;
+                }
+            }
+        }
+        if ((cached_w || grow(tc_w_, tc_w_elems_, N * K, bf16_cache_arena_ ? "BF16_TC weight scratch" : nullptr)) &&
+            grow(tc_x_, tc_x_elems_, x_rows * K, bf16_cache_arena_ ? "BF16_TC activation scratch" : nullptr)) {
+            if (!cached_w) bf16_to_f16(W, tc_w_, N * K, (cudaStream_t) stream_);
             for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
                 const int64_t n = std::min<int64_t>(x_rows, T - t0);
                 bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
-                f16(tc_x_, tc_w_, Y + t0 * ldy, n, N, K, ldy, beta);
+                f16(tc_x_, cached_w ? cached_w : tc_w_, Y + t0 * ldy, n, N, K, ldy, beta);
             }
             return;
         }

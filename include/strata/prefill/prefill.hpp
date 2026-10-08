@@ -97,6 +97,9 @@ public:
     /// ring as one allocation (the startup sizing of a cache without a loan).
     static uint64_t bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
     static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    /// Per-owner persistent allocations on the current device, never part of the borrowed region.
+    /// Reserve before sizing expert caches, including when prompt buffers are borrowed.
+    static uint64_t persistent_bytes_needed();
 
     /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
     /// max_blob, never past ring_cap()):

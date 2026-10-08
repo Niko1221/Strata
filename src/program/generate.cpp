@@ -2900,6 +2900,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    auto persistent_prefill_bytes = [&]() -> int64_t {
+        return o.prefill_chunk > 0 ? (int64_t) strata::prefill::Prefill::persistent_bytes_needed() : 0;
+    };
+    const int64_t persistent_prefill_b = persistent_prefill_bytes();
+    if (persistent_prefill_b)
+        std::fprintf(stderr, "strata generate: reserving %lld MiB for the persistent BF16 conversion cache "
+                             "(independent of prompt buffer loans)\n", (long long) (persistent_prefill_b >> 20));
+
     // ---- --split-skip-if-fits: before any later stage loads, does CUDA0 alone hold every profiled pair?  What it
     // still has to allocate on one GPU is the whole session (the KV of every layer), the drafter and the head
     // (kDrafterMib below), the verify windows and the reserve; the prompt path borrows from the cache.  If the
@@ -2921,7 +2929,8 @@ int main(int argc, char** argv) {
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
             const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers);
-            const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
+            const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20) +
+                                      persistent_prefill_b;   // + drafter/head, windows
             const int64_t room = (int64_t) fb - held_back;
             cudaDeviceProp dp{};
             cudaGetDeviceProperties(&dp, 0);
@@ -3214,8 +3223,8 @@ int main(int argc, char** argv) {
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
         const int64_t base_reserve =
             later && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib;
-        const int64_t reserve = (base_reserve + pf + (later ? kWindowMib : kPipeSnapMib) +
-                                 kPipeWindowMib + (drafter ? kDrafterMib : 0)) << 20;
+        const int64_t reserve = ((base_reserve + pf + (later ? kWindowMib : kPipeSnapMib) +
+                                 kPipeWindowMib + (drafter ? kDrafterMib : 0)) << 20) + persistent_prefill_bytes();
         return std::max<int64_t>((int64_t) fb - reserve, 0);
     };
     if (multi_gpu && split_auto) {
@@ -4184,18 +4193,20 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --pipeline-windows %d: %lld MiB of CUDA0 kept out of the expert cache "
                              "(the second verifier%s)\n", o.pipeline_windows, (long long) (pipe_first >> 20),
                      o.pipeline_windows >= 2 ? ", the GDN snapshots" : "");
-    // The MiB the prompt path's OWN buffers (no loan) take, which the cache sizing leaves out.  0.1.39's rule is
+    // All owned prompt-path allocations, including the persistent arena even when buffers are borrowed.
+    // For buffers without a loan, 0.1.39's rule is
     // 160 + chunk * 680 / 1024 (~16 GiB at 24576 against ~2.4 GiB really allocated); STRATA_OWNED_PRICE=exact prices the
     // real allocation instead (Prefill::bytes_needed_owned: 2 MiB pages, the ring in one piece, as PR #796 measured)
     // and gives that cache the difference.  A recommendation to try, so it is not the default.
     auto owned_prefill_mib = [&]() -> int64_t {
-        if (!(o.prefill_chunk > 0 && !pf_borrow)) return 0;
+        const int64_t persistent_mib = persistent_prefill_b >> 20;
+        if (!(o.prefill_chunk > 0 && !pf_borrow)) return persistent_mib;
         static const bool exact = [] { const char* v = std::getenv("STRATA_OWNED_PRICE"); return v != nullptr && std::string(v) == "exact"; }();
-        if (!exact) return 160 + (o.prefill_chunk * 680) / 1024;
+        if (!exact) return 160 + (o.prefill_chunk * 680) / 1024 + persistent_mib;
         const int64_t mib = ((int64_t) strata::prefill::Prefill::bytes_needed_owned(g, ss, o.prefill_chunk) + (1 << 20) - 1) >> 20;
         std::fprintf(stderr, "strata generate: STRATA_OWNED_PRICE=exact: the prompt path's own buffers for a %lld-token chunk: %lld MiB (the 0.1.39 rule: %lld MiB)\n",
                      (long long) o.prefill_chunk, (long long) mib, (long long) (160 + (o.prefill_chunk * 680) / 1024));
-        return mib + 64;   // a margin for the allocator
+        return mib + 64 + persistent_mib;   // a margin for the allocator
     };
     if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
@@ -4313,7 +4324,7 @@ int main(int argc, char** argv) {
     } else if (multi_gpu && o.expert_cache > 0) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
         // fails with "device buffers ... do not fit" (with borrowing - the default with a profile - the path lends
-        // slots instead and `prefill_mib` is 0, so only the reserve is checked)
+        // slots instead, so `prefill_mib` prices only persistent prompt-path allocations)
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
         const int64_t prefill_mib = owned_prefill_mib();
@@ -4341,7 +4352,8 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int asked = o.expert_cache;
         const uint64_t budget = (uint64_t) asked * lay.max_blob;
-        size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
+        const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) persistent_prefill_b;
+        size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         uint64_t sum = 0;
         for (int64_t l = 0; l < g.n_layers; ++l)
@@ -4367,7 +4379,8 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
         uint64_t used = 0;
-        const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
+        const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first +
+                                 (size_t) persistent_prefill_b;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
@@ -4490,7 +4503,7 @@ int main(int argc, char** argv) {
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
-            const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
+            const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first + persistent_prefill_b;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
@@ -6400,7 +6413,8 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(dev);
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
-                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c);
+                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c) +
+                                         persistent_prefill_bytes();
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
                         return false;

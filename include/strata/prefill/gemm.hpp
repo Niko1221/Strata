@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <map>
+#include <tuple>
 
 namespace strata::prefill {
 
@@ -30,6 +32,30 @@ public:
     /// STRATA_BF16_TC=1), Pascal widens both to fp32 (cublasSgemm); see gemm.cu.
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
               float beta = 0.0f, int64_t ldx = 0);
+
+    /// Opt-in STRATA_BF16_TC_CACHE=1: retain FP16 conversions only for weights explicitly declared immutable.
+    /// W must remain allocated and unchanged until invalidate_bf16_cache(), or this Gemm's destruction.
+    /// One Gemm belongs to one model lifetime, device and fixed stream (which outlives it); calls are host-serialized.
+    /// The caller must order source uploads before that stream's reads (also when uploading on another stream).
+    /// Never use this for dequantization scratch or activations. Other BF16_TC rounding remains unchanged:
+    /// FP16 tensor-core sums need not be bit-identical to BF16 cuBLAS, nor deterministic across library versions.
+    void bf16_immutable(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                        int64_t ldy = 0, float beta = 0.0f, int64_t ldx = 0);
+
+    struct Bf16CacheStats {
+        uint64_t hits = 0, misses = 0, conversions = 0, budget_misses = 0, invalidations = 0;
+        size_t bytes = 0, budget = 0;
+    };
+    Bf16CacheStats bf16_cache_stats() const { return bf16_cache_stats_; }
+    void report_bf16_cache() const;
+    /// CPU-only configuration parsing.
+    /// Strict opt-in, default 256 MiB; STRATA_BF16_TC_CACHE_MIB=1..65536, invalid values disable with a diagnostic.
+    static size_t bf16_cache_budget_bytes();
+    /// Actual arena budget on the current device; zero unless its FP16 BF16_TC path is active.
+    static size_t bf16_cache_reserve_bytes();
+    /// Wait for the fixed stream before weight mutation/unload/reuse. Returns arena space to the cache.
+    /// No per-entry GPU allocations exist; the bounded arena is freed by this Gemm's destructor.
+    void invalidate_bf16_cache();
 
     /// S (STRATA_HCD_EXACT): the HC down projection (N 320, K 10240) by the WMMA kernel that reproduces hipBLASLt's
     /// solution 1176 / 1177 bit for bit; false (nothing launched) unless hipBLASLt would take one of those for this
@@ -73,6 +99,14 @@ private:
     int64_t tc_w_elems_ = 0;
     uint16_t* tc_x_ = nullptr;
     int64_t tc_x_elems_ = 0;
+    bool init_bf16_cache(std::string& err);
+    void bf16_impl(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                   int64_t ldy, float beta, int64_t ldx, bool immutable);
+    uint16_t* bf16_cache_arena_ = nullptr;
+    int bf16_cache_device_ = -1;
+    Bf16CacheStats bf16_cache_stats_;
+    // BF16 -> FP16 is the only dtype pair in this cache. Device is fixed at init; N/K include size and layout.
+    std::map<std::tuple<uintptr_t, int64_t, int64_t>, uint16_t*> bf16_cache_;
     bool native_mmq(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                     int64_t ldy);
     void* mmq_ctx_ = nullptr;

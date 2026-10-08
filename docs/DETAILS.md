@@ -1504,6 +1504,35 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
+### Immutable BF16 conversion cache (opt-in, CUDA)
+
+`STRATA_BF16_TC_CACHE=1` retains FP16 copies of explicitly immutable BF16 prompt weights when the FP16
+`STRATA_BF16_TC` path is active: Volta by default, Turing with `STRATA_BF16_TC=1`. It is not gated by a card name.
+Other paths, including native BF16 on Ampere and newer, Pascal's FP32 path and HIP, reserve nothing.
+The cache is off by default; only the exact value `1` enables it. `STRATA_BF16_TC_CACHE_MIB` sets the per-`Gemm`
+budget (default **256 MiB**, range **1..65536**); invalid values disable it with a diagnostic.
+
+Each owner allocates a persistent arena separate from borrowed prompt buffers. Startup expert-cache sizing and
+prefill fit checks reserve that memory even when the prompt borrows expert slots. The first weights that fit
+stay until invalidation or destruction; full/oversize misses convert per call without evicting them.
+This competes with expert VRAM, so a larger budget can leave fewer experts resident.
+The `owned_prefill_mib()` sizing helper prices all owned prompt-path allocations, including the persistent
+arena independently of loans; callers do not need to add a separate conversion-cache reserve.
+
+The C++ `Gemm::bf16_immutable` contract requires the source allocation to remain unchanged and alive until
+`invalidate_bf16_cache()` or owner destruction. Invalidate before mutation, unload or pointer reuse; it waits
+for the owner's fixed stream and clears the entries, retaining the arena. Calls are host-serialized on one
+device and stream; uploads on another stream need explicit ordering. Mutable dequantization scratch and
+activations are never cached. Logs expose hits, misses, retained conversions, budget misses, invalidations,
+bytes and budget, and report allocation/conversion errors. BF16_TC's rounding is unchanged; it is not a
+promise of bit-identical results against native BF16 cuBLAS.
+
+Measured on physical GPU 3, RTX 8000 at 260 W, IQ3_S, speculation 4, a fixed 19,000-slot expert cache and
+8,192-token prefill: medians of three runs per prompt length, each generating 128 tokens. At 537 / 4,057 /
+32,057 prompt tokens, `STRATA_BF16_TC=1` without the cache processed **661 / 1,262 / 1,416 tokens/s**;
+with a **1,024 MiB** cache, **654 / 1,261 / 1,413 tokens/s**. The cache retained 321 conversions and logged
+5,778 hits. Whole-model throughput was neutral in this measurement; this is not a measured speedup.
+
 ---
 
 ## Credits and licenses
