@@ -644,9 +644,14 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
         {
-            DFlashSection s("fusion.kv_proj");
-            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
-            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
+            {
+                DFlashSection section("fusion.k_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
+            }
+            {
+                DFlashSection section("fusion.v_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
+            }
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
@@ -786,10 +791,18 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
         }
         {
-            DFlashSection s("L*.qkv_gemv");
-            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
-            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
-            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
+            {
+                DFlashSection section("L*.q_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
+            }
+            {
+                DFlashSection section("L*.k_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
+            }
+            {
+                DFlashSection section("L*.v_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
+            }
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
         if (parity_want(cycle_)) {
@@ -893,7 +906,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             cudaStreamSynchronize(cs_);
             std::fprintf(stderr, "df dbg: after attn h0=%.3e bo0=%.3e\n", hb[0], ab[0]);
         }
-        add_inplace(h_, bo_, K * N, cs_);
+        {
+            DFlashSection section("L*.residual_add");
+            add_inplace(h_, bo_, K * N, cs_);
+        }
         if (parity_want(cycle_)) {
             char name[32];
             std::snprintf(name, sizeof name, "h_attn%d", (int) l);
@@ -906,9 +922,14 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
         }
         {
-            DFlashSection s("L*.gate_up_gemv");
-            bf16_gemv_batch(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
-            bf16_gemv_batch(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
+            {
+                DFlashSection section("L*.gate_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
+            }
+            {
+                DFlashSection section("L*.up_proj");
+                bf16_gemv_batch(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
+            }
         }
         {
             DFlashSection s("L*.swiglu");
@@ -919,7 +940,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             DFlashSection s("L*.down_gemv");
             bf16_gemv_batch(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
         }
-        add_inplace(h_, bo_, K * N, cs_);
+        {
+            DFlashSection section("L*.residual_add");
+            add_inplace(h_, bo_, K * N, cs_);
+        }
         if (parity_want(cycle_)) {
             char name[32];
             std::snprintf(name, sizeof name, "h_mlp%d", (int) l);
@@ -935,21 +959,30 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         cudaStreamSynchronize(cs_);
         std::fprintf(stderr, "df dbg: final h0=%.3e emb0=%.3e\n", hb[0], eb[0]);
     }
-    native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
+    {
+        DFlashSection section("out.rmsnorm");
+        native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
+    }
     if (parity_want(cycle_)) parity_dump(parity_dir_, "final_norm", xn_, K * N, cs_);
+    const bool output_parity = parity_want(cycle_);
     ++cycle_;
     {
         DFlashSection s("out.quantize");
         native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
     }
+    if (output_parity)
+        parity_dump(parity_dir_, "head_act_q8", (const float*) xq_,
+                    strata::kernels::native_q8_1_bytes((int) N, K) / 4, cs_);
     {
         DFlashSection s("out.head");
         native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, (int) dg.vocab, K, cs_);
     }
+    if (output_parity) parity_dump(parity_dir_, "head_logits", logits_, K * dg.vocab, cs_);
     {
         DFlashSection s("out.argmax");
         argmax_rows(logits_, K, (int) dg.vocab, arg_scratch_, out_, cs_);
     }
+    if (output_parity) parity_dump(parity_dir_, "head_picks", (const float*) out_, K, cs_);
     {
         DFlashSection s("out.sync");
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
