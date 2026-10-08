@@ -54,7 +54,8 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (THINK_END, H_CHANNEL, ChatTemplate, Event, HarmonyParser, OutputParser,  # noqa: E402
+                            anthropic_to_messages,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -149,6 +150,9 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
+# GPT-OSS (harmony): the same two, as its own end of the analysis message and the start of the final one
+HARMONY_CLOSE = "<|end|><|start|>assistant<|channel|>final<|message|>"
+HARMONY_WRAP_UP = " I have thought about this long enough; time to give my answer." + HARMONY_CLOSE
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
 # low-effort instruction in place of the xhigh one.  Both off by default.
@@ -2792,8 +2796,10 @@ class Service:
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        # GPT-OSS: the harmony format (its tokenizer has <|channel|>); its replies end at <|return|> or <|call|>
+        self.harmony = H_CHANNEL in getattr(tokenizer, "special_tokens", {})
+        ends = ("<|return|>", "<|call|>", "<|endoftext|>") if self.harmony else (IM_END, "<|endoftext|>")
+        self.stop_ids = set(t for e in ends for t in tokenizer.encode(e, parse_special=True))
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -3395,6 +3401,13 @@ class Service:
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
         fetched = self._note_unreadable_tool_images(messages)
+        if self.harmony:
+            # GPT-OSS always reasons (harmony has no "off"): no thinking is its low effort; its template's efforts are
+            # low / medium / high.  A forced call is written in Qwen's form, so harmony leaves the choice to the model.
+            effort = "low" if kwargs.get("enable_thinking") is False else kwargs.get("reasoning_effort")
+            kwargs = {**kwargs, "enable_thinking": True,
+                      "reasoning_effort": {"xhigh": "high", "none": "low", None: "medium", "": "medium"}.get(effort, effort)}
+            force = None
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
@@ -3620,7 +3633,8 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
+        parser = (HarmonyParser if self.harmony else OutputParser)(thinking=thinking, tools=tools, stream_tools=True,
+                                                                  recover=self.tool_call_recovery)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -3869,7 +3883,7 @@ class Service:
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            extra = self.tok.encode(HARMONY_CLOSE if self.harmony else REASONING_CLOSE, parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -3893,7 +3907,7 @@ class Service:
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
                             budget = st["thinking_budget"] = None
-                            text = REASONING_WRAP_UP + (force or "")
+                            text = (HARMONY_WRAP_UP if self.harmony else REASONING_WRAP_UP) + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6090,7 +6104,8 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        meta = json.loads((tpath / "tokenizer.json").read_text()) if (tpath / "tokenizer.json").exists() else {}
+        tok = ST.Tokenizer(tokens, merges, types, meta.get("pre", "qwen35"))   # gpt-4o: GPT-OSS (o200k)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:

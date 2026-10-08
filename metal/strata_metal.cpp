@@ -357,8 +357,9 @@ struct Engine {
         seqs.resize((size_t) p.n_parallel);
         slots.resize((size_t) o.batch);
         llama_token t[4];
-        const char* s = "<|im_start|>";
-        if (llama_tokenize(vocab, s, (int32_t) std::strlen(s), t, 4, false, true) == 1) im_start = t[0];
+        // a message's first token, where the checkpoints go: Qwen's <|im_start|>, else GPT-OSS's (harmony) <|start|>
+        for (const char* s : {"<|im_start|>", "<|start|>"})
+            if (im_start < 0 && llama_tokenize(vocab, s, (int32_t) std::strlen(s), t, 4, false, true) == 1) im_start = t[0];
         return true;
     }
 

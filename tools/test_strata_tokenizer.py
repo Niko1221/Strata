@@ -97,3 +97,33 @@ class ByteCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GptOssPreTokenizer(unittest.TestCase):
+    """`gpt-4o` (GPT-OSS's o200k): the split pattern and ignore_merges, against openai/gpt-oss-120b's tokenizer.json.
+    The expected pieces are that tokenizer's own pre_tokenize_str output (combining marks, contractions, digits)."""
+
+    REFERENCE = {
+        "Hello world's 12345 HELLO'S": ["Hello", " world's", " ", "123", "45", " HELLO'S"],
+        "été café!!\n\n": ["été", " café", "!!\n\n"],
+        "a/b/c\n/ x": ["a", "/b", "/c", "\n", "/", " x"],
+        "  \t\tdef f():\n    return 1": ["  \t", "\tdef", " f", "():\n", "   ", " return", " ", "1"],
+    }
+
+    def tok(self, pre):
+        base = [ST.BYTE_TO_UNICODE[b] for b in range(256)]
+        return ST.Tokenizer(base + ["th", "thx"], ["t h"], pre=pre)     # "thx": a token no merge reaches
+
+    def test_the_split_matches_the_reference(self):
+        tk = self.tok("gpt-4o")
+        for text, pieces in self.REFERENCE.items():
+            self.assertEqual(tk._re.findall(text), pieces, text)
+
+    def test_a_piece_that_is_a_token_is_that_token(self):
+        whole = len(self.tok("gpt-4o").tokens) - 1                      # ignore_merges, as tiktoken
+        self.assertEqual(self.tok("gpt-4o").encode("thx"), [whole])
+        self.assertNotEqual(self.tok("qwen35").encode("thx"), [whole])  # qwen35 merges: "th" + "x"
+
+    def test_an_unknown_pre_tokenizer_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.tok("llama3")
