@@ -682,7 +682,9 @@ Ready to use, in `docs/monitoring/`: `prometheus.yml` (a scrape config, the API 
 `servicemonitor.yaml` (the same for the Prometheus Operator) and `grafana-strata.json`, a Grafana dashboard to
 import (it asks for the Prometheus data source): requests running and waiting, tokens per second, time to first
 token, time between tokens and request duration (p50 / p95), the prompt cache and MTP draft rates, and the engine's
-own panels (state, batch slots, rates, expert cache hit rate, GPU and RAM). Its first row uses only vLLM's names, so
+own panels (state, batch slots, rates, expert cache hit rate, GPU and RAM), and with `"routing_counts"` an Experts row
+(the most routed experts over time, one line per layer and expert; routings per second; per-layer bars of the top-32
+share, the entropy and the experts seen). Its first row uses only vLLM's names, so
 it also reads a vLLM server.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `/slots` uses llama.cpp's names: `n_ctx` and `n_prompt_tokens` (the running request's prompt size, kept after it ends: what a front-end's context meter divides by `n_ctx`). `total_slots` in `/props` is the number of `--batch` slots (1 without). `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
