@@ -288,17 +288,23 @@ void qsa_set_kv_resident(int64_t cells);
 /// captured graphs stay valid.  Set before sizing and initializing the session and the drafter.
 void qsa_set_kv_elastic(bool enabled, int64_t init_cells);
 bool qsa_kv_elastic();
-/// Cells every elastic state can hold now (INT64_MAX when none is elastic).
-int64_t qsa_kv_elastic_cells();
-/// Chunks still to map for every elastic state to hold `cells` cells.
-int64_t qsa_kv_elastic_need(int64_t cells);
+/// The batch slots (--kv-grow beside --batch): every elastic state belongs to the group that was current when it was
+/// initialized -
+/// 0 for the main session and its drafter, b + 1 for batch slot b's session and drafter - and each group grows and
+/// shrinks on its own.  A state of group 1 or more starts with `slot_init_cells` mapped (0: `init_cells`).  The calls
+/// below take the group; 0 (the default) is every caller from before the groups.
+void qsa_set_kv_elastic_group(int group, int64_t slot_init_cells = 0);
+/// Cells every elastic state of `group` can hold now (INT64_MAX when none is elastic).
+int64_t qsa_kv_elastic_cells(int group = 0);
+/// Chunks still to map for every elastic state of `group` to hold `cells` cells.
+int64_t qsa_kv_elastic_need(int64_t cells, int group = 0);
 /// Maps them, each from `take()` (0: a new chunk), the new memory zeroed.  Synchronous; nothing may be running on
 /// the device.  false: out of memory.
-bool qsa_kv_elastic_grow(int64_t cells, const std::function<VmmChunk()>& take);
-/// Unmaps the chunks past `cells` cells, each handed to `give`.  Returns how many.
-int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(VmmChunk)>& give);
-/// Physical bytes the elastic pools hold, and what all of them would at the full context.
-uint64_t qsa_kv_elastic_mapped_bytes();
+bool qsa_kv_elastic_grow(int64_t cells, const std::function<VmmChunk()>& take, int group = 0);
+/// Unmaps the chunks of `group`'s states past `cells` cells, each handed to `give`.  Returns how many.
+int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(VmmChunk)>& give, int group = 0);
+/// Physical bytes the elastic pools hold (of one group, or -1: all), and what all of them would at the full context.
+uint64_t qsa_kv_elastic_mapped_bytes(int group = -1);
 uint64_t qsa_kv_elastic_full_bytes();
 int64_t qsa_kv_resident();
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
