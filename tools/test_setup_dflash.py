@@ -110,7 +110,7 @@ class DrafterChoice(unittest.TestCase):
             self.assertNotIn("dflash_quant", new)
             self.assertNotIn("dflash_source", new)
 
-    def test_speculation_off_menu_and_saved_configuration(self):
+    def test_model_drafter_off_keeps_lookup_and_saved_configuration(self):
         with patch.object(setup, "say"), patch.object(setup, "ask", return_value="3") as ask:
             self.assertEqual(setup.choose_drafter(None, None, None, False), ("none", "original"))
             self.assertEqual(ask.call_count, 1)
@@ -118,7 +118,7 @@ class DrafterChoice(unittest.TestCase):
         for flag in ("--mtp", "--dflash"):
             self.assertNotIn(flag, args)
         for flag in ("--suffix-draft", "--lookup-chain"):
-            self.assertEqual(args[args.index(flag) + 1], "0")
+            self.assertNotIn(flag, args)   # preserve the engine's prompt-lookup defaults
         with tempfile.TemporaryDirectory() as folder:
             cfg = Path(folder)/"strata-iq3_xxs.json"
             cfg.write_text(json.dumps({"args": args, "drafter": "none"}))
