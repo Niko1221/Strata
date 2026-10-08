@@ -33,13 +33,16 @@ set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
 # bound for every device in this build.
 # The short B-series bound matters most on the Windows OpenCL backend, where a kernel's writes to host-mapped memory
-# are not reliably visible while a window runs, so the per-layer waits are expected to run out and give up and the
-# spinning before they do is time spent on nothing. On an Arc Pro B70 (OpenCL, no command graphs, JIT build), 128
-# greedy tokens, medians of two interleaved runs, 20,000 against 2,000,000 measured 53.5 vs 39.9 tok/s after a
-# 3-token prompt and 45.5 vs 25.4 after a 2,048-token one - the same build, one -DSTRATA_SYCL_SPIN_MAX apart
-# (+34% and +79%, and more of it the longer the context, which is more waits running out). docs/INTEL.md has the
-# run-to-run detail, and the case that goes the other way: without --mtp the suffix drafter's own waits need the
-# long bound, so one fixed constant cannot serve both.
+# are not reliably visible while a window runs, so the window's per-layer waits are expected to run out and give up
+# and the spinning before they do is time spent on nothing. On an Arc Pro B70 (OpenCL, no command graphs, JIT build),
+# the same build one -DSTRATA_SYCL_SPIN_MAX apart, 256 greedy tokens after a 2,048-token prompt, medians of two
+# interleaved runs: `--spec 4 --mtp` decodes 45.4 tok/s at 20,000 against 26.2 at 2,000,000 (+73%), 4.19 against
+# 2.28 tokens per round, 99 of 99 drafts accepted against 73 of 126.
+# WITHOUT --mtp the short bound is wrong and not just slower: the suffix drafter's own waits run out inside 20,000,
+# it produces no draft at all and each round verifies a single token - 1.03 against 2.17 tokens per round and 21.8
+# against 68.8 tok/s (`--spec 2`). One constant cannot serve both, and the per-device choice above picks the short
+# one on a B-series either way, so a run without --mtp wants -DSTRATA_SYCL_SPIN_MAX=2000000 (or STRATA_SPIN_MAX);
+# sycl/serve/strata-sycl.bat warns when the engine runs without --mtp. docs/INTEL.md has both measurements.
 set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "fixed bound of the device's spins on host flags, in reads (empty: chosen per device at run time)")
 if(STRATA_SYCL_SPIN_MAX)
   add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)

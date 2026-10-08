@@ -751,24 +751,36 @@ a number that a 256-token run contradicts. Interleave the builds and take median
 **`--spec 2` is the outlier.** Without the draft layer this release decodes at 22.3 tok/s against 53.6 for the
 previous build on the same card, same flags, interleaved - the one reproducible regression in the table.
 
-**0.1.40.3 changed the device's spin bound on host flags and that is worth 46-67% of decode.** It made the bound a
-build option (`STRATA_SYCL_SPIN_MAX`) and gave 20,000 only to a `bmg` **AOT** build, 2,000,000 to everything else -
-the A-series JIT build, where the GPU really does wait on the host's slow per-layer CPU expert work. A JIT build of
-a B70 is not an AOT build, so it inherited the long bound, and on this backend the waits are the opposite kind: a
-kernel's writes to host-mapped memory are not visible while a window runs, so the waits are *expected* to run out
-and give up, and every extra read is time spent on nothing. Same binary, one `-DSTRATA_SYCL_SPIN_MAX` apart,
-128 greedy tokens, medians of two interleaved runs:
+**0.1.40.3 changed the device's spin bound on host flags, and the bound is worth about 3x of decode in either
+direction.** It made the bound a build option (`STRATA_SYCL_SPIN_MAX`) and gave 20,000 only to a `bmg` **AOT** build,
+2,000,000 to everything else - the A-series JIT build, where the GPU really does wait on the host's slow per-layer CPU
+expert work. A JIT build of a B70 is not an AOT build, so it inherited the long bound.
 
-| context | 2,000,000 (the 0.1.40.3 default) | 20,000 (this branch's default) | |
+What the bound decides is whether *speculation works at all*. A window that spins on a host flag it cannot see runs out
+and goes on without what it was waiting for, which is harmless when the thing it wanted is a plan it already has and
+ruinous when it was a draft. Same build, one `-DSTRATA_SYCL_SPIN_MAX` apart, Coder IQ1_M with `--ple-gguf`, 256 greedy
+tokens after a 2,048-token prompt, medians of two interleaved runs, `suffix drafts` and `accepted` from the engine's own
+speculation line:
+
+| mode | | 2,000,000 | 20,000 (this branch's default) |
 |---|---|---|---|
-| 3-token prompt | 40.6 tok/s | **59.0** | +46% |
-| 2,048-token prompt | 25.6 tok/s | **42.9** | +67% |
+| `--spec 4 --mtp` (what setup writes) | tok/s | 26.2 | **45.4** |
+| | tokens per round | 2.28 (73 of 126 drafts accepted) | **4.19 (99 of 99)** |
+| `--spec 2` | tok/s | **68.8** | 21.8 |
+| | tokens per round | **2.17** (2 suffix windows drafted) | 1.03 (**0 drafted**) |
+| `--spec 4`, no `--mtp` | tok/s | **69.7** | 18.9 |
 
-More of it the longer the context, which is what more expired waits looks like. At 20,000 this release decodes
-*faster* than 0.1.40.2 did (42.9 against 40.8 at the 2,048-token context, 59.0 against 51.0 short), so the whole of
-that release's decode regression is this default and not its kernels. The carve-out is on Windows rather than on the
-card because that is the property the bound depends on - the OpenCL backend's handshake, not which Arc is in the
-machine - and `-DSTRATA_SYCL_SPIN_MAX=...` overrides it.
+So with the MTP drafter on, the short bound is both faster and better: the window's waits are the kind that expire, and
+the MTP record path has already published what the window needs, so the drafts are right and accepted. Without
+`--mtp` the suffix drafter's own waits run out inside 20,000, it produces **no draft at all**, every round verifies a
+single token and decode is 3.7x slower - a silent loss, since the answer is still correct. One constant cannot serve
+both because the drafting waits want the long bound and the window's want the short one; that is the shape of the
+upstream report.
+
+The branch's default is 20,000 on Windows because the port's own configuration is `--spec 4 --mtp`, and
+`sycl/serve/strata-sycl.bat` warns on stderr when the engine runs without `--mtp`. Rebuild for the other case with
+`-DSTRATA_SYCL_SPIN_MAX=2000000`; the override is what this branch's default is made of. At 20,000 this release decodes
+*faster* than 0.1.40.2 did, so the decode regression that release shipped is this default and not its kernels.
 
 `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host clocks under `STRATA_VERIFY_EAGER=1`): a
 4-token window is ~65 ms and the GDN hyper-connection read is ~24 ms of it, nearly flat from T=2 (23.6 ms) to T=6
