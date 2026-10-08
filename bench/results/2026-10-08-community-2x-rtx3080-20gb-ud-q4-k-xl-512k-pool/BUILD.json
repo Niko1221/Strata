@@ -6,18 +6,23 @@
     "bytes": 67691704,
     "mtime": "2026-10-07 23:32:38 -0400"
   },
-  "binary_not_a_release": "Built on lm-server from my fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches without an open PR yet'.",
+  "binary_not_a_release": "Built on lm-server from my fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches whose PR is in preparation'.",
   "source_of_binary": {
     "statement": "strata-w7 = the up-merge build (strata-w5) plus branch opt/04-split-batched-draft-kv, per my own evidence notes (pr-evidence 'w7 = merged w5 + opt/04'). The commit is not embedded in the binary; the match below is by branch contents and by time (binary mtime 23:32:38, opt/04 commit time 23:32:28, 2026-10-07, -0400).",
     "repository": "https://github.com/noon-at-cgn/Strata",
     "branch": "opt/04-split-batched-draft-kv",
     "commit": "ac5fc3f3cce9e5b917aa0e818afb116725f53ea5",
+    "repro_branch": {
+      "branch": "repro/w7",
+      "commit": "428d9910134aaaae9ffd8c8e262cec39504221e5",
+      "statement": "up-merge plus the opt/04 commit on one branch, wrong author e-mail on my own commits corrected; the tree is identical to ac5fc3f (empty git diff), only author and committer lines and therefore every commit id differ. The binary's sha256 above is from a build of the earlier ids (ac5fc3f on up-merge 9098e89); a rebuild from repro/w7 gives the same source, not necessarily the same binary bytes. The full list with both ids is in repro-w7-commits.txt."
+    },
     "parent_branch_up_merge": {
       "branch": "up-merge",
       "commit": "9098e8969c22deeb364b3ff0c1207b5e316c6b4e",
       "merge_commit": "2c8b650 (upstream/main d5ea7133741e67743c0e886bb426c0ce8d69cf6c = v0.1.40.3, merged into w2-dense-fix c45d8548cd766d84c8789701428fa705c41f3aba)"
     },
-    "commits_on_up_merge_not_in_upstream_main_fb58e0d": 86
+    "commits_on_up_merge_not_in_upstream_main_fb58e0d": "77 commits that are not merges, plus 9 merge commits; 7 of the 77 are in main under other commit ids. repro/w7 adds the opt/04 commit (78 and 9 on top of v0.1.40.3 d5ea713)"
   },
   "python_front_end": "serve/ from the same merged tree, copied to /opt/strata-bmtp/build/w5root (systemd drop-in PYTHONPATH). The checkout /opt/strata-bmtp itself is an older tree (v0.1.40.1-23-gf197c62) with uncommitted edits to serve/server.py and is not the code that served.",
   "build": {
@@ -36,10 +41,12 @@
     "pr/kv-pool (PR-ready copy)": "3aefa1166047e1df1cc5b702f19600039a7fb738",
     "pr/batch-mtp-split (PR-ready copy)": "484b49c6813c7ed8b2d3d587fa8f5795e23cc39d",
     "pr/mtp-shared-draft-head": "08ef4a38d01cd0d051881d7ff683860064acd1f9",
-    "pr/aux-cpus (#1598)": "91f6238284f654b7ac85f3eb9d152fa31099eda1",
-    "pr/split-mtp-batch (#1599)": "69fa86156f09bbc215a7a98ca74ba14fbda943f3",
-    "pr/lend-sizing (#1600)": "7940c9327ac026fee1b7312a1fb8206b627942f2",
-    "pr/memory-guard (#1601)": "290cf3a5a1b13fc13645ebe3c60dc8ecba639adc"
+    "pr/aux-cpus (#1598)": "1e80ce9cdad6b1eea5af577b6dc54fc70a73f6cf",
+    "pr/split-mtp-batch (#1599)": "3d57d0c0ce215e0e3339446d528d5db9e027a08c",
+    "pr/lend-sizing (#1600)": "8c274ddcc28382c7c19a6abb7ecebc92e544c03e",
+    "pr/memory-guard (#1601)": "dcb9fddde345dc36011065f90d4dfaaceac1cfa9",
+    "repro/w7": "428d9910134aaaae9ffd8c8e262cec39504221e5",
+    "up-141 (my stack on upstream 0.1.41, built as strata-w10; code head db925c1)": "10baecbcb5c70b39b21422a5fc6d11f4bcbc138d"
   },
   "upstream_main_at_report_time": "fb58e0dbc8399662c0e47c76578c6e878b14f6cf"
 }
