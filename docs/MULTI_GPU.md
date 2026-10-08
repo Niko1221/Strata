@@ -134,9 +134,15 @@ borrows N slots (ring R slots at chunk C), K of them keep their experts in RAM t
 `WARNING` follows when K is below N. Without a split, or without `--resident-experts`, nothing changes. With a split
 the order of the two steps changed for every ring choice, the 96-slot rule included: its regions used to be sized for
 the larger default ring, so there the copy probably kept more slots than were borrowed (not measured). The 5,396 /
-4,662 figures are from one start on the test machine (2x RTX 3080 20 GB, UD-Q4_K_XL, `--layer-split 23`);
-TODO-EVIDENCE (PREvidence: borrowed and kept slots before and after, with `STRATA_SPLIT_RING` unset and at 384, and the
-prompt time of a long prompt, n and the A/A).
+4,662 figures were measured on the test machine (2x RTX 3080 20 GB at 220 W, Xeon E5-2696 v4, UD-Q4_K_XL,
+`--layer-split 23`, resident RAM mode, `--prefill auto:16384`, 2 slots), one restart per arm, with `STRATA_SPLIT_RING=384`
+and `STRATA_PREFILL_RING` unset. Before the change a 104K-token prompt made 413 blob reads and read 10.3 GB of experts
+from the model file per request; after it, 0, with all 5,396 borrowed slots kept in RAM, for 2.15 GiB more pinned RAM
+(13.61 -> 15.76 GiB). 25K and 51K prompts read nothing from the file in either case. With the override unset and
+`STRATA_PREFILL_RING=384` the lend lines are identical before and after (5,396 / 5,396, 15.76 GiB). No speed gain is
+shown: the medians of three 104K reads were 2,803 tok/s before and 2,907 after, but the spread before is 2,540-2,897
+(its first read faulted 4.2 GB in from NVMe) and there is no A/A restart. Here the page cache absorbed the 10 GB per
+request; with less spare page cache it would be disk traffic. Not measured: both ring variables unset.
 
 **A separate VRAM reserve for the later cards:** `--vram-reserve-later-mib N` (default: `--vram-reserve-mib`'s value).
 The card that drives the monitors needs more headroom than one that drives none; with the display on the last card,
