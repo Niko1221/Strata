@@ -30,6 +30,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/glm_layer.hpp"
+#include "strata/core/glm_gpu_experts.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -441,6 +442,9 @@ struct Options {
     bool no_host_worker = false;
     bool coupled_draft = strata::core::coupled_draft_env(); ///< Coupled draft sampling for MTP drafter under sampling
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    /// glm5-next: MiB of VRAM for the routed experts' tier (glm_gpu_experts.hpp).  -1 = off, 0 = all free less
+    /// STRATA_GLM_GPU_RESERVE_MIB.  A first-family run never reads it, and off is the default.
+    int64_t glm_gpu_mib = -1;
     std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
     /// `--resident-experts` (the low-RAM PC's resident mode, chosen by setup): `--resident-cpu-experts` with the copy
@@ -1409,6 +1413,45 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
 #endif
 }
 
+/// glm5-next, `--glm-gpu-experts`: build the VRAM tier of the routed experts for layers [layer_lo, layer_hi) of
+/// the CURRENT device (glm_gpu_experts.hpp).  Shared by the single-card path and by each stage of a layer
+/// split, so both size it the same way and neither can drift from the other.
+///
+/// The budget is what the card has FREE, read here and not at startup: `device_free_bytes()` counts what is
+/// left after everything this process has already allocated, and on a split that is this stage's share, since
+/// the caller has made this stage's device current.  0 means all of it less the reserve.
+bool glm_gpu_tier_init(std::unique_ptr<strata::core::GlmGpuExperts>& out, const Options& o,
+                       const strata::core::ModelGeometry& g, strata::core::ExpertSource* src, int64_t lay_n,
+                       int64_t k, int64_t layer_lo, int64_t layer_hi, std::string& err) {
+    const auto& glay = strata::kernels::cpu::expert_layout();
+    if (!glay.native) {
+        err = "--glm-gpu-experts needs a NATIVE pack: without native_experts.txt there is no per-expert blob "
+              "size for the card to hold";
+        return false;
+    }
+    std::vector<int> gu((size_t) lay_n, -1), dt((size_t) lay_n, -1);
+    std::vector<uint64_t> bb((size_t) lay_n, 0);
+    for (int64_t l = layer_lo; l < layer_hi && l < lay_n; ++l) {
+        if (g.is_dense_ffn_layer(l) || (size_t) l >= glay.fmt.size()) continue;
+        gu[(size_t) l] = glay.fmt[(size_t) l].gu_type;
+        dt[(size_t) l] = glay.fmt[(size_t) l].d_type;
+        bb[(size_t) l] = glay.blob_bytes(l);
+    }
+    const char* rv = std::getenv("STRATA_GLM_GPU_RESERVE_MIB");
+    const int64_t reserve = (int64_t) (rv != nullptr ? std::atoll(rv) : 2048) << 20;
+    const int64_t avail = (int64_t) strata::core::device_free_bytes() - reserve;
+    if (avail < (1 << 20)) {
+        err = "there is no VRAM free for --glm-gpu-experts (a run with no tier is the answer on this card)";
+        return false;
+    }
+    const int64_t budget = o.glm_gpu_mib > 0 ? std::min<int64_t>(o.glm_gpu_mib << 20, avail) : avail;
+    auto tier = std::make_unique<strata::core::GlmGpuExperts>();
+    if (!tier->init(src, gu, dt, bb, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, err))
+        return false;
+    out = std::move(tier);
+    return true;
+}
+
 /// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)
 void mem_mark(const char* where) {
     static const bool on = std::getenv("STRATA_TRACE") != nullptr;
@@ -2062,6 +2105,7 @@ int main(int argc, char** argv) {
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--glm-gpu-experts") o.glm_gpu_mib = std::atoll(next("--glm-gpu-experts"));
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
         else if (a == "--resident-experts") {
@@ -7084,6 +7128,27 @@ int main(int argc, char** argv) {
                 // it was built; these are zeroed here, on their own stream, before a request can read them.
                 strata::core::session_zero(st.ss, g, nullptr, (void*) st.stream);
                 grs.push_back(r);
+            }
+            // ---- **THE VRAM TIER, ONE PER STAGE** (`--glm-gpu-experts`, glm_gpu_experts.hpp).  Each stage's
+            // slots are for ITS OWN layers and are sized against ITS OWN card's free memory - which is the
+            // whole reason this is a per-stage object and not one shared one - so a 4-way split gives every
+            // card the quota a whole-model sizing would have split four ways.  Built after the `grs` loop
+            // because that is when every stage's weights, state and per-token buffers exist, and
+            // `device_free_bytes()` is a question about what is left.  The arch test is the non-serve path's
+            // too (below): a first family's `session_token` has no VRAM tier to read it, so building one would
+            // be VRAM taken off the cache for nothing.
+            std::vector<std::unique_ptr<strata::core::GlmGpuExperts>> glm_tiers;
+            if (g.arch == strata::core::Arch::Glm5Next && o.glm_gpu_mib >= 0) {
+                glm_tiers.resize(grs.size());
+                for (size_t i = 0; i < grs.size(); ++i) {
+                    const strata::core::OnDevice on(grs[i].dev);
+                    const int64_t lb = grs[i].ss->layer_lo, le = grs[i].ss->layer_hi;
+                    if (!glm_gpu_tier_init(glm_tiers[i], o, g, srcp, lay_n, K, lb, le, err)) {
+                        std::fprintf(stderr, "strata serve: CUDA%d: %s\n", grs[i].dev, err.c_str());
+                        return 1;
+                    }
+                    grs[i].ss->glm_gpu = glm_tiers[i].get();
+                }
             }
             for (size_t i = 0; i + 1 < grs.size(); ++i) {
                 void* h = nullptr;
@@ -12655,6 +12720,23 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- **THE VRAM TIER OF THE ROUTED EXPERTS** (`--glm-gpu-experts`, glm_gpu_experts.hpp).  Sized HERE and
+    // not with the weights: `device_free_bytes` is what the card has left, and by this line the weights, the
+    // session, the expert cache and the prompt path's own buffers are all allocated - so what it sees is what
+    // the tier may really have.  Sizing it earlier on the card's idle figure is how the first family's cache
+    // ended up handing out slots it did not have.
+    std::unique_ptr<strata::core::GlmGpuExperts> glm_gpu_store;
+    if (g.arch == strata::core::Arch::Glm5Next && o.glm_gpu_mib >= 0) {
+        // `lay_n` and not `g.n_layers`: the arrays have to name every layer the pool can be asked for, and on a
+        // pack that carries the draft block that is one past the trunk.  No SLOTS are made for it (the range
+        // below is the trunk's), so a draft block that routed experts would simply miss and take the CPU pool.
+        if (!glm_gpu_tier_init(glm_gpu_store, o, g, srcp, lay_n, K, /*layer_lo=*/0, /*layer_hi=*/g.n_layers,
+                               err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        ss.glm_gpu = glm_gpu_store.get();
+    }
     for (int64_t pos = pos_start;; ++pos) {
         // plan v0.3 P6: a native pack's last prompt token is the first verify window (T = 1)
         // **A NATIVE PACK LEAVES THIS LOOP FOR THE VERIFY WINDOW - UNLESS IT IS glm5-next.**  The window is the

@@ -30,8 +30,14 @@ namespace strata::core {
 
 /// Everything a sequence needs that is NOT a weight: the per-layer state, the block scratch, and the pinned
 /// handoff between the GPU and the CPU expert pool.
+class GlmGpuExperts;
+
 struct SessionState {
     int64_t max_cells = 0;
+
+    /// glm5-next: the VRAM tier of the routed experts (`--glm-gpu-experts`) for THIS stage's layers, or null
+    /// for the CPU pool alone.  Owned by whoever built the session; the state only borrows it.
+    GlmGpuExperts* glm_gpu = nullptr;
 
     GdnBuffers gdn;                 ///< the 36 GDN layers share one set of scratch; their STATE is per layer
     float* gdn_state = nullptr;     ///< (n_gdn_layers, gdn_state_floats)

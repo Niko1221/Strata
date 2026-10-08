@@ -4,6 +4,7 @@
 #include "strata/core/progress.hpp"
 
 #include "strata/core/glm_layer.hpp"
+#include "strata/core/glm_gpu_experts.hpp"
 
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -868,6 +869,66 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
     return true;
 }
 
+namespace {
+// glm5-next, one decode token, one MoE layer, WITH THE VRAM TIER (`--glm-gpu-experts` - see
+// glm_gpu_experts.hpp).  `x` and `ids` are already on the host and the stream is already synchronized (the
+// hand-off above); `parts` is the device's k x n_embd of unweighted rows, and this is still its only writer.
+//
+// The order is the point: the HITS are queued first, so the card is running them while this thread computes the
+// misses on the CPU, and only the misses' rows come back over PCIe - each into its own row of `parts`, which is
+// what lets the two halves share one combine at the end.
+bool glm_gpu_layer(SessionState& s, int64_t l, std::vector<float>& x, std::vector<int32_t>& ids, int64_t k,
+                   std::vector<float>& out, float* parts, void* stream, GlmPoolFn pool, void* user,
+                   std::string& err) {
+    static const bool check = [] {
+        const char* v = std::getenv("STRATA_GLM_GPU_CHECK");
+        return v != nullptr && v[0] == '1';
+    }();
+    static thread_local std::vector<int32_t> miss, sub;
+    cudaStream_t cs = (cudaStream_t) stream;
+    const int64_t n = (int64_t) x.size();
+    if (!s.glm_gpu->run_hits(l, s.glm.cur, ids.data(), k, parts, stream, miss, err)) return false;
+    if (!miss.empty()) {
+        sub.resize(miss.size());
+        for (size_t j = 0; j < miss.size(); ++j) sub[j] = ids[(size_t) miss[j]];
+        if (!pool(user, l, x.data(), sub.data(), 1, (int64_t) sub.size(), out.data(), err)) return false;
+        for (size_t j = 0; j < miss.size(); ++j) {
+            if (cudaMemcpyAsync(parts + (size_t) miss[j] * (size_t) n, out.data() + j * (size_t) n,
+                                (size_t) n * sizeof(float), cudaMemcpyHostToDevice, cs) != cudaSuccess) {
+                err = std::string("staging the expert results: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        }
+        if (!s.glm_gpu->admit(l, ids.data(), miss, stream, err)) return false;
+    }
+    if (check && !s.glm_gpu->last_hits().empty()) {
+        // THE CHECK: the hits again, on the CPU, against what the card wrote.  A slot holding the wrong expert
+        // produces a plausible token; this is the only thing that says it does not.
+        const auto& hp = s.glm_gpu->last_hits();
+        std::vector<int32_t> hid(hp.size());
+        for (size_t j = 0; j < hp.size(); ++j) hid[j] = ids[(size_t) hp[j]];
+        std::vector<float> cpu(hp.size() * (size_t) n), gpu((size_t) n);
+        if (!pool(user, l, x.data(), hid.data(), 1, (int64_t) hid.size(), cpu.data(), err)) return false;
+        double worst = 0.0, scale = 0.0;
+        for (size_t j = 0; j < hp.size(); ++j) {
+            if (cudaMemcpyAsync(gpu.data(), parts + (size_t) hp[j] * (size_t) n, (size_t) n * sizeof(float),
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+                err = "reading a hit back for the check";
+                return false;
+            }
+            if (cudaStreamSynchronize(cs) != cudaSuccess) { err = "waiting for a hit to read back"; return false; }
+            for (int64_t c = 0; c < n; ++c) {
+                worst = std::max(worst, (double) std::fabs(gpu[(size_t) c] - cpu[j * (size_t) n + (size_t) c]));
+                scale = std::max(scale, (double) std::fabs(cpu[j * (size_t) n + (size_t) c]));
+            }
+        }
+        std::fprintf(stderr, "strata glm gpu check: layer %lld, %zu hits, max |gpu - cpu| %.3e (max |cpu| %.3e)\n",
+                     (long long) l, hp.size(), worst, scale);
+    }
+    return true;
+}
+}  // namespace
+
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
                    GlmPoolFn glm_pool, void* glm_pool_user, std::string& err) {
@@ -956,18 +1017,32 @@ bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t po
                     err = "layer " + std::to_string(l) + ": waiting for the expert handoff";
                     return false;
                 }
-                if (!glm_pool(glm_pool_user, l, glm_x_host.data(), glm_ids_host.data(), 1, k, glm_out_host.data(),
-                              err)) {
-                    err = "layer " + std::to_string(l) + ": " + err;
-                    return false;
-                }
-                // `parts` is device memory the caller owns and this is the only writer of it.  The cast drops a
-                // const that is about the CALLER's contract (the loop only reads it), not about the buffer.
-                if (cudaMemcpyAsync(const_cast<float*>(parts), glm_out_host.data(), (size_t) (k * n) * sizeof(float),
-                                    cudaMemcpyHostToDevice, cs) != cudaSuccess) {
-                    err = "layer " + std::to_string(l) + ": staging the expert results: " +
-                          cudaGetErrorString(cudaGetLastError());
-                    return false;
+                if (s.glm_gpu != nullptr) {
+                    // THE VRAM TIER: the hits are queued here and run on the card while this thread computes
+                    // the misses, and only the misses' rows cross PCIe.  `glm_out_host` is still sized k*n and
+                    // `glm_gpu_layer` uses only its first `miss.size()` rows, so a layer that misses everything
+                    // is the call the arm below makes.
+                    if (!glm_gpu_layer(s, l, glm_x_host, glm_ids_host, k, glm_out_host, const_cast<float*>(parts),
+                                       stream, glm_pool, glm_pool_user, err)) {
+                        err = "layer " + std::to_string(l) + ": " + err;
+                        return false;
+                    }
+                } else {
+                    if (!glm_pool(glm_pool_user, l, glm_x_host.data(), glm_ids_host.data(), 1, k,
+                                  glm_out_host.data(), err)) {
+                        err = "layer " + std::to_string(l) + ": " + err;
+                        return false;
+                    }
+                    // `parts` is device memory the caller owns and this is the only writer of it.  The cast
+                    // drops a const that is about the CALLER's contract (the loop only reads it), not about
+                    // the buffer.
+                    if (cudaMemcpyAsync(const_cast<float*>(parts), glm_out_host.data(),
+                                        (size_t) (k * n) * sizeof(float), cudaMemcpyHostToDevice, cs) !=
+                        cudaSuccess) {
+                        err = "layer " + std::to_string(l) + ": staging the expert results: " +
+                              cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
                 }
             }
             if (!glm_block_layer_post(tables, g, l, k, s.glm, s.moe, s.block, parts, stream, err)) {
