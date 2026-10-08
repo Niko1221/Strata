@@ -106,13 +106,13 @@ void kda_rec(const float* q, const float* k, const float* v, const float* g1, co
              float* state, const float* g2, const float* norm_w, float eps, int n_head, int head_dim,
              void* out_q8_1, cudaStream_t s);
 
-/// DSA, after the first projections: q_a norm (-> qr f32 + q8_1), kv_a norm into the latent cache
+/// DSA, after the first projections: q_a norm (-> qr f32 + q8_1), kv_a norm into the FP16 latent cache
 /// at position p, the indexer key's layer norm into its cache, the compressor gate into its cache,
 /// and the completed pool's pooled key when (p + 1) % kpool == 0.
 struct DsaPrepArgs {
     const float* qr_raw = nullptr; const float* q_a_norm = nullptr; float* qr = nullptr; void* qr_q = nullptr;
     int q_lora = 1536;
-    const float* kv_raw = nullptr; const float* kv_norm = nullptr; float* lat = nullptr; int kv_lora = 512;
+    const float* kv_raw = nullptr; const float* kv_norm = nullptr; uint16_t* lat = nullptr; int kv_lora = 512;
     const float* ik_raw = nullptr; const float* k_norm_w = nullptr; const float* k_norm_b = nullptr;
     float* ik_cache = nullptr;
     const float* ig_raw = nullptr; float* ig_cache = nullptr;
@@ -130,7 +130,7 @@ void dsa_select(const float* score, int n_vis, int kpool, int top_pools, int n_s
                 cudaStream_t s);
 /// Absorbed MLA for one token, per head: q_abs = wk_b_h . q_h, scores over the selected latents,
 /// softmax, ctx, out_h = wv_b_h . ctx; writes the q8_1 of the n_head * v_head output.
-void mla(const float* q, const uint16_t* wk_b, const uint16_t* wv_b, const float* lat, const int* cells, int n_sel,
+void mla(const float* q, const uint16_t* wk_b, const uint16_t* wv_b, const uint16_t* lat, const int* cells, int n_sel,
          int n_head, int qk_nope, int kv_lora, int v_head, void* out_q8_1, cudaStream_t s);
 
 /// SwiGLU with GLM's clamp (gate above, up both sides) and the q8_1 of h, n values.

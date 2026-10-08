@@ -238,6 +238,104 @@ class GlmSetup(unittest.TestCase):
         self.assertEqual(eng, self.root / "engine-glm")
         self.assertTrue((self.root / "build-glm" / S.EXE).exists())
 
+    def test_report_cli_does_not_setup_download_build_or_start(self):
+        with patch.object(sys, "argv", ["setup.py", "--family", "glm", "--report", "--yes", "--download-model"]), \
+             patch.object(S, "out", return_value=""), patch.object(S, "setup_glm") as install, \
+             patch.object(S, "run") as run, patch.object(S, "build_engine") as build:
+            self.assertEqual(S.main(), 0)
+        install.assert_not_called()
+        run.assert_not_called()
+        build.assert_not_called()
+        self.download.assert_not_called()
+        S.data_folder.assert_not_called()
+        self.assertEqual([p.name for p in self.root.iterdir()], ["strata-glm-report.txt"])
+        with patch.object(sys, "argv", ["setup.py", "--report"]), \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            S.main()
+
+    def test_report_allowlists_config_build_and_metrics(self):
+        eng = self.root / "engine-glm"
+        eng.mkdir()
+        (eng / "BUILD.json").write_text(json.dumps(dict(archs=[86], toolkit=12, version="1.0.4",
+            cuda_dirs=["C:/Users/private/CUDA"], api_key="stamp-secret")))
+        log = self.root / "private.log"
+        good = "glm fast: CUDA0 RAM tier 12.50 GB pinned, 420 slots"
+        speed = "glm prefill: 32 tokens in 64.0 ms (2.00 ms/token, 500 tok/s) | staged experts: 10 ram, " \
+                "20 disk | rows resident 75.0% | plan 3.0 ms (cumulative)"
+        speed_alt = "glm prefill: 32 tokens in 64.0 ms (2.00 ms/token, 500 tok/s) | staged experts: 10 ram, " \
+                    "20 disk, 30 resident rows"
+        banner = "glm_batch: CUDA0 prompt attention on the tensor cores"
+        log.write_text("\n".join([good, speed, speed_alt, banner, "user: private conversation", "ERR Authorization: Bearer log-secret",
+            good + " prompt-secret", "glm fast: CUDA0 private memory question", "glm prefill: secret-path /private/data"]))
+        cfg = dict(args=["--glm-pack", str(self.root / "model" / "pack"), "--max-context", "8192"], gpu=[0],
+            vision=dict(api_key="vision-secret"), api_key="config-secret", log=str(log),
+            env=dict(STRATA_GLM_PREFILL_CHUNK="128", STRATA_GLM_PREFILL_ATTN="f32", STRATA_GLM_PREFILL_ATTN_CHECK="1",
+                     STRATA_GLM_RAM_EVICT="lru", STRATA_GLM_TRACE="/private/trace",
+                     STRATA_GLM_POOL_GB="Bearer value-secret", API_KEY="env-secret", STRATA_GLM_API_KEY="1234"))
+        (self.root / "strata-glm-test.json").write_text(json.dumps(cfg))
+        with patch.object(S, "out", return_value="GPU hardware"), \
+             patch.dict(S.os.environ, {"STRATA_GLM_PREFILL_MB": "1024", "OPENAI_API_KEY": "process-secret"}):
+            self.assertEqual(S.glm_report(), 0)
+        report = (self.root / "strata-glm-report.txt").read_text()
+        for value in (good, speed, speed_alt, banner, "8192", '"toolkit": 12', '"STRATA_GLM_PREFILL_CHUNK": "128"',
+                      '"STRATA_GLM_PREFILL_ATTN": "f32"', '"STRATA_GLM_PREFILL_ATTN_CHECK": "1"',
+                      '"STRATA_GLM_PREFILL_MB": "1024"', "images on", "lru"):
+            self.assertIn(value, report)
+        for value in ("secret", "private", "conversation", "API_KEY", "TRACE", str(self.root), "cuda_dirs"):
+            self.assertNotIn(value, report)
+        self.download.assert_not_called()
+
+    def test_report_missing_tools_corrupt_state_and_bounded_log(self):
+        (self.root / "strata-glm-bad.json").write_text('{invalid json')
+        (self.root / "strata-glm-null.json").write_text(json.dumps(dict(log="\0", args=["--glm-pack", "\0"])))
+        (self.root / "strata-glm-large.json").write_text(" " * (1048576 + 1))
+        log = self.root / "tail.log"
+        good = "glm fast: CUDA0 RAM tier 1.00 GB pinned, 10 slots"
+        log.write_text(good + "\n" + "x" * 1048576 + "\n" + good + "\n")
+        (self.root / "strata-glm-tail.json").write_text(json.dumps(dict(log=str(log))))
+        with patch.object(S, "out", side_effect=OSError("private failure detail")), \
+             patch.object(S, "cpu_info", side_effect=OSError("private CPU detail")), \
+             patch.object(S, "ram_gb", side_effect=OSError("private RAM detail")):
+            self.assertEqual(S.glm_report(), 0)
+        report = (self.root / "strata-glm-report.txt").read_text()
+        self.assertEqual(report.count(good), 1)
+        self.assertIn("unavailable", report)
+        self.assertNotIn("private", report)
+        self.assertLess(len(report), 12000)
+
+    def test_report_sanitizes_hardware_and_rejects_network_paths(self):
+        (self.root / "strata-glm-network.json").write_text(json.dumps(dict(
+            args=["--glm-pack", "//server/share/pack"], log="\\\\server\\share\\private.log")))
+        with patch.object(S, "out", return_value=f"{Path.home()} /mnt/private/file C:\\private\\file\n"
+                          "Authorization: Bearer hardware-secret\nX-API-Key: key-secret\nsk-abcdefghijk"), \
+             patch.object(S.shutil, "disk_usage", return_value=SimpleNamespace(free=200e9)) as disk:
+            self.assertEqual(S.glm_report(), 0)
+        report = (self.root / "strata-glm-report.txt").read_text()
+        for value in (str(Path.home()), "private", "hardware-secret", "key-secret", "sk-abcdefghijk", "server", "share"):
+            self.assertNotIn(value, report)
+        disk.assert_called_once_with(self.root)
+
+    def test_report_write_failure_omits_exception_details(self):
+        with patch.object(S, "out", return_value=""), \
+             patch.object(Path, "write_text", side_effect=OSError("private-path secret")), \
+             self.assertRaises(SystemExit):
+            S.glm_report()
+
+    def test_report_available_memory_and_validated_commit(self):
+        with patch.object(S, "WIN", True), patch.object(S, "out", return_value="abc1234"), \
+             patch.object(S, "_memory_status", return_value=SimpleNamespace(
+                 ullAvailPhys=16 * 2**30, ullAvailPageFile=32 * 2**30)):
+            self.assertEqual(S.glm_report(), 0)
+        report = (self.root / "strata-glm-report.txt").read_text()
+        self.assertIn("Strata commit abc1234", report)
+        self.assertIn("RAM 16.0, commit 32.0", report)
+        with patch.object(S, "out", return_value="untrusted commit text"), \
+             patch.object(Path, "read_text", return_value="MemAvailable: 8388608 kB\n"):
+            self.assertEqual(S.glm_report(), 0)
+        report = (self.root / "strata-glm-report.txt").read_text()
+        self.assertIn("Available RAM (GiB)\n8.0", report)
+        self.assertIn("Strata commit ?", report)
+
 
 if __name__ == "__main__":
     unittest.main()

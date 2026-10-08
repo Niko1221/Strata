@@ -2197,7 +2197,7 @@ bool Glm5Model::fast_dsa(int il, int64_t p, std::string& err) {
     d.q_lora = g.q_lora;
     d.kv_raw = F->kv_raw;
     d.kv_norm = Ly.kv_a_norm;
-    d.lat = state_ + dsa_lat_[(size_t) il];
+    d.lat = (uint16_t*) (state_ + dsa_lat_[(size_t) il]);
     d.kv_lora = g.kv_lora;
     d.ik_raw = F->ik_raw;
     d.k_norm_w = Ly.k_norm_w;
@@ -2231,7 +2231,7 @@ bool Glm5Model::fast_dsa(int il, int64_t p, std::string& err) {
     const int n_sel = g.idx_kpool * top_pools + (g.idx_select_tail ? g.idx_kpool - 1 : 0);
     gf::dsa_select(F->score, pool_done, g.idx_kpool, top_pools, n_sel, (int) p, F->cells, s);
     if (F->prof_on) F->mark("dsa_score_select");
-    gf::mla(F->q, Ly.k_b, Ly.v_b, state_ + dsa_lat_[(size_t) il], F->cells, n_sel, g.n_head, g.qk_nope,
+    gf::mla(F->q, Ly.k_b, Ly.v_b, (const uint16_t*) (state_ + dsa_lat_[(size_t) il]), F->cells, n_sel, g.n_head, g.qk_nope,
             g.kv_lora, g.v_head, F->attn_q, s);
     if (F->prof_on) F->mark("mla");
     gf::MvJob o = {Ly.out.q, F->attn_q, nullptr, F->mixer, nullptr, 1.0f, Ly.out.type,

@@ -32,5 +32,11 @@ int main() {
     attempts.clear();
     check(allocate_landing(1, [&](int n) { attempts.push_back(n); return true; }) == 12);
     check(attempts == std::vector<int>({12}));
+    check(latent_floats(512, 8193, true) == 512 * 8193 / 2);
+    check(latent_floats(3, 3, true) == 5);  // odd element count rounds up to an F32 arena unit
+    check(latent_floats(3, 3, false) == 9);
+    check(latent_start(5, true) == 8);
+    check(latent_start(8, true) == 8);
+    check(latent_start(5, false) == 5);  // diagnostic layout remains unchanged
     std::printf("glm_prefill_memory_test: PASS (%d checks)\n", checks);
 }

@@ -4548,6 +4548,140 @@ def glm_local_host(host: str) -> bool:
         return False
 
 
+def glm_report() -> int:
+    """Local diagnostics only: allowlisted settings and numeric engine messages, never a raw log tail."""
+    lines = []
+
+    def safe(text):
+        text = str(text)[:16384]
+        for home in (str(Path.home()), str(Path.home()).replace("\\", "/")):
+            text = re.sub(re.escape(home), "~", text, flags=re.I)
+        text = re.sub(r"(?i)(?:bearer\s+\S+|(?:api[_-]?key|token|password|authorization)\s*[:=][^\r\n]*)",
+                      "[secret omitted]", text)
+        text = re.sub(r"\b(?:sk-[\w-]{8,}|gh[pousr]_[\w]+|github_pat_[\w]+|hf_[\w]+|xox[baprs]-[\w-]+|"
+                      r"eyJ[\w-]+\.[\w-]+\.[\w-]+)\b", "[secret omitted]", text)
+        text = re.sub(r"(?<!\w)(?:[A-Za-z]:[\\/]|/|\\\\)[^\s,;]+", "[path omitted]", text)
+        return text
+
+    def add(title, value):
+        lines.extend((f"## {title}", safe(value), ""))
+
+    def probe(fn):
+        try:
+            return fn()
+        except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+            return "unavailable"
+
+    def read_json(path):
+        try:
+            if path.stat().st_size > 1048576:
+                return {}
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def local_path(value):
+        if not isinstance(value, str) or not value or "\0" in value or value.startswith(("\\\\", "//")) or "://" in value:
+            return None
+        path = Path(value).expanduser()
+        return path if path.is_absolute() else ROOT / path
+
+    add("Strata GLM", f"Python {sys.version.split()[0]}, {sys.platform}, "
+        f"system {platform.system()} {platform.release()}, machine {platform.machine()}")
+    commit = probe(lambda: out(["git", "-C", str(ROOT), "log", "-1", "--format=%h"]).strip())
+    add("Source", f"Strata commit {commit if re.fullmatch(r'[0-9a-f]{7,40}', commit) else '?'}, "
+        "Maya reference cfd2f45b506be6c02d715e3198b3ff9719de25fc")
+    add("GPUs", probe(lambda: out(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,driver_version,"
+                                  "pcie.link.gen.max,pcie.link.width.current,power.limit,temperature.gpu",
+                                  "--format=csv"])) or "nvidia-smi unavailable")
+    add("CPU", probe(lambda: f"{cpu_info()}, {os.cpu_count()} threads"))
+    add("RAM and page file (GiB)", probe(lambda: f"RAM {ram_gb():.1f}, page file {page_file_gb()}"))
+    if WIN:
+        add("Available RAM and commit (GiB)", probe(lambda: f"RAM {_memory_status().ullAvailPhys / 2**30:.1f}, "
+            f"commit {_memory_status().ullAvailPageFile / 2**30:.1f}"))
+    else:
+        add("Available RAM (GiB)", probe(lambda: "{:.1f}".format(int(re.search(r"^MemAvailable:\s+(\d+)",
+            Path("/proc/meminfo").read_text(encoding="utf-8"), re.M).group(1)) / 2**20)))
+    disks = (["powershell", "-NoProfile", "-Command", "Get-PhysicalDisk | Format-Table -AutoSize "
+              "FriendlyName,MediaType,BusType,Size | Out-String -Width 200"] if WIN else
+             ["lsblk", "-d", "-o", "NAME,MODEL,ROTA,TRAN,SIZE"])
+    add("Disks", probe(lambda: out(disks)) or "disk inventory unavailable")
+    add("Installer disk free (GB)", probe(lambda: f"{shutil.disk_usage(ROOT).free / 1e9:.1f}"))
+    stamp = read_json(ROOT / "engine-glm" / "BUILD.json")
+    build = {k: v for k, v in stamp.items() if k in ("archs", "toolkit", "isa_floor", "vision", "version", "src", "vision_src")
+             and re.fullmatch(r"[\d., \[\]a-fA-F_-]{1,128}|none|gpu|cpu|avx|avx2|sse42", str(v))}
+    add("Engine build", json.dumps(build) if stamp else "missing, unreadable or invalid BUILD.json")
+    env_names = {"STRATA_GLM_" + k for k in ("SPLIT", "DEV1", "SLOW", "NO_REUSE", "NO_MTP", "NO_SPEC", "MTP",
+        "NO_PREFILL", "PREFILL_MB", "PREFILL_CHUNK", "PREFILL_LAND", "PREFILL_PROF", "PREFILL_LIGHT",
+        "PREFILL_LIGHT_LAYER", "PREFILL_PRED_T", "CPU_LANE", "CPU_THREADS", "CPU_PLAN", "CPU_COLD", "RAM_GB",
+        "RAM_PROTECT", "RAM_FREE", "RAM_HEADROOM_GB", "VRAM_GB", "POOL_GB", "POOL_SLOTS0", "RESERVE_MB",
+        "DISK_QD", "READ_CHUNKS", "TIER_GC", "TIMING", "AHEAD", "AHEAD_READ", "BOUNCE", "CPU_EXPERTS",
+        "LEND_DROP", "MTP_MISS", "NO_STAGE", "PIPE", "POOL_STATS", "PREFETCH_N", "PREFILL_MIN",
+        "PREFILL_SERIAL", "PREFILL_VERBOSE", "PROF", "SPEC_PROF", "TIER_DIAG", "UNIFORM_SLOTS",
+        "VISION_LEND_MB", "WARM", "PREFILL_ATTN", "PREFILL_ATTN_CHECK")}
+    env_names |= {"STRATA_IO_THREADS", "STRATA_GLM_RAM_EVICT", "CUDA_MODULE_LOADING"}
+    num = r"\d+(?:\.\d+)?"
+    metric = re.compile(
+        rf"glm stat: decode {num} ms/tok \({num} tok/s\) \| vram hit {num}% \| ram fetches {num}/tok \| "
+        rf"disk {num} reads/tok in {num} waits/tok, {num} ms/tok \| promotions {num}/tok \| cpu lane {num}/tok "
+        rf"in {num} ms/tok \| prompt {num} ms/tok \| vram \d+/\d+ ram \d+/\d+|"
+        rf"glm prefill: \d+ tokens in {num} ms \({num} ms/token, {num} tok/s\) \| staged experts: \d+ ram, "
+        rf"\d+ disk \| rows resident {num}% \| plan {num} ms \(cumulative\)|"
+        rf"glm prefill: \d+ tokens in {num} ms \({num} ms/token, {num} tok/s\) \| staged experts: \d+ ram, "
+        r"\d+ disk, \d+ resident rows|glm_batch: CUDA\d+ prompt attention on the (?:tensor cores|F32 cores)|"
+        rf"glm fast: CUDA\d+ RAM tier {num} GB pinned, \d+ slots|"
+        rf"glm fast: CUDA\d+ layers \[\d+,\d+\) expert pool {num} GB, \d+-\d+ slots/layer \(\d+ total\)|"
+        rf"glm fast: CUDA\d+ tiers warm: \d+ experts \({num} GB\) in {num} s \({num} GB/s\)|"
+        r"glm split: layers \[0, \d+\) on CUDA\d+, \[\d+, \d+\) on CUDA\d+ \(one 64 KB host hop/token\)|"
+        rf"glm prefill: CUDA\d+ chunks of \d+ tokens, borrowing {num} MB of the expert pool while a prompt "
+        rf"runs \(activations {num}, weight scratch {num}, expert staging {num}\); disk landing ring \d+ "
+        rf"experts \({num} MB pinned\)")
+    try:
+        configs = sorted(ROOT.glob("strata-glm-*.json"))[:32]
+    except OSError:
+        configs = []
+    if not configs:
+        add("Setup", "no installed GLM config")
+    for i, path in enumerate(configs, 1):
+        cfg = read_json(path)
+        argv = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+        context = next((argv[j + 1] for j, v in enumerate(argv[:-1]) if v == "--max-context"), "?")
+        pack = local_path(next((argv[j + 1] for j, v in enumerate(argv[:-1]) if v == "--glm-pack"), None))
+        gpu = cfg.get("gpu")
+        gpu = gpu if isinstance(gpu, list) and all(type(v) is int for v in gpu) else "?"
+        settings = dict(os.environ)
+        if isinstance(cfg.get("env"), dict):
+            settings.update(cfg["env"])
+        settings = {k: str(v) for k, v in settings.items() if k in env_names and
+                    re.fullmatch(r"-?\d{1,8}(?:\.\d{1,6})?|lfu|lru|f32|LAZY|EAGER", str(v))}
+        add(f"Setup {i}", f"model GLM-5.3-Flash, context {context if str(context).isdigit() else '?'}, "
+            f"GPUs {gpu}, images {'on' if cfg.get('vision') else 'off'}, settings {json.dumps(settings, sort_keys=True)}")
+        if pack:
+            add(f"Model {i}", probe(lambda: f"local folder; "
+                f"{sum(p.stat().st_size for p in pack.parent.glob('*.gguf')) / 1e9:.1f} GB of GGUF, "
+                f"{shutil.disk_usage(pack.parent).free / 1e9:.1f} GB free"))
+        log = local_path(cfg.get("log")) or path.with_suffix(".log")
+        try:
+            with log.open("rb") as f:
+                size = f.seek(0, 2)
+                f.seek(max(0, size - 1048576))
+                tail = f.read(1048576).decode("utf-8", errors="replace").splitlines()
+            if size > 1048576:
+                tail = tail[1:]  # a partial line is never a complete metric
+            picked = [line for line in tail if len(line) <= 2048 and metric.fullmatch(line)]
+            add(f"Engine metrics {i} (last 80; scanned at most 1 MiB)", "\n".join(picked[-80:]) or "no recognized metrics")
+        except OSError:
+            add(f"Engine metrics {i}", "log missing or unreadable")
+    target = ROOT / "strata-glm-report.txt"
+    try:
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        fail("cannot write strata-glm-report.txt; check this folder's write permission")
+    ok(f"written: {target}; diagnostics stay on this PC")
+    return 0
+
+
 def setup_glm(a) -> int:
     """Maya-S v2 installation; its architecture has no Qwen setup defaults."""
     if (not WIN and not sys.platform.startswith("linux")) or is_wsl():
@@ -4784,7 +4918,13 @@ def main() -> int:
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--report", action="store_true", help="with --family glm: write local hardware, setup and "
+                    "numeric engine diagnostics to strata-glm-report.txt (nothing is sent anywhere)")
     a = ap.parse_args()
+    if a.report:
+        if a.family != "glm":
+            ap.error("--report requires --family glm")
+        return glm_report()
     if a.family == "glm":
         return setup_glm(a)
     if a.model == GLM_MODEL:

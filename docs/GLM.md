@@ -19,7 +19,7 @@ this checkout. Windows CUDA compilation has not been verified here either.
 - Allow about 108 GB free for a fresh installation with images (96.5 GB of weights, 1.14 GB of vision files,
   and 10 GB reserved for the pack/build), plus at least 5 GB free in the source checkout.
 
-These requirements follow the [Maya v1.2.0 reference](https://github.com/mw00/project-maya/blob/5932f601373f53fc021f75dc55159a722c772571/README.md).
+These requirements follow the [Maya v1.0.4 reference](https://github.com/mw00/project-maya/blob/cfd2f45b506be6c02d715e3198b3ff9719de25fc/README.md).
 They are not a performance measurement of this Strata integration.
 
 ## Install
@@ -79,7 +79,7 @@ starting from a saved configuration.
 
 ## Prompt memory and read-ahead
 
-The v1.2.0 prompt path sizes its GPU scratch budget at about 6% of VRAM, bounded to 1-2 GiB. It starts at an
+The prompt path sizes its GPU scratch budget at about 6% of VRAM, bounded to 1-2 GiB. It starts at an
 8,192-token chunk and reduces the chunk until its scratch fits. Its pinned SSD landing buffer uses about 2% of
 currently available RAM per GPU, bounded to 12-64 expert slots by default. If pinning fails, it halves the
 requested slots down to 12; if even that fails, it falls back to processing tokens individually.
@@ -91,9 +91,30 @@ These controls go in the configuration's `env` object:
 - `STRATA_GLM_PREFILL_CHUNK`: requested chunk size, still reduced to fit the budget.
 - `STRATA_GLM_PREFILL_LAND`: requested landing-buffer slots, at least 12; allocation failures still reduce it.
 - `STRATA_GLM_PREFILL_PRED_T`: chunk size from which to read ahead; `0` disables read-ahead.
+- `STRATA_GLM_PREFILL_ATTN`: `f32` selects the F32 prompt-attention calculation for comparison; otherwise the
+  engine selects tensor cores when the compiled kernel and the GPU's shared memory allow it.
+- `STRATA_GLM_PREFILL_ATTN_CHECK`: when present, also runs the F32 calculation and prints the difference from
+  tensor-core attention; this adds work and memory use and is intended for debugging.
 
 The engine prints the chosen chunk, scratch and pinned-buffer sizes. Larger buffers use memory that could
 otherwise cache experts. No speed improvement has been measured for this Strata port.
+
+Prompt attention uses FP16 operands with F32 accumulation on tensor cores and prefetches the next selected
+latent rows. The default fast engine keeps its DSA latent cache in FP16 for both prompts and token decoding,
+including MTP. This halves the latent-cache storage, not the whole attention or engine memory allocation.
+`STRATA_GLM_PREFILL_ATTN=f32` still reads that FP16 cache; `STRATA_GLM_SLOW=1` keeps the diagnostic F32 cache.
+The fast path's reduced precision still needs device parity and full-model quality checks in this checkout.
+
+## Local diagnostic report
+
+Use `START-HERE.bat --family glm --report` on Windows or `./setup.sh --family glm --report` on Linux to write
+`strata-glm-report.txt` beside the installer. It collects this PC's hardware, available RAM/commit, recorded build
+details, installed GLM settings and recognized speed/memory messages from existing engine logs. It works when
+the toolkit, model or logs are missing, and does not download, build or start anything.
+
+The report stays on this PC. It excludes API keys, conversations and raw log tails, and masks personal paths.
+Only recognized numeric engine messages and supported settings are retained, so an unrelated error may not
+appear in the report. The file is ignored by Git; inspect it before attaching it to an issue.
 
 ## Build and validation
 
@@ -123,6 +144,10 @@ The runner tests generate their small GGUF and oracle fixtures locally. They do 
 token-at-a-time logits at a maximum absolute error below `2e-3`. It checks disk reads with 12/64 landing slots
 and next-layer read-ahead off/on. `glm_prefill_memory_test` checks slot sizing, allocation retries and fallback
 without a GPU; actual CUDA allocation cleanup still needs device validation.
+The prefill test also compares F32 and automatic attention selection. `glm_batch_attention_f32` and
+`glm_batch_attention_wmma` compare synthetic attention against a CPU softmax reference, with FP16 cache guards,
+negative/empty cell lists and partial tiles. The tensor-core test skips GPUs with insufficient hardware support
+and fails if a supposedly supported run silently selects F32. These new device tests have not been run here.
 Live text/image inference and one/two-GPU MTP still need validation with the full model on a Linux/NVIDIA machine.
 No speed or quality results from Project Maya are presented as measurements of this port.
 
@@ -141,14 +166,32 @@ CUDA compilation, Q4_0 device parity, actual CUDA allocation-failure cleanup and
 full-model inference remain unverified. No model weights were downloaded and no production engine/server was
 started.
 
+The v1.0.4 port also aligns the packed latent-cache starts to 16 bytes and rounds its storage up. Its F32 fallback
+uses 16-cell tiles, fitting below 48 KiB of shared memory, so GPUs such as Turing do not need the tensor-core
+kernel's larger shared arena. These are Strata compatibility adaptations; their device execution is pending.
+
+Fresh v1.0.4-update validation on Windows on 2026-10-07: 596 Python test cases completed, with 589 passed and
+seven skipped. This includes 22 GLM installer/report cases. Four C++ CPU tests passed; the prefill-memory helper
+now includes 19 checks, covering packed FP16 sizing/alignment and the unchanged F32 diagnostic layout. The Q4_0
+fixture generated and packed on CPU, the CPU image encoder built with MSVC 19.51, and Python/JavaScript syntax
+and Git whitespace checks passed. CUDA configuration again stopped with "No CUDA toolset found". The new
+attention test prepares 81,920 context values per mode; the prefill test prepares eight configurations and
+16,384 continuation-logit comparisons. Neither device test was executed here. Tensor-core compilation/parity,
+Turing fallback, full-model quality and one/two-GPU MTP remain pending. No weights were downloaded or production
+engine/server started.
+
 `STRATA_GLM_SLOW=1` selects the diagnostic CPU-expert path. Its older GPU expert pool has not been ported;
 use the default fast path for the GPU/RAM/SSD tiers.
 
 ## Source and licenses
 
 The port uses Strata `main` at `d5ea7133741e67743c0e886bb426c0ce8d69cf6c`. Its initial Maya reference was
-`444030a3f2afc01515d4d067d663377329efb5b5`; the prefill and Windows update follows Maya v1.2.0 at
+`444030a3f2afc01515d4d067d663377329efb5b5`; the prefill and Windows update used
 [`5932f601373f53fc021f75dc55159a722c772571`](https://github.com/mw00/project-maya/commit/5932f601373f53fc021f75dc55159a722c772571).
+The current reference is Maya v1.0.4 at
+[`cfd2f45b506be6c02d715e3198b3ff9719de25fc`](https://github.com/mw00/project-maya/commit/cfd2f45b506be6c02d715e3198b3ff9719de25fc).
+Maya renumbered its earlier releases: the previous v1.2.0 is now v1.0.2, the report update is v1.0.3, and the
+tensor-core/FP16-cache update is v1.0.4. This does not change Strata's own version number.
 Project Maya and Strata use the MIT license; the copyright notice remains in [LICENSE](../LICENSE).
 ggml/llama.cpp retains its [MIT notice](../third_party/ggml/LICENSE), and the dashboard font retains its
 [OFL notice](../serve/web/fonts/OFL.txt). GLM weights and the Maya quant retain the model publisher's license.

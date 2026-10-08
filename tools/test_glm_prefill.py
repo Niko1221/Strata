@@ -1,5 +1,6 @@
 """Q4_0 fast-prefill parity: CPU fixture check, optional CUDA glm_pack_test executable."""
 import argparse
+import itertools
 import os
 from pathlib import Path
 import re
@@ -57,19 +58,21 @@ def cuda_parity(executable, root, pack):
         return logits.reshape(rows, 512), result.stderr
 
     reference, _ = run("stream", {"STRATA_GLM_NO_PREFILL": "1"}, 69)
-    for landing in (12, 64):
-        for ahead in (0, 1):
-            name = f"land{landing}-ahead{ahead}"
-            logits, log = run(name, {"GLM_TEST_PREFILL": "65", "GLM_TEST_REQUIRE_PREFILL": "1",
-                                    "STRATA_GLM_PREFILL_LAND": str(landing),
-                                    "STRATA_GLM_PREFILL_PRED_T": str(ahead)}, 4)
-            assert re.search(rf"disk landing ring {landing}\b", log), f"{name}: wrong landing ring\n{log}"
-            counts = re.search(r"disk experts used (\d+), read (\d+)", log)
-            assert counts and int(counts[1]) > landing and int(counts[2]) >= int(counts[1]), \
-                f"{name}: disk landing ring was not exercised\n{log}"
-            error = float(np.max(np.abs(logits - reference[65:])))
-            assert error < 2e-3, f"{name}: max tail logit error {error}"
-            print(f"{name} PASS: five chunks + four continuation rows, max error {error:.3e}")
+    for landing, ahead, attention in itertools.product((12, 64), (0, 1), ("f32", "auto")):
+        name = f"land{landing}-ahead{ahead}-{attention}"
+        logits, log = run(name, {"GLM_TEST_PREFILL": "65", "GLM_TEST_REQUIRE_PREFILL": "1",
+                                "STRATA_GLM_PREFILL_LAND": str(landing),
+                                "STRATA_GLM_PREFILL_ATTN": "f32" if attention == "f32" else "",
+                                "STRATA_GLM_PREFILL_PRED_T": str(ahead)}, 4)
+        expected_path = "prompt attention on the F32 cores" if attention == "f32" else "prompt attention on the "
+        assert expected_path in log, f"{name}: attention path was not exercised\n{log}"
+        assert re.search(rf"disk landing ring {landing}\b", log), f"{name}: wrong landing ring\n{log}"
+        counts = re.search(r"disk experts used (\d+), read (\d+)", log)
+        assert counts and int(counts[1]) > landing and int(counts[2]) >= int(counts[1]), \
+            f"{name}: disk landing ring was not exercised\n{log}"
+        error = float(np.max(np.abs(logits - reference[65:])))
+        assert error < 2e-3, f"{name}: max tail logit error {error}"
+        print(f"{name} PASS: five chunks + four continuation rows, max error {error:.3e}")
 
 
 def main():

@@ -976,7 +976,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
                 d.q_lora = g.q_lora;
                 d.kv_raw = B.kv_raw;
                 d.kv_norm = Ly.kv_a_norm;
-                d.lat = state_ + dsa_lat_[(size_t) il];
+                d.lat = (uint16_t*) (state_ + dsa_lat_[(size_t) il]);
                 d.kv_lora = g.kv_lora;
                 d.ik_raw = B.ik_raw;
                 d.k_norm_w = Ly.k_norm_w;
@@ -1014,7 +1014,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
                                                   g.kv_lora, g.n_head),
                         "q_abs");
                 S->mark("dsa_qabs", s);
-                gb::mla_attn(B.q_abs, state_ + dsa_lat_[(size_t) il], B.cells, B.n_sel, g.n_sel_max(), g.n_head,
+                gb::mla_attn(B.q_abs, (const uint16_t*) (state_ + dsa_lat_[(size_t) il]), B.cells, B.n_sel, g.n_sel_max(), g.n_head,
                              g.kv_lora, 1.0f / std::sqrt((float) g.qk_nope), tn, B.ctx, s);
                 S->mark("dsa_attn", s);
                 // out[t][h] = wv_b[h] (v_head x kv_lora) . ctx[t][h]
@@ -1408,7 +1408,7 @@ bool Glm5Model::prefill_half(int64_t p0, int T, std::string& err, const int32_t*
             gb::DsaPrepArgs d;
             d.kv_raw = kv;
             d.kv_norm = Ly.kv_a_norm;
-            d.lat = state_ + dsa_lat_[(size_t) mtp_il_];
+            d.lat = (uint16_t*) (state_ + dsa_lat_[(size_t) mtp_il_]);
             d.kv_lora = g.kv_lora;
             d.ik_raw = ik;
             d.k_norm_w = Ly.k_norm_w;
