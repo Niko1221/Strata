@@ -1453,8 +1453,17 @@ bool glm_gpu_tier_init(std::unique_ptr<strata::core::GlmGpuExperts>& out, const 
         return false;
     }
     const int64_t budget = o.glm_gpu_mib > 0 ? std::min<int64_t>(o.glm_gpu_mib << 20, avail) : avail;
+    // **HOW BIG A CHUNK THIS MUST BE ABLE TO SERVE.**  The same expression the carve uses a few hundred lines
+    // down, spelled here because the tier's buffers are sized at startup and the carve happens after: `--prefill
+    // N`, or the auto default.  A chunk of 1 (`--prefill 1`, which is decode spelled as a chunk) gets 0 - the
+    // tier is decode-only and pays nothing for a prefill path it can never be asked to use.
+    constexpr int64_t kGlmAutoChunk = 512;
+    int64_t chunk_tokens = (o.prefill_chunk <= 0 || o.prefill_auto) ? kGlmAutoChunk : o.prefill_chunk;
+    chunk_tokens = std::clamp<int64_t>(chunk_tokens, 1, strata::core::GlmExpertPool::kMaxChunk);
+    if (chunk_tokens <= 1 || std::getenv("STRATA_GLM_GPU_NO_PREFILL") != nullptr) chunk_tokens = 0;
     auto tier = std::make_unique<strata::core::GlmGpuExperts>();
-    if (!tier->init(src, gu, dt, bb, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, err))
+    if (!tier->init(src, gu, dt, bb, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, chunk_tokens,
+                    err))
         return false;
     out = std::move(tier);
     return true;

@@ -18,9 +18,21 @@
 // compute - and, because the quota is `budget / total blob bytes`, shrinks every stage's quota by 4x on the
 // way.  `lo_`/`hi_` are the layer's own slot range and are empty for a layer outside the stage's range.
 //
-// **WHAT IT DOES NOT DO.**  Prefill.  `session_token_chunk` still sends every expert of a chunk to the CPU
-// pool; the tier is warmed by the decode tokens that follow, which for a ~40-slot layer is single-digit
-// tokens.  And it computes nothing itself: `native_expert_grouped` and `native_down_rows` do, so a hit is the
+// **IT SERVES A PREFILL CHUNK TOO, AND BY A DIFFERENT RULE.**  `run_chunk` streams every expert the chunk
+// routes to through the layer's slots and computes it on the card, so `session_token_chunk` no longer has to
+// send the chunk to the CPU pool.  The two rules are different because the two loads are: a decode token
+// routes to `k` experts and a cache is the right answer (the ~40-slot layer is warmed by the tokens that
+// follow), while a chunk routes to essentially ALL of the layer's 288 (88 tokens already touch 263), so the
+// slots are not a cache at all there - they are a ring, refilled `per_layer` at a time until the layer's
+// experts have all passed through.  A chunk therefore does not read fewer bytes by being bigger; it pays the
+// same fixed cost fewer times, which is what the chunk-size curve in the PR body measures.
+//
+// **A CHUNK CANNOT BE PARTLY RESIDENT.**  The wave rule above means `run_chunk` rewrites which expert each of
+// the layer's slots holds, so it leaves the `slot_` table describing what it actually left there.  Decode's
+// LFU counts are NOT touched - `admit` continues from where it was - so a prefill does not teach the tier
+// anything false about the conversation.
+//
+// And it computes nothing itself: `native_expert_grouped` and `native_down_rows` do, so a hit is the
 // same arithmetic the pool would have done, in a different order - see STRATA_GLM_GPU_CHECK below.
 //
 // Off unless `--glm-gpu-experts N` is given, so every run that does not ask for it is bit-identical to before
@@ -57,10 +69,23 @@ public:
     /// `kernels::cpu::expert_layout()` reports them (`blob_bytes[l] == 0` for a dense lead layer and for any
     /// layer with no row).  `[layer_lo, layer_hi)` is this stage's trunk range and the only range that gets
     /// slots; `budget_bytes` is the VRAM they may take, split evenly over the range's MoE layers.
+    ///
+    /// `chunk_tokens` is the largest prefill chunk this will be asked to serve with `run_chunk`, or 0 for a
+    /// decode-only tier (which is the whole of the cost this adds, and what every run that does not ask for
+    /// prefill gets).  It sizes the chunk plan, the activations and `native_expert_grouped`'s scratch, all of
+    /// which come out of `budget_bytes` BEFORE the slots are divided - so asking for it costs a few slots a
+    /// layer, not a few slots of nothing.
     bool init(ExpertSource* src, const std::vector<int>& gu_type, const std::vector<int>& d_type,
               const std::vector<uint64_t>& blob_bytes, int64_t layer_lo, int64_t layer_hi, int64_t n_expert,
-              int64_t k, int64_t n_embd, int64_t n_ff, int64_t budget_bytes, std::string& err);
+              int64_t k, int64_t n_embd, int64_t n_ff, int64_t budget_bytes, int64_t chunk_tokens,
+              std::string& err);
     bool valid() const { return cache_.valid(); }
+    /// Whether this stage holds slots for `layer`'s experts at all.  False for a layer outside its range, and for
+    /// a dense lead layer.  `run_chunk` can only serve a layer this says yes to; for any other the caller takes
+    /// the CPU pool exactly as it did before the tier existed.
+    bool serves_layer(int64_t layer) const {
+        return layer >= 0 && layer < n_layers_ && hi_[(size_t) layer] > lo_[(size_t) layer];
+    }
 
     /// One decode token, one MoE layer.  `ids` are the routed experts (HOST, `k` of them, and `k` may not
     /// exceed the `k` this was sized for - `job`s past it would write past `slot_`).  The hits are launched on
@@ -75,6 +100,49 @@ public:
     /// the blob through `src_`.  The copies are queued on `stream` behind this layer's hit kernel, which may
     /// still be reading a slot being replaced, and ahead of the next token's kernel that reads it.
     bool admit(int64_t layer, const int32_t* ids, const std::vector<int32_t>& miss, void* stream, std::string& err);
+
+    /// A whole prefill chunk's MoE for ONE layer, computed entirely on the card: every distinct expert the
+    /// chunk routes to is streamed through this layer's slots `per_layer` at a time and grouped-kernel'd against
+    /// all the tokens that chose it, writing each `(token, expert)` pair's row of `parts_dev`.
+    ///
+    /// `ids` are the chunk's routed experts, HOST memory, `T * k` of them token-major (`ids[t*k + i]`), `cur_dev`
+    /// is the layer's normed FFN input for all `T` tokens (`T * n_embd` floats back to back, DEVICE), and
+    /// `parts_dev` is the session's own `T * k` output rows.  Unlike `run_hits` nothing is staged through the
+    /// host: `cur_dev` is read where it lies and `parts_dev` is written where it lies, which is the point.
+    ///
+    /// **ALL OR NOTHING.**  `served` says whether the card did the layer.  It is false - and nothing is written -
+    /// when this stage holds no slots for the layer, when a routed id is out of range, or when `T` or `k` is past
+    /// what this was sized for; the caller then sends the whole chunk to the CPU pool as it always did.  There is
+    /// no partial answer, because a partial one would need the pool's `T*k` host rows staged back up, which is
+    /// most of what this exists to avoid.
+    ///
+    /// The card's rows are NOT bitwise the pool's: the activation is quantized to q8_1 here and ggml-cpu's
+    /// `vec_dot` quantizes it to q8_K there, the same difference `run_hits` has.  `STRATA_GLM_GPU_CHECK` is the
+    /// gate, and it is the same one.
+    bool run_chunk(int64_t layer, const float* cur_dev, const int32_t* ids, int64_t T, int64_t k, float* parts_dev,
+                   void* stream, bool& served, std::string& err);
+
+    /// The distinct experts the last `run_chunk` served, ascending - the CPU check needs the list to recompute.
+    const std::vector<int32_t>& last_chunk_experts() const { return plan_e_; }
+    /// The last `run_chunk`'s plan, entry by entry: `last_chunk_dst()[p]` is the ROW of `parts` entry `p` owns
+    /// and `last_chunk_tok()[p]` the token whose activation it needed.  Entries are grouped by expert through
+    /// `last_chunk_off()`, which is why the check can walk `dst` alone: a row names its own (token, expert)
+    /// pair, and that is all the CPU needs to recompute it.
+    const std::vector<int32_t>& last_chunk_dst() const { return plan_dst_; }
+    const std::vector<int32_t>& last_chunk_tok() const { return plan_tok_; }
+    const std::vector<int32_t>& last_chunk_off() const { return plan_off_; }
+    /// How many `(token, expert)` entries the last `run_chunk` computed - 0 for a chunk that routed nowhere,
+    /// which is also what makes the check a no-op rather than a walk over a stale plan.
+    int64_t last_chunk_entries() const { return last_chunk_entries_; }
+    /// STRATA_GLM_GPU_CHUNK_TIME: where a chunk's wall went, as `run_chunk` saw it.  `host` is the CPU
+    /// assembling blobs out of the source, `wait` is this thread blocking on the staging ring, `wave` is the
+    /// blocking done at the end of a wave waiting for the card, and `plan` is the host-side plan and uploads.
+    /// The split is what says whether the ring is too shallow, the PCIe is too slow, or the card is the wall.
+    struct ChunkTimes {
+        double host = 0, wait = 0, wave = 0, plan = 0, total = 0;
+        int64_t blobs = 0, waves = 0, entries = 0;
+    };
+    const ChunkTimes& last_chunk_times() const { return chunk_; }
 
     /// STRATA_GLM_GPU_CHECK: the positions in `parts_dev` the last `run_hits` filled from VRAM.
     const std::vector<int32_t>& last_hits() const { return hit_pos_; }
@@ -107,6 +175,34 @@ private:
     int32_t* h_idx_ = nullptr;
     std::vector<uint8_t*> stage_;              ///< pinned staging, one blob per admission in flight
     std::vector<int32_t> hit_pos_;
+
+    // ---- the chunk path (`run_chunk`).  Its own buffers, deliberately: `d_idx_`/`h_idx_` above are laid out
+    // against `k_` and drive the live decode path, and re-sizing them for a chunk would put the decode tier's
+    // correctness behind a second caller's geometry.  Everything here is null/empty on a decode-only tier.
+    void* cxq_ = nullptr;                      ///< device: the chunk's q8_1 activations, `chunk_tokens_` rows
+    void* cscratch_ = nullptr;                 ///< native_expert_grouped's, for `cap_entry_` entries
+    unsigned long long* c_ptr_ = nullptr;      ///< device: one group per expert in the wave
+    int32_t* c_idx_ = nullptr;                 ///< device: start[] | n_groups | dst[] | tok[], sized on the caps
+    unsigned long long* hc_ptr_ = nullptr;     ///< pinned host mirrors
+    int32_t* hc_idx_ = nullptr;
+    int64_t chunk_tokens_ = 0;                 ///< the largest chunk sized for; 0 = a decode-only tier
+    int64_t cap_group_ = 0;                    ///< the most groups, and so the most slots, one wave may use
+    int64_t cap_entry_ = 0;                    ///< the most (token, expert) entries one wave may hold
+    int64_t chunk_calls_ = 0, chunk_entries_ = 0, last_chunk_entries_ = 0;
+    std::vector<int32_t> plan_e_;              ///< host: the distinct experts of the chunk, ascending
+    std::vector<int32_t> plan_off_;            ///< host: plan_off_[e]..plan_off_[e+1) index the two below
+    std::vector<int32_t> plan_cur_;            ///< host: the counting sort's running cursor, one an expert
+    std::vector<int32_t> plan_dst_, plan_tok_; ///< host: the entry's row in `parts` and the token it came from
+    // The chunk path's staging ring.  `copy_blob` assembles a GGUF-in-place blob on the CPU (three slices of a
+    // mmap, ~11 MB and ~2 ms an expert), so the ring exists to keep that memcpy RUNNING AHEAD of the DMA rather
+    // than taking turns with it: a buffer is reused only after the copy that read it has landed, which the event
+    // in the same slot says.  The decode path's `stage_` above is k deep because an admission is at most k blobs
+    // a layer; a wave is up to `cap_group_` of them.
+    std::vector<uint8_t*> stage_chunk_;
+    std::vector<void*> stage_ev_;              ///< `cudaEvent_t`s, held as void* so this header needs no CUDA
+    ChunkTimes chunk_;                         ///< the last `run_chunk`'s breakdown (STRATA_GLM_GPU_CHUNK_TIME)
+    int64_t par_threads_ = 1;                  ///< threads that assemble one wave (STRATA_GLM_GPU_CHUNK_THREADS)
+    int64_t last_chunk_threads_ = 0;           ///< the width the last wave's assembly actually ran at
 };
 
 }  // namespace strata::core
