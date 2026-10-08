@@ -380,6 +380,7 @@ Verifier::~Verifier() try {
     if (arena_b_) sycl::free(arena_b_, dpct::get_in_order_queue());
     if (h_commitb_) sycl::free(h_commitb_, dpct::get_in_order_queue());
     if (qcnt_) sycl::free(qcnt_, dpct::get_in_order_queue());
+    // SYCL port: nullptr until set_stream() (see verify.hpp); the in-order queue is not a value it can now hold
     if (cs_ && cs_ != ext_stream_) dpct::get_current_device().destroy_queue(
         cs_); // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) dpct::get_current_device().destroy_queue(sh_cs_);
@@ -608,9 +609,9 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: copy stream create failed";
         return false;
     }
-    if (ext_stream_ != &dpct::get_in_order_queue()) cs_ =
-        ext_stream_; // set_stream (pipelined windows): the stage's shared
-                     // stream
+    // SYCL port: ext_stream_ is nullptr until set_stream() (see verify.hpp) - the old test against the in-order queue
+    // read a member initialiser that had already captured *this* device's queue, so a stage on another card took it.
+    if (ext_stream_ != nullptr) cs_ = ext_stream_; // set_stream (pipelined windows): the stage's shared stream
     /*
     DPCT1025: The SYCL queue is created ignoring the flag and priority
     options.
@@ -1763,6 +1764,11 @@ bool Verifier::record_commit(std::string &err) {
                 ++qsa_index;
             }
         }
+        // SYCL port: splitting capture_commit() into record_commit() dropped this line (found by TeppeiLan1104 in
+        // #1390): the PLE history is staged here and stage_inputs() reads it back out of hist_snap_, so without it the
+        // next window restores a stale history - the Coder's greedy output changes (their hash 8769f8bd4768 against
+        // 0.1.39's 376092cc1dd5, which this restores, at the same speed).
+        if (ok && ss.ple.ready() && ple_stage()) copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
     } catch (const std::exception& e) {
         err = std::string("verify commit: ") + e.what();
         ok = false;

@@ -6863,7 +6863,7 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, g.n_layers);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -11962,7 +11962,7 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, g.n_layers);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;

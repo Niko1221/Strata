@@ -2354,17 +2354,26 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+int g_mirror_layers = 0;       // the table's layer count: the slice of a call's layer must be inside it
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int n_layers) {
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
+    g_mirror_layers = n_layers;
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
-    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
-        mir = g_mirror_table + (res_layer - g_mirror_res);
+    // SYCL port: the slice was found from the pointer alone (`res_layer >= g_mirror_res`), which is a pointer
+    // comparison, not a layer index: a layer-split stage whose own residency table happens to sit above this one read
+    // a slice far outside the table (device lost, experts short of the second card - TeppeiLan1104 in #1390). The
+    // difference in int32 entries is the layer index, and it has to be inside the table's own layers.
+    if (g_mirror_table != nullptr && g_mirror_res != nullptr && n_expert > 0 && res_layer >= g_mirror_res) {
+        const long long layer = (res_layer - g_mirror_res) / n_expert;
+        if (layer < g_mirror_layers)
+            mir = g_mirror_table + layer * (long long) n_expert;
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
