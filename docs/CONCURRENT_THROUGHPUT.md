@@ -1,6 +1,6 @@
 # Opt-in wider speculative batches
 
-Review base: the QFUSE correctness branch on upstream v0.1.40.1. Upstream
+Review base: pristine upstream v0.1.40.4 (`6674a00`). Upstream
 already supports concurrent MTP. This adds wider target verification across
 independent slots while retaining upstream admission, prefix reuse, request
 cancellation, checkpoints, preemption, and return-to-solo behavior.
@@ -19,7 +19,7 @@ cancellation, checkpoints, preemption, and return-to-solo behavior.
 | Per-slot suffix proposals alongside MTP | Reuse repeated prompt/output sequences | Only committed target tokens enter history; rejected/padded rows do not |
 | Optional adaptation between speculative batches | Refresh residency during long concurrent decodes | Defers while prefill/borrowed buffers/pending transfers make it unsafe |
 | Optional prefill row/chunk limits, row fairness and PCIe share | Expose tradeoffs between decode work and new-request latency | Opt-in; upstream settings remain the defaults |
-| Effective-mode and timing diagnostics | Distinguish verified rows from emitted output tokens | Engine logs; Python monitoring is a separate PR |
+| Effective-mode and timing diagnostics | Distinguish verified rows from emitted output tokens | Engine logs; no Python server or telemetry changes in this PR |
 
 ## Compatibility and use
 
@@ -58,32 +58,9 @@ borrowing when reproducing the historical common-arithmetic controls. Preserve
 normal kernels/adaptation for performance runs, and record those as a separate
 comparison. Keep expert capacity, context, sampling and prompts matched.
 
-## Evidence, interpretation and limits
+## Upstream integration and evidence
 
-Historical integrated-candidate tests used RTX 5090, Ryzen 9950X3D, Swift IQ2_XS,
-98304 context/request and 2560 MiB reserve. This source split does not establish
-a new speedup. A v040 integration screen measured 296.09 aggregate common-c4
-decode TPS versus 158.19 with upstream MTP **inside the same integrated binary**.
-It was not a pristine upstream-v040 A/B, adaptive outputs differed, and the
-result does not establish equal-quality workflow speedup. A subsequent bounded
-QFUSE-fix before/after screen measured 295.78/297.13 TPS and 47/47 ms p95 gaps;
-that checks for an obvious regression, not a statistically significant gain.
-
-Controlled c4 output matched 4096/4096 tokens from the corrected v039 candidate.
-Wide and upstream-MTP lifecycle suites each matched eight transitions to solo.
-Normal adaptive full-logit comparisons passed the recorded absolute screens
-(mean KL <= .001, max KL <= .02, mean TV <= .01). Cross-build mean KL was
-.000364..000666 for the general fixture and .000167..000182 for coding, comparable
-to measured self-repeat variation. The stricter historical .0001 trigger still
-flags pairs, including self-repeats: it is not claimed to pass. Two repetitions
-are not a statistical equivalence study. The small answer screen scored 15/16
-on both builds, with the same error; it is not a broad quality benchmark.
-
-The complete earlier evidence remains at local tag
-candidate-v040-numerics-20261006, under docs/evidence/v040-numerical-followup and
-docs/evidence/v040-integration. The local review bundle maps those reports to
-these extracted sources and records fresh preparation checks. Machine-specific
-launchers, configs and large diagnostics are deliberately outside this patch.
-Before publication, the review bundle/evidence location must be made available
-to reviewers. AMD/multi-GPU testing and a fresh pristine-upstream performance
-comparison remain limitations; no new c=1 throughput gain is asserted.
+See [V0404_REBASE.md](V0404_REBASE.md) for the conflict audit, exclusions and
+fresh qualification. Historical PR #1209 performance ratios are not the
+claims for this rebased submission. Performance is measured first, followed
+by bounded correctness and lifecycle checks if the workload benefit remains.
