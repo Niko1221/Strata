@@ -217,10 +217,11 @@ int64_t g_ring_small_max = 0;
 // 8192 to 6144, but more experts stay resident).  A native pack likewise when the native kernels (moe_fused_iq.hpp)
 // take any of its layers: IQ2_XS, 4K / 32K, their first version at 384 slots -3% / -6% against MMQ, at 512 +8% / 0%.
 inline bool fused_ring() {
-    if (!fused::enabled()) return false;
     if (core::peer_portable()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
-    if (!lay.native) return true;
+    // the Q2_0 pack: fused::enabled().  A native pack: native_supported() alone - it implies enabled() wherever the Q2_0
+    // kernels exist, and on gfx12 (the native kernels only) enabled() is false while the native layers do run fused.
+    if (!lay.native) return fused::enabled();
     // EVERY layer: fused_layout() shrinks the MoE buffers to the fused path's needs, so a layer the native kernels do
     // not cover (Unsloth UD-IQ4_XS's Q8_0 down projections) would run MMQ in them at the full chunk and overflow them
     // (garbage, an illegal memory access or a hung prompt on gfx1151).  A pack with such a layer keeps MMQ's buffers;
