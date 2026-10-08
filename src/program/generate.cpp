@@ -6035,19 +6035,30 @@ int main(int argc, char** argv) {
                          (long long) o.prefill_chunk, (long long) (xcache.slots() - lend_from),
                          (long long) src.resident_lent_slots());
         if (resident_ok) {
+            // The batch: `--adapt-swaps` experts per round, each one a copy down and a copy up through a page-locked
+            // exchange buffer of the largest blob (3.48 MB on UD-IQ4_XS).  It was capped at 96 in three places, so
+            // asking for more did nothing; the cap is 256 now, which costs 256 x 3.48 MB pinned (double that with
+            // --adapt-async, whose second half bounces the copies) and a round that takes N x 2.34 MB / the PCIe
+            // rate - about 56 ms per 96 experts at the 4 GB/s measured here.
+            const int64_t adapt_batch = std::min<int64_t>(o.adapt_swaps, 256);
             // --adapt-async: twice the exchange buffers - the second half bounces the copies in whose source is not
             // page-locked (an asynchronous copy instead of the driver's staged, synchronous one)
-            if (o.adapt_async && !src.reserve_exchanges(2 * std::min<int64_t>(o.adapt_swaps, 96), err))
+            if (o.adapt_async && !src.reserve_exchanges(2 * adapt_batch, err))
                 adapt_async_off(err.c_str());
             // pageable buffers would make every copy of a round synchronous (the driver stages them): that is the
             // blocking tier's cost, so the asynchronous tier is not worth running - said, and the blocking tier stays
             if (o.adapt_async && !src.exchange_pinned())
                 adapt_async_off("the exchange buffers could not be page-locked");
             if (o.adapt_every > 0 && o.adapt_swaps > 0 &&
-                !src.reserve_exchanges(std::min<int64_t>(o.adapt_swaps, 96), err)) {
+                !src.reserve_exchanges(adapt_batch, err)) {
                 std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
                 return 1;
             }
+            if (o.adapt_swaps > 96)
+                std::fprintf(stderr, "strata generate: adaptive batch %lld of %d experts a round: %.2f GiB of pinned "
+                                     "exchange buffers%s\n",                             (long long) adapt_batch, o.adapt_swaps,
+                             (double) adapt_batch * 3.0 * 1048576.0 / 1073741824.0 * (o.adapt_async ? 2 : 1),
+                             o.adapt_swaps > adapt_batch ? " (asked for more than 256: capped)" : "");
             std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
                                  "cache; adaptive swaps %s\n",
                          (double) src.resident_bytes() / 1073741824.0,
@@ -7462,7 +7473,7 @@ int main(int argc, char** argv) {
         std::atomic<bool> a_err{false};
         std::vector<AHome> ahomes;   // [0] = CUDA0's cache, [k] = layer split stage k's
         std::unique_ptr<JobThread> ajob;
-        const int64_t a_cap = std::min<int64_t>(o.adapt_swaps, 96);   // as the blocking tier's exchange buffers
+        const int64_t a_cap = std::min<int64_t>(o.adapt_swaps, 256);   // as the blocking tier's exchange buffers
         if (o.adapt_async && !drive.d.usage.empty() && src.complement_ready() && src.exchange_capacity() >= 2 * a_cap) {
             ahomes.push_back({&xcache, adapt_stream, adapt_ev, 0, false});
             for (auto& st : stages) ahomes.push_back({&st->cache, st->adapt_stream, st->adapt_ev, st->dev, false});
