@@ -79,8 +79,13 @@ def _content(content, param):
                 raise ResponsesError("only images given as image_url (a data: or http(s) URL) are supported; "
                                      "this server keeps no files", f"{param}[{j}]", "unsupported_parameter")
             parts.append({"type": "input_image", "image_url": part["image_url"]})
+        elif kind in ("input_video", "video_url"):
+            if not part.get("video_url"):
+                raise ResponsesError("only videos given as video_url (a data: or http(s) URL) are supported; "
+                                     "this server keeps no files", f"{param}[{j}]", "unsupported_parameter")
+            parts.append(dict(part, type="input_video"))
         else:
-            raise ResponsesError(f"content parts of type {kind!r} are not supported (text and images are)",
+            raise ResponsesError(f"content parts of type {kind!r} are not supported (text, images and videos are)",
                                  f"{param}[{j}].type", "unsupported_parameter")
     return _parts_of(parts)
 

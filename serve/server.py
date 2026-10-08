@@ -11,6 +11,12 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
+Videos (the same "vision" entry, plus ffmpeg/ffprobe on PATH or its "ffmpeg_dir"): video_url parts become what the
+Qwen3-VL processor makes of a video - sampled frames, two per temporal patch, each pair after its "<t seconds>" -
+each frame pair an image record for the engine (`strata-vision` ENCV), sized from the video's length to a budget
+that follows the context.  "video_fps", "video_tokens", "video_total_tokens", "video_context_share",
+"video_min_tokens", "video_max_frames" and "video_max_side" in the vision entry set the defaults; a part's own "fps",
+"max_frames", "max_side", "tokens", "total_tokens" override them.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -56,7 +62,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
-                            tool_choice_of, unmark_think_literals)
+                            tool_choice_of, unmark_think_literals, videos_of)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
@@ -66,6 +72,19 @@ from serve.responses import ResponsesError, error_body as responses_error_body  
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VIDEO_PAD = "<|video_pad|>"
+VISION_END = "<|vision_end|>"
+# a video's defaults (the vision entry's video_* keys override them): Qwen's 2 fps; frames sized to at most 768 tokens
+# per frame pair (qwen-vl-utils' VIDEO_MAX_TOKEN_NUM; 1152x640 at 16:9; 18-28 px text was readable at 448, lost at
+# ~100 tokens on a busy background); and a
+# whole-video budget, total_tokens 0 = automatic: context_share of the model's context, at most 224K (the
+# Qwen3.8-Flash-Next card's hour-scale setting), shared by the videos of one request.  A video longer than the budget
+# allows at 768 gets smaller frames, down to min_tokens per pair (Qwen3-VL's minimum), then a lower frame rate -
+# strata-vision plans it from the length.  max_frames 2,048 is the Qwen3-VL report's evaluation cap
+VIDEO_DEFAULTS = {"fps": 2.0, "max_frames": 2048, "max_side": 0, "tokens": 768, "total_tokens": 0,
+                  "min_tokens": 128, "context_share": 0.6}
+VIDEO_MAX_TOTAL = 229376                  # 224K video tokens
+VIDEO_FALLBACK_TOTAL = 12288              # the budget when the context is not known yet
 
 
 def popen(what: str, args: list, **kw):
@@ -248,6 +267,7 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
+VISION_VIDEO_S = _timeout_env("STRATA_VISION_VIDEO_S", 1800.0)    # ENCV answers once the whole video is encoded
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 
@@ -1780,6 +1800,7 @@ class StrataEngine:
 
 
 IMAGE_URL_MAX = 32 << 20        # an image URL is read up to this (the web app attaches pictures of up to 20 MB)
+VIDEO_URL_MAX = 1 << 30         # a video URL is read up to this
 
 
 def network_path(path: str) -> bool:
@@ -1851,6 +1872,9 @@ class Vision:
             args += ["--max-tokens", str(cfg["max_tokens"])]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        if cfg.get("ffmpeg_dir"):                       # videos: ffmpeg and ffprobe, when not on PATH
+            args += ["--ffmpeg-dir", os.path.abspath(str(cfg["ffmpeg_dir"]))]
+        self.video = {k: cfg.get("video_" + k, v) for k, v in VIDEO_DEFAULTS.items()}
         self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.proc = None
@@ -1948,19 +1972,21 @@ class Vision:
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
-    def download(url: str) -> bytes:
+    def download(url: str, limit: int | None = None, what: str = "image") -> bytes:
         """An image URL's bytes, at most IMAGE_URL_MAX of them: the whole response was read, so a huge or endless one
-        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection."""
-        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
+        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection.
+        A video's URL: limit VIDEO_URL_MAX."""
+        limit = IMAGE_URL_MAX if limit is None else limit
+        too_big = f"the {what} URL's file is over {limit >> 20} MiB"
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "strata"}), timeout=60) as r:
                 size = r.headers.get("Content-Length") or ""
-                if size.isdigit() and int(size) > IMAGE_URL_MAX:
+                if size.isdigit() and int(size) > limit:
                     raise ValueError(too_big)
-                data = r.read(IMAGE_URL_MAX + 1)
+                data = r.read(limit + 1)
         except (OSError, HTTPException) as e:
-            raise ValueError(f"the image URL could not be read: {e}") from None
-        if len(data) > IMAGE_URL_MAX:
+            raise ValueError(f"the {what} URL could not be read: {e}") from None
+        if len(data) > limit:
             raise ValueError(too_big)
         return data
 
@@ -2042,12 +2068,83 @@ class Vision:
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
-            held = {str(p) for p in keep} | {str(out)}
-            for old in list(self.cache):                               # oldest first, but never one still in use
-                if len(self.cache) <= 64:
-                    break
-                if str(self.cache[old][0]) not in held:
-                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            self._trim({str(p) for p in keep} | {str(out)})
+            return self.cache[key]
+
+    def _trim(self, held: set):
+        for old in list(self.cache):                                   # oldest first, but never one still in use
+            if len(self.cache) <= 64:
+                break
+            if str(self.cache[old][0]) not in held:
+                self.cache.pop(old)[0].unlink(missing_ok=True)
+
+    @staticmethod
+    def parse_layout(text: str) -> list:
+        """strata-vision's LAYOUT -> [list of text token ids | int image cells, ...] in prompt order."""
+        out = []
+        for item in filter(None, text.split(";")):
+            if item[0] == "I":
+                out.append(int(item[1:]))
+            elif item[0] == "T":
+                out.append([int(t) for t in item[1:].split(",") if t])
+            else:
+                raise ValueError("the vision encoder sent a bad video layout")
+        return out
+
+    def video_options(self, opts: dict) -> dict:
+        """The server's video defaults with a request's own fps / max_frames / max_side / tokens / total_tokens on
+        top (checked); "budget" is the whole video's token budget: total_tokens, or automatic from the model's context
+        (`self.context`), shared by the request's videos (`self.videos_in_request`)."""
+        o = dict(self.video)
+        limits = {"fps": 60, "max_frames": 8192, "max_side": 16384, "tokens": 4096, "total_tokens": 1 << 20}
+        for k in limits:
+            if k in (opts or {}):
+                try:
+                    v = float(opts[k]) if k == "fps" else int(opts[k])
+                except (TypeError, ValueError):
+                    raise ValueError(f"a video's {k} must be a number") from None
+                if v < 0 or v > limits[k]:
+                    raise ValueError(f"a video's {k} is out of range")
+                o[k] = v
+        ctx = int(getattr(self, "context", 0) or 0)
+        auto = min(VIDEO_MAX_TOTAL, int(ctx * float(o["context_share"]))) if ctx > 0 else VIDEO_FALLBACK_TOTAL
+        auto //= max(1, int(getattr(self, "videos_in_request", 1) or 1))
+        o["budget"] = int(o["total_tokens"]) if int(o["total_tokens"] or 0) > 0 else auto
+        return o
+
+    def encode_video(self, source: str | bytes, opts: dict | None = None, keep=()) -> tuple[Path, int, list]:
+        """-> (embeddings file: one SVE1 record per frame pair, number of image cells, layout).  The layout replaces
+        the template's <|vision_start|><|video_pad|><|vision_end|>: text token ids (each pair's "<t seconds>" and its
+        <|vision_start|> / <|vision_end|>) and image cell counts, in order.  `source`: what load() reads, or the
+        video's bytes (an http(s) URL is downloaded before, outside the FIFO).  `keep` as for encode()."""
+        data = source if isinstance(source, bytes) else self.load(source)
+        o = self.video_options(opts or {})
+        key = hashlib.sha256(data + json.dumps(o, sort_keys=True).encode()).hexdigest()[:32]
+        with self.lock:
+            if key in self.cache:
+                self.cache[key] = self.cache.pop(key)                  # most recently used last
+                return self.cache[key]
+            vid, out = self.dir / f"{key}.vid", self.dir / f"{key}.sve"
+            vid.write_bytes(data)
+            try:
+                self.proc.stdin.write(f"ENCV {o['fps']:g} {int(o['max_frames'])} {int(o['max_side'])} "
+                                      f"{int(o['tokens'])} {int(o['budget'])} {int(o['min_tokens'])} "
+                                      f"{vid.name} {out.name}\n")                # relative to the encoder's cwd (#480)
+                self.proc.stdin.flush()
+                try:                                      # the whole video before the first line: its own, longer wait
+                    line = self._readline(VISION_VIDEO_S, "the video could not be read").strip()
+                    layout = self._readline(VISION_ENCODE_S, "the video could not be read").strip() \
+                        if line.startswith("OK") else ""
+                except RuntimeError as e:
+                    self.stopped = True
+                    raise ValueError(str(e)) from None
+            finally:                                                   # as for an image: also when the pipe is gone
+                vid.unlink(missing_ok=True)
+            if not line.startswith("OK") or not layout.startswith("LAYOUT "):
+                raise ValueError("the video could not be read: " + (line[4:] if line.startswith("ERR") else
+                                                                    "the vision encoder stopped"))
+            self.cache[key] = (out, int(line.split()[1]), self.parse_layout(layout[7:]))
+            self._trim({str(p) for p in keep} | {str(out)})
             return self.cache[key]
 
     def close(self):
@@ -2428,7 +2525,8 @@ def vision_env(cfg: dict, env: dict) -> dict:
 
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
-    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
+    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>",
+                "<|video_pad|>"]
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
@@ -3216,16 +3314,25 @@ class Service:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         images = images_of(messages)
-        if images:
+        videos = videos_of(messages)
+        records = []                                    # the embeddings files, in prompt order
+        if images or videos:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images")
+                                 "'vision'), so it cannot read " + ("images" if images else "videos"))
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+            vpad = self.tok.encode(VIDEO_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
+            end = self.tok.encode(VISION_END, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             images = [fetched[src] if src in fetched else Vision.download(src) if src.startswith(("http://", "https://"))
                       else src for src in images]
+            videos = [(Vision.download(src, VIDEO_URL_MAX, "video") if src.startswith(("http://", "https://")) else src,
+                       opts) for src, opts in videos]
+            if videos:                                  # a video's automatic budget: a share of the context, split
+                self.vision.context = self.reported_ctx()               # between the request's videos
+                self.vision.videos_in_request = len(videos)
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -3233,24 +3340,50 @@ class Service:
             with self.fifo:
                 encoded = (self.vision.encode_all(images) if hasattr(self.vision, "encode_all")
                            else [self.vision.encode(src) for src in images])
+                encoded_v = []                          # never evicting a file this request still needs (#1072)
+                for src, opts in videos:
+                    held = [p for p, _ in encoded] + [v[0] for v in encoded_v]
+                    encoded_v.append(self.vision.encode_video(src, opts, keep=held))
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            # A video's <|vision_start|><|video_pad|><|vision_end|> is replaced whole by its layout: each frame pair's
+            # "<t seconds>" text and start/end markers, and one <|image_pad|> per cell - the engine places image rows
+            # at image pads (and its PLE reads the image id there, as llama.cpp does for any embedding input).
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
+            vliteral = self.tok.encode(VIDEO_PAD, parse_special=False)
+            out, k, kv, j = [], 0, 0, 0
+            while j < len(ids):
+                t = ids[j]
                 if t == pad and j > 0 and ids[j - 1] == start:
                     # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
                     if k == len(encoded):
                         raise ValueError("the prompt and its images do not match")
                     out += [pad] * encoded[k][1]
+                    records.append(encoded[k][0])
                     k += 1
+                elif t == vpad and j > 0 and ids[j - 1] == start:
+                    if kv == len(encoded_v):
+                        raise ValueError("the prompt and its videos do not match")
+                    path, _, layout = encoded_v[kv]
+                    out.pop()                                          # the template's <|vision_start|>
+                    for item in layout:
+                        out += [pad] * item if isinstance(item, int) else item
+                    records.append(path)
+                    kv += 1
+                    if j + 1 < len(ids) and ids[j + 1] == end:         # and its <|vision_end|>
+                        j += 1
                 elif t == pad:
                     out += literal
+                elif t == vpad:
+                    out += vliteral
                 else:
                     out.append(t)
+                j += 1
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
+            if kv != len(encoded_v):
+                raise ValueError("the prompt and its videos do not match")
             ids = out
         ctx = self.engine.max_context
         if ctx <= 0:
@@ -3274,15 +3407,15 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        if images:
+        if records:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
             # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p in records))
             self.embeddings.path = combined             # first, so a half-written one is found as well
-            write_temporary(combined, [p for p, _ in encoded])
+            write_temporary(combined, records)
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(records))
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -4530,7 +4663,8 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "images": svc.vision is not None,
+                                 "videos": hasattr(svc.vision, "encode_video"), "api_key": bool(svc.api_key),
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
@@ -4551,7 +4685,7 @@ def make_handler(svc: Service):
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": (["text", "image"] + (["video"] if hasattr(svc.vision, "encode_video") else [])) if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
@@ -4864,7 +4998,7 @@ def make_handler(svc: Service):
             and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
             client that is no browser.  ValueError (a 400)."""
             if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
-                                              for src in images_of(messages)):
+                                              for src in images_of(messages) + [s for s, _ in videos_of(messages)]):
                 raise ValueError("a web page of another origin cannot have a file on this computer read as an "
                                  "image: send it as a data: URL (or add the page's origin to the config's "
                                  "trusted_origins)")

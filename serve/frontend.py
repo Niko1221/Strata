@@ -122,6 +122,8 @@ def _text_of(content) -> str:
 
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
+VIDEO_PARTS = ("video_url", "input_video", "video")
+VIDEO_OPTIONS = ("fps", "max_frames", "max_side", "tokens", "total_tokens")
 
 # Thinking levels.  The model's template knows low, medium and xhigh (its default; "high" means xhigh), and
 # enable_thinking=false for none.  Clients spell these many ways; everything maps onto those four.
@@ -152,7 +154,8 @@ def budget_effort(tokens) -> dict:
 
 
 def _has_image(content) -> bool:
-    return isinstance(content, list) and any(isinstance(p, dict) and p.get("type") in IMAGE_PARTS for p in content)
+    return isinstance(content, list) and any(isinstance(p, dict) and p.get("type") in IMAGE_PARTS + VIDEO_PARTS
+                                             for p in content)
 
 
 def _image_source(part: dict) -> str:
@@ -171,6 +174,24 @@ def _image_source(part: dict) -> str:
     return url or ""
 
 
+def _video_source(part: dict) -> tuple[str, dict]:
+    """A video part's source (a data: URL, an http(s) URL or a local file path) and its sampling options.
+    OpenAI-style {"type": "video_url", "video_url": {"url": ..., "fps": 1}} (or "video_url": "..."), Responses-style
+    {"type": "input_video", "video_url": ...}, and {"type": "video", "source": {"type": "base64" | "url" | "path",
+    ...}} or {"type": "video", "video": "..."}.  Options (VIDEO_OPTIONS) may sit on the part or beside the url; unset
+    ones take the server's defaults."""
+    src = part.get("video_url")
+    if part.get("type") == "video":
+        src = part.get("source") or part.get("video") or {}
+        if isinstance(src, dict) and src.get("type") == "base64":
+            src = f"data:{src.get('media_type', 'video/mp4')};base64,{src.get('data', '')}"
+    opts = {k: part[k] for k in VIDEO_OPTIONS if part.get(k) is not None}
+    if isinstance(src, dict):
+        opts.update({k: src[k] for k in VIDEO_OPTIONS if src.get(k) is not None})
+        src = src.get("url") or src.get("path") or ""
+    return src or "", opts
+
+
 def _parts_of(content):
     """Message content for the template: a string when there is no image (unchanged behaviour), otherwise the
     template's list form - text items and image items, in order - whose image items carry their source."""
@@ -182,6 +203,9 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
+        elif part.get("type") in VIDEO_PARTS:
+            src, opts = _video_source(part)
+            items.append({"type": "video", "source": src, "options": opts})
         elif part.get("type") in ("text", "input_text", None) and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
@@ -192,6 +216,13 @@ def images_of(messages: list[dict]) -> list[str]:
     <|vision_start|><|image_pad|><|vision_end|> per image item, message by message)."""
     return [item["source"] for m in messages if isinstance(m.get("content"), list)
             for item in m["content"] if item.get("type") == "image"]
+
+
+def videos_of(messages: list[dict]) -> list[tuple[str, dict]]:
+    """The videos of the rendered conversation, (source, options) in prompt order (the template renders one
+    <|vision_start|><|video_pad|><|vision_end|> per video item)."""
+    return [(item["source"], item.get("options") or {}) for m in messages if isinstance(m.get("content"), list)
+            for item in m["content"] if item.get("type") == "video"]
 
 
 # #537: a literal <think> / </think> inside a message's text is plain text, not the model's reasoning markers.  The

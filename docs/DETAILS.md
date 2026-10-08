@@ -7,7 +7,7 @@ New here? Start with the [README](../README.md); installing step by step is in [
 > **On this page:** [Speed](#speed-measured) · [Other GPUs](#other-gpus-estimated) · [Which model?](#which-model) ·
 > [Requirements](#before-you-start) · [Windows](#windows) · [Linux](#linux) · [API](#using-it) ·
 > [MCP tools](#tools-from-mcp-servers) · [MCP server](#manage-strata-from-your-ai-assistant-mcp-server) ·
-> [Images](#images-vision) ·
+> [Images](#images-vision) · [Videos](#videos) ·
 > [Troubleshooting](#troubleshooting) · [How it works](#how-it-works)
 
 ---
@@ -1062,7 +1062,7 @@ more than 16 MiB apart. A symbolic link, a second hard link and a file with one 
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
-re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
+re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images and [videos](#videos) only when set up with images (below). **Temperature / top_p / top_k / min_p /
 seed** are honored per request (OpenAI and Anthropic fields), and so are stop strings (OpenAI `stop`, a string or up
 to 4; Anthropic `stop_sequences`): the answer ends before the first one, which is not sent, and the engine stops
 there (`finish_reason` "stop"; `stop_reason` "stop_sequence" with `stop_sequence` set to the one found); with the default adaptive expert tier a sampled result
@@ -1492,6 +1492,72 @@ model's.
 **Measured here** (Q2_0, fixed experts, 2,557 teacher-forced tokens of code, a document and a chat): the top-1 token
 changes at 10% of positions, mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3% on
 the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
+
+---
+
+## Videos
+
+The image encoder reads videos too: set up with images, plus **ffmpeg and ffprobe** on `PATH` (or `"ffmpeg_dir"` in
+the `"vision"` section). A `video_url` part (OpenAI), `input_video` (Responses) or a `video` block (Anthropic; a
+`base64`, `url` or `path` source) takes a `data:` URL, an `http(s)://` URL or a local file path. In the chat page the
+attach button (or dropping a file) takes a video as well, up to 200 MB.
+
+```python
+r = client.chat.completions.create(model="strata", messages=[{"role": "user", "content": [
+    {"type": "video_url", "video_url": {"url": "C:/clips/demo.mp4", "fps": 1}},
+    {"type": "text", "text": "What happens in this video?"}]}])
+```
+
+A video is laid out as the Qwen3-VL processor in transformers lays it out (`processing_qwen3_vl.py`): frames sampled
+by ffmpeg, frames 0+1, 2+3, ... merged into one temporal patch (the qwen3vl projector; an odd last frame is doubled),
+and each pair preceded by its time as text, `<1.2 seconds>` (the pair's mean), then `<|vision_start|>` image
+`<|vision_end|>` - its own M-RoPE time step, rows and columns. The engine reads it like that many pictures,
+unchanged. (llama.cpp's own video helper writes a `Video:` label and a `[0m5.00s]` timestamp every 5 s after the frame
+it marks, which leaves frame 0 unpaired and shifts every label; with it, answers placed events about 1 s late.)
+
+**Any length is one request.** `strata-vision` reads the video's length and plans within a budget: every frame at 2 fps
+and up to 768 tokens per pair (Qwen's own default, qwen-vl-utils) while that fits, then smaller frames down to 128 per pair, then a lower frame rate spread
+over the whole video. The budget is 60% of the context (at most 224K, the Qwen3.8-Flash-Next card's setting for
+hour-scale video), shared by the videos of one request. It encodes 64 frames at a time, so its memory does not grow
+with the length.
+
+| `"vision"` key | Default | What it does |
+| --- | --- | --- |
+| `video_fps` | 2 | frames sampled per second, at most |
+| `video_tokens` | 768 | each frame is sized so a pair is at most this many tokens (one token per 32x32 pixels; 768 = 1152x640 at 16:9) |
+| `video_total_tokens` | 0 | the whole video's budget; 0 = automatic: `video_context_share` of the context, at most 224K |
+| `video_context_share` | 0.6 | the share of the context an automatic budget takes (64K: ~39K tokens; 256K: 157K) |
+| `video_min_tokens` | 128 | the smallest a frame pair gets before the frame rate drops instead (Qwen3-VL's minimum) |
+| `video_max_frames` | 2,048 | a hard cap (the Qwen3-VL report's evaluation limit) |
+| `video_max_side` | 0 | an extra cap on the frames' longer side (0: none) |
+
+A request can set `fps`, `max_frames`, `tokens`, `total_tokens` and `max_side` for one video; `"max_tokens"` in the
+`"vision"` section caps every frame pair as it caps a picture. The server waits up to 30 minutes for a video's encoding
+(`STRATA_VISION_VIDEO_S` in seconds, 0 = no limit), where a picture gets 300 s (`STRATA_VISION_ENCODE_S`).
+
+**Measured** (encoder on an RTX 5070 Ti, built with CUDA 12.8 for sm_120, or an i9-13900K's 16 threads; the model
+IQ2_XS on the 5070 Ti, or IQ3_S on an RTX 2080 Ti with 94 GB of RAM; thinking off; frame pairs at most 448
+tokens, the default before it became 768):
+
+| Video | Budget | Frames | Tokens | Encode |
+| --- | ---: | ---: | ---: | ---: |
+| 10 s, 720x358 (llama.cpp's `tools/mtmd/test-3.mp4`), 2 fps, 448 px | - | 20 | 1,078 | CPU 6.5 s, GPU 0.74 s |
+| 36 s, 1080p | 39K (64K context) | 72 (2 fps) | 16,128 | GPU 8.6 s |
+| 10 min, 540p | 39K (64K context) | 614 (~1 fps) | 36,840 | GPU 21 s |
+| 10 min, 540p | 157K (256K context) | 1,200 (2 fps) | 158,400 | GPU 71 s (peak 859 MB of RAM) |
+
+- The 10-second clip, asked to describe it in order and what lies on the counter and when: the scene right, "a
+  revolver ... at the 6-second mark" (in view from ~6 s); 6.4 s for the whole request with the GPU encoder.
+- The 10-minute video (20 scenes of 30 s, a 2-second "BOSS SPAWNED" banner at 7:13) on the 2080 Ti at 64K: the scene
+  at 7:20 and the banner at 7:13 right (it said 3 seconds long); 38,589 prompt tokens, 68 s, the follow-up 2.9 s from
+  the conversation cache. At 256K: both right including the 2 seconds; 157,124 tokens, 328 s, the follow-up 5.5 s.
+- Small text (a 12-second 1080p clip, busy background, a 20 px HUD changing at 6 s, an 18 px sign, three 28 px
+  subtitles): at ~100 tokens per pair (448 px frames) 0/3 subtitles and 1/4 HUD values right; at 448 tokens per pair
+  (896x504) 3/3 subtitles at their exact seconds and the sign; with `"fps": 1, "tokens": 1024` also 4/4 HUD values and the change at
+  6 s. For small text, ask for that.
+- Two videos compared in one request (a 51-second 1080p gameplay recording as Video A, a copy as B with the minimap
+  blacked out, 30% saturation and 1.25x speed): all three found - the black box, the washed-out colours through the
+  HUD and effects, "roughly 20-25% faster" - plus one difference that was not there. 42,606 tokens, 153 s.
 
 ---
 
