@@ -190,6 +190,26 @@ int main() {
             std::printf("  timing: %lld tokens, %.1f us per call (rank %lld, %lld -> %lld)\n", (long long) n,
                         1000.0f * ms / 500.0f, (long long) R, (long long) NIN, (long long) NOUT);
         }
+        // as decode runs it: one graph of 48 adapted layers (layers 3 and 5 alternating), replayed
+        for (const int64_t n : {1, 8}) {
+            cudaGraph_t gg = nullptr;
+            cudaGraphExec_t ge = nullptr;
+            ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "capture 48");
+            for (int l = 0; l < 48; ++l) k::lora_apply(l % 2 ? 5 : kLayer, dx, LDX, n, dy, LDY, s);
+            ck(cudaStreamEndCapture(s, &gg), "end 48");
+            ck(cudaGraphInstantiate(&ge, gg, 0), "instantiate 48");
+            for (int i = 0; i < 10; ++i) cudaGraphLaunch(ge, s);
+            cudaEventRecord(e0, s);
+            for (int i = 0; i < 200; ++i) cudaGraphLaunch(ge, s);
+            cudaEventRecord(e1, s);
+            ck(cudaEventSynchronize(e1), "timing 48");
+            float ms = 0.0f;
+            cudaEventElapsedTime(&ms, e0, e1);
+            std::printf("  timing: %lld tokens, a graph of 48 layers: %.1f us per replay (%.2f us per layer)\n", (long long) n,
+                        1000.0f * ms / 200.0f, 1000.0f * ms / 200.0f / 48.0f);
+            cudaGraphExecDestroy(ge);
+            cudaGraphDestroy(gg);
+        }
         cudaEventDestroy(e0);
         cudaEventDestroy(e1);
     }
