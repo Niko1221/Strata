@@ -17,6 +17,7 @@
 # Build:
 #   docker build -t strata -f Dockerfile.rocm .
 #   docker build -t strata -f Dockerfile.rocm --build-arg HIP_ARCHITECTURES=gfx1100 .   # 7900 XT only
+#   docker build -t strata -f Dockerfile.rocm --build-arg BASE_IMAGE=rocm/dev-ubuntu-26.04:10.1.0-full .   # ROCm 10.1.0 build 
 #
 # Run (host needs the amdgpu driver; the container needs KFD + DRI passed through):
 #   docker run --rm \
@@ -49,7 +50,8 @@
 # -e GPUS=0,2. A volume set up for one card switches to the pair on its first start
 # on a two-card host unless GPU or GPUS pins it. LOW_RAM=on runs on one card.
 
-FROM rocm/dev-ubuntu-24.04:7.2.4-complete
+ARG BASE_IMAGE=rocm/dev-ubuntu-24.04:7.2.4-complete
+FROM ${BASE_IMAGE}
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
 # and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
