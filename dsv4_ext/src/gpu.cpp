@@ -105,5 +105,62 @@ bool experts_hit(const ExpPtrs& p, uint32_t type_g, uint32_t type_u, uint32_t ty
     return true;
 }
 
+// ------------------------------------------------------------------ prefill
+// The emulated device has no kernel to be missing, so matmul() is the same row math as matvec() with
+// row_dots() doing T dot products per decoded row. d_X and d_Y are host memory here, exactly as the
+// "device" pointers the model already passes around.
+bool matmul(uint32_t type, const uint8_t* W, int64_t rows, int64_t in,
+            const float* d_X, int T, const int32_t* sel, float* d_Y, int64_t x_stride, int64_t y_stride) {
+    if (!type_supported(type) || rows <= 0 || in <= 0 || T <= 0) return false;
+    const size_t rb = row_bytes(type, in);
+    if (!rb) return false;
+    if (x_stride <= 0) x_stride = in;
+    if (y_stride <= 0) y_stride = rows;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (int64_t r = 0; r < rows; ++r)
+        row_dots(type, W + (size_t) r * rb, d_X, x_stride, sel, T, in, d_Y + (size_t) r, y_stride);
+    return true;
+}
+
+bool experts_batch(const ExpBatch* e, int n_exp, uint32_t type_g, uint32_t type_u, uint32_t type_d,
+                   int64_t ff, int64_t dim, float swiglu_limit,
+                   const float* d_X, int T, float* d_g, float* d_u, float* d_a, float* d_dn, float* d_Y) {
+    if (n_exp <= 0) return true;
+    if (T <= 0) return true;
+    if (!experts_supported(type_g, type_u, type_d)) return false;
+    const size_t rg = row_bytes(type_g, dim), ru = row_bytes(type_u, dim), rd = row_bytes(type_d, ff);
+    if (!rg || !ru || !rd) return false;
+    // Same contract as the CUDA backend: d_Y is cleared for the T token rows, then accumulated.
+    std::memset(d_Y, 0, (size_t) T * dim * 4);
+    for (int ei = 0; ei < n_exp; ++ei) {
+        const ExpBatch& b = e[ei];
+        if (b.n <= 0) continue;
+        // A host expert is already where this backend would have to copy it to.
+        const uint8_t* gsrc = b.gate ? b.gate : b.hg;
+        const uint8_t* usrc = b.up ? b.up : b.hu;
+        const uint8_t* dsrc = b.down ? b.down : b.hd;
+        if (!gsrc || !usrc || !dsrc) return false;
+        if (!matmul(type_g, gsrc, ff, dim, d_X, b.n, b.tok, d_g, dim, ff)) return false;
+        if (!matmul(type_u, usrc, ff, dim, d_X, b.n, b.tok, d_u, dim, ff)) return false;
+        for (int t = 0; t < b.n; ++t) {
+            float* g = d_g + (size_t) t * ff;
+            float* u = d_u + (size_t) t * ff;
+            float* a = d_a + (size_t) t * ff;
+            swiglu_clamped(g, u, (int) ff, swiglu_limit, a);
+            for (int64_t i = 0; i < ff; ++i) a[i] *= b.w[t];
+        }
+        if (!matmul(type_d, dsrc, dim, ff, d_a, b.n, nullptr, d_dn, ff, dim)) return false;
+        // Expert order, no atomics: within one bucket a token appears exactly once.
+        for (int t = 0; t < b.n; ++t) {
+            const int32_t tk = b.tok[t];
+            if (tk < 0) return false;
+            for (int64_t i = 0; i < dim; ++i) d_Y[(int64_t) tk * dim + i] += d_dn[(size_t) t * dim + i];
+        }
+    }
+    return true;
+}
+
 }  // namespace gpu
 }  // namespace dsv4

@@ -81,6 +81,10 @@ target_link_libraries(test_ops PRIVATE dsv4_core)
 # dequant_row()/row_dot(): nessun touch della GPU, nessun nvcc.
 add_executable(test_dq_traits tests/test_dq_traits.cpp)
 target_link_libraries(test_dq_traits PRIVATE dsv4_core)
+# Il prefill a chunk contro il percorso token-per-token: vuole un GGUF minuscolo, quindi non e'
+# registrato come add_test (lo genera tools/tiny_model.py). Vedi tests/test_prefill_batch.cpp.
+add_executable(test_prefill_batch tests/test_prefill_batch.cpp)
+target_link_libraries(test_prefill_batch PRIVATE dsv4_core)
 add_test(NAME core COMMAND test_dsv4_core)
 add_test(NAME ops COMMAND test_ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden.txt)
 add_test(NAME dq_traits COMMAND test_dq_traits)

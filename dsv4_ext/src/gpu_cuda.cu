@@ -57,6 +57,13 @@ uint8_t* g_stage = nullptr;
 size_t g_stage_bytes = 0;
 uint8_t* g_stage_pin = nullptr;
 
+// Batched-prefill scratch: the token gather list and the routing weights of one expert are HOST
+// arrays, so every batched launch copies them up first. One pair of buffers, reused expert by
+// expert: the stream runs the launches in order, so the copy of expert k+1 cannot race expert k.
+int32_t* g_d_sel = nullptr;
+float* g_d_w = nullptr;
+size_t g_batch_max = 0;
+
 constexpr int64_t kMaxDim = 16384;
 constexpr int kThreads = 256;
 
@@ -119,6 +126,38 @@ __global__ void matvec_kernel(const uint8_t* __restrict__ W, int64_t rows, int i
     if (threadIdx.x == 0) y[r] = red[0];
 }
 
+// ---------------------------------------------------------------- batched matmul kernel (prefill)
+// One block per (weight row, token) pair: same decode-on-the-fly math as matvec_kernel, but the T
+// tokens of a chunk are independent, so the launch is rows*T blocks and the GPU stops being latency
+// bound on a single 4096-element dot. `sel` is copied into device memory by matmul() (it is a host
+// array), and sel == nullptr means the identity gather.
+template <class Tr>
+__global__ void matmul_kernel(const uint8_t* __restrict__ W, int64_t rows, int in, int rb,
+                              const float* __restrict__ X, int T, const int32_t* __restrict__ sel,
+                              float* __restrict__ Y, int64_t x_stride, int64_t y_stride) {
+    const int64_t r = blockIdx.x;
+    const int t = (int) blockIdx.y;
+    if (r >= rows || t >= T) return;
+    if (in <= 0 || in % Tr::BE != 0 || (int64_t)(in / Tr::BE) * (int64_t) Tr::BB != (int64_t) rb) {
+        if (threadIdx.x == 0) Y[(int64_t) t * y_stride + r] = 0.f;
+        return;
+    }
+    const int32_t src = sel ? sel[t] : t;
+    const uint8_t* w = W + (size_t) r * (size_t) rb;
+    const float* x = X + (int64_t) src * x_stride;
+    float acc = 0.f;
+    for (int e = threadIdx.x; e < in; e += kThreads) acc += Tr::at(w, e) * x[e];
+    __shared__ float red[kThreads];
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    #pragma unroll
+    for (int s = kThreads / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) Y[(int64_t) t * y_stride + r] = acc;
+}
+
 // ---------------------------------------------------------------- MoE kernels
 // a = w_k * swiglu_clamped(g, u, limit). The routing weight is folded in here so the down projection needs
 // no scaling pass of its own. w_k is passed BY VALUE: p.w is a host array and must never be read here.
@@ -129,6 +168,37 @@ __global__ void swiglu_kernel(const float* __restrict__ g, const float* __restri
     float xa = g[i], ub = u[i];
     if (limit > 0.f) { xa = fminf(xa, limit); ub = fminf(fmaxf(ub, -limit), limit); }
     a[i] = w_k * (xa / (1.f + expf(-xa)) * ub);
+}
+
+// Batched MoE: one launch per expert covers ALL of that expert's tokens of the chunk. w is a DEVICE
+// array (n floats) copied up by experts_batch(), because p.w is host memory.
+__global__ void swiglu_batch_kernel(const float* __restrict__ g, const float* __restrict__ u,
+                                    float* __restrict__ a, int64_t n, int64_t ff, float limit,
+                                    const float* __restrict__ w) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n * ff) return;
+    const int64_t t = i / ff;
+    const float* gp = g + i;
+    const float* up = u + i;
+    float xa = *gp, ub = *up;
+    if (limit > 0.f) { xa = fminf(xa, limit); ub = fminf(fmaxf(ub, -limit), limit); }
+    a[i] = w[t] * (xa / (1.f + expf(-xa)) * ub);
+}
+
+// d_Y[sel[t]] += d_dn[t] for every t: the down projections of one expert, scattered back to their
+// token rows. sel is the same device array matmul_kernel reads.
+//
+// No atomics, deliberately. Within ONE expert a token appears at most once (a token routes to an
+// expert once), so this launch has no write conflicts at all; the experts are separate launches on
+// one stream, which run strictly in order. The sum therefore happens in expert order, exactly like
+// the CPU-emulated backend, instead of the arbitrary order atomicAdd would give.
+__global__ void scatter_add_kernel(const float* __restrict__ dn, const int32_t* __restrict__ sel,
+                                   int n, int64_t dim, float* __restrict__ Y) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (int64_t) n * dim) return;
+    const int64_t t = i / dim;
+    const int64_t c = i - t * dim;
+    Y[(int64_t) sel[t] * dim + c] += dn[i];
 }
 
 // d_y = sum_k tmp[k] in a fixed order: deterministic, and cheap (dim floats).
@@ -151,6 +221,28 @@ bool launch_mv(uint32_t type, const uint8_t* W, int64_t rows, int64_t in, const 
     if (in % Tr::BE != 0 || (int64_t)(in / Tr::BE) * (int64_t) Tr::BB != (int64_t) rb) return false;
     matvec_kernel<Tr><<<(unsigned) rows, kThreads>>>(W, rows, (int) in, (int) rb, d_x, d_y);
     return check(cudaGetLastError(), "matvec launch");
+}
+
+template <class Tr>
+bool launch_mm(uint32_t type, const uint8_t* W, int64_t rows, int64_t in, const float* d_X, int T,
+               const int32_t* d_sel, float* d_Y, int64_t x_stride, int64_t y_stride) {
+    const size_t rb = row_bytes(type, in);
+    if (!rb || rows <= 0 || in <= 0 || in > (1 << 30) || T <= 0) return false;
+    if (x_stride <= 0) x_stride = in;
+    if (y_stride <= 0) y_stride = rows;
+    if (in % Tr::BE != 0 || (int64_t)(in / Tr::BE) * (int64_t) Tr::BB != (int64_t) rb) return false;
+    // gridDim.y is capped at 65535, and a chunk can be bigger than that only for absurd contexts;
+    // splitting on the token axis keeps the result identical (each (row, token) pair is one block).
+    for (int t0 = 0; t0 < T; t0 += 65535) {
+        const int tn = T - t0 < 65535 ? T - t0 : 65535;
+        dim3 grid((unsigned) rows, (unsigned) tn);
+        matmul_kernel<Tr><<<grid, kThreads>>>(W, rows, (int) in, (int) rb,
+                                              d_X + (int64_t) t0 * x_stride, tn,
+                                              d_sel ? d_sel + t0 : nullptr,
+                                              d_Y + (int64_t) t0 * y_stride, x_stride, y_stride);
+        if (!check(cudaGetLastError(), "matmul launch")) return false;
+    }
+    return true;
 }
 
 /// Every ggml type this file has a kernel for. One table, so type_supported(), experts_supported() and
@@ -191,6 +283,15 @@ bool init(std::string& err) {
     if (!check(cudaMalloc((void**) &g_down_acc, (size_t) kMaxHit * kMaxDim * sizeof(float)), "alloc down scratch")) {
         err = "cannot allocate the MoE down-projection scratch"; g_down_acc = nullptr; return false;
     }
+    // Batched-prefill scratch: kMaxSel token indices + kMaxSel routing weights = 48 KiB. Small enough
+    // to always have, and without it matmul()/experts_batch() answer false rather than guess.
+    if (!check(cudaMalloc((void**) &g_d_sel, (size_t) kMaxSel * sizeof(int32_t)), "alloc batch sel")) {
+        err = "cannot allocate the batched-prefill scratch"; g_d_sel = nullptr; g_ready = false; return false;
+    }
+    if (!check(cudaMalloc((void**) &g_d_w, (size_t) kMaxSel * sizeof(float)), "alloc batch weights")) {
+        err = "cannot allocate the batched-prefill scratch"; g_d_w = nullptr; g_ready = false; return false;
+    }
+    g_batch_max = kMaxSel;
     g_ready = true;
     return true;
 }
@@ -257,6 +358,126 @@ bool matvec(uint32_t type, const uint8_t* W, int64_t rows, int64_t in, const flo
         case T_MXFP4:   return launch_mv<dqt::MXFP4T>(type, W, rows, in, d_x, d_y);
         default: return false;
     }
+}
+
+// The same switch, for the token-batched launch. One table here too, so a type can never be
+// matvec-able but not matmul-able.
+bool mm_dispatch(uint32_t type, const uint8_t* W, int64_t rows, int64_t in, const float* d_X, int T,
+                 const int32_t* d_sel, float* d_Y, int64_t x_stride, int64_t y_stride) {
+    switch (type) {
+        case T_F32:     return launch_mm<dqt::F32T>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_BF16:    return launch_mm<dqt::BF16T>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_Q8_0:    return launch_mm<dqt::Q8_0T>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_Q4_K:    return launch_mm<dqt::Q4_KT>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_Q5_K:    return launch_mm<dqt::Q5_KT>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_Q6_K:    return launch_mm<dqt::Q6_KT>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_IQ3_XXS: return launch_mm<dqt::IQ3_XXST>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_IQ2_XXS: return launch_mm<dqt::IQ2_XXST>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_IQ1_M:   return launch_mm<dqt::IQ1_MT>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        case T_MXFP4:   return launch_mm<dqt::MXFP4T>(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+        default: return false;
+    }
+}
+
+bool matmul(uint32_t type, const uint8_t* W, int64_t rows, int64_t in,
+            const float* d_X, int T, const int32_t* sel, float* d_Y, int64_t x_stride, int64_t y_stride) {
+    if (!g_ready || g_cuda_err || !supported(type)) return false;
+    if (rows <= 0 || in <= 0 || T <= 0 || T > kMaxSel) return false;
+    if (x_stride <= 0) x_stride = in;
+    if (y_stride <= 0) y_stride = rows;
+    const int32_t* d_sel = nullptr;
+    if (sel) {
+        if (!g_d_sel) return false;
+        if (!check(cudaMemcpy(g_d_sel, sel, (size_t) T * sizeof(int32_t), cudaMemcpyHostToDevice), "matmul sel H2D"))
+            return false;
+        d_sel = g_d_sel;
+    }
+    return mm_dispatch(type, W, rows, in, d_X, T, d_sel, d_Y, x_stride, y_stride);
+}
+
+// A host expert has to be copied up before the kernels can read it. The DEVICE side of that is free of
+// races: everything here runs on one stream, so the copy of expert k+1 is executed after expert k's
+// kernels have consumed their bytes. The HOST side is not: writing the pinned buffer again while the
+// DMA of the previous copy is still reading it would corrupt that transfer. Hence a small ring of
+// pinned slots, with a stream sync only when the ring wraps.
+constexpr int kStageRing = 4;
+uint8_t* g_batch_pin = nullptr;
+size_t g_batch_pin_slot = 0;   // bytes per slot
+int g_batch_pin_next = 0;
+
+bool ensure_batch_pin(size_t slot_bytes) {
+    if (g_batch_pin && g_batch_pin_slot >= slot_bytes) return true;
+    // The ring is grown, never shrunk: one allocation covers every layer of the model, and a free
+    // while a transfer is still in flight would corrupt it.
+    if (g_batch_pin) {
+        check(cudaStreamSynchronize(0), "batch ring sync before free");
+        cudaFreeHost(g_batch_pin);
+    }
+    g_batch_pin = nullptr;
+    g_batch_pin_slot = 0;
+    void* p = nullptr;
+    if (!check(cudaHostAlloc(&p, slot_bytes * kStageRing, cudaHostAllocDefault), "batch pinned ring")) return false;
+    g_batch_pin = (uint8_t*) p;
+    g_batch_pin_slot = slot_bytes;
+    g_batch_pin_next = 0;
+    return true;
+}
+
+bool experts_batch(const ExpBatch* e, int n_exp, uint32_t type_g, uint32_t type_u, uint32_t type_d,
+                   int64_t ff, int64_t dim, float swiglu_limit,
+                   const float* d_X, int T, float* d_g, float* d_u, float* d_a, float* d_dn, float* d_Y) {
+    if (n_exp <= 0) return true;
+    if (!g_ready || g_cuda_err) return false;
+    if (!supported(type_g) || !supported(type_u) || !supported(type_d)) return false;
+    if (!g_d_sel || !g_d_w) return false;
+    const size_t bg = row_bytes(type_g, dim) * (size_t) ff;
+    const size_t bu = row_bytes(type_u, dim) * (size_t) ff;
+    const size_t bd = row_bytes(type_d, ff) * (size_t) dim;
+    if (!bg || !bu || !bd) return false;
+
+    // d_Y is ACCUMULATED into (scatter_add does +=), so it has to start at zero. The caller only
+    // ever reads back the T rows it asked for, so exactly those are cleared.
+    if (T <= 0) return true;
+    if (!check(cudaMemsetAsync(d_Y, 0, (size_t) T * dim * sizeof(float)), "batch d_Y memset")) return false;
+
+    for (int ei = 0; ei < n_exp; ++ei) {
+        const ExpBatch& b = e[ei];
+        const int n = b.n;
+        if (n <= 0) continue;
+        if (n > kMaxSel || !b.tok || !b.w) return false;
+        uint8_t* gp = b.gate;
+        uint8_t* gu = b.up;
+        uint8_t* gd = b.down;
+        if (!gp) {   // host expert: stage it into the device pool, like experts_hit() does
+            if (!b.hg || !b.hu || !b.hd || !g_stage) return false;
+            if (g_stage_bytes < bg + bu + bd) return false;
+            if (!ensure_batch_pin(bg + bu + bd)) return false;
+            if (g_batch_pin_next == 0 && !check(cudaStreamSynchronize(0), "batch stage ring sync")) return false;
+            uint8_t* pin = g_batch_pin + (size_t) g_batch_pin_next * g_batch_pin_slot;
+            g_batch_pin_next = (g_batch_pin_next + 1) % kStageRing;
+            std::memcpy(pin, b.hg, bg);
+            std::memcpy(pin + bg, b.hu, bu);
+            std::memcpy(pin + bg + bu, b.hd, bd);
+            if (!check(cudaMemcpyAsync(g_stage, pin, bg + bu + bd, cudaMemcpyHostToDevice), "batch stage H2D"))
+                return false;
+            gp = g_stage; gu = g_stage + bg; gd = g_stage + bg + bu;
+        }
+        if (!check(cudaMemcpyAsync(g_d_sel, b.tok, (size_t) n * sizeof(int32_t), cudaMemcpyHostToDevice), "batch tok H2D"))
+            return false;
+        if (!check(cudaMemcpyAsync(g_d_w, b.w, (size_t) n * sizeof(float), cudaMemcpyHostToDevice), "batch w H2D"))
+            return false;
+
+        // gate/up read the chunk through the gather; the down projection reads d_a, which this same
+        // launch order has already filled for exactly those n rows.
+        if (!mm_dispatch(type_g, gp, ff, dim, d_X, n, g_d_sel, d_g, dim, ff)) return false;
+        if (!mm_dispatch(type_u, gu, ff, dim, d_X, n, g_d_sel, d_u, dim, ff)) return false;
+        swiglu_batch_kernel<<<(unsigned) (((int64_t) n * ff + 255) / 256), 256>>>(d_g, d_u, d_a, n, ff, swiglu_limit, g_d_w);
+        if (!check(cudaGetLastError(), "swiglu batch launch")) return false;
+        if (!mm_dispatch(type_d, gd, dim, ff, d_a, n, nullptr, d_dn, ff, dim)) return false;
+        scatter_add_kernel<<<(unsigned) (((int64_t) n * dim + 255) / 256), 256>>>(d_dn, g_d_sel, n, dim, d_Y);
+        if (!check(cudaGetLastError(), "scatter_add launch")) return false;
+    }
+    return true;
 }
 
 bool experts_hit(const ExpPtrs& p, uint32_t type_g, uint32_t type_u, uint32_t type_d, int64_t ff, int64_t dim,

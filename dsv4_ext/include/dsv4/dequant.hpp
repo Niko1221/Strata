@@ -33,4 +33,13 @@ void dequant_row(uint32_t type, const uint8_t* w, int64_t in, float* y);
 /// dot(w_row, x) with the row decoded on the fly. Returns 0 for unsupported types.
 float row_dot(uint32_t type, const uint8_t* w, const float* x, int64_t in);
 
+/// The prefill primitive: ONE decoded row, T dot products.
+///   y[k*y_stride] = dot(w_row, x + rows[k]*x_stride)   for k in [0,T)
+/// `rows` may be null, which means rows[k] = k (the contiguous case). Each block of the row is
+/// decoded once and then used for all T columns, which is exactly what a prefill of T tokens buys
+/// over T separate decodes: the weight decode, not the multiply, is what costs.
+/// With T == 1 and rows == null the result is bit-identical to row_dot().
+void row_dots(uint32_t type, const uint8_t* w, const float* x, int64_t x_stride, const int32_t* rows,
+              int T, int64_t in, float* y, int64_t y_stride);
+
 }  // namespace dsv4

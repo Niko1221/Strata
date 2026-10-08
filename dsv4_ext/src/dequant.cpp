@@ -6,6 +6,7 @@
 #include "dsv4/gguf_header.hpp"
 #include "dsv4/iq_tables.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -479,6 +480,53 @@ float row_dot(uint32_t type, const uint8_t* w, const float* x, int64_t in) {
         for (int j = 0; j < be; ++j) acc += (double) blk[j] * x[off + j];
     }
     return (float) acc;
+}
+
+// The prefill primitive. Same block walk and the same double accumulator per column as row_dot(), so
+// column k of a T-column call is BIT-IDENTICAL to row_dot() on that column: a batched prefill cannot
+// change the logits, it only decodes each weight block T times less often.
+void row_dots(uint32_t type, const uint8_t* w, const float* x, int64_t x_stride, const int32_t* rows,
+              int T, int64_t in, float* y, int64_t y_stride) {
+    if (in <= 0 || T <= 0 || !w || !x || !y) return;
+    const int be = dequant_block_elems(type);
+    if (be <= 0 || in % be != 0 || !dequant_supported(type)) return;
+    if (x_stride <= 0) x_stride = in;
+    if (y_stride <= 0) y_stride = 1;
+
+    // Small T is the decode case, and there the extra indirection of the batched loop costs more
+    // than it saves: hand it back to the plain row-by-row path.
+    if (T <= 2) {
+        for (int k = 0; k < T; ++k) {
+            const int32_t r = rows ? rows[k] : k;
+            y[(int64_t) k * y_stride] = row_dot(type, w, x + (int64_t) r * x_stride, in);
+        }
+        return;
+    }
+
+    const dq_blocks_fn fn = pick(type);
+    if (!fn) return;
+    alignas(64) float blk[QK_K];
+    alignas(64) double acc[64];
+    const int kstep = T <= 64 ? T : 64;   // the scratch is 64 columns wide; wider batches go in passes
+    const size_t bb = row_bytes(type, in) / (size_t) (in / be);
+    for (int k0 = 0; k0 < T; k0 += kstep) {
+        const int kn = std::min(kstep, T - k0);
+        const float* xp[64];
+        for (int k = 0; k < kn; ++k) {
+            const int32_t r = rows ? rows[k0 + k] : k0 + k;
+            xp[k] = x + (int64_t) r * x_stride;
+            acc[k] = 0;
+        }
+        const uint8_t* p = w;
+        for (int64_t off = 0; off < in; off += be, p += bb) {
+            fn(p, 1, blk);
+            for (int j = 0; j < be; ++j) {
+                const double v = blk[j];
+                for (int k = 0; k < kn; ++k) acc[k] += v * xp[k][off + j];
+            }
+        }
+        for (int k = 0; k < kn; ++k) y[(int64_t) (k0 + k) * y_stride] = (float) acc[k];
+    }
 }
 
 }  // namespace dsv4

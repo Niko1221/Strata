@@ -94,8 +94,14 @@ struct Comp {  // KV compressor state (model.py Compressor), decode-only
     std::vector<float> own;        // storage when cache is not shared with the attention kv buffer
 };
 
+// A layer's window ring is written at pos % win, so a chunk of T tokens would let token p see the
+// rows of tokens p+1..p+T-1. The snapshot below is what prevents that: the ring is copied aside
+// before the chunk is written, and an index whose slot now holds a FUTURE token is redirected into
+// the snapshot, which holds exactly what the token-by-token path would have read.
 struct Layer {
     int ratio = 0;
+    int snap_base = 0;      // row index in kvbuf where the pre-chunk window snapshot starts
+    std::vector<int> ring_pos;   // slot -> position of the token currently in it (-1 = never written)
     Tn attn_norm, q_a, q_a_norm, q_b, kv, kv_norm, o_a, o_b, sinks;
     Tn ffn_norm, gate_inp, exp_bias, tid2eid;
     Tn sh_gate, sh_up, sh_down;
@@ -103,7 +109,9 @@ struct Layer {
     Comp ac, ic;
     Tn i_q_b, i_proj;
     bool has_idx = false;
-    std::vector<float> kvbuf;      // [win + ctx/ratio + 1][hd]: ring window, then compressed entries
+    std::vector<float> kvbuf;      // [win][ncomp_max + win][hd]: ring, compressed entries, window snapshot
+    int ncomp_max = 0;
+    int max_idx = 0;              // widest attention index list one token can produce
     // routed experts
     Tn eg, eu, ed;
     size_t bg = 0, bu = 0, bd = 0, bpe = 0;     // bytes per expert: gate, up, down, total
@@ -178,6 +186,187 @@ struct Model::Impl {
     float *d_x = nullptr, *d_y = nullptr, *d_g = nullptr, *d_u = nullptr, *d_a = nullptr, *d_yh = nullptr;
     std::vector<void*> allocs;
     uint8_t* d_stage = nullptr;      // device pool MISS experts are staged through (see gpu::staging)
+    // ---- prefill scratch (see forward_chunk) ----
+    // A chunk of T tokens shares every weight row: the projections become [rows]x[in] times [T], and
+    // the MoE evaluates each routed expert ONCE for all the tokens of the chunk that picked it.
+    int pf_cap = 0;                  // tokens per chunk the scratch was sized for; 0 = no batching
+    int64_t pf_xcap = 0, pf_ycap = 0;   // widest input / output block the device scratch holds
+    float *d_pX = nullptr, *d_pY = nullptr;               // device activation in / out blocks
+    float *d_pg = nullptr, *d_pu = nullptr, *d_pa = nullptr, *d_pd = nullptr, *d_pYm = nullptr;
+    // host arena, sized once in load() for pf_cap tokens
+    std::vector<float> pf, pf_w;
+    std::vector<int32_t> pf_i;
+    std::vector<int> pf_ic;
+    std::vector<gpu::ExpBatch> pf_b;
+    float *h_h = nullptr, *h_hn = nullptr, *h_yv = nullptr, *h_nrm = nullptr;
+    float *h_qa = nullptr, *h_qr = nullptr, *h_q = nullptr, *h_kv = nullptr, *h_kvn = nullptr;
+    float *h_o = nullptr, *h_t = nullptr, *h_lg = nullptr, *h_mixes = nullptr, *h_pre = nullptr;
+    float *h_post = nullptr, *h_comb = nullptr, *h_acc = nullptr, *h_mg = nullptr, *h_mu = nullptr;
+    float *h_ma = nullptr, *h_md = nullptr, *h_e = nullptr, *h_x = nullptr, *h_xn = nullptr;
+    float *h_sg = nullptr, *h_su = nullptr, *h_sa = nullptr, *h_sy = nullptr;
+    float *h_w = nullptr, *h_wt = nullptr;
+    int32_t *h_attn_idx = nullptr; int *h_attn_n = nullptr;
+    int32_t *h_sel = nullptr, *h_tok = nullptr, *h_tk = nullptr;
+    int *h_cnt = nullptr, *h_off = nullptr, *h_at = nullptr, *h_eid = nullptr;
+    int pf_mix = 0, pf_gin = 0, pf_max_list = 0;
+    uint64_t pf_host_bytes = 0, pf_dev_bytes = 0;
+    // The device block d_pX holds whatever pf_up() last copied. Re-uploading the same bytes is pure
+    // PCIe waste, so the last upload is remembered - but ONLY until the next layer writes its
+    // activations, which is what pf_clear_note() is for. Forgetting to call it would hand a kernel a
+    // stale block, so it is called at the top of every block_batch().
+    const float* pf_note_host = nullptr;
+    size_t pf_note_bytes = 0;
+    /// Upload the used part of a [T][stride] activation block (in elements per row).
+    /// Returns the device pointer, or hx itself when the device cannot take it.
+    const float* pf_up(const float* hx, int64_t stride, int T, int64_t in) {
+        if (!o.gpu || !d_pX) return hx;
+        const size_t bytes = ((size_t) (T - 1) * stride + (size_t) in) * 4;
+        if (bytes > (size_t) pf_xcap * 4) return hx;
+        if (pf_note_host == hx && pf_note_bytes == bytes) return d_pX;
+        gpu::h2d(d_pX, hx, bytes);
+        pf_note_host = hx; pf_note_bytes = bytes;
+        return d_pX;
+    }
+    void pf_clear_note() { pf_note_host = nullptr; pf_note_bytes = 0; }
+    /// True when a batched matmul over this block can run on the device at all. y_stride is the
+    /// stride the CALLER wants its output rows at: the kernel writes them there directly, so no
+    /// repacking pass is needed on the host (and none of the caller's other rows get clobbered).
+    bool pf_dev(int64_t stride, int T, int64_t in, int64_t rows, int64_t y_stride) const {
+        return o.gpu && d_pX && d_pY && T > 0 && T <= pf_cap && T <= gpu::kMaxSel &&
+               (size_t) ((T - 1) * stride + in) * 4 <= (size_t) pf_xcap * 4 &&
+               (size_t) ((T - 1) * y_stride + rows) * 4 <= (size_t) pf_ycap * 4;
+    }
+    /// Host floats per token of a chunk, matching the arena layout in pf_alloc() exactly.
+    int64_t pf_per_token() const {
+        const int64_t nh_hd = (int64_t) c.n_head * hd;
+        return (int64_t) hc * dim * 2                      // h_h, h_hn
+             + (int64_t) dim * 6                           // yv, nrm, e, x, xn, acc
+             + (int64_t) c.q_lora * 2                      // q_a, q_r
+             + nh_hd * 2                                   // q, o
+             + (int64_t) hd * 2                            // kv, kv_norm
+             + (int64_t) c.o_groups * c.o_lora             // the o_a group scratch
+             + c.n_expert                                  // router logits
+             + (int64_t) pf_mix * 2 + hc * 2               // hyper-connections
+             + (int64_t) c.ff_exp * 6 + (int64_t) dim * 2; // shared expert + host expert buckets
+    }
+    /// The largest chunk that fits the memory this build is willing to spend on it.
+    int pf_pick(int want) const {
+        if (want <= 1) return 0;
+        int t = std::min(want, 4096);
+        const int64_t host_budget = (int64_t) 512 << 20;   // half a GiB of prefill arena, at most
+        while (t > 8 && (int64_t) t * pf_per_token() * 4 > host_budget) t /= 2;
+        return t;
+    }
+    /// Allocate the prefill arena. On the device the buffers are sized from pf_cap; if a cudaMalloc
+    /// fails the chunk is halved and retried, because a smaller chunk is still far better than none.
+    void pf_alloc() {
+        // The widest attention index list a token can produce, straight from the config: the window
+        // plus every compressed entry the context can hold. Computed here rather than from the Layer
+        // array so the arena can be sized BEFORE the layers allocate their kv buffers.
+        pf_max_list = win;
+        for (int l = 0; l < nrun; ++l) {
+            const int r = c.compress_ratios[(size_t) l];
+            if (r > 0) pf_max_list = std::max(pf_max_list, win + o.ctx / r + 1);
+        }
+        // An indexer layer can select idx_topk compressed entries whatever the context says.
+        pf_max_list = std::max(pf_max_list, win + c.idx_topk);
+        while (pf_cap > 0) {
+            const int T = pf_cap;
+            const int64_t nh_hd = (int64_t) c.n_head * hd;
+            // The widest row any batched matmul reads or writes, in elements. Both the input block
+            // and the output block are sized from it, so pf_dev() can never be handed a block that
+            // runs past either buffer.
+            int64_t max_span = (int64_t) hc * dim;                 // the residual streams
+            max_span = std::max(max_span, nh_hd);                  // q / o
+            max_span = std::max(max_span, (int64_t) c.o_groups * c.o_lora);
+            max_span = std::max(max_span, (int64_t) c.ff_exp);
+            max_span = std::max(max_span, (int64_t) dim);
+            max_span = std::max(max_span, (int64_t) c.q_lora);
+            max_span = std::max(max_span, (int64_t) c.n_expert);
+            max_span = std::max(max_span, (int64_t) pf_mix);
+            pf_xcap = (int64_t) (T - 1) * max_span + max_span;
+            pf_ycap = (int64_t) (T - 1) * max_span + max_span;
+            bool ok = true;
+            if (o.gpu && !gpu::is_emulated()) {
+                d_pX = (float*) galloc((size_t) pf_xcap * 4);
+                d_pY = (float*) galloc((size_t) pf_ycap * 4);
+                d_pg = (float*) galloc((size_t) T * c.ff_exp * 4);
+                d_pu = (float*) galloc((size_t) T * c.ff_exp * 4);
+                d_pa = (float*) galloc((size_t) T * c.ff_exp * 4);
+                d_pd = (float*) galloc((size_t) T * dim * 4);
+                d_pYm = (float*) galloc((size_t) T * dim * 4);
+                ok = d_pX && d_pY && d_pg && d_pu && d_pa && d_pd && d_pYm;
+            }
+            if (!ok) {
+                // Give the VRAM back before retrying smaller: galloc() counts every byte it hands
+                // out, and without the release the retry would only see a card that is fuller still.
+                for (float** pp : {&d_pX, &d_pY, &d_pg, &d_pu, &d_pa, &d_pd, &d_pYm}) {
+                    gfree(*pp);
+                    *pp = nullptr;
+                }
+                pf_cap /= 2;
+                continue;
+            }
+            // host arena
+            const int64_t n = hc * dim;
+            size_t at = 0;
+            auto take = [&](size_t k) { size_t base = at; at += k; return base; };
+            const size_t b_h = take((size_t) T * n), b_hn = take((size_t) T * n);
+            const size_t b_yv = take((size_t) T * dim), b_nrm = take((size_t) T * dim);
+            const size_t b_e = take((size_t) T * dim), b_x = take((size_t) T * dim), b_xn = take((size_t) T * dim);
+            const size_t b_acc = take((size_t) T * dim);
+            const size_t b_qa = take((size_t) T * c.q_lora), b_qr = take((size_t) T * c.q_lora);
+            const size_t b_q = take((size_t) T * nh_hd), b_o = take((size_t) T * nh_hd);
+            const size_t b_kv = take((size_t) T * hd), b_kvn = take((size_t) T * hd);
+            const size_t b_t = take((size_t) T * c.o_groups * c.o_lora);
+            const size_t b_lg = take((size_t) T * c.n_expert);
+            const size_t b_mix = take((size_t) T * pf_mix), b_comb = take((size_t) T * pf_mix);
+            const size_t b_pre = take((size_t) T * hc), b_post = take((size_t) T * hc);
+            const size_t b_sg = take((size_t) T * c.ff_exp), b_su = take((size_t) T * c.ff_exp);
+            const size_t b_sa = take((size_t) T * c.ff_exp), b_sy = take((size_t) T * dim);
+            const size_t b_mg = take((size_t) T * c.ff_exp), b_mu = take((size_t) T * c.ff_exp);
+            const size_t b_ma = take((size_t) T * c.ff_exp), b_md = take((size_t) T * dim);
+            pf.assign(at, 0.f);
+            auto P = [&](size_t b) { return pf.data() + b; };
+            h_h = P(b_h); h_hn = P(b_hn); h_yv = P(b_yv); h_nrm = P(b_nrm);
+            h_e = P(b_e); h_x = P(b_x); h_xn = P(b_xn); h_acc = P(b_acc);
+            h_qa = P(b_qa); h_qr = P(b_qr); h_q = P(b_q); h_kv = P(b_kv); h_kvn = P(b_kvn);
+            h_o = P(b_o); h_t = P(b_t); h_lg = P(b_lg);
+            h_mixes = P(b_mix); h_comb = P(b_comb); h_pre = P(b_pre); h_post = P(b_post);
+            h_sg = P(b_sg); h_su = P(b_su); h_sa = P(b_sa); h_sy = P(b_sy);
+            h_mg = P(b_mg); h_mu = P(b_mu); h_ma = P(b_ma); h_md = P(b_md);
+            pf_host_bytes = at * 4;
+            pf_dev_bytes = (size_t) (pf_xcap + pf_ycap + (size_t) T * c.ff_exp * 3 + (size_t) T * dim * 2) * 4;
+            // index / routing scratch. The attention index list is sized for the widest list a token
+            // can produce in ANY layer (window + compressed entries), and pf_max_list is the stride.
+            pf_i.assign((size_t) T * (c.n_expert_used * 2 + pf_max_list + 1), 0);
+            h_tok = pf_i.data();
+            h_sel = h_tok + (size_t) T * c.n_expert_used;
+            h_attn_idx = h_sel + (size_t) T * c.n_expert_used;
+            h_tk = h_attn_idx + (size_t) T * pf_max_list;
+            pf_ic.assign((size_t) T + (size_t) (c.n_expert + 1) * 3 + (size_t) c.n_expert, 0);
+            h_attn_n = pf_ic.data();
+            h_cnt = h_attn_n + T;
+            h_off = h_cnt + (c.n_expert + 1);
+            h_at = h_off + (c.n_expert + 1);
+            h_eid = h_at + (c.n_expert + 1);
+            pf_w.assign((size_t) T * c.n_expert_used * 2, 0.f);
+            h_w = pf_w.data();
+            h_wt = h_w + (size_t) T * c.n_expert_used;
+            pf_b.assign((size_t) c.n_expert, gpu::ExpBatch{});
+            chunk_routing.assign((size_t) T * (size_t) nrun * c.n_expert_used, -1);
+            return;
+        }
+        pf_cap = 0;
+        // Even with batching off, forward_chunk() may be asked for a whole prompt and the sequential
+        // fallback still has somewhere to put the per-token routing trace.
+        chunk_routing.assign((size_t) std::max(1, o.ctx) * (size_t) nrun * c.n_expert_used, -1);
+    }
+    /// Routing of every token of the last forward_chunk(): [t][layer*K + k]. Empty for a sequential
+    /// forward(). dsv4_run --dump-routing writes one row per token from this.
+    std::vector<int> chunk_routing;
+    int chunk_routing_n = 0;
+    size_t last_routing_size_ = 0;   // n_layer * n_expert_used, set with last_routing_p
     bool have_profile = false;
     uint64_t cache_clock = 0;                   // LRU clock of the MISS arenas
     std::vector<std::pair<int, int>> missed_now;      // (layer, expert) missed during the current token
@@ -188,10 +377,20 @@ struct Model::Impl {
         for (size_t i = 0; i < maps.size(); ++i) if (maps[i]) munmap((void*) maps[i], map_len[i]);
     }
     // vram_used counts every byte handed out by the device layer, so the residency plan can subtract the
+    // Sizes of the allocations in allocs[], index for index: the prefill arena has to give its VRAM
+    // back when it is resized down, and guessing at the size would corrupt the plan.
+    std::vector<size_t> alloc_sz;
+    // vram_used counts every byte handed out by the device layer, so the residency plan can subtract the
     // weights and scratch that are ALREADY on the card instead of guessing at them. On the CUDA backend
     // cudaMemGetInfo reports what the driver has left, not what this model still needs: without this the
     // planner hands out more expert slots than fit and the dpool allocation fails.
-    void* galloc(size_t n) { void* p = gpu::alloc(n); if (p) { allocs.push_back(p); vram_used += n; } return p; }
+    void* galloc(size_t n) { void* p = gpu::alloc(n); if (p) { allocs.push_back(p); alloc_sz.push_back(n); vram_used += n; } return p; }
+    void gfree(void* p) {
+        if (!p) return;
+        for (size_t k = 0; k < allocs.size(); ++k)
+            if (allocs[k] == p) { vram_used -= alloc_sz[k]; allocs.erase(allocs.begin() + (long) k); alloc_sz.erase(alloc_sz.begin() + (long) k); break; }
+        gpu::release(p);
+    }
     uint64_t vram_used = 0, vram_scratch = 0;
 
     Tn tn(const std::string& name, bool required, std::string& err) {
@@ -245,6 +444,56 @@ struct Model::Impl {
         cpu_mv(w.type, w.h + (size_t) row0 * w.rb, nrows, w.in, x, y);
     }
     bool warned_host_fallback = false;
+
+    // ------------------------------------------------------------ prefill: batched matmul
+    // Y[t*y_stride + r] = W_row_r . X[t*x_stride ..], for t in [0,T). Same math as mv(), over T tokens:
+    // the weight row is decoded once and dotted T times, which is the whole point of a batched prefill.
+    // X and Y are HOST buffers here; the device path copies the activation block up and back, which is
+    // kilobytes against the megabytes of weights a matvec() over the same tensor would move per token.
+    bool mvb(const Tn& w, const float* X, int64_t x_stride, int T, float* Y, int64_t y_stride,
+             int64_t row0 = 0, int64_t nrows = -1) {
+        if (T <= 0) return true;
+        if (nrows < 0) nrows = w.out;
+        if (x_stride <= 0) x_stride = w.in;
+        if (y_stride <= 0) y_stride = nrows;
+        if (o.gpu && w.d && pf_dev(x_stride, T, w.in, nrows, y_stride)) {
+            const float* dX = pf_up(X, x_stride, T, w.in);
+            // dX must really be the device block: pf_up falls back to the host pointer when the block
+            // does not fit, and handing that to a kernel would read host addresses as VRAM.
+            if (dX && dX != X && gpu::matmul(w.type, w.d + (size_t) row0 * w.rb, nrows, w.in, dX, T, nullptr, d_pY,
+                                  x_stride, y_stride)) {
+                // The kernel wrote row t at d_pY + t*y_stride, so the meaningful floats are exactly
+                // [0,nrows) of each row. Copying one flat span instead would also move the gaps
+                // between rows, which hold whatever an earlier matmul left there - and when
+                // y_stride > nrows those gaps are the neighbouring group's output.
+                for (int t = 0; t < T; ++t)
+                    gpu::d2h(Y + (size_t) t * y_stride, d_pY + (size_t) t * y_stride, (size_t) nrows * 4);
+                return true;
+            }
+            if (!warned_host_fallback) {
+                warned_host_fallback = true;
+                std::fprintf(stderr, "warning: no device kernel for ggml type %s (%s): those matmuls run on the host\n",
+                             ggml_type_str(w.type).c_str(), w.g ? w.g->name.c_str() : "?");
+            }
+        }
+        const size_t rb = row_bytes(w.type, w.in);
+        if (!rb) return false;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int64_t r = 0; r < nrows; ++r)
+            row_dots(w.type, w.h + (size_t) (row0 + r) * rb, X, x_stride, nullptr, T, w.in, Y + (size_t) r, y_stride);
+        return true;
+    }
+    // mvb() never gathers: the gathered expert path goes straight through row_dots()/experts_batch().
+
+    /// Row of the window ring that holds position `pos` as seen by a query at position `pos_q`.
+    /// A chunk writes the ring ahead of the queries that come later in the same chunk; when the slot
+    /// already holds a FUTURE token, the pre-chunk snapshot is the row the token-per-token path read.
+    int win_row(const Layer& y, int slot, int pos_q) const {
+        if (y.snap_base <= 0) return slot;
+        return y.ring_pos[(size_t) slot] <= pos_q ? slot : y.snap_base + slot;
+    }
 
     // ------------------------------------------------------------ expert sources / residency
     static ExpSrc packed(const Layer& l, const uint8_t* p) {
@@ -385,6 +634,26 @@ struct Model::Impl {
             if (!d_x || !d_y || !d_g || !d_u || !d_a || !d_yh) { err = "cannot allocate GPU scratch"; return false; }
             vram_scratch = vram_used - before_scratch;
         }
+        // ---- prefill scratch: sized from --prefill-chunk, shrunk to what fits below ----
+        pf_mix = (2 + hc) * hc;
+        pf_gin = c.n_head * hd / std::max(1, c.o_groups);
+        {
+            int want = o.prefill_chunk;
+            if (want > o.ctx) want = o.ctx;
+            if (want > gpu::kMaxSel) want = gpu::kMaxSel;
+            // The window ring is written at pos % win, so a chunk longer than the ring would need
+            // more than one snapshot to stay exact. Cap it at the window.
+            if (win > 0 && want > win) want = win;
+            pf_cap = pf_pick(want);
+        }
+        pf_alloc();
+        if (o.verbose) {
+            if (pf_cap > 0)
+                std::fprintf(stderr, "prefill: chunks of %d tokens | host arena %.1f MiB | device %.1f MiB\n",
+                             pf_cap, pf_host_bytes / 1048576.0, pf_dev_bytes / 1048576.0);
+            else
+                std::fprintf(stderr, "prefill: batching OFF (--prefill-chunk 0): one token per pass\n");
+        }
         embd = tn("token_embd.weight", true, err); outw = tn("output.weight", true, err); outnorm = tn("output_norm.weight", true, err);
         out_hc_fn = tn("output_hc_fn.weight", true, err); out_hc_base = tn("output_hc_base.weight", true, err); out_hc_scale = tn("output_hc_scale.weight", true, err);
         if (!err.empty()) return false;
@@ -412,7 +681,13 @@ struct Model::Impl {
             y.hc_ffn_fn = N("hc_ffn_fn.weight"); y.hc_ffn_base = N("hc_ffn_base.weight"); y.hc_ffn_scale = N("hc_ffn_scale.weight");
             y.eg = N("ffn_gate_exps.weight"); y.eu = N("ffn_up_exps.weight"); y.ed = N("ffn_down_exps.weight");
             if (!err.empty()) return false;
-            y.kvbuf.assign((size_t) (win + (y.ratio ? o.ctx / y.ratio + 1 : 0)) * hd, 0.f);
+            y.ncomp_max = y.ratio ? o.ctx / y.ratio + 1 : 0;
+            // [ring win][compressed ncomp_max][window snapshot win]: the last block only exists when
+            // prefill batching is on, and holds the ring as it looked before the current chunk.
+            y.max_idx = win + y.ncomp_max;
+            y.kvbuf.assign((size_t) (win + y.ncomp_max + (pf_cap > 0 ? win : 0)) * hd, 0.f);
+            y.snap_base = pf_cap > 0 ? win + y.ncomp_max : 0;
+            y.ring_pos.assign((size_t) win, -1);
             if (y.ratio) {
                 if (!init_comp(y.ac, y.ratio, hd, false, N("attn_compressor_kv.weight"), N("attn_compressor_gate.weight"), N("attn_compressor_ape.weight"), N("attn_compressor_norm.weight"), y.kvbuf.data() + (size_t) win * hd) && err.empty())
                     err = "compressor tensor shapes do not match ratio " + std::to_string(y.ratio) + " at layer " + std::to_string(l);
@@ -432,6 +707,9 @@ struct Model::Impl {
             y.slot_of.assign((size_t) c.n_expert, -1); y.ram_idx.assign((size_t) c.n_expert, -1); y.freq.assign((size_t) c.n_expert, 0);
             // A VRAM slot only pays off if experts_hit() can run this layer's three matrices on the device.
             y.gpu_experts = o.gpu && gpu::experts_supported(y.eg.type, y.eu.type, y.ed.type);
+            // hc_*_fn is deliberately NOT uploaded: hc_half() runs hc_pre() per token, which reads
+            // the host weights and keeps the exact (double) rounding of the sequential path. Uploading
+            // 130 MiB of them would only take VRAM away from the experts that do go to the device.
             for (Tn* t : {&y.q_a, &y.q_b, &y.kv, &y.o_a, &y.o_b, &y.gate_inp, &y.sh_gate, &y.sh_up, &y.sh_down, &y.ac.wkv, &y.ac.wg, &y.i_q_b, &y.ic.wkv, &y.ic.wg}) upload(*t);
         }
         upload(outw);
@@ -626,6 +904,7 @@ struct Model::Impl {
 
     void reset() {
         for (Layer& y : L) {
+            std::fill(y.ring_pos.begin(), y.ring_pos.end(), -1);
             for (Comp* cp : {&y.ac, &y.ic}) if (cp->ratio) {
                 cp->kvs.assign((size_t) cp->coff * cp->ratio * cp->coff * cp->d, 0.f);
                 cp->scs.assign((size_t) cp->coff * cp->ratio * cp->coff * cp->d, -INFINITY);
@@ -823,6 +1102,308 @@ struct Model::Impl {
     }
     int32_t* last_routing_p = nullptr;
 
+    // ============================================================ prefill: one chunk of T tokens
+    // The token-per-token path above re-decodes every weight row once per token. Over a chunk of T
+    // prompt tokens the same row is needed T times, so the batched path decodes it once and dots it
+    // against T activation rows (row_dots / gpu::matmul), and evaluates each routed expert ONCE for
+    // all the tokens of the chunk that picked it. The arithmetic per token is untouched: row_dots()
+    // walks the same blocks with the same double accumulator as row_dot(), so the logits match.
+    void attention_batch(int l, const float* X, int T, int pos0, float* out) {
+        Layer& y = L[(size_t) l];
+        const int nh = c.n_head;
+        const bool yarn = y.ratio > 0;
+        const float* cosT = yarn ? cos_y.data() : cos_p.data();
+        const float* sinT = yarn ? sin_y.data() : sin_p.data();
+        // The ring is written at pos % win, so a later token of the chunk would see an earlier slot
+        // already holding a FUTURE token. Snapshot the ring first; win_row() redirects those reads.
+        if (y.snap_base > 0)
+            std::memcpy(y.kvbuf.data() + (size_t) y.snap_base * hd, y.kvbuf.data(), (size_t) win * hd * 4);
+
+        mvb(y.q_a, X, dim, T, h_qa, c.q_lora);
+        for (int t = 0; t < T; ++t)
+            rmsnorm(h_qa + (size_t) t * c.q_lora, y.q_a_norm.f(), c.rms_eps, c.q_lora, h_qr + (size_t) t * c.q_lora);
+        mvb(y.q_b, h_qr, c.q_lora, T, h_q, nh * hd);
+        for (int t = 0; t < T; ++t) {
+            const int pos = pos0 + t;
+            const float* cs = cosT + (size_t) pos * (rd / 2);
+            const float* sn = sinT + (size_t) pos * (rd / 2);
+            for (int hh = 0; hh < nh; ++hh) {
+                float* qh = h_q + (size_t) t * nh * hd + (size_t) hh * hd;
+                rmsnorm(qh, nullptr, c.rms_eps, hd, qh);
+                rotary(qh, hd, rd, cs, sn, false);
+            }
+        }
+        mvb(y.kv, X, dim, T, h_kv, hd);
+        for (int t = 0; t < T; ++t) {
+            const int pos = pos0 + t;
+            const float* cs = cosT + (size_t) pos * (rd / 2);
+            const float* sn = sinT + (size_t) pos * (rd / 2);
+            float* kvn = h_kvn + (size_t) t * hd;
+            rmsnorm(h_kv + (size_t) t * hd, y.kv_norm.f(), c.rms_eps, hd, kvn);
+            rotary(kvn, hd, rd, cs, sn, false);
+            if (o.qat_sim) fp8_sim(kvn, hd - rd, 64);
+            const int slot = pos % win;
+            std::memcpy(&y.kvbuf[(size_t) slot * hd], kvn, (size_t) hd * 4);
+            y.ring_pos[(size_t) slot] = pos;
+        }
+        // Compressor: strictly in position order, exactly as the sequential path.
+        if (y.ratio)
+            for (int t = 0; t < T; ++t) comp_step(y.ac, X + (size_t) t * dim, pos0 + t, cosT, sinT);
+
+        const float scale = 1.f / std::sqrt((float) hd);
+        std::vector<int> idx, tmp;   // reused across the chunk: this loop runs T times per layer
+        for (int t = 0; t < T; ++t) {
+            const int pos = pos0 + t;
+            int n = 0;
+            int r, cc;
+            window_topk(win, 1, pos, idx, r, cc);
+            // -1 is a masked slot: it stays -1, exactly as the sequential path leaves it.
+            for (int s : idx) h_attn_idx[(size_t) t * pf_max_list + n++] = s < 0 ? -1 : win_row(y, s, pos);
+            if (y.ratio) {
+                if (y.has_idx) tmp = indexer(y, X + (size_t) t * dim, h_qr + (size_t) t * c.q_lora, pos,
+                                             cosT + (size_t) pos * (rd / 2), sinT + (size_t) pos * (rd / 2), cosT, sinT);
+                else compress_topk(y.ratio, 1, pos, win, tmp, r, cc);
+                for (int s : tmp) h_attn_idx[(size_t) t * pf_max_list + n++] = s;
+            }
+            h_attn_n[t] = n;
+            sparse_attn_token(h_q + (size_t) t * nh * hd, nh, hd, y.kvbuf.data(),
+                              h_attn_idx + (size_t) t * pf_max_list, n, y.sinks.f(), scale,
+                              h_o + (size_t) t * nh * hd);
+        }
+        for (int t = 0; t < T; ++t) {
+            const int pos = pos0 + t;
+            const float* cs = cosT + (size_t) pos * (rd / 2);
+            const float* sn = sinT + (size_t) pos * (rd / 2);
+            for (int hh = 0; hh < nh; ++hh) rotary(h_o + (size_t) t * nh * hd + (size_t) hh * hd, hd, rd, cs, sn, true);
+        }
+        const int G = c.o_groups;
+        for (int g = 0; g < G; ++g)
+            mvb(y.o_a, h_o + (size_t) g * pf_gin, nh * hd, T, h_t + (size_t) g * c.o_lora, G * c.o_lora,
+                (int64_t) g * c.o_lora, c.o_lora);
+        mvb(y.o_b, h_t, G * c.o_lora, T, out, dim);
+    }
+
+    /// True when this build can run a batched MoE layer on the device at all.
+    bool pf_device_experts() const { return o.gpu && !gpu::is_emulated() && d_pYm != nullptr; }
+
+    void moe_batch(int l, const float* X, int T, const int32_t* toks, float* out) {
+        Layer& y = L[(size_t) l];
+        const int K = c.n_expert_used, ff = c.ff_exp, E = c.n_expert;
+        mvb(y.gate_inp, X, dim, T, h_lg, E);
+        const bool hash = l < c.n_hash_layers;
+        const Score fn = c.gating_func == 1 ? Score::Softmax : c.gating_func == 2 ? Score::Sigmoid : Score::SqrtSoftplus;
+        std::fill(h_cnt, h_cnt + E, 0);
+        for (int t = 0; t < T; ++t) {
+            int32_t idx[16]; float w[16];
+            gate_route(h_lg + (size_t) t * E, E, K, fn, (!hash && y.exp_bias) ? y.exp_bias.f() : nullptr,
+                       hash ? (const int32_t*) y.tid2eid.h + (size_t) toks[t] * K : nullptr, c.exp_w_scale, idx, w);
+            for (int k = 0; k < K; ++k) {
+                h_tok[(size_t) t * K + k] = idx[k];
+                h_wt[(size_t) t * K + k] = w[k];
+                ++h_cnt[idx[k]];
+                y.freq[(size_t) idx[k]]++;
+            }
+            // The routing trace of the LAST token of the chunk is what --dump-routing and the
+            // adaptive swaps read, so it is kept in the same place the sequential path leaves it.
+            // Every token's routing also goes into chunk_routing, which lets a chunked prefill write
+            // the same per-token trace file the token-per-token path does.
+            for (int k = 0; k < K; ++k) {
+                chunk_routing[(size_t) t * (size_t) nrun * K + (size_t) l * K + k] = idx[k];
+                if (t == T - 1) last_routing_p[(size_t) l * K + k] = idx[k];
+            }
+        }
+        // Bucket the chunk's (token, expert) pairs by expert: h_sel/h_w become one contiguous run per
+        // expert, which is exactly what experts_batch() and row_dots() want.
+        int run = 0;
+        for (int e = 0; e < E; ++e) { h_off[e] = run; run += h_cnt[e]; }
+        h_off[E] = run;
+        std::copy(h_off, h_off + E + 1, h_at);
+        for (int t = 0; t < T; ++t)
+            for (int k = 0; k < K; ++k) {
+                const int e = h_tok[(size_t) t * K + k];
+                const int p = h_at[e]++;
+                h_sel[p] = t;
+                h_w[p] = h_wt[(size_t) t * K + k];
+            }
+
+        int nexp = 0;
+        for (int e = 0; e < E; ++e) {
+            if (!h_cnt[e]) continue;
+            gpu::ExpBatch& b = pf_b[(size_t) nexp];
+            int s = (y.slots > 0) ? y.slot_of[(size_t) e] : -1;
+            if (s < 0 && y.slots > 0) {   // admit into a free slot, as the sequential path does
+                for (int q = 0; q < y.slots; ++q)
+                    if (y.occ[(size_t) q] < 0) { upload_slot(y, q, e); ++st->admits; s = q; break; }
+            }
+            if (s >= 0) {
+                uint8_t* base = y.dpool + (size_t) s * y.bpe;
+                b.gate = base; b.up = base + y.bg; b.down = base + y.bg + y.bu;
+                b.hg = b.hu = b.hd = nullptr;
+                st->hits += (uint64_t) h_cnt[e];
+            } else {
+                missed_now.push_back({l, e});
+                ExpSrc src = src_miss(y, e);
+                b.gate = b.up = b.down = nullptr;
+                b.hg = src.g; b.hu = src.u; b.hd = src.d;
+                st->misses += (uint64_t) h_cnt[e];
+            }
+            b.tok = h_sel + h_off[e];
+            b.w = h_w + h_off[e];
+            b.n = h_cnt[e];
+            h_eid[nexp] = e;
+            ++nexp;
+        }
+        std::fill(h_acc, h_acc + (size_t) T * dim, 0.f);
+        const float lim = c.swiglu_clamp_exp[(size_t) l];
+        bool ok = false;
+        if (pf_device_experts() && y.gpu_experts && nexp > 0) {
+            // X is the same block the gate_inp matmul above just uploaded, so this is usually free.
+            const float* dX = pf_up(X, dim, T, dim);
+            if (dX && dX != X) {   // pf_up falls back to the host pointer: a kernel must not read it
+                ok = gpu::experts_batch(pf_b.data(), nexp, y.eg.type, y.eu.type, y.ed.type, ff, dim, lim,
+                                        dX, T, d_pg, d_pu, d_pa, d_pd, d_pYm);
+                if (ok) gpu::d2h(h_acc, d_pYm, (size_t) T * dim * 4);
+            }
+        }
+        if (!ok) {
+            // No device kernels for this layer: run the same buckets on the host, where row_dots()
+            // still decodes each expert row once for all of its tokens.
+            ok = true;
+            for (int ei = 0; ei < nexp; ++ei) {
+                const gpu::ExpBatch& b = pf_b[(size_t) ei];
+                // A resident expert's device pointer cannot be read on the host: re-read it from its
+                // source (RAM arena, LRU arena or mmap), which is the same bytes that were uploaded.
+                const ExpSrc s2 = b.gate ? src(y, h_eid[ei]) : src_miss(y, h_eid[ei]);
+                if (!s2.g || !s2.u || !s2.d) { ok = false; break; }
+                host_expert(y, b, s2.g, s2.u, s2.d, ff, lim, X);
+            }
+            if (!ok) {   // last resort: the exact sequential path, token by token
+                for (int t = 0; t < T; ++t) moe(l, X + (size_t) t * dim, toks[t], out + (size_t) t * dim);
+                return;
+            }
+        }
+        // shared expert, batched
+        mvb(y.sh_gate, X, dim, T, h_sg, ff);
+        mvb(y.sh_up, X, dim, T, h_su, ff);
+        for (int t = 0; t < T; ++t)
+            swiglu_clamped(h_sg + (size_t) t * ff, h_su + (size_t) t * ff, ff, c.swiglu_clamp_shexp[(size_t) l],
+                           h_sa + (size_t) t * ff);
+        mvb(y.sh_down, h_sa, ff, T, h_sy, dim);
+        for (size_t i = 0; i < (size_t) T * dim; ++i) out[i] = h_acc[i] + h_sy[i];
+    }
+
+    /// One expert, all of the chunk's tokens that routed to it, on the host. Each of the three
+    /// matrices is walked once for the whole bucket instead of once per token.
+    void host_expert(Layer& y, const gpu::ExpBatch& b, const uint8_t* g, const uint8_t* u, const uint8_t* d,
+                     int ff, float lim, const float* X) {
+        const int n = b.n;
+        const size_t rb_g = row_bytes(y.eg.type, dim), rb_u = row_bytes(y.eu.type, dim), rb_d = row_bytes(y.ed.type, ff);
+        if (!rb_g || !rb_u || !rb_d) return;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int r = 0; r < ff; ++r) {
+            row_dots(y.eg.type, g + (size_t) r * rb_g, X, dim, b.tok, n, dim, h_mg + (size_t) r, ff);
+            row_dots(y.eu.type, u + (size_t) r * rb_u, X, dim, b.tok, n, dim, h_mu + (size_t) r, ff);
+        }
+        for (int t = 0; t < n; ++t) {
+            swiglu_clamped(h_mg + (size_t) t * ff, h_mu + (size_t) t * ff, ff, lim, h_ma + (size_t) t * ff);
+            for (int i = 0; i < ff; ++i) h_ma[(size_t) t * ff + i] *= b.w[t];
+        }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int r = 0; r < dim; ++r)
+            row_dots(y.ed.type, d + (size_t) r * rb_d, h_ma, ff, nullptr, n, ff, h_md + (size_t) r, dim);
+        // Same expert-order accumulation the device path uses; within one expert a token appears once.
+        for (int t = 0; t < n; ++t) {
+            const int32_t tk = b.tok[t];
+            for (int i = 0; i < dim; ++i) h_acc[(size_t) tk * dim + i] += h_md[(size_t) t * dim + i];
+        }
+    }
+
+    /// One half of a block for the whole chunk: hc_pre per token (24 rows, cheap, and it keeps the
+    /// exact summation order of the sequential path), then the batched body, then hc_post.
+    void hc_half(int l, int T, bool ffn, float* nrm_out) {
+        Layer& y = L[(size_t) l];
+        const Tn& fn = ffn ? y.hc_ffn_fn : y.hc_attn_fn;
+        const Tn& sc = ffn ? y.hc_ffn_scale : y.hc_attn_scale;
+        const Tn& bs = ffn ? y.hc_ffn_base : y.hc_attn_base;
+        const Tn& an = ffn ? y.ffn_norm : y.attn_norm;
+        for (int t = 0; t < T; ++t) {
+            float* yv = h_yv + (size_t) t * dim;
+            hc_pre(h_h + (size_t) t * hc * dim, hc, dim, fn.f(), sc.f(), bs.f(), c.rms_eps,
+                   c.hc_sinkhorn_iters, c.hc_eps, yv, h_post + (size_t) t * hc, h_comb + (size_t) t * pf_mix);
+            rmsnorm(yv, an.f(), c.rms_eps, dim, nrm_out + (size_t) t * dim);
+        }
+        // nrm_out is the block every following matmul reads, and it has just been rewritten: any
+        // device copy of it from before this call is stale.
+        pf_clear_note();
+    }
+    void hc_join(int T, const float* a) {
+        for (int t = 0; t < T; ++t)
+            hc_post(a + (size_t) t * dim, h_h + (size_t) t * hc * dim, h_post + (size_t) t * hc,
+                    h_comb + (size_t) t * pf_mix, hc, dim, h_hn + (size_t) t * hc * dim);
+        std::swap(h_h, h_hn);   // h_h always holds the running residual streams of this chunk
+    }
+
+    void block_batch(int l, int T, const int32_t* toks, int pos0) {
+        hc_half(l, T, false, h_nrm);
+        attention_batch(l, h_nrm, T, pos0, h_x);
+        hc_join(T, h_x);
+        hc_half(l, T, true, h_nrm);
+        moe_batch(l, h_nrm, T, toks, h_x);
+        hc_join(T, h_x);
+    }
+
+    int forward_chunk(const int* tokens, int T, int pos0, std::vector<float>* logits) {
+        if (T <= 0) return 0;
+        if (pf_cap <= 0 || T > pf_cap) {   // no batched scratch: fall back to the sequential path.
+            // end_token() is deliberately NOT called here: the caller closes the chunk, and closing
+            // it twice would count every token twice.
+            chunk_routing_n = 0;
+            std::fill(chunk_routing.begin(), chunk_routing.end(), -1);
+            const size_t row = last_routing_size_;
+            const size_t room = row ? chunk_routing.size() / row : 0;   // tokens the trace can hold
+            for (int t = 0; t < T; ++t) {
+                std::vector<float>* lg = (t + 1 == T) ? logits : nullptr;
+                forward(tokens[t], pos0 + t, lg);
+                // Keep the per-token trace the same shape the batched path produces, for as many
+                // tokens as the arena can hold (a caller may ask for more than pf_cap).
+                if ((size_t) t < room)
+                    for (size_t i = 0; i < row; ++i)
+                        chunk_routing[(size_t) t * row + i] = last_routing_p[i];
+            }
+            chunk_routing_n = (int) std::min<size_t>((size_t) T, room);
+            return T;
+        }
+        // The chunk trace starts empty; a layer that runs the sequential fallback leaves -1 behind.
+        chunk_routing_n = 0;
+        std::fill(chunk_routing.begin(), chunk_routing.end(), -1);
+        auto t0 = Clock::now();
+        const int n = hc * dim;
+        for (int t = 0; t < T; ++t) {
+            float* e = h_e + (size_t) t * dim;
+            dequant_row(embd.type, embd.h + (size_t) tokens[t] * embd.rb, dim, e);
+            for (int j = 0; j < hc; ++j) std::memcpy(h_h + (size_t) t * n + (size_t) j * dim, e, (size_t) dim * 4);
+        }
+        for (int t = 0; t < T; ++t) h_tk[t] = tokens[t];
+        for (int l = 0; l < nrun; ++l) block_batch(l, T, h_tk, pos0);
+        chunk_routing_n = T;
+        // Only the last token of the chunk needs logits: it is the one that starts the answer.
+        if (logits) {
+            std::vector<float> x((size_t) dim);
+            hc_head(h_h + (size_t) (T - 1) * n, hc, dim, out_hc_fn.f(), out_hc_scale.f(), out_hc_base.f(),
+                    c.rms_eps, c.hc_eps, x.data());
+            logits->assign((size_t) c.vocab, 0.f);
+            mv(outw, x.data(), logits->data());
+        }
+        st->total_s += secs(t0, Clock::now());
+        ++st->prefill_chunks;
+        st->prefill_tokens += (uint64_t) T;
+        return T;
+    }
+
     // ------------------------------------------------------------ block / forward
     void block(int l, std::vector<float>& hres, int token, int pos) {
         Layer& y = L[(size_t) l];
@@ -851,7 +1432,10 @@ struct Model::Impl {
         st->total_s += secs(t0, Clock::now());
     }
 
-    void end_token() {
+    void end_token() { end_chunk(1); }
+
+    /// Called once per chunk (a chunk of one token is exactly the old end_token).
+    void end_chunk(int n) {
         if (o.adapt_swaps > 0 && o.gpu) {
             std::stable_sort(missed_now.begin(), missed_now.end(), [&](const std::pair<int, int>& a, const std::pair<int, int>& b) {
                 return L[(size_t) a.first].freq[(size_t) a.second] > L[(size_t) b.first].freq[(size_t) b.second]; });
@@ -866,7 +1450,7 @@ struct Model::Impl {
             }
         }
         missed_now.clear();
-        ++st->tokens;
+        st->tokens += (uint64_t) (n > 0 ? n : 1);
     }
 
     bool save_profile(std::string& err) const {
@@ -907,11 +1491,27 @@ bool Model::load(const std::vector<std::string>& s, const RunOpts& o, std::strin
     if (!p_->load(s, o, err)) return false;
     last_routing.assign((size_t) p_->c.n_layer * p_->c.n_expert_used, -1);
     p_->last_routing_p = last_routing.data();
+    p_->last_routing_size_ = last_routing.size();
     return true;
 }
 void Model::reset() { p_->reset(); }
-void Model::forward(int token, int pos, std::vector<float>* logits) { p_->forward(token, pos, logits); }
+void Model::forward(int token, int pos, std::vector<float>* logits) {
+    p_->forward(token, pos, logits);
+    // A single token has no chunk trace: last_routing already carries it, as it always did.
+    chunk_routing_.clear();
+    chunk_routing_n_ = 0;
+}
+int Model::forward_chunk(const int* tokens, int n, int pos0, std::vector<float>* logits) {
+    const int done = p_->forward_chunk(tokens, n, pos0, logits);
+    // The per-token routing trace of the chunk, handed out so --dump-routing writes the same rows
+    // the token-per-token path writes.
+    chunk_routing_.assign(p_->chunk_routing.begin(), p_->chunk_routing.end());
+    chunk_routing_n_ = p_->chunk_routing_n;
+    return done;
+}
+int Model::max_chunk() const { return p_->pf_cap; }
 void Model::end_token() { p_->end_token(); }
+void Model::end_chunk(int n) { p_->end_chunk(n); }
 bool Model::save_profile(std::string& err) const { return p_->save_profile(err); }
 void Model::selfcheck() const { p_->selfcheck(); }
 uint64_t Model::model_hash() const { return p_->model_hash; }

@@ -144,6 +144,7 @@ int serve_loop(Model& m, const RunOpts& o, const std::vector<int>& eos_ids) {
     std::printf("INFO n_expert_used=%d\n", c.n_expert_used);
     std::printf("INFO vocab=%d\n", (int) c.vocab);
     std::printf("INFO device=%s\n", o.gpu ? (gpu::is_emulated() ? "cpu-emulated" : "cuda") : "cpu");
+    std::printf("INFO prefill_chunk=%d\n", m.max_chunk());
     // One request at a time: no batch slots, so server.py keeps its FIFO (batch stays 0).
     // "stop" says a STOP line is honoured, which the LineReader below does between tokens.
     std::printf("READY %d stop\n", o.ctx);
@@ -212,19 +213,27 @@ int serve_loop(Model& m, const RunOpts& o, const std::vector<int>& eos_ids) {
         const auto t0 = std::chrono::steady_clock::now();
         int pos = 0;
         bool stopped = false;
-        // Prefill: one PP per chunk. server.py's silence watchdog (#481) needs a line often enough and the
-        // Monitor shows the progress; a chunk of 8 keeps both happy without flooding the pipe.
-        const size_t chunk = 8;
-        for (size_t i = 0; i < ids.size(); ++i) {
-            const bool last = i + 1 == ids.size();
-            m.forward(ids[i], pos, last ? &logits : nullptr);   // logits only for the token that starts the answer
-            m.end_token();
-            ++pos;
-            if (last || (i + 1) % chunk == 0) {
+        // Prefill runs in chunks of m.max_chunk() tokens: every weight row an expert holds is decoded
+        // once for the whole chunk instead of once per token, which is what makes a long prompt cost
+        // less than the same number of separate forwards. A PP line is still printed every 8 tokens so
+        // server.py's silence watchdog (#481) stays happy and the Monitor keeps showing progress.
+        const int bchunk = m.max_chunk();
+        const size_t report = 8;
+        size_t since_report = 0;
+        for (size_t i = 0; i < ids.size(); ) {
+            const size_t left = ids.size() - i;
+            const int n = (bchunk > 1 && left > 1) ? (int) std::min<size_t>(left, (size_t) bchunk) : 1;
+            m.forward_chunk(ids.data() + i, n, pos, n == (int) left ? &logits : nullptr);
+            m.end_chunk(n);
+            i += (size_t) n;
+            pos += n;
+            since_report += (size_t) n;
+            if (i == ids.size() || since_report >= report) {
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                const double rate = (double) (i + 1) * 1000.0 / std::max(ms, 1e-9);
-                std::printf("PP %zu %zu %.1f %.2f\n", i + 1, ids.size(), ms, rate);
+                const double rate = (double) i * 1000.0 / std::max(ms, 1e-9);
+                std::printf("PP %zu %zu %.1f %.2f\n", i, ids.size(), ms, rate);
                 std::fflush(stdout);
+                since_report = 0;
             }
             std::string junk;
             while (in.try_next(junk)) {            // a STOP during the prompt: end the request at once
