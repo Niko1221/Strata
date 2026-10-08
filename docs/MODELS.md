@@ -51,7 +51,7 @@ A card with more VRAM is faster, because more of the model fits on the GPU: an R
 RX 9060 XT, RX 6900 XT) are in [AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201).
 
 Every PC is different: `START-HERE.bat --calibrate` measures a few engine settings on yours and keeps the fastest
-(about 5-10 minutes; on the PC above it made the Coder 7% faster; NVIDIA cards for now). Measured Strata on your own
+(about 15-30 minutes, longer on a slow card; on the PC above it made the Coder 7% faster; NVIDIA cards for now). Measured Strata on your own
 PC? See [Community benchmark results](COMMUNITY_BENCHMARKS.md) for a report template and how to share your results
 in a pull request.
 

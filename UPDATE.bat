@@ -50,6 +50,7 @@ rem All of it in one block: cmd reads a .bat file while it runs it, and the git 
         )
         call git checkout -q -B %%BR%% origin/main
         if errorlevel 1 (
+          call git branch -D %%BK%% >nul 2>nul
           echo.
           echo  Could not move to the new history ^(the reason is above^): nothing was updated. By hand:
           echo    git checkout -B main origin/main

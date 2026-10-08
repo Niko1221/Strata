@@ -569,7 +569,7 @@ class LayerSplit(unittest.TestCase):
         self.assertIsNone(code, out)
         self.assertTrue(started)
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--pack", "p", "--kv", "int8", "--remote-expert-opt"])   # 0.1.39b: #578
+        self.assertEqual(cfg["args"], ["--pack", "p", "--kv", "int8"])   # #1447: no helper cache
         self.assertIn("no RAM budget", out)
 
     def test_start_with_gpus_without_the_ram_is_asked(self):

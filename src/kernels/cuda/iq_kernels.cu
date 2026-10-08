@@ -2323,11 +2323,11 @@ __global__ void s26_swiglu_q8_1_kernel(const float* __restrict__ gate, const flo
         amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
         sum += __shfl_xor_sync(0xffffffffu, sum, o);
     }
-    const float d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const int8_t q = q8_1_quant(xi, d, amax);
     const long long ib = i / 32, iqs = i % 32;
     y[ib].qs[iqs] = q;
-    if (iqs == 0) y[ib].ds = make_half2(d, sum);
+    if (iqs == 0) y[ib].ds = q8_1_ds(d, sum);   // #606: clamped scale/sum (the S26 path bypassed the finite helper)
 }
 template<bool LT, bool LX, int RG, int RD, bool SL = false, bool FQ = false, bool TS = false, int BD = 0>
 void s26_launch_l(const NativeExpertLayout& L, int64_t cap_groups, cudaStream_t s, const unsigned long long* grp_ptr,
@@ -2812,7 +2812,23 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
 }
 
 
+// The AMD layouts below (STRATA_EXP_MODE) also build for CUDA: Volta takes mode 8 by default (exp_mode), every
+// other CUDA card keeps mode 0, the CUDA layout above.
+#if defined(STRATA_HIP_GFX906) || !defined(__HIPCC__)
+#define STRATA_EXP_LAYOUTS 1
+#else
+#define STRATA_EXP_LAYOUTS 0
+#endif
 #if defined(STRATA_HIP_GFX906)
+constexpr int kExpModeDefault = 7;
+constexpr int kExpFallback = 2;   // modes 5-8 on a format without an LDS kernel: R2
+constexpr bool kExpLds16 = false; // IQ2_XXS gate/up: R2 as measured on gfx906
+#else
+constexpr int kExpModeDefault = 0;
+constexpr int kExpFallback = 0;   // ... the CUDA layout (V100, IQ2_XXS gate/up: R2 183 us vs 113)
+constexpr bool kExpLds16 = true;  // IQ2_XXS gate/up in LDS too
+#endif
+#if STRATA_EXP_LAYOUTS
 // ---- AMD layouts for the grouped native experts (STRATA_EXP_MODE; 0 = the CUDA one above).
 // 1 (W64): a row per 64-lane wavefront - 4x the wavefronts, ~1-2 calls per lane, a 64-lane butterfly.
 // 2 (R2):  a 32-lane logical warp computes TWO rows in one loop - two independent load chains in flight.
@@ -2826,7 +2842,11 @@ __device__ __forceinline__ float row_dot64(const uint8_t* row, const block_q8_1*
         s += F::dot(row, x + kbx * (F::qk / 32), kbx, iqs);
     }
 #pragma unroll
+#if defined(__HIPCC__)
     for (int o = 32; o > 0; o >>= 1) s += __shfl_xor(s, o, 64);
+#else
+    __trap();   // a 64-lane wavefront: mode 1 is gfx906's only
+#endif
     return s;
 }
 template<int TY>
@@ -2979,6 +2999,7 @@ __global__ void __launch_bounds__(256) native_down_amd_kernel(const unsigned lon
 // output is bitwise the mode-2 one.
 template<int TY> struct GridOf;
 template<> struct GridOf<22> { using T = uint64_t; static constexpr int N = 1024; __device__ static const T* src() { return iq2s_grid; } };
+template<> struct GridOf<16> { using T = uint64_t; static constexpr int N = 256; __device__ static const T* src() { return iq2xxs_grid; } };
 template<> struct GridOf<18> { using T = uint32_t; static constexpr int N = 256; __device__ static const T* src() { return iq3xxs_grid; } };
 template<> struct GridOf<21> { using T = uint32_t; static constexpr int N = 512; __device__ static const T* src() { return iq3s_grid; } };
 template<> struct GridOf<23> { using T = uint32_t; static constexpr int N = 1; __device__ static const T* src() { return iq3s_grid; } };   // IQ4_XS: no grid
@@ -3089,6 +3110,39 @@ template<int SG> struct DotG<21, SG> { __device__ static __forceinline__ float f
     }
     sumi *= 1 + 2 * ((bq3->scales[iqs / 4] >> ((iqs << 1) & 0x04)) & 0x0F);
     const float d = __half2float(bq3->d) * __low2float(bq8_1[iqs / 2].ds);
+    return d * sumi;
+} };
+
+// IQ2_XXS: vec_dot_iq2_xxs_q8_1 with the grid in LDS - the same integers, the same floats
+template<int SG> struct DotG<16, SG> { __device__ static __forceinline__ float f(const void* vbq, const block_q8_1* bq8_1, int kbx, int iqs,
+                                                      const uint64_t* grid) {
+    const block_iq2_xxs* bq2 = (const block_iq2_xxs*) vbq + kbx;
+    const int q2 = get_int_b2(bq2->qs, iqs);
+    const uint8_t* aux8 = (const uint8_t*) &q2;
+    const uint32_t aux32 = get_int_b2(bq2->qs, iqs + 1);
+    int sumi = 0;
+#pragma unroll
+    for (int k0 = 0; k0 < 8; k0 += 2) {
+        const uint2 grid_pos = *(const uint2*) (grid + aux8[k0 / 2]);
+        const int u0 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 0);
+        const int u1 = get_int_b4(bq8_1[iqs / 2].qs, k0 + 1);
+        if constexpr (SG == 1) {
+            const uint32_t v = (aux32 >> (7 * k0 / 2)) & 0x7F, sg = v | ((__popc(v) & 1) << 7);
+            const int m0 = nib_mask(sg), m1 = nib_mask(sg >> 4);
+            sumi = ggml_cuda_dp4a((int) grid_pos.x ^ m0, u0, sumi);
+            sumi = ggml_cuda_dp4a((int) grid_pos.y ^ m1, u1, sumi);
+            sumi -= ggml_cuda_dp4a(m1, u1, ggml_cuda_dp4a(m0, u0, 0));
+        } else {
+            const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
+            const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+            sumi = ggml_cuda_dp4a((int) __vsub4(grid_pos.x ^ signs0, signs0), u0, sumi);
+            sumi = ggml_cuda_dp4a((int) __vsub4(grid_pos.y ^ signs1, signs1), u1, sumi);
+        }
+    }
+    const int ls = aux32 >> 27 | 1;
+    sumi = sumi * ls / 8;
+    const float d = __half2float(bq2->d) * __low2float(bq8_1[iqs / 2].ds);
     return d * sumi;
 } };
 
@@ -3348,16 +3402,34 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     }
 }
 
-int g_exp_mode = -1;   // native_expert_set_mode (the bench); -1 = STRATA_EXP_MODE, default 7
+int g_exp_mode = -1;   // native_expert_set_mode (the bench); -1 = STRATA_EXP_MODE, else the card's default
 int exp_mode() {
-    static const int m = [] { const char* v = std::getenv("STRATA_EXP_MODE"); return v ? std::atoi(v) : 7; }();
-    return g_exp_mode >= 0 ? g_exp_mode : m;
+    static const int m = [] { const char* v = std::getenv("STRATA_EXP_MODE"); return v ? std::atoi(v) : -1; }();
+    if (g_exp_mode >= 0) return g_exp_mode;
+    if (m >= 0) return m;
+#if defined(STRATA_HIP_GFX906)
+    return kExpModeDefault;
+#else
+    // Volta (sm_70): mode 8, the grid and the group's activations in shared memory with SwiGLU + q8_1 fused
+    // (V100-SXM2, a verify window's VRAM call: 227 -> 159 us); every other CUDA card keeps the CUDA layout
+    static int per_dev[64];   // 0 unknown, else mode + 1
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return kExpModeDefault;
+    if (!per_dev[dev]) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        const char* sm70 = std::getenv("STRATA_SM70_TABLE");   // PR 1401: Volta's mode 8 is opt-in until confirmed on a V100
+        per_dev[dev] = 1 + (major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0 ? 8 : kExpModeDefault);
+    }
+    return per_dev[dev] - 1;
+#endif
 }
 #endif
 int g_exp_phase = 0;   // the bench: 0 all, 1 gate/up + swiglu + quantize only, 2 down only
 
 void native_expert_set_mode(int mode, int phase) {
-#if defined(STRATA_HIP_GFX906)
+#if STRATA_EXP_LAYOUTS
     g_exp_mode = mode;
 #else
     (void) mode;
@@ -3416,16 +3488,23 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const int64_t gy = (v1 || grid_groups <= 0 || grid_groups > cap_groups) ? cap_groups : grid_groups;
     const int gu_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_embd == 2560 && gu_split(L.gu_type)) ? 16 : GU_ROWS;
     const dim3 ggu((unsigned) ((2 * L.n_ff + gu_rows - 1) / gu_rows), (unsigned) gy);
+#if STRATA_EXP_LAYOUTS
 #if defined(STRATA_HIP_GFX906)
     const int em0 = exp_mode();
+#else
+    // CUDA: the AMD layouts launch a block row per possible group, so a call that strides (a verify window's PCIe
+    // call, grid_groups 1..cap) keeps the CUDA layout: V100, 0 groups 11.3 vs 6.5 us, 1 group of 2 29.6 vs 21.3
+    const int em0 = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
 #endif
-#if defined(STRATA_HIP_GFX906)
-    const bool fused_gu = em0 == 8 && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
+#endif
+#if STRATA_EXP_LAYOUTS
+    const bool fused_gu = em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
                           L.n_ff % 32 == 0;
     if (fused_gu && g_exp_phase != 2) {
         const dim3 gl((unsigned) (L.n_ff / 32), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
         switch (L.gu_type) {
+            case 16: native_gu_fused_kernel<16><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 18: native_gu_fused_kernel<18><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 21: native_gu_fused_kernel<21><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
             case 23: native_gu_fused_kernel<23><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
@@ -3437,19 +3516,20 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     if (g_exp_phase != 2) {
 #endif
-#if defined(STRATA_HIP_GFX906)
-    const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
+#if STRATA_EXP_LAYOUTS
+    const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
     if (lds_gu) {
         const dim3 gl((unsigned) ((2 * L.n_ff + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
         switch (L.gu_type) {
+            case 16: if (em0 >= 7) native_gu_lds_kernel<16, 1, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else if (em0 == 6) native_gu_lds_kernel<16, 1><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else native_gu_lds_kernel<16, 0><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
             case 18: if (em0 >= 7) native_gu_lds_kernel<18, 1, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else if (em0 == 6) native_gu_lds_kernel<18, 1><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else native_gu_lds_kernel<18, 0><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
             case 21: if (em0 >= 7) native_gu_lds_kernel<21, 1, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else if (em0 == 6) native_gu_lds_kernel<21, 1><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else native_gu_lds_kernel<21, 0><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
             case 23: if (em0 >= 7) native_gu_lds_kernel<23, 1, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else native_gu_lds_kernel<23, 1><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
             default: if (em0 >= 7) native_gu_lds_kernel<22, 1, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else if (em0 == 6) native_gu_lds_kernel<22, 1><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); else native_gu_lds_kernel<22, 0><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
         }
     } else {
-    const int em = exp_mode() >= 5 ? 2 : exp_mode();
+    const int em = em0 >= 5 ? kExpFallback : em0;
     const dim3 ggu_amd((unsigned) ((2 * L.n_ff + (em == 1 ? 3 : em == 4 ? 31 : 15)) / (em == 1 ? 4 : em == 4 ? 32 : 16)), (unsigned) cap_groups);
 #define STRATA_GU_AMD(T) \
     case T: if (em == 1) native_gu_amd_kernel<T, 1><<<ggu_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); \
@@ -3472,7 +3552,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #undef STRATA_GU
         default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
     }
-#if defined(STRATA_HIP_GFX906)
+#if STRATA_EXP_LAYOUTS
     }
 #endif
     check("native_expert_grouped/gu");
@@ -3497,7 +3577,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (g_exp_phase == 1) return;
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
-#if defined(STRATA_HIP_GFX906)
+#if STRATA_EXP_LAYOUTS
     if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
@@ -3506,7 +3586,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         check("native_expert_grouped/down");
         return;
     }
-    const int em = exp_mode() >= 5 ? 2 : exp_mode();
+    const int em = em0 >= 5 ? kExpFallback : em0;
     const dim3 gd_amd((unsigned) ((L.n_embd + (em == 1 ? 3 : em == 4 ? 31 : 15)) / (em == 1 ? 4 : em == 4 ? 32 : 16)), (unsigned) cap_groups);
 #define STRATA_D_AMD(T) \
     case T: if (em == 1) native_down_amd_kernel<T, 1><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); \

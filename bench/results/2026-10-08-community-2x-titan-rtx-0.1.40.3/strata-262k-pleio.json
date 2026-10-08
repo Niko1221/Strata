@@ -47,7 +47,7 @@
  "gpus_asked": true,
  "layer_split": "auto",
  "host": "0.0.0.0",
- "api_key": "shrisha",
+ "api_key": "<your-key>",
  "vision": {
   "exe": "/mnt/1TB/src/Strata/engine/strata-vision",
   "mmproj": "/mnt/1TB/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
