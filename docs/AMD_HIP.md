@@ -422,7 +422,10 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   the directory, from which it takes the file of its own rocBLAS build) and runs those solutions in place of rocBLAS's
   choice, the default kernel for every shape without a row. Solution indices are valid for one architecture and one
   rocBLAS build (the full version string, `5.6.0.8d1ae90e` for ROCm 10.0.0's), and the engine refuses any other
-  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu); setup
+  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured
+  on an RX 6900 XT. Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
+  indices are valid on every gfx1030 - but have fewer CUs or other clocks, so their own table may pick differently;
+  `tune_rocblas` makes one in about 5 minutes ([Tuning table](#tuning-table)), and a report of what it changed is welcome. Setup
   points the engine at the directory when a table for the card's architecture exists, and the engine's log says
   `rocBLAS tuning enabled (... rows ...)` or why not. Measured on the 2x RX 6900 XT machine above (one card, #835 +
   this, `STRATA_PREFILL_TIMING=1`, temperature 0, the same answers with and without): a 799-token prompt's GPU time

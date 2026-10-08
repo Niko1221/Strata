@@ -1,6 +1,7 @@
 # rocBLAS solution indices for the prompt path's FP16-out GEMMs; valid for this architecture and rocBLAS build only
 # rows: type N K ldy T solution   (type f16o: FP16 in, FP16 out, FP32 compute; Gemm::f16_inplace)
 # solution: rocBLAS's solution index, or `default` where its own choice measured best at that bucket
+# measured on an RX 6900 XT (80 CUs); another gfx1030 card can make its own with tools/hip/tune_rocblas
 STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e
 f16o 10240 2560 10240 256 -1086327703   # 2.35815 ms -> 0.347774 ms
 f16o 10240 2560 10240 512 -1086327703   # 4.93049 ms -> 0.674375 ms
