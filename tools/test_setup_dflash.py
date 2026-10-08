@@ -110,6 +110,38 @@ class DrafterChoice(unittest.TestCase):
             self.assertNotIn("dflash_quant", new)
             self.assertNotIn("dflash_source", new)
 
+    def test_speculation_off_menu_and_saved_configuration(self):
+        with patch.object(setup, "say"), patch.object(setup, "ask", return_value="3") as ask:
+            self.assertEqual(setup.choose_drafter(None, None, None, False), ("none", "original"))
+            self.assertEqual(ask.call_count, 1)
+        args = setup.drafter_args(None, None)
+        for flag in ("--mtp", "--dflash"):
+            self.assertNotIn(flag, args)
+        for flag in ("--suffix-draft", "--lookup-chain"):
+            self.assertEqual(args[args.index(flag) + 1], "0")
+        with tempfile.TemporaryDirectory() as folder:
+            cfg = Path(folder)/"strata-iq3_xxs.json"
+            cfg.write_text(json.dumps({"args": args, "drafter": "none"}))
+            saved = setup.choices_from_config(cfg)
+            self.assertEqual(saved["drafter"], "none")
+            self.assertIsNone(saved["dflash"])
+            self.assertIsNone(saved["dflash_quant"])
+            self.assertEqual(setup.choose_drafter(saved["drafter"], saved["dflash"], saved["dflash_quant"], True),
+                             ("none", "original"))
+            cfg.write_text(json.dumps({"args": setup.drafter_args(None, "mtp/rt")}))
+            saved = setup.choices_from_config(cfg)
+            self.assertEqual(saved["drafter"], "mtp")
+            self.assertIsNone(saved["dflash_quant"])
+            self.assertEqual(setup.choose_drafter(saved["drafter"], saved["dflash"], saved["dflash_quant"], True),
+                             ("mtp", "original"))
+        for path, quant in (("auto", None), (None, "q4")):
+            with patch.object(setup, "fail", side_effect=ValueError):
+                with self.assertRaises(ValueError): setup.choose_drafter("none", path, quant, True)
+        old = {"dflash": "draft.gguf", "dflash_source": "auto", "dflash_quant": "q4", "draft_vocab": "en"}
+        new = {"drafter": "none", "args": args}
+        setup.carry_over(old, new)
+        for key in old: self.assertNotIn(key, new)
+
     def test_manual_conversion_and_cache_reuse(self):
         with tempfile.TemporaryDirectory() as folder:
             data = Path(folder)
