@@ -980,6 +980,13 @@ that floor or assume that freed allocations have reached the OS. Pinned prefixes
 stay intact, including their order and tie preference. Unknown RAM telemetry or an unknown allocation estimate
 does not evict anything. The usual admission check still runs before copying state.
 
+With this option the HTTP server also allows up to 30 seconds for physical RAM accounting to catch up after
+cache reclamation. Only an unpublished `memory` refusal from the SAVE RAM preflight is retried, at most three
+times, when measured available RAM reaches the reported estimate plus the original floor and 2 MiB for rounding.
+The same live engine process and service FIFO are held throughout; a process change, death, unknown telemetry
+or missing estimate ends the wait. This does not unload a model or trim another process's working set. Persistent
+pressure still returns the last refusal. The wait is outside the engine's reported `save_ms`.
+
 This can trade later prefix-cache hits for room to save. Released caches stay released even if admission or file
 I/O later fails; the current tokens, images, steering and live device state are unchanged. It cannot guarantee a
 SAVE under arbitrary memory pressure. With the option off, or enough RAM at the first probe, cache retention and

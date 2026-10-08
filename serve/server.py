@@ -603,6 +603,7 @@ class StrataEngine:
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False):
         self.spawn = (exe, list(args), cwd, log, env)   # to start it again after it died (issue #27)
+        self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
@@ -2702,7 +2703,11 @@ class Service:
                                        else "restoring a session", started=time.time(), first_token=None,
                                        prompt_tokens=None, generated=None, max_tokens=None)
                 try:
-                    r = self.engine.session_file(action, path)
+                    if action == 'save' and getattr(self.engine, 'session_save_reclaim', False):
+                        from serve.session_save_retry import session_file
+                        r = session_file(self, action, path, SessionRefused)
+                    else:
+                        r = self.engine.session_file(action, path)
                 except SessionRefused as e:
                     body = error(e.status, str(e))
                     body[1]["error"]["kind"] = e.kind
