@@ -246,6 +246,65 @@ class SamplerTests(unittest.TestCase):
         ps.process_iter.side_effect = RuntimeError("sensor error")
         self.assertFalse(sampler.sample(11)["complete"])
 
+    def test_windows_bulk_uses_fresh_monotonic_interval_without_per_pid_queries(self):
+        processes = [process(101, cpu=0, rss=9 * GIB)]
+        sampler, ps = self.sampler(processes)
+        bulk = mock.Mock()
+        sampler._bulk = bulk
+        bulk.sample.return_value = SimpleNamespace(processes={101: processes[0].info}, wall_time=1000,
+                                                    monotonic_time=10)
+        self.assertFalse(sampler.sample(1000)["complete"])
+        processes[0] = process(101, cpu=2, rss=9 * GIB)
+        # Wall time advanced two seconds but actual counter interval is one.
+        bulk.sample.return_value = SimpleNamespace(processes={101: processes[0].info}, wall_time=1002,
+                                                    monotonic_time=11)
+        result = sampler.sample(1002)
+        self.assertEqual(result, {"complete": True, "cpu_percent": 50, "rss_bytes": 9 * GIB})
+        ps.process_iter.assert_not_called()
+
+    def test_windows_bulk_exact_creation_identity_prevents_rounded_pid_reuse(self):
+        sampler, _ = self.sampler([])
+        sampler._bulk = mock.Mock()
+        old = process(101, created=1000, cpu=.25, create_time_ticks=10000000001).info
+        new = process(101, created=1000, cpu=.75, create_time_ticks=10000000002).info
+        sampler._bulk.sample.return_value = SimpleNamespace(processes={101: old}, wall_time=1001,
+                                                             monotonic_time=10)
+        sampler.sample(1001)
+        sampler._bulk.sample.return_value = SimpleNamespace(processes={101: new}, wall_time=1002,
+                                                             monotonic_time=11)
+        self.assertFalse(sampler.sample(1002)["complete"])
+
+    def test_windows_bulk_failure_or_staleness_requires_new_fallback_baseline(self):
+        for stale in (False, True):
+            with self.subTest(stale=stale):
+                processes = [process(101)]
+                sampler, ps = self.sampler(processes)
+                sampler._bulk = mock.Mock()
+                sampler._bulk.sample.return_value = SimpleNamespace(processes={101: processes[0].info},
+                                                                    wall_time=0, monotonic_time=10)
+                sampler.sample(0)
+                if stale:
+                    sampler._bulk.sample.return_value = SimpleNamespace(processes={}, wall_time=-10, monotonic_time=11)
+                else:
+                    sampler._bulk.sample.side_effect = OSError("sensor unavailable")
+                self.assertFalse(sampler.sample(1)["complete"])
+                self.assertTrue(sampler.sample(2)["complete"])
+                self.assertEqual(ps.process_iter.call_count, 2)
+
+    def test_windows_bulk_descendants_and_reused_parent_identity(self):
+        sampler, ps = self.sampler([])
+        processes = [process(101, ppid=300, created=1, create_time_ticks=10, rss=2 * GIB),
+                     process(300, created=2, create_time_ticks=20),
+                     process(301, ppid=300, created=3, create_time_ticks=30, rss=9 * GIB)]
+        sampler._bulk = mock.Mock()
+        for now in (10, 11):
+            sampler._bulk.sample.return_value = SimpleNamespace(processes={p.pid: p.info for p in processes},
+                                                                wall_time=now, monotonic_time=now)
+            result = sampler.sample(now, exclude_pids=(300,))
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["rss_bytes"], 2 * GIB)
+        ps.process_iter.assert_not_called()
+
 
 class TelemetryWorkloadTests(unittest.TestCase):
     def telemetry(self):

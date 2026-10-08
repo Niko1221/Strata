@@ -133,6 +133,19 @@ class WorkloadSampler:
         self.ps = ps
         self._previous = {}
         self._last_sample = None
+        self._last_clock = self._last_source = None
+        self._bulk = None
+        # Fake psutil providers used by tests keep the portable path. Importing
+        # this optional sensor never affects Linux or unsupported Windows ABIs.
+        if os.name == "nt" and getattr(ps, "__name__", None) == "psutil":
+            try:
+                try:
+                    from .windows_process_snapshot import WindowsProcessSnapshot
+                except ImportError:
+                    from windows_process_snapshot import WindowsProcessSnapshot
+                self._bulk = WindowsProcessSnapshot()
+            except (ImportError, OSError, AttributeError):
+                pass
 
     @staticmethod
     def unavailable():
@@ -141,25 +154,39 @@ class WorkloadSampler:
     def sample(self, now, exclude_pids=()):
         if self.ps is None or not _number(now):
             self._previous, self._last_sample = {}, None
+            self._last_clock = self._last_source = None
             return self.unavailable()
         complete, processes = True, {}
+        source, clock_now = "psutil", now
         started = time.monotonic()
         try:
             cores = self.ps.cpu_count(logical=True)
             if not _number(cores) or cores < 1:
                 raise ValueError("CPU count unavailable")
-            for index, proc in enumerate(self.ps.process_iter(attrs=list(self._ATTRS), ad_value=None)):
-                if index >= self.MAX_PROCESSES or time.monotonic() - started > self.MAX_SCAN_SECONDS:
-                    complete = False
-                    break
-                info = proc.info
-                pid = info.get("pid")
-                if isinstance(pid, bool) or not isinstance(pid, int):
-                    complete = False
-                    continue
-                processes[pid] = info
+            if self._bulk is not None:
+                try:
+                    snapshot = self._bulk.sample(self.MAX_PROCESSES, self.MAX_SCAN_SECONDS)
+                    if (not _number(snapshot.wall_time) or not _number(snapshot.monotonic_time)
+                            or abs(snapshot.wall_time - now) > MAX_SAMPLE_GAP):
+                        raise ValueError("native process snapshot is stale")
+                    processes, now, clock_now = snapshot.processes, snapshot.wall_time, snapshot.monotonic_time
+                    source = "windows_bulk"
+                except Exception:  # noqa: BLE001 - unavailable native counters use conservative fallback
+                    pass
+            if source == "psutil":
+                for index, proc in enumerate(self.ps.process_iter(attrs=list(self._ATTRS), ad_value=None)):
+                    if index >= self.MAX_PROCESSES or time.monotonic() - started > self.MAX_SCAN_SECONDS:
+                        complete = False
+                        break
+                    info = proc.info
+                    pid = info.get("pid")
+                    if isinstance(pid, bool) or not isinstance(pid, int):
+                        complete = False
+                        continue
+                    processes[pid] = info
         except Exception:  # noqa: BLE001 - optional process sensors must never stop telemetry
             self._previous, self._last_sample = {}, None
+            self._last_clock = self._last_source = None
             return self.unavailable()
         excluded = set(exclude_pids) | {os.getpid()}
         names = {}
@@ -174,8 +201,8 @@ class WorkloadSampler:
         for pid, info in processes.items():
             parent = info.get("ppid")
             parent_info = processes.get(parent)
-            created = info.get("create_time")
-            parent_created = parent_info.get("create_time") if parent_info else None
+            created = info.get("create_time_ticks", info.get("create_time"))
+            parent_created = parent_info.get("create_time_ticks", parent_info.get("create_time")) if parent_info else None
             # Do not attach a child to an unrelated process reusing its old PPID.
             if _number(created) and _number(parent_created) and parent_created > created:
                 continue
@@ -186,7 +213,7 @@ class WorkloadSampler:
                 if pid not in excluded:
                     excluded.add(pid)
                     pending.append(pid)
-        elapsed = now - self._last_sample if self._last_sample is not None else None
+        elapsed = clock_now - self._last_clock if self._last_clock is not None and source == self._last_source else None
         advancing = elapsed is not None and 0 < elapsed <= MAX_SAMPLE_GAP
         complete = complete and advancing
         previous, cpu, rss = {}, 0.0, 0
@@ -211,7 +238,7 @@ class WorkloadSampler:
                 continue
             rss += resident
             total = user + system
-            identity = (pid, created)
+            identity = (pid, info.get("create_time_ticks", created))
             previous[identity] = total
             baseline = self._previous.get(identity)
             if advancing and baseline is None:
@@ -226,4 +253,5 @@ class WorkloadSampler:
                 continue
             cpu += (total - baseline) / elapsed / cores * 100
         self._previous, self._last_sample = previous, now
+        self._last_clock, self._last_source = clock_now, source
         return {"complete": complete, "cpu_percent": min(100.0, max(0.0, cpu)), "rss_bytes": rss}
