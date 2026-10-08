@@ -64,6 +64,18 @@ class CoAdaptiveTests(unittest.TestCase):
         c = self.controller()
         self.assertEqual(self.settle(c, cpu=60, gpu_util=100)["mode"], "yield_cpu")
 
+    def test_low_capacity_without_attributed_compute_does_not_inflate_reserve(self):
+        c = self.controller()
+        self.assertEqual(self.settle(c, free_gpu=240, gpu_util=100)["mode"], "balanced")
+        self.assertEqual(c.limits(), (4, 256))
+
+    def test_capacity_pressure_cancels_cpu_promotion_without_claiming_gpu_work(self):
+        c = self.controller()
+        self.settle(c, cpu=65)
+        c.observe(reading(10, cpu=65, free_gpu=240), 10)
+        self.assertEqual(c.mode, "balanced")
+        self.assertEqual(c.limits(), (4, 256))
+
     def test_missing_stale_or_replayed_sensor_cannot_authorize_route(self):
         c = self.controller()
         self.settle(c, cpu=60)

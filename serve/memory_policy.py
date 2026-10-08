@@ -136,7 +136,12 @@ class MemoryPolicy:
         startup_allowance = 0 if loaded else self.overhead
         resident = max(1.0, min(self.cap, free_ram + arena_gib - headroom - startup_allowance))
         reserve = self.reserve_floor
-        if loaded:
+        if loaded and self.mode == "live" and self.fixed_resource_limits and self.reclaim_gpu_headroom:
+            # MEMORY consumes an absolute running free-memory target. Adding a
+            # deficit to the previous startup fitting reserve compounds it on
+            # every ACK, over-evicts the cache and can invent an unreachable floor.
+            reserve = self.reserve_floor
+        elif loaded:
             reserve = self.current["vram_reserve_mib"]
             free_vram = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
             desired_free = (self.reserve_floor if self.fixed_resource_limits else
@@ -369,7 +374,9 @@ class MemoryPolicy:
         free_vram = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
         pressure = (free_ram < self.headroom or free_vram < self.reserve_floor
                     or self.current["vram_reserve_mib"] < self.reserve_floor)
-        shrink = pressure and (ram_delta <= -1 or vram_delta >= 32)
+        absolute_live = self.mode == "live" and self.reclaim_gpu_headroom
+        shrink = pressure and (ram_delta <= -1 or vram_delta >= 32 or
+                               absolute_live and free_vram < self.reserve_floor)
         # Use raw headroom as well as the rounded budget: rounding cannot earn
         # a two-GiB expansion from slightly less safe space.
         ram_grow = (ram_delta >= 2 and free_ram - self.headroom >= 2) or (
@@ -389,7 +396,8 @@ class MemoryPolicy:
         if self.pressure_since is not None and stamp - self.pressure_since >= self.pressure_duration:
             # Reclamation must not grow the other cache, even after retargeting.
             plan["resident_budget_gib"] = min(plan["resident_budget_gib"], self.current["resident_budget_gib"])
-            plan["vram_reserve_mib"] = max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"])
+            plan["vram_reserve_mib"] = (max(self.reserve_floor, int(free_vram)) if absolute_live else
+                                        max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"]))
             reason = "sustained_pressure"
         elif ram_ready or vram_ready:
             plan = {"resident_budget_gib": min(self.cap, plan["resident_budget_gib"],
@@ -399,6 +407,12 @@ class MemoryPolicy:
                                             self.current["vram_reserve_mib"] - 128) if vram_ready else
                     self.current["vram_reserve_mib"]}
             reason = "stable_headroom"
+            if absolute_live:
+                # A RAM-only action holds today's GPU capacity. Only a GPU
+                # action lowers the previous absolute target (<=128 MiB per
+                # policy step); native mapping remains bounded per safe window.
+                plan["vram_reserve_mib"] = max(self.reserve_floor,
+                    self.current["vram_reserve_mib"] - 128 if vram_ready else int(free_vram))
         else:
             self.last_reason = "pressure_debounce" if shrink else "growth_debounce" if grow else "stable"
             return None

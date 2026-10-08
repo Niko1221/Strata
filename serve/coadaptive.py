@@ -124,11 +124,16 @@ class CoAdaptive:
             free_ram = min(free_ram, commit)
         free_gpu = (snapshot["gpu_mem_total"] - snapshot["gpu_mem_used"]) / MIB
         cpu_busy = work["cpu_percent"] >= 20
-        gpu_busy = free_gpu < self.gpu_floor or external_gpu is not None and external_gpu >= 60
+        gpu_compute_busy = external_gpu is not None and external_gpu >= 60
+        gpu_capacity_busy = free_gpu < self.gpu_floor
+        gpu_busy = gpu_capacity_busy or gpu_compute_busy
         ram_busy = free_ram < self.ram_floor * GIB
         # Safety takes precedence; both busy does not invent a free compute tier.
         if gpu_busy:
-            candidate = "balanced" if cpu_busy or ram_busy else "yield_gpu"
+            # Low free VRAM proves capacity pressure, not external GPU compute.
+            # The memory policy already reclaims toward the running floor. Own
+            # prompt workspace must not manufacture a +512 MiB foreground target.
+            candidate = "yield_gpu" if gpu_compute_busy and not (cpu_busy or ram_busy) else "balanced"
         elif cpu_busy or ram_busy:
             candidate = "yield_cpu" if free_gpu >= self.gpu_floor + 256 else "balanced"
         else:
