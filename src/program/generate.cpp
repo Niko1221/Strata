@@ -60,6 +60,7 @@
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
+#include "strata/program/read_piece.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -9508,11 +9509,22 @@ int main(int argc, char** argv) {
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
-                // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
-                if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
+                // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots,
+                // or in STRATA_SPLIT_PIECE-token runs so a shorter request's BYIELD is seen within one piece)
+                static const int64_t split_piece = [] {
+                    const char* v = std::getenv("STRATA_SPLIT_PIECE");
+                    return v != nullptr ? std::max<int64_t>(0, std::atoll(v)) : int64_t(0);
+                }();
+                if (o.batch <= 0 || piped) return sp.run(ids.data() + a0, b0 - a0, a0, e);
+                // decided again at every boundary: a read that began beside a decoding slot goes back to whole
+                // pieces once no slot decodes (they finish their short turns within seconds of a long read)
+                const auto piece_now = [&] {
+                    return strata::program::prompt_read_piece(sp.chunk(), !stages.empty() && !batch_on(), split_piece);
+                };
+                if (piece_now() == 0) return sp.run(ids.data() + a0, b0 - a0, a0, e);
                 const int64_t C = std::max<int64_t>(sp.chunk(), 1);
                 for (int64_t q = a0; q < b0;) {
-                    const int64_t r = std::min(b0, q + C);
+                    const int64_t r = strata::program::prompt_read_run_end(q, b0, piece_now());
                     const auto tq = Clock::now();
                     if (!sp.run(ids.data() + q, r - q, q, e)) return false;
                     q = r;
