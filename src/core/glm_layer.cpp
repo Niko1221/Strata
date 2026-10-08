@@ -842,8 +842,9 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
             return false;
         }
     }
-    // The way back: `band_out` is `[h][t][kvl]` and `qabs` is `[t][h][kvl]`, so the two axis counts exchange.
-    kernels::glm_heads_major(b.band_out, b.qabs, b.ntok, nh, kvl, stream);
+    // **NO WAY BACK, UNLESS THE SELECTION NEEDS ONE.**  `band_out` is `[h][t][kvl]`, which is the layout the
+    // attention kernel asks for, so a dense layer hands this buffer straight to it and the transpose to
+    // token-major `qabs` happens only where the DSA selection below reads `qabs` per token.  See step 5.
 
     // ---- 4. the latent, its norm, and the cache write.  K == V, so there is one write and no second tensor.
     if (!project(*wkv_a, v.name("attn_kv_a_mqa.weight"), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16, b.kv_cmpr, n,
@@ -863,15 +864,26 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     // second launch per token to hide data that is already hidden.
     kernels::glm_mla_cache_store_t(b.kv_cmpr, st.mla_cache, row0, kvl, b.ntok, stream);
 
-    // ---- 5. the attention itself: every cell up to and including this one, one query, one token.  `T` is 1,
-    //      not the sequence length - the cache holds the sequence and the kernel walks it.  A chunk calls it
-    //      `ntok` times, each with its own `pos_base` and its own `n_kv`, because the mask is a function of the
-    //      token's absolute position and the kernel takes it as a launch argument.
+    // ---- 5. the attention itself, THE WHOLE GROUP IN ONE CALL.  It used to be `ntok` calls of one query each,
+    //      with `T` pinned to 1 - the cache holds the sequence and the kernel walks it, so one query was one
+    //      launch and a group was eight of them.
+    //
+    //      **THE MASK IS STILL A FUNCTION OF ABSOLUTE POSITION; IT JUST DOES NOT NEED A LAUNCH A TOKEN.**  The
+    //      kernel masks query `t` at `pos_base + t + 1`, so the `ntok` per-token calls were the same walk with
+    //      `pos_base` and `n_kv` both counting up by one.  One call at `pos_base = abs_pos` and
+    //      `n_kv = vis0 + ntok - 1` reproduces every one of them: query `t`'s limit is `min(abs_pos + t + 1,
+    //      n_kv)`, and with `vis0 >= abs_pos + 1` the second term is never the smaller one.
+    //
+    //      **AND THE TWO `glm_heads_major` CALLS THAT WRAPPED IT ARE GONE WITH IT.**  The group went
+    //      `[h][t][kvl] -> [t][h][kvl] -> attention -> [t][h][kvl] -> [h][t][kvl]`, four buffers and two
+    //      transposes for a kernel whose own contract is the head-major one at both ends.  It reads `band_out`
+    //      where step 3 left it and writes `heads_in` where step 6 wants it, which is the same place and the
+    //      same layout the transpose used to put it.
     //
     //      **OR THE DSA SELECTION, WHICH REPLACES THIS CALL AND NOTHING ELSE.**  With `--dsa` the layer attends the
     //      `idx_top_k` cells the k-pool indexer picks instead of every cell - the reference's own optional path
-    //      (`cparams.dsa`, off by default there too).  Everything above and below is untouched: the same `qabs`
-    //      goes in and the same `kqv` comes out, which is what lets the de-absorption in step 6 be shared.
+    //      (`cparams.dsa`, off by default there too).  Everything above and below is untouched: the same
+    //      absorbed query goes in and the same pre-de-absorption output comes out.
     const bool dsa = kernels::glm_dsa_enabled();
     // The indexer addresses the cache by ABSOLUTE POSITION (`glm_dsa_select`'s pools, `n_vis = (pos+1)/kpool`),
     // which is the same address the dense reading uses and a different one from a compacted row counter.  Only
@@ -952,54 +964,58 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     const int64_t kpool = g.idx_kpool;
     const int top_pools_max = kernels::glm_dsa_top_pools(g.idx_top_k, kpool);
     const int tail = g.idx_select_tail != 0 ? 1 : 0;
-    for (int64_t t = 0; t < b.ntok; ++t) {
-        if (!dsa) {
-            kernels::glm_mla_attn(b.qabs + t * nh * kvl, st.mla_cache, b.kqv + t * nh * kvl, nh, kvl, vis0 + t,
-                                  /*T=*/1, abs_pos + t, (float) (1.0 / std::sqrt((double) hd)), stream);
-            continue;
+    if (!dsa) {
+        kernels::glm_mla_attn(b.band_out, st.mla_cache, b.heads_in, nh, kvl, vis0 + b.ntok - 1, b.ntok, abs_pos,
+                              (float) (1.0 / std::sqrt((double) hd)), stream);
+    } else {
+        // The selection is a property of one query, so `--dsa` keeps the per-token walk and with it the two
+        // transposes the dense path just dropped: the loop below reads `qabs` and writes `kqv`, both token-major.
+        kernels::glm_heads_major(b.band_out, b.qabs, b.ntok, nh, kvl, stream);
+        for (int64_t t = 0; t < b.ntok; ++t) {
+            // ---- the indexer, for THIS query.  Its own `ik`/`ig` rows go into the pool in progress, this query's
+            //      pool is pooled if it completes the pool, and only then is the selection run - a pool is visible to
+            //      the query whose own cell is its LAST member (`glm_dsa_select`'s `n_vis`), so pooling after the
+            //      selection would hide the current token from itself.
+            const int64_t p = abs_pos + t;
+            const int64_t slot = p % kpool;
+            const int64_t pool_done = (p + 1) / kpool;
+            cudaMemcpyAsync(st.idx_partial_k + slot * kd, b.idx_key + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
+                            (cudaStream_t) stream);
+            cudaMemcpyAsync(st.idx_partial_g + slot * kd, b.idx_gate + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
+                            (cudaStream_t) stream);
+            if (slot == kpool - 1) {
+                // `glm_dsa_pool` pools from pool 0, so the completed pool is the ONLY pool in this call: its members
+                // are the `kpool` rows the partial holds, and its column is `pool_done - 1`.
+                kernels::glm_dsa_pool(st.idx_partial_k, st.idx_partial_g, ape, kd, (int) kpool, 1,
+                                      st.idx_pooled + (pool_done - 1) * kd, stream);
+            }
+            int top_pools = (int) (pool_done < top_pools_max ? pool_done : top_pools_max);
+            if (pool_done > 0) {
+                kernels::glm_dsa_score(b.idx_iq + t * kd * ih, st.idx_pooled, b.idx_iw + t * ih, (int) kd, (int) ih,
+                                       /*n_tokens=*/1, (int) pool_done, b.idx_score, stream);
+            }
+            if (pool_done > 0 || tail) {
+                const int n_sel = (int) (kpool * top_pools + (tail ? kpool - 1 : 0));
+                kernels::glm_dsa_select(b.idx_score, (int) pool_done, (int) kpool, top_pools, tail, /*n_tokens=*/1,
+                                        n_sel, b.idx_pos + t, b.idx_cells, stream);
+                kernels::glm_dsa_attn(b.qabs + t * nh * kvl, st.mla_cache, b.idx_cells, (int) kvl, (int) nh, (int) hd,
+                                      /*n_tokens=*/1, n_sel, b.kqv + t * nh * kvl, stream);
+            } else {
+                // Nothing to attend to: with the tail OFF, the first `kpool - 1` queries have no complete pool and the
+                // reference zeroes their attention output rather than leaving a stale one.  Unreachable at this
+                // model's own reading (`idx_select_tail` is 1), kept because the other reading is a parameter.
+                cudaMemsetAsync(b.kqv + t * nh * kvl, 0, (size_t) nh * kvl * 4, (cudaStream_t) stream);
+            }
         }
-        // ---- the indexer, for THIS query.  Its own `ik`/`ig` rows go into the pool in progress, this query's
-        //      pool is pooled if it completes the pool, and only then is the selection run - a pool is visible to
-        //      the query whose own cell is its LAST member (`glm_dsa_select`'s `n_vis`), so pooling after the
-        //      selection would hide the current token from itself.
-        const int64_t p = abs_pos + t;
-        const int64_t slot = p % kpool;
-        const int64_t pool_done = (p + 1) / kpool;
-        cudaMemcpyAsync(st.idx_partial_k + slot * kd, b.idx_key + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
-                        (cudaStream_t) stream);
-        cudaMemcpyAsync(st.idx_partial_g + slot * kd, b.idx_gate + t * kd, (size_t) kd * 4, cudaMemcpyDeviceToDevice,
-                        (cudaStream_t) stream);
-        if (slot == kpool - 1) {
-            // `glm_dsa_pool` pools from pool 0, so the completed pool is the ONLY pool in this call: its members
-            // are the `kpool` rows the partial holds, and its column is `pool_done - 1`.
-            kernels::glm_dsa_pool(st.idx_partial_k, st.idx_partial_g, ape, kd, (int) kpool, 1,
-                                  st.idx_pooled + (pool_done - 1) * kd, stream);
-        }
-        int top_pools = (int) (pool_done < top_pools_max ? pool_done : top_pools_max);
-        if (pool_done > 0) {
-            kernels::glm_dsa_score(b.idx_iq + t * kd * ih, st.idx_pooled, b.idx_iw + t * ih, (int) kd, (int) ih,
-                                   /*n_tokens=*/1, (int) pool_done, b.idx_score, stream);
-        }
-        if (pool_done > 0 || tail) {
-            const int n_sel = (int) (kpool * top_pools + (tail ? kpool - 1 : 0));
-            kernels::glm_dsa_select(b.idx_score, (int) pool_done, (int) kpool, top_pools, tail, /*n_tokens=*/1,
-                                    n_sel, b.idx_pos + t, b.idx_cells, stream);
-            kernels::glm_dsa_attn(b.qabs + t * nh * kvl, st.mla_cache, b.idx_cells, (int) kvl, (int) nh, (int) hd,
-                                  /*n_tokens=*/1, n_sel, b.kqv + t * nh * kvl, stream);
-        } else {
-            // Nothing to attend to: with the tail OFF, the first `kpool - 1` queries have no complete pool and the
-            // reference zeroes their attention output rather than leaving a stale one.  Unreachable at this
-            // model's own reading (`idx_select_tail` is 1), kept because the other reading is a parameter.
-            cudaMemsetAsync(b.kqv + t * nh * kvl, 0, (size_t) nh * kvl * 4, (cudaStream_t) stream);
-        }
+        kernels::glm_heads_major(b.kqv, b.heads_in, nh, b.ntok, kvl, stream);
     }
 
     // ---- 6. de-absorption.  The same fold as step 3, and here the slices are `kv_lora_rank` wide - still a
     //      whole number of blocks, which is the property that lets one quantize stand in for `n_head`.
-    // Same transpose and the same one-call-per-head-per-group as step 3 - see the note there for the numbers.
-    // The bands are the other way round (`kvl`-wide input, `hd` = 256 rows of a 512-wide value map), which is
-    // the swap the note in step 3 warns about.
-    kernels::glm_heads_major(b.kqv, b.heads_in, nh, b.ntok, kvl, stream);
+    // Same one-call-per-head-per-group as step 3 - see the note there for the numbers.  The bands are the other
+    // way round (`kvl`-wide input, `hd` = 256 rows of a 512-wide value map), which is the swap the note in step
+    // 3 warns about.  **NO TRANSPOSE IN FRONT OF THE QUANTIZE**: `heads_in` is `[h][t][kvl]` however it was
+    // written, by the attention above or by the DSA branch's own `glm_heads_major`.
     quantize_both(b.heads_in, b.heads_q8k, b.heads_q8_0, nh * kvl * b.ntok, stream);
     const int64_t kvl_q8k = (int64_t) q8k_bytes(kvl), kvl_q8_0 = (kvl / 32) * 34;
     const int64_t grp_kvl_q8k = (int64_t) b.ntok * kvl_q8k, grp_kvl_q8_0 = (int64_t) b.ntok * kvl_q8_0;

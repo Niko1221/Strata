@@ -144,9 +144,11 @@ struct GlmBuffers {
     /// 2 = 352 launches for the same chunk, in place of the 360,448 that are gone.
     float* heads_in = nullptr;         ///< `[h][t][w]`: the group, head-major, before the band loop
     float* band_out = nullptr;         ///< `[h][t][w]`: the band loop's result, before it goes back
-    float* qabs = nullptr;             ///< n_head * kv_lora_rank: `wk_b @ q` - the ABSORBED query (Qcur)
+    float* qabs = nullptr;             ///< n_head * kv_lora_rank: the ABSORBED query (Qcur).  `--dsa` only:
+                                       ///< the dense path hands `band_out` to the kernel and never lands here
     float* kv_cmpr = nullptr;          ///< kv_lora_rank: the latent that goes into the cache AND is V
-    float* kqv = nullptr;              ///< n_head * kv_lora_rank: the attention output, pre-de-absorption
+    float* kqv = nullptr;              ///< n_head * kv_lora_rank: the attention output, pre-de-absorption.
+                                       ///< `--dsa` only: the dense path writes `heads_in` from the kernel
     float* head_out = nullptr;         ///< n_head * mla_head_dim: `wv_b @ kqv`
 
     // ---- the dense FFN's two projections, and nothing else ----

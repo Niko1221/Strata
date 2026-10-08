@@ -1456,12 +1456,19 @@ int main(int argc, char** argv) {
 
     // MLA: the first token of a sequence (nothing before it), a mid-sequence token with a longer cache than
     // window, and a multi-token window starting at a non-zero position - which is the case that separates
-    // `pos_base + t + 1` from every rival.  `kv` 512 is the real latent width, so `NPER` there is 4 and not 1.
+    // `pos_base + t + 1` from every rival.  `kv` 512 is the real latent width, so a kernel that folds the
+    // latent across lanes takes 16 slots each there and 1 at `kv` 8 - both are exercised.
     test_mla_attn(d, 3, 1, 8, 1, 0);
     test_mla_attn(d, 2, 1, 8, 9, 8);
     test_mla_attn(d, 4, 4, 8, 12, 8);
     test_mla_attn(d, 2, 1, 512, 3, 2);
     test_mla_attn(d, 2, 2, 512, 5, 3);
+    // **T != n_head, WHICH IS THE ONLY SHAPE THAT CAN SEE THE OUTER TWO AXES.**  `q`/`out` are `[kv, T, n_head]`
+    // with the head OUTERMOST, so `(h*T + t)*kv` and `(t*nh + h)*kv` agree exactly when `T == n_head` - both
+    // multi-token cases above are square, and a kernel that read the wrong one passed every one of them.  A
+    // group of eight against this model's 64 heads is 8x the other way, so both directions are covered here.
+    test_mla_attn(d, 2, 8, 512, 12, 4);    // T > n_head
+    test_mla_attn(d, 5, 3, 512, 9, 6);     // T < n_head, and neither is a factor of the other
 
     // The head/token transpose that lets the MLA bands take a whole group.  BOTH counts are above 1 in every
     // case: at `ntok == 1` (or `nh == 1`) the move IS the identity, so the "unchanged copy" rival would be the

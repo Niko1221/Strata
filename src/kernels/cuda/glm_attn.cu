@@ -34,6 +34,18 @@ namespace {
 
 constexpr int ATTN_THREADS = 128;
 
+/// How many latent slots one lane of the batched kernel carries, and so the widest `kv_lora` it takes: 16
+/// covers 512, which is this model's rank and the parity test's larger case.  A wider latent falls back to
+/// `mla_attn_kernel`, which carries eight and so reaches 1024 - stale code is worth less than a wrong answer,
+/// but silently dropping half a row is worse than either.
+constexpr int SPLIT_MAX_SLOTS = 16;
+
+/// Heads a warp carries in the batched kernel.  2 halves the blocks and the cache rows they walk between
+/// them, but doubles the query registers a lane holds and the accumulator it rescales when a row raises
+/// the running max.  Which way that lands at this model's shapes is UNMEASURED - it is 1, and the `<2>`
+/// instantiation in the dispatch below is there so that measuring it is a one-line change.
+constexpr int MLA_HG = 1;
+
 void sync_if_needed(void* stream, const char* what) {
     if (stream != nullptr) return;
     const cudaError_t e = cudaDeviceSynchronize();
@@ -117,6 +129,120 @@ __global__ void mla_attn_kernel(const float* __restrict__ q, const __half* __res
     }
 }
 
+/// ONE WARP A (head, query) PAIR, AND NO BARRIER ANYWHERE IN THE CACHE WALK.
+///
+/// **WHAT THE KERNEL ABOVE COSTS, MEASURED.** `mla_attn_kernel` is one 128-thread block per (head, query) with
+/// one thread per latent slot, and it reduces over the block for EVERY cache row: `red[lane] = part`, then
+/// seven `__syncthreads()` to sum 512 products.  Timed standalone on an RTX 5060 at this model's shapes
+/// (`n_head` 64, `kv_lora_rank` 512), on a 5060's 30 SMs:
+///
+///     n_kv    512: 0.3501 ms a call    (0.684 us a cache row)
+///     n_kv   1024: 0.6941 ms a call    (0.678 us a cache row)
+///     n_kv   2048: 1.3865 ms a call    (0.677 us a cache row)
+///
+/// Dead linear in `n_kv`, and 0.68 us for 1 KB of cache row is **~1.5 GB/s** against the card's 391 GB/s
+/// measured D2D roofline.  The kernel is not moving bytes; it is synchronising.  A 4096-token chunk then
+/// costs a whole cache walk per token per head - 64 heads x 8.4 M rows - and the engine's own section timer
+/// charges the attention mixer 30.6 s of a 4096-token chunk's 12 layers, 82% of the card's `pre`, of which
+/// this kernel is the larger part.
+///
+/// Here a warp owns the whole 512-wide (head, query) dot - 16 slots a lane, summed by five `__shfl_xor` with
+/// no barrier at all - and a block's eight warps all work on the SAME query, so the eight reads of one cache
+/// row are one L1 miss and seven hits.  Blocks in the same `blockIdx.y` re-read the same rows, but the whole
+/// cache at this model's ceiling is 8192 x 512 x 2 B = 8 MiB and stays resident in L2, which is what the
+/// standalone timing above shows the second sweep at n_kv 4096 paying for.
+///
+/// THE ONLINE SOFTMAX IS THE OTHER HALF OF THE COST, and it is a comparison, not an `expf`.  In the usual
+/// form every row needs two exponentials - `p = exp(s - m_new)` and the rescale `corr = exp(m - m_new)` - and
+/// a full 512-wide multiply-add over the accumulator *even when `corr` is 1*.  Writing the update as two
+/// branches makes `corr = 1` and `p = 1` fall out of the branch that is taken when a row does NOT raise the
+/// maximum, which after the first few rows is almost every row: `m` is the running max of a softmax, so it
+/// stops moving early and the rescale runs O(log n_kv) times instead of n_kv.  The arithmetic is the same
+/// online softmax, reassociated - `l = l*corr + p` with `p == 1` is `l = l*corr + 1` - and it is within
+/// `close_enough` of the reference the parity harness already runs for T > 1.
+template <int HG, int NSLOT>
+__global__ void mla_attn_nt_kernel(const float* __restrict__ q, const __half* __restrict__ kc,
+                                   float* __restrict__ out, int nh, int kv, int n_kv, int pos_base, float scale) {
+    const int nwarp = (int) (blockDim.x >> 5);
+    const int warp = (int) (threadIdx.x >> 5);
+    const int lane = (int) (threadIdx.x & 31);
+    const int t = (int) blockIdx.y;
+    const int h0 = ((int) blockIdx.x * nwarp + warp) * HG;
+    if (h0 >= nh) return;
+    const int NPER = (kv + 31) / 32;   // 16 at kv_lora 512; 1 for the parity test's kv 8
+    // **THE HEAD IS THE OUTERMOST AXIS AND THE TOKEN IS INSIDE IT** - `(h*T + t)*kv`, the contract the header
+    // states and the parity test's "head and token swapped" rival pins down.  The engine's per-token calls
+    // could not tell the two apart (at T == 1 both indexings collapse to `h*kv`), so this is the first kernel
+    // that has to get it right, and getting it wrong is a silent permutation of the same elements.
+    const int64_t T = gridDim.y;
+    const float* Q = q + ((size_t) h0 * T + t) * kv;
+    float* O = out + ((size_t) h0 * T + t) * kv;
+
+    float qv[HG][NSLOT];
+    float acc[HG][NSLOT];
+#pragma unroll
+    for (int j = 0; j < HG; ++j) {
+#pragma unroll
+        for (int i = 0; i < NSLOT; ++i) {
+            const int c = lane + i * 32;
+            qv[j][i] = (i < NPER && c < kv) ? Q[j * kv + c] : 0.0f;   // 0 keeps a short row out of the shuffle
+            acc[j][i] = 0.0f;
+        }
+    }
+    float m[HG], l[HG];
+#pragma unroll
+    for (int j = 0; j < HG; ++j) {
+        m[j] = -INFINITY;
+        l[j] = 0.0f;
+    }
+
+    const int limit = (pos_base + t + 1 < n_kv) ? pos_base + t + 1 : n_kv;
+    const unsigned full = 0xffffffffu;
+    for (int s = 0; s < limit; ++s) {
+        const __half* K = kc + (size_t) s * kv;
+        float k[NSLOT];
+#pragma unroll
+        for (int i = 0; i < NSLOT; ++i) {
+            const int c = lane + i * 32;
+            // The load is PREDICATED, not merely multiplied by zero: a lane past the end of a short row would
+            // otherwise read into the next row, and a zero times a NaN is a NaN, not a zero.
+            k[i] = (i < NPER && c < kv) ? __half2float(K[c]) : 0.0f;
+        }
+#pragma unroll
+        for (int j = 0; j < HG; ++j) {
+            float part = 0.0f;
+#pragma unroll
+            for (int i = 0; i < NSLOT; ++i) part += qv[j][i] * k[i];
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) part += __shfl_xor_sync(full, part, off);
+            const float score = part * scale;
+            // Uniform across the warp - every lane reduced to the same `part` - so neither branch diverges.
+            if (score > m[j]) {
+                const float corr = (m[j] == -INFINITY) ? 0.0f : __expf(m[j] - score);
+                l[j] = l[j] * corr + 1.0f;   // p == exp(score - score) == 1
+#pragma unroll
+                for (int i = 0; i < NSLOT; ++i) acc[j][i] = acc[j][i] * corr + k[i];
+                m[j] = score;
+            } else {
+                const float p = __expf(score - m[j]);
+                l[j] += p;
+#pragma unroll
+                for (int i = 0; i < NSLOT; ++i) acc[j][i] += p * k[i];
+            }
+        }
+    }
+
+#pragma unroll
+    for (int j = 0; j < HG; ++j) {
+        const float inv = l[j] > 0.0f ? 1.0f / l[j] : 0.0f;
+#pragma unroll
+        for (int i = 0; i < NSLOT; ++i) {
+            const int c = lane + i * 32;
+            if (i < NPER && c < kv) O[j * kv + c] = acc[j][i] * inv;
+        }
+    }
+}
+
 /// `[t][h][w] -> [h][t][w]`: swaps the two outer axes of a `n_tok x n_head` stack of `w`-wide slices, and is
 /// its own inverse (call it again with `n_head` and `n_tok` exchanged and the operands swapped).
 ///
@@ -185,6 +311,30 @@ void glm_mla_attn(const float* q, const uint16_t* k_cache, float* out, int64_t n
     if (kv_lora > (int64_t) ATTN_THREADS * 8) {
         std::fprintf(stderr, "glm_mla_attn: kv_lora %lld exceeds the %d slots a thread carries\n",
                      (long long) kv_lora, ATTN_THREADS * 8);
+        return;
+    }
+    // **T > 1 TAKES THE BATCHED KERNEL, AND T == 1 KEEPS THIS ONE.**  Not for compatibility - for occupancy.
+    // The batched kernel's grid is (heads a block, T), so at T == 1 it is eight blocks of 256 threads, 2048
+    // threads against a 30-SM card's 61,440 slots, and a block-reduction kernel's 64 blocks of 128 is the
+    // better of two bad shapes when there is only one query to spread.  A chunk never has T == 1 (the engine
+    // groups by `GLM_MAX_NTOK`), and decode never has T > 1, so the split costs nothing at either end.  What a
+    // one-query decode actually wants is the cache split across blocks - see the note in the PR.
+    if (T > 1 && kv_lora <= (int64_t) 32 * SPLIT_MAX_SLOTS) {
+        // 8 warps a block, one head a warp: the block's eight reads of a cache row are one miss and seven
+        // L1 hits, and `n_head` 64 / 8 = 8 blocks of them walk the same rows.  The grid's y is the token.
+        const int nwarp = (int) (ATTN_THREADS / 32);
+        const int per_block = nwarp * MLA_HG;
+        const int hblocks = (int) ((n_head + per_block - 1) / per_block);
+        dim3 grid((unsigned) hblocks, (unsigned) T);
+        if (MLA_HG == 1) {
+            mla_attn_nt_kernel<1, SPLIT_MAX_SLOTS><<<grid, ATTN_THREADS, 0, (cudaStream_t) stream>>>(
+                q, (const __half*) k_cache, out, (int) n_head, (int) kv_lora, (int) n_kv, (int) pos_base, scale);
+        } else {
+            mla_attn_nt_kernel<2, SPLIT_MAX_SLOTS><<<grid, ATTN_THREADS, 0, (cudaStream_t) stream>>>(
+                q, (const __half*) k_cache, out, (int) n_head, (int) kv_lora, (int) n_kv, (int) pos_base, scale);
+        }
+        check_launch("glm_mla_attn");
+        sync_if_needed(stream, "glm_mla_attn");
         return;
     }
     dim3 grid((unsigned) n_head, (unsigned) T);
