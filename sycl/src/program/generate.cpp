@@ -4708,12 +4708,22 @@ int main(int argc, char **argv) try {
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
         uint64_t avail = 0;
+#if defined(_WIN32)
+        // SYCL port: there is no /proc/meminfo here, so the mirror's default size was 0 on Windows and no expert
+        // outside VRAM was ever mirrored - a model that does not fit entirely in VRAM then refused to run
+        // ("experts are neither in VRAM nor mirrored") or, with a host plan, read every miss from the SSD.  The same
+        // reading process_mem() takes above: the available physical memory.
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms)) avail = ms.ullAvailPhys;
+#else
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
             while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+#endif
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
