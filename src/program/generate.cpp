@@ -64,6 +64,7 @@
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
+#include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
@@ -3869,15 +3870,31 @@ int main(int argc, char** argv) {
     // force: when it cannot run it is said and left off (plain batching still starts); default off = exactly 0.1.39.
     // With a layer split the slots' drafters live on the LAST stage's GPU (where the solo drafter, the head and the final
     // residual rows are); the windows are the ones --batch runs, two rows per slot, through every stage.
+    // --batch-groups: given as a number or auto, or (0.1.41) auto by default for a layer split with --batch >= 2.  The
+    // pipelined slot groups do not run --batch-mtp's drafts, so when it is asked for and the groups were not given, the
+    // default is one group (batch_groups.hpp).  Evaluated again once the slots that fit are known, and BEFORE the
+    // --batch-mtp gate below, which must see the resolved number.
+    auto batch_groups_for = [&](bool mtp_on) {
+        strata::program::batch_groups::Input bin;
+        bin.set = o.batch_groups_set;
+        bin.auto_given = o.batch_groups_auto;
+        bin.given = o.batch_groups;
+        bin.batch = o.batch;
+        bin.later_stages = (int) stages.size();
+        bin.batch_mtp = mtp_on;
+        return strata::program::batch_groups::resolve(bin);
+    };
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
     if (batch_mtp) {
         // (--pipeline-windows is already off with --batch slots)
         const char* why = o.batch < 2 ? "it needs --batch 2 or more" : o.mtp.empty() ? "it needs --mtp"
                         : o.spec < 2 ? "it needs --spec T (T >= 2)" : split_same
-                        ? "it needs each stage of a layer split on its own GPU" : (o.batch_groups > 1 && !stages.empty())
-                        ? "it does not combine with --batch-groups (pipelined slot groups) yet"
+                        ? "it needs each stage of a layer split on its own GPU"
                         : !o.serve ? "it needs --serve" : nullptr;
+        // the groups it would run with (the default gives way to it: one group; a number or auto given pipelines)
+        if (why == nullptr && !stages.empty() && batch_groups_for(true).groups > 1)
+            why = "it does not combine with --batch-groups (pipelined slot groups) yet";
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: WARNING: --batch-mtp is off: %s\n", why);
             batch_mtp = false;
@@ -3899,17 +3916,22 @@ int main(int argc, char** argv) {
     }
     // --batch-groups auto: the pipeline needs one group per GPU stage to keep every card busy (4 x R9700, 8 clients:
     // 90 tok/s in one group, 136 in 2, 166 in 4).  The most groups, at most one per stage, that divide the slots.
+    // The default (0.1.41: a layer split with --batch pipelines one group per stage; --batch-groups 1 opts out) gives
+    // way to --batch-mtp, which needs the serial windows: one group, said once.
+    int groups_said = 0;
     auto resolve_groups_auto = [&] {
-        // default (0.1.41): a layer split with --batch pipelines one group per stage; --batch-groups 1 opts out
-        if (!o.batch_groups_set && !stages.empty() && o.batch > 1) o.batch_groups_auto = true;
-        if (!o.batch_groups_auto) return;
-        int best = 1;
-        for (int d = 2; d <= (int) stages.size() + 1 && d <= o.batch; ++d)
-            if (o.batch % d == 0) best = d;
-        if (stages.empty()) best = 1;
-        o.batch_groups = best;
-        std::fprintf(stderr, "strata generate: --batch-groups auto: %d group%s of %d slot%s\n", best, best == 1 ? "" : "s",
-                     o.batch / best, o.batch / best == 1 ? "" : "s");
+        const auto r = batch_groups_for(batch_mtp);
+        if (!r.from_auto) return;
+        o.batch_groups = r.groups;
+        if (groups_said == r.groups) return;   // (the second call, once the slots that fit are known, says nothing new)
+        groups_said = r.groups;
+        if (r.serial != strata::program::batch_groups::Serial::None)
+            std::fprintf(stderr, "strata generate: --batch-groups auto: 1 group of %d slot%s - %s does not run in pipelined "
+                                 "groups; --batch-groups %d would pipeline them and turn it off\n", o.batch,
+                         o.batch == 1 ? "" : "s", strata::program::batch_groups::serial_what(r.serial), r.would_be);
+        else
+            std::fprintf(stderr, "strata generate: --batch-groups auto: %d group%s of %d slot%s\n", r.groups,
+                         r.groups == 1 ? "" : "s", o.batch / r.groups, o.batch / r.groups == 1 ? "" : "s");
     };
     if (o.batch > 0) resolve_groups_auto();
     if (o.batch > 0 && o.batch_groups > 1 && (stages.empty() || o.batch % o.batch_groups != 0)) {

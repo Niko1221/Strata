@@ -1080,6 +1080,10 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(batch_rows_test tests/core/batch_rows_test.cpp)
   target_include_directories(batch_rows_test PRIVATE include)
   add_test(NAME batch_rows_test COMMAND batch_rows_test)
+  # how many pipelined slot groups --batch runs with: the 0.1.41 default, and --batch-mtp keeping it serial (header-only, CPU)
+  add_executable(batch_groups_test src/program/batch_groups_test.cpp)
+  target_include_directories(batch_groups_test PRIVATE include)
+  add_test(NAME batch_groups_test COMMAND batch_groups_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
