@@ -1400,8 +1400,9 @@ Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 15
 ## GLM-5.3-Flash (`glm5-next`): the switches it adds
 
 GLM-5.3-Flash is served from a pack built by `tools/iq_pack.py` (the routed experts in `native_experts.txt`), and the
-engine picks the architecture out of the pack. Everything below is off unless you ask for it, and a Qwen3.8-Flash-Next
-run never reads any of it.
+engine picks the architecture out of the pack. Every switch below is off unless you ask for it, and a
+Qwen3.8-Flash-Next run never reads any of it. (The one thing here that is not a switch — a chunked prefill reading
+each projection's weights once per group of tokens — is GLM's own code path and changes nothing for Qwen.)
 
 **`--dsa`** — attend the 2,048 cache cells the DSA k-pool indexer selects, instead of the whole cache. Below about
 2,048 cells the two are the same attention and the answers are unchanged; above them, attending to everything is
@@ -1425,10 +1426,12 @@ Measured on 2× RTX 3060 12 GB + 2× RTX 5060 8 GB, UD-IQ4_XS, `--layer-split au
 
 | | decode | prompt reading |
 |---|---|---|
-| off (the CPU pool alone) | 6.7 tok/s (6.66 6.72 6.73 6.76 6.8) | 344 tokens in 31 s |
-| `--glm-gpu-experts 0` | **9.6 tok/s** (8.29 on the first tokens, then 9.28 9.52 9.57 9.67 9.75 9.90) | 344 tokens in 31 s |
+| off (the CPU pool alone) | 6.7 tok/s (6.66 6.72 6.73 6.76 6.8) | 344 tokens in 20 s |
+| `--glm-gpu-experts 0` | **9.6 tok/s** (8.29 on the first tokens, then 9.28 9.52 9.57 9.67 9.75 9.90) | 344 tokens in 19 s |
 
 That is **+43%** on decode, and the prompt reading is unchanged — prefill still routes every token through the pool.
+(The prompt-reading column is from the group-of-eight prefill below; before that change the same runs read the prompt
+in 31 s.)
 The tier took 19.1 GiB of VRAM in all: 61 / 53 / 22 / 30 slots a MoE layer on CUDA0..3, 1,719 of the model's 12,096
 (layer, expert) pairs, and it served 3.97 of the 8 experts a token routes per layer (49.7%) on the card. Slot counts
 differ per card because each is sized against its own free memory after its own weights, session and snapshot.
@@ -1447,6 +1450,33 @@ layer was 0.28, so the bar sits in a 7.9× gap. `STRATA_GLM_GPU_CHECK=2` also pr
 
 One interaction worth knowing: with the tier on, `--expert-profile-save` counts only the experts the card did *not*
 hold, so the profile it writes is the misses' routing and not the router's.
+
+**A chunked prefill reads each projection's weights once per group of tokens, not once per token.** A `--prefill`
+chunk hands the layer its tokens eight at a time — eight is the widest the quantized projections take — so the
+layer's weight matrices are read once for the group instead of once for each token. Nothing about the arithmetic
+changes: every kernel in the block was already written to take a width, a group of one still takes the single-token
+path byte for byte, and greedy answers are identical either way. `STRATA_GLM_NO_GROUP=1` pins the group to one
+token, which is the arm that checks it: 48 greedy tokens byte-identical with it on and off, and identical across a
+repeat of the same arm, so the engine is deterministic and the comparison has power.
+
+Measured on the rig above, UD-IQ4_XS over four cards, 344-token prompt, `--prefill 256`:
+
+| | prefill |
+|---|---|
+| group of one (`STRATA_GLM_NO_GROUP=1`) | 344 tokens in 31 s |
+| group of eight (default) | **344 tokens in 20 s** |
+
+That is 10.9 → 17.6 tokens a second. Over the two chunks that make up the prompt, the card's time went from 18.98 s
+to 7.25 s while the CPU pool's is unchanged at 11.87 s, so the pool is now the larger half of a prefill — 11.9 s of
+the 19.1 s those chunks take in all.
+
+**`STRATA_GLM_PREFILL_TIME=1`** prints where a chunk's time goes — on stderr, outside the token stream, and at no
+cost to a run that does not set it. One line a chunk splits the card, the CPU pool, `post` and the dense lead; six
+more lines break `pre` down, from CUDA events at its section boundaries (the mHC read and write, the attention
+mixer, `ffn3`, the norm and quantize, the router). Events rather than a clock around the calls, because `pre` only
+*enqueues*: a `printf` between two of them would report the launch cost and nothing else. That first line is what
+turned "the CPU pool is the bottleneck" from a guess into 38% pool and 56% card, and it is why the group was worth
+writing at all.
 
 ---
 
