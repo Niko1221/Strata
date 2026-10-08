@@ -4164,7 +4164,7 @@ def choose_drafter(method, path, quant, yes):
         say("  Speculative decoding = a small drafter proposes tokens which the target checks.")
         say("  1) MTP (default)")
         say("  2) DFlash (experimental; greedy decoding, one request at a time)")
-        say("  3) Off (no speculative decoding)")
+        say("  3) Off (no MTP/DFlash; prompt lookup stays on)")
         method = {"1": "mtp", "2": "dflash", "3": "none"}[ask("Drafter?", ["1", "2", "3"], "1", yes)]
     if method == "dflash" and quant is None:
         say()
@@ -4182,9 +4182,9 @@ def drafter_args(dflash, rt):
         return ["--spec", "8", "--dflash", str(dflash), "--dflash-window", "0"]
     if rt:
         return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
-    # --serve needs a verifier capacity >= 2; with no model drafter it runs one
-    # token per window. Disable both lookup methods so it never proposes tokens.
-    return ["--spec", "2", "--suffix-draft", "0", "--lookup-chain", "0"]
+    # Leave the engine's prompt-lookup defaults in place without loading a model
+    # drafter. --spec reserves verifier capacity for any suffix proposals.
+    return ["--spec", "2"]
 
 
 def prepare_dflash(data, roots, source, quant, env):
@@ -4735,7 +4735,7 @@ def main() -> int:
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
     ap.add_argument("--drafter", choices=["mtp", "dflash", "none"],
-                    help="speculative decoding: MTP (default), DFlash or none (disabled)")
+                    help="model drafter: MTP (default), DFlash or none (prompt lookup remains enabled)")
     ap.add_argument("--dflash", metavar="GGUF", nargs="?", const="auto",
                     help="select DFlash; omit GGUF to download the pinned drafter automatically")
     ap.add_argument("--dflash-quant", choices=["original", "q8", "q5", "q4"],
@@ -5158,7 +5158,7 @@ def main() -> int:
             fail("DFlash is currently supported by the CUDA/HIP engine; choose MTP for SYCL")
         ok(f"drafter: DFlash ({DFLASH_QUANTS[a.dflash_quant] or 'original BF16'})")
     else:
-        ok("speculative decoding: off" if a.drafter == "none" else "drafter: MTP")
+        ok("model drafter: off (prompt lookup stays on)" if a.drafter == "none" else "drafter: MTP")
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -5492,9 +5492,9 @@ def main() -> int:
             say("  " + line)
 
     else:
-        ok("speculative decoding off: no draft model to download or load")
+        ok("model drafter off: no draft model to download or load; prompt lookup stays on")
         if a.draft_vocab:
-            warn("--draft-vocab applies to MTP; ignored with speculative decoding off")
+            warn("--draft-vocab applies to MTP; ignored without an MTP drafter")
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -5504,7 +5504,7 @@ def main() -> int:
     if ple is None:
         fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    # the drafter slot: DFlash, MTP, or neither when speculation is off.  DFlash's window is
+    # the drafter slot: DFlash, MTP, or neither with prompt lookup left on.  DFlash's window is
     # 1 anchor + K candidates with K up to the artifact's trained block, so the spec takes the full 8.
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
