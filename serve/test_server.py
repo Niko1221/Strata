@@ -1651,7 +1651,7 @@ class GpuChoice(unittest.TestCase):
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
         from serve.server import child_env, vision_env
-        cfg = {"gpu": [0, 1], "vision": {"exe": "v", "cuda_device": 2}}
+        cfg = {"gpu": [0, 1], "gpu_order": "as_given", "vision": {"exe": "v", "cuda_device": 2}}
         env = child_env(cfg)
         venv = vision_env(cfg, env)
         self.assertEqual(venv["CUDA_VISIBLE_DEVICES"], "2")
