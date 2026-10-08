@@ -152,6 +152,19 @@ void full_session(int fmt, int mode, int experts) {
     fill(177);
     check(conversation_snapshot_save(b,view,ss,g,draft.state,err),"capture complete B");
     {
+        auto transferable = checkpoints;
+        const uint8_t* original = transferable[0].gdn.data();
+        const ConversationView moving{ids,images,transferable,true};
+        SavedConversation moved;
+        check(conversation_snapshot_save(moved,moving,ss,g,draft.state,err,{},nullptr,false) &&
+              moved.checkpoints.empty(),"capture leaves the replaceable checkpoint chain with its caller");
+        moved.checkpoints = std::move(transferable);
+        check(moved.checkpoints[0].gdn.data()==original && moved.checkpoints[0].gdn==b.checkpoints[0].gdn &&
+              moved.bytes()==b.bytes(),"checkpoint handoff moves buffers and preserves snapshot accounting");
+        check(conversation_snapshot_restore(moved,ss,g,draft.state,err)==ConversationRestore::restored,
+              "snapshot with moved checkpoint chain restores exactly");
+    }
+    {
         // disk save path: metadata + streamed K/V give the same file as the captured image
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
@@ -196,6 +209,9 @@ void full_session(int fmt, int mode, int experts) {
     for (int64_t dirty : {65, 3, 0}) {
         check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore growth fixture base");
         ConversationKvReuse reuse{a.kv,65,dirty};
+        reuse.running.gdn=a.live.gdn; reuse.running.ple=a.live.ple; reuse.running.tails=a.live.tails;
+        reuse.running.dead=a.live.dead; reuse.running.block_pos=a.live.block_pos;
+        const uint8_t* original_gdn = reuse.running.gdn.data();
         const uint8_t* original = nullptr;
         reuse.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){original=p;return true;});
         main.fill_after(91,dirty); draft.fill_after(91,std::max<int64_t>(0,dirty-1));
@@ -212,7 +228,8 @@ void full_session(int fmt, int mode, int experts) {
         check(incremental.bytes() <= peak,"incremental allocation stays within admitted bound");
         check(incremental.live.gdn==fresh.live.gdn && incremental.live.ple==fresh.live.ple &&
               incremental.live.dead==fresh.live.dead && equal(incremental.kv[0],fresh.kv[0]) &&
-              equal(incremental.kv[1],fresh.kv[1]),"incremental capture equals full capture after growth or rewind");
+               equal(incremental.kv[1],fresh.kv[1]),"incremental capture equals full capture after growth or rewind");
+        check(incremental.live.gdn.data()==original_gdn,"incremental capture reuses the running-state allocation");
         check((dirty>=4)==(reused>0),"only complete unchanged pages or rows are retained");
         incremental.kv[0].k.visit(0,1,[&](const uint8_t* p,size_t,size_t){
             check(p==original,"growth never reallocates the retained payload");return true;

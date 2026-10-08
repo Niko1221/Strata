@@ -59,8 +59,16 @@ struct ConversationKvReuse {
     int64_t captured_tokens = 0, unchanged_tokens = 0;
     // With a layer split: the later stages' own retained K/V, one per stage, same extents (empty: none)
     std::vector<ConversationKvReuse> stages;
+    // Restoring consumed these running-state bytes but not their host allocations. The next park refreshes every byte.
+    ConversationCheckpoint running;
+    ConversationKvReuse() = default;
+    ConversationKvReuse(std::vector<ConversationKv> buffers, int64_t captured, int64_t unchanged,
+                        std::vector<ConversationKvReuse> stage_buffers = {}, ConversationCheckpoint state = {})
+        : kv(std::move(buffers)), captured_tokens(captured), unchanged_tokens(unchanged),
+          stages(std::move(stage_buffers)), running(std::move(state)) {}
     size_t bytes() const {
-        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
+        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse) +
+                   running.bytes();
         for (const auto& layer : kv) n += layer.bytes();
         for (const auto& s : stages) n += s.bytes();
         return n;
@@ -194,6 +202,9 @@ public:
         size_t index = 0;
         int64_t tokens = 0;
         bool live = false;
+        // How much the lookup scanned, for the prompt-cache trace (STRATA_PROMPT_CACHE_TRACE): the parked
+        // conversations and checkpoints examined to find this prefix.  Not used by the request path.
+        size_t scanned_entries = 0, scanned_checkpoints = 0;
     };
 
     ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
@@ -212,16 +223,38 @@ public:
     // This optimization never evicts a parked conversation to make itself fit.
     // `stage_kv`: with a layer split, the later stages' restored K/V (one per stage), retained with the first's.
     void retain(std::vector<ConversationKv>&& kv, int64_t tokens,
-                std::vector<std::vector<ConversationKv>>&& stage_kv = {}) {
+                std::vector<std::vector<ConversationKv>>&& stage_kv = {},
+                ConversationCheckpoint running = {}, std::vector<ConversationCheckpoint> stage_running = {}) {
         reuse_ = {};
-        ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
-        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
-        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+        ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}, std::move(running)};
+        for (size_t i = 0; i < stage_kv.size(); ++i) {
+            ConversationCheckpoint state;
+            if (i < stage_running.size()) state = std::move(stage_running[i]);
+            candidate.stages.push_back(ConversationKvReuse{std::move(stage_kv[i]), tokens, tokens, {},
+                                                            std::move(state)});
+        }
+        if (!enabled()) return;
+        const size_t available = budget_ - bytes_;
+        if (candidate.bytes() > available) {
+            candidate.running = {};
+            for (auto& s : candidate.stages) s.running = {};
+        }
+        if (candidate.bytes() <= available) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
         for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
-        if (reuse_.unchanged_tokens <= 0) reuse_ = {};
+        if (reuse_.unchanged_tokens <= 0) {
+            reuse_.kv.clear();
+            reuse_.captured_tokens = reuse_.unchanged_tokens = 0;
+            for (auto& s : reuse_.stages) {
+                s.kv.clear();
+                s.captured_tokens = s.unchanged_tokens = 0;
+            }
+            const bool stage_running = std::any_of(reuse_.stages.begin(), reuse_.stages.end(),
+                                                   [](const auto& s) { return s.running.bytes() != 0; });
+            if (!reuse_.running.bytes() && !stage_running) reuse_ = {};
+        }
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
     size_t retained_bytes() const { return reuse_.bytes(); }
@@ -233,18 +266,23 @@ public:
     template<class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         Match best;
+        size_t scanned_entries = 0, scanned_checkpoints = 0;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
+            ++scanned_entries;
             if (e.cvec != cvec) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
+                ++scanned_checkpoints;
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > best.tokens) best = {i, n, live};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         }
+        best.scanned_entries = scanned_entries;
+        best.scanned_checkpoints = scanned_checkpoints;
         return best;
     }
 

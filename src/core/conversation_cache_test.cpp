@@ -82,6 +82,41 @@ int main() {
         check(cache.retained_bytes() == 0 && cache.size() == 1 && cache.evictions() == 0,
               "pressure drops retained storage before evicting parked conversations");
     }
+    {
+        ConversationCache cache(4096, 2);
+        ConversationCheckpoint running;
+        running.gdn.resize(64, 7);
+        cache.retain({}, 16, {}, std::move(running));
+        cache.limit_reuse(0);
+        auto reuse = cache.take_reuse();
+        check(reuse.kv.empty() && reuse.running.gdn.size() == 64 && reuse.running.gdn[0] == 7,
+              "a full K/V rewrite still retains running-state allocations for overwrite");
+    }
+    {
+        ConversationCache cache(64, 1);
+        SavedConversation rejected = image({1,2,3});
+        ConversationCheckpoint checkpoint;
+        checkpoint.gdn.resize(128, 9);
+        rejected.checkpoints.push_back(std::move(checkpoint));
+        const uint8_t* original = rejected.checkpoints[0].gdn.data();
+        check(!cache.put(std::move(rejected)) && rejected.checkpoints[0].gdn.data() == original &&
+              rejected.checkpoints[0].gdn[0] == 9,
+              "a refused park leaves the moved checkpoint chain available for rollback");
+    }
+    {
+        ConversationKv layer;
+        layer.k.resize(400);
+        std::vector<ConversationKv> layers;
+        layers.push_back(std::move(layer));
+        const size_t kv_bytes = layers.capacity()*sizeof(ConversationKv) + layers[0].bytes();
+        ConversationCheckpoint running;
+        running.gdn.resize(64, 7);
+        ConversationCache cache(kv_bytes, 2);
+        cache.retain(std::move(layers), 16, {}, std::move(running));
+        auto reuse = cache.take_reuse();
+        check(!reuse.kv.empty() && reuse.running.gdn.empty(),
+              "running-state retention does not displace K/V reuse under a tight budget");
+    }
     const std::vector<int64_t> a = {1, 2, 3, 4}, b = {9, 8, 7, 6};
     {
         ConversationCache cache(1024, 2);

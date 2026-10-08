@@ -47,6 +47,10 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
 };
+struct ConversationCheckpointTiming {
+    double allocation_ms = 0, gdn_ms = 0, ple_ms = 0, index_ms = 0;
+    size_t gdn_bytes = 0, ple_bytes = 0, index_bytes = 0;
+};
 /// Whole-model sizes: `gdn` covers every GDN layer, the indexer sizes are per QSA layer.
 bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& sizes, std::string& error);
 /// The same for one session's layer carve (#216): `gdn` covers its `gdn_alloc` rows; the per-QSA-layer sizes
@@ -57,7 +61,8 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& sess
 bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, const SessionState& session,
                                       const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
-                                  const ModelGeometry& g, std::string& error);
+                                  const ModelGeometry& g, std::string& error,
+                                  ConversationCheckpointTiming* timing = nullptr);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 
@@ -77,10 +82,13 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 // the uniquely owned reusable buffers, including on failure.
 // Caller admits the estimate before invoking capture. Allocation failures propagate
 // to the RAM policy; the active session is never modified by capture.
+// copy_checkpoints=false leaves image.checkpoints empty: the caller must move its validated view.checkpoints
+// into the image before publishing it, or keep its original chain if capture/admission fails.
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& session, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
-                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,
+                                bool copy_checkpoints = true);
 // Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
 // checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
 // synchronized and must not run the session until the file is written.
@@ -107,7 +115,8 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
                                          size_t& bytes, std::string& error);
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
                                 const ModelGeometry& g, const QsaState* draft, std::string& error,
-                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,
+                                bool copy_checkpoints = true);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
