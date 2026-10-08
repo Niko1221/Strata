@@ -295,6 +295,11 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
+        # Isolate the first-install/update callers from a developer's real local engine.
+        root = mock.patch.object(setup, "ROOT", Path(self.tmp.name))
+        root.start(); self.addCleanup(root.stop)
+        base = mock.patch.object(setup, "prebuilt_bases", return_value=[str(Path(self.tmp.name) / "dist") + "/"])
+        base.start(); self.addCleanup(base.stop)
 
     def fake_download(self, url, dst, what=None):
         with zipfile.ZipFile(dst, "w") as z:

@@ -8,6 +8,9 @@ no prompts.
 from __future__ import annotations
 
 import sys
+import json
+import hashlib
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +78,85 @@ class ConfigKey(unittest.TestCase):
     def test_setup_owns_the_key(self):
         # carry_over keeps setup-written keys across a re-run's config rewrite: "dflash" must be setup's
         self.assertIn("dflash", setup.SETUP_KEYS)
+
+
+class DrafterChoice(unittest.TestCase):
+    def test_defaults_and_explicit_choices(self):
+        with patch.object(setup, "say"), patch.object(setup, "ask", return_value="1"):
+            self.assertEqual(setup.choose_drafter(None, None, None, True), ("mtp", "original"))
+            self.assertEqual(setup.choose_drafter(None, "auto", None, True), ("dflash", "original"))
+            for q in setup.DFLASH_QUANTS:
+                self.assertEqual(setup.choose_drafter("dflash", None, q, True), ("dflash", q))
+        with patch.object(setup, "say"), patch.object(setup, "ask", side_effect=["2", "3"]):
+            self.assertEqual(setup.choose_drafter(None, None, None, False), ("dflash", "q5"))
+        with patch.object(setup, "fail", side_effect=ValueError):
+            with self.assertRaises(ValueError): setup.choose_drafter("mtp", None, "q4", True)
+
+    def test_exclusive_arguments_and_saved_choice(self):
+        a = setup.drafter_args(Path("drafter-Q4.gguf"), Path("mtp/rt"))
+        self.assertIn("--dflash", a)
+        self.assertNotIn("--mtp", a)
+        self.assertEqual(a[a.index("--dflash-window")+1], "0")
+        self.assertNotIn("--dflash", setup.drafter_args(None, Path("mtp/rt")))
+        with tempfile.TemporaryDirectory() as folder:
+            cfg = Path(folder)/"strata-iq3_xxs.json"
+            cfg.write_text(json.dumps({"args": a + ["--max-context", "8192"],
+                                      "dflash_quant": "q4", "dflash_source": "auto"}))
+            saved = setup.choices_from_config(cfg)
+            self.assertEqual((saved["model"], saved["drafter"], saved["dflash"], saved["dflash_quant"]),
+                             ("IQ3_XXS", "dflash", "auto", "q4"))
+            new = {"args": setup.drafter_args(None, "rt"), "drafter": "mtp"}
+            setup.carry_over(json.loads(cfg.read_text()), new)
+            self.assertNotIn("dflash_quant", new)
+            self.assertNotIn("dflash_source", new)
+
+    def test_manual_conversion_and_cache_reuse(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            original = write_artifact(data/"custom.gguf")
+            self.assertEqual(setup.prepare_dflash(data, [data], str(original), "original", {}), original)
+            def convert(cmd, **kwargs):
+                from dflash_quantize import export
+                export(cmd[2], cmd[cmd.index("-o")+1], cmd[cmd.index("--type")+1])
+            with patch.object(setup, "download", side_effect=AssertionError("manual source must not download")), \
+                    patch.object(setup, "run", side_effect=convert) as run:
+                output = setup.prepare_dflash(data, [data], str(original), "q5", {})
+                self.assertTrue(output.is_file())
+                self.assertEqual(setup.prepare_dflash(data, [data], str(original), "q5", {}), output)
+                self.assertEqual(run.call_count, 1)
+                output.write_bytes(output.read_bytes()[:-32])
+                setup.prepare_dflash(data, [data], str(original), "q5", {})
+                self.assertEqual(run.call_count, 2)
+                output.write_bytes(b"broken cached GGUF")
+                setup.prepare_dflash(data, [data], str(original), "q5", {})
+                self.assertEqual(run.call_count, 3)
+
+    def test_pinned_download_and_checkpoint_hash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder); fetched = []
+            checkpoint = b"fake checkpoint for installer control flow"
+            def fetch(url, path, what=None):
+                fetched.append(url)
+                path.write_bytes(checkpoint if path.name == "model.safetensors" else b"{}")
+            def convert(cmd, **kwargs):
+                output = Path(cmd[cmd.index("-o")+1])
+                w = GGUFWriter(); w.add("general.architecture", "dflash")
+                w.add("dflash.source.sha256", hashlib.sha256(checkpoint).hexdigest())
+                for i in range(58): w.add_bf16(f"norm-{i}", np.ones((32,),np.float32), shape=[32])
+                w.write(output)
+            with patch.object(setup, "download", side_effect=fetch), patch.object(setup, "run", side_effect=convert), \
+                    patch.object(setup, "DFLASH_SHA256", hashlib.sha256(checkpoint).hexdigest()):
+                output = setup.prepare_dflash(data, [data], "auto", "original", {})
+                self.assertTrue(output.is_file())
+                self.assertEqual(len(fetched), 2)
+                self.assertTrue(all(setup.HF_REVISIONS[setup.DFLASH_REPO] in u for u in fetched))
+                self.assertEqual(setup.prepare_dflash(data, [data], "auto", "original", {}), output)
+                self.assertEqual(len(fetched), 2)
+            output.unlink()
+            with patch.object(setup, "download", side_effect=fetch), \
+                    patch.object(setup, "fail", side_effect=ValueError) as fail:
+                with self.assertRaises(ValueError): setup.prepare_dflash(data, [data], "auto", "original", {})
+                self.assertIn("SHA-256", fail.call_args_list[0].args[0])
 
 
 if __name__ == "__main__":

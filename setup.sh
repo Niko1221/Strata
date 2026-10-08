@@ -1,5 +1,6 @@
 #!/bin/sh
 # Strata for Linux: the first run installs everything and starts the model; later runs just start it.
+# Drafter choices and quantization are handled by setup.py, including --drafter dflash --dflash-quant q8.
 # Needs only an NVIDIA driver (or, for an AMD Radeon card, the kernel's amdgpu driver: see docs/AMD_HIP.md).
 # Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.

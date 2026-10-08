@@ -198,3 +198,12 @@ collect `strata-<model>.log` and the setup output, and suggest an issue at https
 Strata also has an MCP server, so an AI tool can check, install, start and stop Strata through tool calls
 (`strata_status`, `strata_models`, `strata_install`, `strata_start`, `strata_stop`, `strata_logs`) instead of the
 shell commands above. See [MCP_SERVER.md](MCP_SERVER.md).
+
+### Selecting the drafter
+
+Setup offers MTP (default) or DFlash. Use `--drafter dflash --dflash-quant original|q8|q5|q4`
+with `--setup --yes` for non-interactive DFlash setup. It fetches the pinned drafter automatically,
+prepares its GGUF and skips MTP. Quantization affects the drafter's matrices; norms retain BF16.
+The resulting server defaults to greedy decoding. Sampling requests use target-only decoding.
+DFlash currently needs one GPU and serial requests, rereads prompts, and allocates 20 KiB of
+extra KV per configured context token. See [DFLASH.md](DFLASH.md) for build requirements and limits.
