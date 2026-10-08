@@ -62,6 +62,7 @@
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
+#include "strata/spec/dflash_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -781,7 +782,7 @@ void usage() {
                  "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
                  "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
                  "  --dflash-head GGUF   experimental draft-only output.weight; target verification keeps its own head\n"
-                 "  --dflash-block K     cap the candidates per pass below the trained block (0 = min(--spec-1, trained))\n"
+                 "  --dflash-block K     fixed candidates per pass; 0 = automatic in --serve, maximum in CLI\n"
                  "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
                  "                       attends to every cell)\n"
                  "  --dflash-mask-token ID  the mask token when the artifact's metadata lacks it (published artifact: 248077)\n"
@@ -3760,6 +3761,7 @@ int main(int argc, char** argv) {
                                  "follows)\n", st.dev, (double) fb / 1073741824.0);
         }
 
+    bool dflash_elastic = false;   // the drafter can grow independently of a streamed target
     // ---- CUDA0's session, and the stages' sessions: sized to each device's own layer range (the carve).  A
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
@@ -3784,7 +3786,13 @@ int main(int argc, char** argv) {
                                      "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
-            strata::core::ExpertCache::set_vmm(on);
+            const char* df_grow = std::getenv("STRATA_DFLASH_KV_GROW");
+            dflash_elastic = (df_grow == nullptr || std::atoi(df_grow) != 0) && !o.dflash.empty() && !multi_gpu && !o.expert_profile.empty() &&
+                             !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
+                             strata::core::vmm_available() && o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+            // A fully resident draft cache must not reserve the whole configured
+            // context before any request arrives. Reuse the expert-cache/VMM exchange.
+            strata::core::ExpertCache::set_vmm(on || dflash_elastic);
         }
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
@@ -3977,6 +3985,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::DFlashDrafter dflash;
+    std::vector<int32_t> dflash_capture_layers;
     int dflash_k = 0;   // THE effective draft length (1 anchor + dflash_k candidates = the window)
     if (!o.dflash.empty()) {
         if (!o.mtp.empty()) {
@@ -4009,6 +4018,14 @@ int main(int argc, char** argv) {
         if (!strata::core::DFlashArtifact::validate_supported(dg, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
+        }
+        dflash_capture_layers = dg.target_layers;
+        for (auto& l : dflash_capture_layers) {
+            ++l;   // layer output -> next layer's HC-contracted attention input
+            if (l >= g.n_layers) {
+                std::fprintf(stderr, "dflash: target feature boundary %d is outside the target's layers\n", l);
+                return 2;
+            }
         }
         if (dg.mask_token_id < 0 && o.dflash_mask < 0) {
             std::fprintf(stderr, "strata generate: %s declares no dflash.mask_token_id; pass "
@@ -4058,7 +4075,7 @@ int main(int argc, char** argv) {
             const strata::core::OnDevice on_dflash(last_st ? last_st->dev : -1);
             int dev = 0;
             cudaGetDevice(&dev);
-            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err) ||
+            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err, dflash_elastic) ||
                 (!o.dflash_head.empty() && !dflash.load_head(o.dflash_head, err))) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
@@ -5931,19 +5948,19 @@ int main(int argc, char** argv) {
         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
     } kvg;
     auto kvg_start = [&](int64_t top) {
-        kvg.on = strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
+        kvg.on = (strata::core::qsa_kv_elastic() || dflash_elastic) && xcache.vmm_range() != nullptr && d_res != nullptr &&
                  !host_res.empty() && srcp != nullptr && top > kvg.floor;
         if (!kvg.on) return;
         kvg.top = kvg.lo = top;
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         if (const char* v = std::getenv("STRATA_KV_GROW_STEP"); v != nullptr && std::atoll(v) > 0) kvg.step = std::atoll(v);
         // tests: the cache keeps this many slots (its size: the K/V grows into new VRAM only)
         if (const char* v = std::getenv("STRATA_KV_GROW_FLOOR"); v != nullptr && std::atoll(v) > 0) kvg.floor = std::atoll(v);
         std::fprintf(stderr, "strata generate: elastic K/V: %lld of %lld cells in VRAM (%.2f of %.2f GiB); the expert "
                              "cache (%lld slots) gives the K/V room below slot %lld as the context grows\n",
                      (long long) kvg.cells, (long long) o.max_context,
-                     (double) strata::core::qsa_kv_elastic_mapped_bytes() / 1073741824.0,
-                     (double) strata::core::qsa_kv_elastic_full_bytes() / 1073741824.0, (long long) xcache.slots(),
+                     (double) (strata::core::qsa_kv_elastic_mapped_bytes() + dflash.scratch_mapped_bytes()) / 1073741824.0,
+                     (double) (strata::core::qsa_kv_elastic_full_bytes() + dflash.scratch_reserved_bytes()) / 1073741824.0, (long long) xcache.slots(),
                      (long long) top);
     };
     // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
@@ -5951,8 +5968,8 @@ int main(int argc, char** argv) {
     auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
         if (!kvg.on || cells <= kvg.cells) return true;
         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
-        const int64_t need = strata::core::qsa_kv_elastic_need(target);
-        if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
+        const int64_t need = strata::core::qsa_kv_elastic_need(target) + dflash.scratch_chunks_needed(target);
+        if (need == 0) { kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells()); return true; }
         quiesce();
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
@@ -6030,18 +6047,20 @@ int main(int argc, char** argv) {
             return false;
         }
         int64_t fresh = 0;
-        const bool ok = strata::core::qsa_kv_elastic_grow(target, [&]() -> strata::core::VmmChunk {
+        auto take_kv_chunk = [&]() -> strata::core::VmmChunk {
             if (kvg.spare.empty()) { ++fresh; return 0; }   // the cache is at its floor: new memory
             const strata::core::VmmChunk h = kvg.spare.back();
             kvg.spare.pop_back();
             return h;
-        });
+        };
+        const bool ok = strata::core::qsa_kv_elastic_grow(target, take_kv_chunk) &&
+                        dflash.grow_scratch(target, take_kv_chunk);
         kvg.fresh += fresh;
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         ++kvg.grows;
         std::fprintf(stderr, "strata: K/V grown to %lld cells (%.2f GiB); the expert cache gave %lld slots for it, "
                              "%lld hotter experts moved to colder ones' slots (%lld of %lld slots hold experts)%s\n",
-                     (long long) kvg.cells, (double) strata::core::qsa_kv_elastic_mapped_bytes() / 1073741824.0,
+                     (long long) kvg.cells, (double) (strata::core::qsa_kv_elastic_mapped_bytes() + dflash.scratch_mapped_bytes()) / 1073741824.0,
                      (long long) gave, (long long) moved, (long long) (kvg.lo + (xcache.slots() - kvg.top)),
                      (long long) xcache.slots(),
                      fresh > 0 ? " - and new VRAM, the cache being at its floor" : "");
@@ -6060,8 +6079,10 @@ int main(int argc, char** argv) {
         const int64_t want = std::max<int64_t>(cells, hold);
         const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
         if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
-        strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        auto give_kv_chunk = [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); };
+        strata::core::qsa_kv_elastic_shrink(target, give_kv_chunk);
+        dflash.shrink_scratch(target, give_kv_chunk);
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
         const int64_t c1 = (int64_t) (xcache.slot_offset(kvg.top) / G);
@@ -6265,8 +6286,7 @@ int main(int argc, char** argv) {
         const bool has_dflash = !o.dflash.empty();
         strata::prefill::Prefill sp;
         if (has_dflash) {
-            const auto& taps = dflash.artifact().geom().target_layers;
-            sp.set_tap_layers(taps.data(), (int) taps.size());
+            sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
                 return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
             };
@@ -6862,8 +6882,7 @@ int main(int argc, char** argv) {
         ver.set_remote_expert_opt(remote_opt.get());
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
         if (has_dflash) {
-            const auto& taps = dflash.artifact().geom().target_layers;
-            ver.set_tap_layers(taps.data(), (int) taps.size());
+            ver.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
         }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
@@ -9953,6 +9972,11 @@ int main(int argc, char** argv) {
             }
             bool first_window = true;
             bool dflash_ready = false;
+            const bool df_auto = req_dflash && o.dflash_block == 0;
+            strata::spec::DFlashPolicy df_policy(dflash_k);
+            int df_pending_k = 0;
+            double df_pending_ms = 0;
+            int64_t df_windows[8] = {};
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
@@ -10605,7 +10629,7 @@ int main(int argc, char** argv) {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = req_dflash && dflash_ready ? dflash_k + 1 : use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
+                int T = req_dflash && dflash_ready ? df_pending_k + 1 : use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 if (use_mtp && req_spec_min_p > 0.0) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
@@ -10731,11 +10755,21 @@ int main(int argc, char** argv) {
                 if (req_dflash && !eos && produced_n < max_new) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err);
+                    const auto ctx_done = Clock::now();
+                    if (df_auto && rounds > 1) {
+                        const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
+                        df_policy.observe(T - 1, a + 1, ms + df_pending_ms);
+                    }
+                    ++df_windows[T - 1];
+                    df_pending_k = df_auto ? df_policy.choose() : dflash_k;
                     // Finish near the context limit with target-only windows rather than
                     // proposing a block which the next verification window cannot fit.
-                    dflash_ready = drafted && p + a + 1 + dflash_k + 1 <= o.max_context;
+                    dflash_ready = drafted && df_pending_k > 0 &&
+                                   p + a + 1 + df_pending_k + 1 <= o.max_context;
                     if (dflash_ready)
-                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, dflash_k, drafts.data(), err);
+                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err);
+                    df_pending_ms = dflash_ready ?
+                        std::chrono::duration<double, std::milli>(Clock::now() - ctx_done).count() : 0;
                 }
                 {
                     const Clock::time_point tw3 = Clock::now();
@@ -10768,6 +10802,12 @@ int main(int argc, char** argv) {
             if (!ver.wait_commit(err)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
+            }
+            if (df_auto) {
+                std::fprintf(stderr, "dflash: adaptive windows (K:rounds):");
+                for (int k = 0; k <= dflash_k; ++k)
+                    if (df_windows[k] > 0) std::fprintf(stderr, " %d:%lld", k, (long long) df_windows[k]);
+                std::fprintf(stderr, "\n");
             }
             if (dec_timing && dec_windows > 0) {
                 const DecSnap d1 = dec_snap();
@@ -11175,8 +11215,8 @@ int main(int argc, char** argv) {
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
         if ((use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) ||
             (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
-            static const int kTapBoundaries[5] = {4, 16, 24, 36, 44};   // the trained taps [3,15,23,35,43] + 1
-            prefill.set_tap_layers(kTapBoundaries, 5);   // before init: the taps join the buffer carve
+            const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
+            prefill.set_tap_layers(taps.data(), (int) taps.size());   // before init: the taps join the buffer carve
         }
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
@@ -11555,8 +11595,8 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
         if (use_dflash || (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
-            static const int kTapBoundaries[5] = {4, 16, 24, 36, 44};   // the trained taps [3,15,23,35,43] + 1
-            ver.set_tap_layers(kTapBoundaries, 5);   // before init: the tap buffer joins the arena carve
+            const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
+            ver.set_tap_layers(taps.data(), (int) taps.size());   // before init: the tap buffer joins the arena carve
         }
         if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
             if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");

@@ -1449,7 +1449,9 @@ bool Prefill::bind_stage_helper(int64_t T) {
     return true;
 }
 
-int64_t Prefill::tap_stride_rows() const { return impl_->T_max; }
+// A borrowed prompt buffer is re-carved for each request's chunk. The tap
+// planes follow that current layout, not the largest chunk accepted at init.
+int64_t Prefill::tap_stride_rows() const { return impl_->T; }
 
 void Prefill::set_tap_layers(const int* layers, int n) {
     Impl& m = *impl_;
@@ -2326,7 +2328,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     for (int ti = 0; ti < m.n_taps_; ++ti)
                         if (l == m.tap_layers_[ti]) {
                             strata::kernels::f32_to_bf16_bulk(
-                                m.mixed, m.taps + ((size_t) ti * (size_t) m.T_max) * (size_t) TN,
+                                m.mixed, m.taps + ((size_t) ti * (size_t) m.T) * (size_t) TN,
                                 (int64_t) T * TN, m.cs);
                         }
                 }

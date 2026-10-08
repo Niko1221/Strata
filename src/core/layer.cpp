@@ -580,13 +580,14 @@ void qsa_set_kv_elastic(bool enabled, int64_t init_cells) {
 bool qsa_kv_elastic() { return g_kv_elastic; }
 int64_t qsa_kv_elastic_cells() {
     int64_t cells = std::numeric_limits<int64_t>::max();
-    for (const auto& p : g_pools) cells = std::min<int64_t>(cells, pool_slots_mapped(*p) * p->page_size);
+    for (const auto& p : g_pools) if (p) cells = std::min<int64_t>(cells, pool_slots_mapped(*p) * p->page_size);
     return cells;
 }
 int64_t qsa_kv_elastic_need(int64_t cells) {
     const uint64_t G = strata::core::vmm_granularity();
     int64_t n = 0;
     for (const auto& p : g_pools) {
+        if (!p) continue;
         const int64_t slots = pool_slots(*p, cells);
         for (size_t a = 0; a < p->off.size(); ++a) {
             const int64_t c0 = (int64_t) (p->off[a] / G), c1 = c0 + pool_chunks(*p, a, slots);
@@ -597,13 +598,14 @@ int64_t qsa_kv_elastic_need(int64_t cells) {
 }
 bool qsa_kv_elastic_grow(int64_t cells, const std::function<strata::core::VmmChunk()>& take) {
     for (auto& p : g_pools)
-        if (!pool_grow(*p, cells, take)) return false;
+        if (p && !pool_grow(*p, cells, take)) return false;
     return cudaDeviceSynchronize() == cudaSuccess;
 }
 int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(strata::core::VmmChunk)>& give) {
     const uint64_t G = strata::core::vmm_granularity();
     int64_t n = 0;
     for (auto& p : g_pools) {
+        if (!p) continue;
         const int64_t slots = pool_slots(*p, cells);
         for (size_t a = 0; a < p->off.size(); ++a) {
             const int64_t c0 = (int64_t) (p->off[a] / G), c1 = c0 + pool_chunks(*p, a, slots);
@@ -616,13 +618,23 @@ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(strata::co
 }
 uint64_t qsa_kv_elastic_mapped_bytes() {
     uint64_t n = 0;
-    for (const auto& p : g_pools) n += (uint64_t) p->range.mapped_count() * strata::core::vmm_granularity();
+    for (const auto& p : g_pools) if (p) n += (uint64_t) p->range.mapped_count() * strata::core::vmm_granularity();
     return n;
 }
 uint64_t qsa_kv_elastic_full_bytes() {
     uint64_t n = 0;
-    for (const auto& p : g_pools) n += (uint64_t) p->range.chunks() * strata::core::vmm_granularity();
+    for (const auto& p : g_pools) if (p) n += (uint64_t) p->range.chunks() * strata::core::vmm_granularity();
     return n;
+}
+void qsa_state_release_elastic(QsaState& st) {
+    if (st.kv_elastic >= 0 && (size_t) st.kv_elastic < g_pools.size()) {
+        g_pools[(size_t) st.kv_elastic].reset();
+        st.kv_elastic = -1;
+    }
+}
+uint64_t qsa_state_elastic_bytes(const QsaState& st) {
+    if (st.kv_elastic < 0 || (size_t) st.kv_elastic >= g_pools.size() || !g_pools[(size_t) st.kv_elastic]) return 0;
+    return (uint64_t) g_pools[(size_t) st.kv_elastic]->range.mapped_count() * strata::core::vmm_granularity();
 }
 namespace {
 
@@ -650,13 +662,13 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     }
     return p;
 }
-uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
+uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8, bool q4) {
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
                rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
     }
-    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
+    if (q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
     return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
@@ -675,13 +687,16 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
                          const QsaStateInitOptions& opts) {
     if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
-    const bool elastic = g_kv_elastic && !opts.disable_elastic && !opts.force_owned_kv;
+    KvPlan p = kv_plan(s, max_cells, ring_cells);
+    if (opts.no_indexer) p.pooled_rows = 0;
+    const bool elastic = !opts.disable_elastic && strata::core::vmm_available() &&
+                         (opts.elastic_init_cells > 0 || (g_kv_elastic && !opts.force_owned_kv));
     const bool hybrid = g_kv_hybrid && !opts.force_owned_kv && !opts.force_f16_kv;
     const bool int8 = (g_kv_int8 || g_kv_hybrid) && !opts.force_owned_kv && !opts.force_f16_kv;
     uint64_t n = 0;
     if (!(elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
-        n += kv_pool_bytes(s, p.slots, hybrid && ring_cells <= 0, int8) + 4 * 16;   // K/V pools (the VRAM slots)
+        n += kv_pool_bytes(s, p.slots, hybrid && ring_cells <= 0, int8,
+                           g_kv_q4 && !opts.force_owned_kv && !opts.force_f16_kv) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -703,8 +718,10 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                         const QsaState* share_rope, int64_t ring_cells, const QsaStateInitOptions& opts) {
     if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
-    const bool elastic = g_kv_elastic && !opts.disable_elastic && !opts.force_owned_kv;
+    KvPlan p = kv_plan(s, max_cells, ring_cells);
+    if (opts.no_indexer) p.pooled_rows = 0;
+    const bool elastic = !opts.disable_elastic && strata::core::vmm_available() &&
+                         (opts.elastic_init_cells > 0 || (g_kv_elastic && !opts.force_owned_kv));
     const bool hybrid = g_kv_hybrid && !opts.force_owned_kv && !opts.force_f16_kv;
     const bool int8 = (g_kv_int8 || g_kv_hybrid) && !opts.force_owned_kv && !opts.force_f16_kv;
     const int64_t pages = p.pages;
@@ -743,7 +760,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         pool->per_slot = per;
         pool->n_slots = p.slots;
         pool->page_size = s.page_size;
-        if (!pool->range.reserve(at) || !pool_grow(*pool, g_kv_elastic_init, [] { return (strata::core::VmmChunk) 0; })) {
+        if (!pool->range.reserve(at) || !pool_grow(*pool, opts.elastic_init_cells > 0 ? opts.elastic_init_cells : g_kv_elastic_init, [] { return (strata::core::VmmChunk) 0; })) {
             std::fprintf(stderr, "strata: the elastic K/V could not reserve or map its pools\n");
             return 0;
         }

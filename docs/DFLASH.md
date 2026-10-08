@@ -137,9 +137,22 @@ decoding and logs that DFlash was skipped. Subsequent starts use the saved choic
 DFlash currently supports one GPU and serial requests. The server rereads the
 full prompt for each request because target-only snapshots do not contain the
 DFlash pools. Elastic target KV growth is disabled with DFlash. Setup uses
-`--dflash-window 0`, allocating the drafter's pools for the configured context
-(20 KiB per token); large contexts therefore need additional VRAM even when
-the target's KV is streamed to RAM.
+`--dflash-window 0`, preserving the full configured context. On CUDA, with one
+GPU and a profiled RAM-backed expert cache, the drafter's FP16 K/V and attention
+scratch start at 8192 cells and grow as requests use more positions. The expert
+cache supplies physical chunks and gets them back after a shorter request. This
+is independent of the target's KV streaming. Other configurations allocate the
+full draft capacity up front. `STRATA_DFLASH_KV_GROW=0` retains that allocation
+for comparisons. A positive `--dflash-window N` is a capacity limit, not a
+rolling window: requests beyond it are refused.
+
+The server measures real forwards at different block lengths and chooses the
+length with the best observed committed tokens per millisecond. It can pause
+proposals while maintaining context, and periodically probes to resume drafting.
+`--dflash-block K` selects a fixed length for reproducible comparisons; the CLI
+also keeps its fixed-length behavior. Sampled requests still use target-only
+decoding. The server and CLI capture the same layer boundaries, and the prompt
+feature stride follows the current buffer layout after each relayout.
 
 This branch's CUDA and Linux HIP engines are built from source for DFlash;
 released engines may lack its server and quantization support. Windows HIP needs
@@ -159,11 +172,12 @@ verifies every proposal. Validation on IQ3_XXS is recorded in
 | Drafter runtime: fusion, context KV (own QsaState pools), block forward, argmax | `src/core/dflash_runtime.cpp` |
 | Decode loop wiring, prefill wiring, VRAM reservation, metrics | `src/program/generate.cpp` |
 
-Memory (16 GB card, measured at startup): drafter weights ≈ 950 MiB BF16, context/block
-KV 20 KiB per position per... (f32 K/V pools, `--dflash-window` cells, default 32768 →
-≈ 655 MiB), fusion/logits scratch < 32 MiB. `DFlashDrafter::load` runs before the expert
-cache is sized and reports the same way `MtpDrafter` does, so the cache auto-sizing
-reserves the drafter's footprint.
+The five draft FP16 K/V pools use 10 KiB per position (5 layers × 2 K/V
+arrays × 2 heads × 256 values × 2 bytes). DFlash does not allocate the target's
+sparse-indexer history. The attention scratch grows with the mapped capacity.
+Weights, mapped pools and scratch are loaded before the expert cache is sized.
+The target's embedding and output head are shared. The [performance check](../bench/results/2026-10-09-dflash-performance/REPORT.md)
+records the measured startup footprint and generation speed for the setup path.
 
 Feature-capture gate (commit 2): `STRATA_DFLASH_TAPS=<file>` makes a target-only run append one
 record per prompt chunk and per verify window with the five boundaries' contracted residuals
