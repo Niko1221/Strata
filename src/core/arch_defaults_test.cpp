@@ -26,11 +26,14 @@ static void put(const char* k, const char* v) {
 int main() {
     using namespace strata::core;
     unset("STRATA_GFX1151_DEFAULTS");
+    unset("STRATA_GFX1150_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
     CHECK(arch_default_env("gfx1201:sramecc-:xnack-").empty());
-    CHECK(arch_default_env("gfx1150").empty());
+    CHECK(arch_default_env("gfx1152").empty());
+    CHECK(arch_default_env("gfx1103").empty());
     CHECK(arch_default_env("gfx11510").empty());   // not a prefix match
+    CHECK(arch_default_env("gfx11500").empty());
     CHECK(arch_default_env("").empty());
     CHECK(arch_default_env(nullptr).empty());
     // gfx1151, plain and with its feature suffix: the table, and no bit-changing switch in it
@@ -44,6 +47,20 @@ int main() {
                 CHECK(kv.first != bits);
         }
     }
+    // gfx1150: the gfx1151 table less STRATA_HCD_EXACT (it copies gfx1151's hipBLASLt solutions 1176 / 1177)
+    for (const char* a : {"gfx1150", "gfx1150:sramecc-:xnack-"}) {
+        const auto t = arch_default_env(a);
+        CHECK(t.size() + 1 == arch_default_env("gfx1151").size());
+        for (const auto& kv : t) CHECK(kv.first != "STRATA_HCD_EXACT");
+    }
+    // each opt-out turns off its own architecture only
+    put("STRATA_GFX1150_DEFAULTS", "0");
+    CHECK(arch_default_env("gfx1150").empty());
+    CHECK(!arch_default_env("gfx1151").empty());
+    unset("STRATA_GFX1150_DEFAULTS");
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(!arch_default_env("gfx1150").empty());
+    unset("STRATA_GFX1151_DEFAULTS");
     // a user's setting wins, whatever it is; the rest are set
     put("STRATA_TSUM", "0");
     unset("STRATA_QFUSE");
