@@ -270,6 +270,10 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  # which free-memory figure device_free_bytes() sizes from (the driver's or the DRM fdinfo's), host only
+  add_executable(drm_free_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/drm_free_test.cpp)
+  target_link_libraries(drm_free_test PRIVATE strata_includes)
+  add_test(NAME drm_free_test COMMAND drm_free_test)
   # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
   # ported yet: it reports "refused the pools" here). Built, not registered.
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)

@@ -5,6 +5,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_drm_free.hpp"
 #include "strata/core/expert_cache.hpp"
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
@@ -74,9 +75,9 @@ size_t device_free_bytes() try {
     You may need to adjust the code.
     */
     dpct::get_current_device().get_memory_info(free_b, total_b);
-    if (const unsigned long long own = own_drm_local_bytes(); own > 0 && total_b > own && total_b - own < free_b) {
+    if (const unsigned long long own = own_drm_local_bytes(); drm_total_replaces_free(free_b, total_b, own)) {
         static std::atomic<bool> said{false};
-        if (free_b + (16ull << 20) >= total_b && !said.exchange(true))
+        if (!said.exchange(true))
             std::fprintf(stderr, "strata: the driver reports the whole card as free although this process holds %.2f GiB of it (Arc A750/i915 does this); sizing from the DRM fdinfo instead\n", (double) own / 1073741824.0);
         free_b = (size_t) (total_b - own);
     }
