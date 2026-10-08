@@ -29,7 +29,7 @@ separate from the three-run matched-input benchmarks.
 Independent guards enforce exclusive GPU ownership, Gen4 x16, zero watched
 PCIe errors, 30.5 GiB resident-VRAM ceiling, 32 GiB host-memory margin, an 80 GiB
 cgroup without swap, bounded execution and sensor-specific thermal margins.
-Content/logs/configuration remain in RAM. Core dumps, persistent SYCL cache and
+Generated content, native/API logs and temporary request configuration remain in RAM. Sanitized launch profiles and build metadata persist for reproduction. Core dumps, persistent SYCL cache and
 crash capture during generation are disabled. Cleanup verifies payload exit
 before deleting RAM content and restoring normal services and crash capture.
 Only numeric/hash receipts persist. qualification.json records sample counts,
