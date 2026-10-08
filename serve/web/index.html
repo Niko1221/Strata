@@ -167,6 +167,20 @@
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
           (in this page's chat only; switch it off in Sampling).</p>
       </div>
+
+      <div class="st-card usage-card" id="usage-card" hidden>
+        <div class="req-head"><span class="card-title">Token usage and cost</span>
+          <span class="muted small" id="usage-pricing-note"></span></div>
+        <dl class="facts" id="usage-facts"></dl>
+        <div class="table-wrap" id="usage-days-wrap" hidden>
+          <table class="st-table">
+            <thead><tr><th>Day</th><th class="num">Requests</th><th class="num">Prompt</th><th class="num">Reused</th>
+              <th class="num">Output</th><th class="num">Cost</th></tr></thead>
+            <tbody id="usage-days-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small usage-note" id="usage-note"></p>
+      </div>
     </div>
   </section>
 
@@ -196,6 +210,35 @@
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+      </div>
+      <div class="st-card price-card" id="price-card">
+        <div class="req-head"><span class="card-title">Token pricing</span><span class="muted small" id="price-file"></span></div>
+        <p class="muted small">The prices the Monitor's cost readout uses, per million tokens. Set your own, or
+          leave a field empty for the default. Cached input is what the conversation cache reused.</p>
+        <div class="price-grid">
+          <div class="st-field">
+            <label class="st-label" for="price-currency">Currency</label>
+            <select class="st-input" id="price-currency">
+              <option value="CNY">CNY ¥</option><option value="USD">USD $</option><option value="EUR">EUR €</option>
+              <option value="JPY">JPY ¥</option><option value="GBP">GBP £</option>
+            </select>
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="price-input">Input <output>per 1M tokens</output></label>
+            <input class="st-input" id="price-input" type="number" min="0" step="any" placeholder="default">
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="price-cached">Cached input <output>per 1M tokens</output></label>
+            <input class="st-input" id="price-cached" type="number" min="0" step="any" placeholder="default">
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="price-output">Output <output>per 1M tokens</output></label>
+            <input class="st-input" id="price-output" type="number" min="0" step="any" placeholder="default">
+          </div>
+        </div>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="price-save" type="button">Save</button>
+          <button class="st-btn st-btn--secondary" id="price-default" type="button">Defaults</button>
+          <span class="muted small" id="price-msg" role="status"></span></div>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
         <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>

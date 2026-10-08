@@ -80,7 +80,13 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
-  if (tab === "about") loadConfig();
+  if (tab === "about") {
+    loadConfig();
+    if (lastMetrics && lastMetrics.usage) {              // the pricing card: the prices the costs are shown at
+      $("price-card").hidden = false;
+      fillPricing(lastMetrics.pricing);
+    } else $("price-card").hidden = true;                // an older server: no usage, no pricing
+  }
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -195,6 +201,7 @@ function render(m) {
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderUsage(m.usage, m.pricing);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -229,6 +236,37 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+}
+
+// token use kept across starts (GET /usage, in /metrics): today, all time, and the cost at the current prices
+const CUR = {CNY: "¥", USD: "$", EUR: "€", JPY: "¥", GBP: "£"};
+function money(c) {
+  if (!c || c.total_cost == null) return "–";
+  const v = c.total_cost, sym = CUR[c.currency] || "";
+  if (v === 0) return `${sym}0`;
+  return v < 0.01 ? `${sym}${v.toFixed(4)}` : `${sym}${v.toFixed(2)}`;
+}
+function renderUsage(u, pricing) {
+  const card = $("usage-card");
+  card.hidden = !u;
+  if (!u) return;                                        // an older server
+  const t = u.today || {}, a = u.total || {};
+  facts($("usage-facts"), [
+    ["Today", `${fmt(t.requests)} requests · ${fmt(t.prompt_tokens)} prompt · ${fmt(t.reused)} reused · ${fmt(t.output_tokens)} written`],
+    ["Today's cost", money(t.cost)],
+    ["All time", `${fmt(a.requests)} requests · ${fmt(a.prompt_tokens)} prompt · ${fmt(a.reused)} reused · ${fmt(a.output_tokens)} written`],
+    ["All-time cost", money(a.cost)],
+  ]);
+  const p = pricing || {};
+  $("usage-pricing-note").textContent = p.input_per_mtok != null
+    ? `${p.input_per_mtok} / ${p.cached_input_per_mtok} / ${p.output_per_mtok} per 1M in·cached·out (${p.currency})` : "";
+  const days = (u.days || []).filter((d) => d.requests);
+  $("usage-days-wrap").hidden = days.length < 2;
+  $("usage-days-body").innerHTML = days.map((d) => `<tr><td>${esc(d.date)}</td><td class="num">${fmt(d.requests)}</td>
+    <td class="num">${fmt(d.prompt_tokens)}</td><td class="num">${fmt(d.reused)}</td>
+    <td class="num">${fmt(d.output_tokens)}</td><td class="num">${esc(money(d.cost))}</td></tr>`).join("");
+  $("usage-note").textContent = "Kept per day across starts, next to the run config. The cost is what these tokens "
+    + "would have cost at API prices — set your own under About > Token pricing.";
 }
 
 function renderTotals(t) {
@@ -491,6 +529,41 @@ $("cfg-save").addEventListener("click", async () => {
     $("cfg-msg").textContent = "";
     toast("error", "Not saved", String(e.message || e), 6000);
   }
+});
+
+// ------------------------------------------------------------------ Token pricing (GET /usage, POST /pricing)
+// The prices the Monitor's cost readout uses. They live next to the run config (strata-<model>.pricing.json);
+// an empty field is the default. The card shows the current values, which come with the metrics poll.
+function fillPricing(p) {
+  if (!p) return;
+  $("price-currency").value = p.currency || "CNY";
+  $("price-input").value = p.input_per_mtok ?? "";
+  $("price-cached").value = p.cached_input_per_mtok ?? "";
+  $("price-output").value = p.output_per_mtok ?? "";
+}
+$("price-save").addEventListener("click", async () => {
+  const pricing = {currency: $("price-currency").value};
+  for (const [id, key] of [["price-input", "input_per_mtok"], ["price-cached", "cached_input_per_mtok"],
+                           ["price-output", "output_per_mtok"]]) {
+    const s = $(id).value.trim();
+    pricing[key] = s === "" ? null : Number(s);
+  }
+  try {
+    const r = await fetch("pricing", {method: "POST", headers: headers(true), body: JSON.stringify({pricing})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    fillPricing(b.pricing);
+    $("price-msg").textContent = "Saved; the Monitor's costs use these prices.";
+    if (lastMetrics) { lastMetrics.pricing = b.pricing; lastMetrics.usage = b.usage; render(lastMetrics); }
+  } catch (e) {
+    $("price-msg").textContent = "";
+    toast("error", "Not saved", String(e.message || e), 6000);
+  }
+});
+$("price-default").addEventListener("click", () => {
+  $("price-currency").value = "CNY";
+  for (const id of ["price-input", "price-cached", "price-output"]) $(id).value = "";
+  $("price-msg").textContent = "Save to go back to the default prices.";
 });
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
