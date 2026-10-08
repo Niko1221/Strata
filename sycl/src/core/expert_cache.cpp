@@ -430,6 +430,9 @@ bool ExpertCache::open_segmented(uint64_t want, std::string &err) try {
         }
         mapped_segs_ = (int64_t) i + 1;
     }
+    // the reserved VA, so device_offset_end can place a borrowed prompt buffer or a resident expert inside it (the GEMM
+    // stages an operand that lies more than 4 GiB in; oneMKL misreads such an operand's last partial tile)
+    strata::device_alloc_register(base_, (size_t) reserved_);
     return true;
 #endif
 }

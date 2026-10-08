@@ -170,13 +170,49 @@ inline bool arena_alias_guard_enabled() {
 }  // namespace strata
 
 #include <vector>
+#include <map>
+#include <mutex>
 namespace strata {
+// Every big device allocation (base -> size), so device_offset_end can find the allocation that holds an address.  The
+// CPU expert pool's handshake and oneMKL's GEMM both care where, within its allocation, an operand lies.
+inline std::map<const void*, size_t>& device_alloc_map() {
+    static std::map<const void*, size_t> m;
+    return m;
+}
+inline std::mutex& device_alloc_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline void device_alloc_register(const void* p, size_t bytes) {
+    if (p == nullptr || bytes == 0) return;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    device_alloc_map()[p] = bytes;
+}
+// How far into its device allocation the byte range [p, p + bytes) ends; 0 when p is not in one we know.  oneMKL's GEMM
+// reads the last, partial tile of an operand from the wrong place when it lies more than 4 GiB in (Arc A770, oneMKL
+// 2026.1), so the GEMM stages any operand this reports > 4 GiB for.  An operand in an allocation we did not register
+// (small cudaMalloc'd buffers) is reported 0: those can never reach 4 GiB.
+inline size_t device_offset_end(const void* p, size_t bytes) {
+    if (p == nullptr) return 0;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    auto& m = device_alloc_map();
+    auto it = m.upper_bound(p);
+    if (it == m.begin()) return 0;
+    --it;
+    const uint8_t* base = (const uint8_t*) it->first;
+    const uint8_t* end = (const uint8_t*) p + bytes;
+    if (end > base + it->second) return 0;
+    return (size_t) (end - base);
+}
 // sycl::malloc_device for a big allocation, checked for aliased pages (arena_alias_check) and, when it has some, allocated
 // again behind a growing spacer that moves it.  Small allocations and STRATA_ARENA_ALIAS_CHECK=0 go straight to
 // sycl::malloc_device.  The memory comes back uninitialised, as from sycl::malloc_device.
 inline void* malloc_device_guarded(size_t bytes, sycl::queue& q, const char* what = "device buffer") {
     void* p = sycl::malloc_device(bytes, q);
-    if (p == nullptr || bytes < ((size_t) 32 << 20) || !arena_alias_guard_enabled()) return p;
+    if (p == nullptr || bytes < ((size_t) 32 << 20) || !arena_alias_guard_enabled()) {
+        device_alloc_register(p, bytes);
+        return p;
+    }
     std::vector<void*> spacers;
     bool clean = false;
     for (int attempt = 0; attempt < 8 && p != nullptr; ++attempt) {
@@ -199,6 +235,7 @@ inline void* malloc_device_guarded(size_t bytes, sycl::queue& q, const char* wha
     for (void* sp : spacers) if (sp != nullptr) sycl::free(sp, q);
     if (p != nullptr && !clean)
         std::fprintf(stderr, "strata: WARNING: the %s still has aliased pages after 8 tries (STRATA_ARENA_ALIAS_CHECK=0 skips the check)\n", what);
+    device_alloc_register(p, bytes);
     return p;
 }
 }  // namespace strata
