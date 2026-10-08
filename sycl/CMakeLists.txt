@@ -32,6 +32,14 @@ set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
 # bound for every device in this build.
+# The short B-series bound matters most on the Windows OpenCL backend, where a kernel's writes to host-mapped memory
+# are not reliably visible while a window runs, so the per-layer waits are expected to run out and give up and the
+# spinning before they do is time spent on nothing. On an Arc Pro B70 (OpenCL, no command graphs, JIT build), 128
+# greedy tokens, medians of two interleaved runs, 20,000 against 2,000,000 measured 53.5 vs 39.9 tok/s after a
+# 3-token prompt and 45.5 vs 25.4 after a 2,048-token one - the same build, one -DSTRATA_SYCL_SPIN_MAX apart
+# (+34% and +79%, and more of it the longer the context, which is more waits running out). docs/INTEL.md has the
+# run-to-run detail, and the case that goes the other way: without --mtp the suffix drafter's own waits need the
+# long bound, so one fixed constant cannot serve both.
 set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "fixed bound of the device's spins on host flags, in reads (empty: chosen per device at run time)")
 if(STRATA_SYCL_SPIN_MAX)
   add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)
