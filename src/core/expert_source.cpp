@@ -279,14 +279,15 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     std::ifstream info(meminfo);
     std::string line;
     uint64_t bytes = 0;
+    bool found = false;
     while (std::getline(info, line)) {
         std::istringstream fields(line);
         std::string key, unit;
         uint64_t value = 0;
         if (fields >> key >> value >> unit && key == "MemAvailable:" && unit == "kB" &&
-            value <= std::numeric_limits<uint64_t>::max() / 1024) bytes = value * 1024;
+            value <= std::numeric_limits<uint64_t>::max() / 1024) { bytes = value * 1024; found = true; }
     }
-    if (bytes == 0) return false;
+    if (!found) return false;
     // Account for the tightest cgroup ancestor limit when its normal mount is visible.
     // This is a point-in-time guard, not a reservation against concurrent allocations.
     std::ifstream groups(self_cgroup);

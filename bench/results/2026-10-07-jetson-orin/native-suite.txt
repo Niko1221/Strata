@@ -1,0 +1,28 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+      Start 82: native_expert_parity_refuses_q6_K
+ 1/11 Test #82: native_expert_parity_refuses_q6_K ...   Passed    0.27 sec
+      Start 83: native_expert_parity_q4_K_q5_1
+ 2/11 Test #83: native_expert_parity_q4_K_q5_1 ......   Passed    0.66 sec
+      Start 84: native_expert_parity_q4_K_q8_0
+ 3/11 Test #84: native_expert_parity_q4_K_q8_0 ......   Passed    0.60 sec
+      Start 85: native_expert_parity_q5_K_q8_0
+ 4/11 Test #85: native_expert_parity_q5_K_q8_0 ......   Passed    0.62 sec
+      Start 86: native_expert_parity_q8_0_q8_0
+ 5/11 Test #86: native_expert_parity_q8_0_q8_0 ......   Passed    0.30 sec
+      Start 87: native_expert_parity_q4_K_q5_0
+ 6/11 Test #87: native_expert_parity_q4_K_q5_0 ......   Passed    0.61 sec
+      Start 88: native_expert_parity_q5_0_q8_0
+ 7/11 Test #88: native_expert_parity_q5_0_q8_0 ......   Passed    0.31 sec
+      Start 89: native_expert_parity_q4_0_q4_0
+ 8/11 Test #89: native_expert_parity_q4_0_q4_0 ......   Passed    0.31 sec
+      Start 90: native_expert_parity_q4_0_q4_1
+ 9/11 Test #90: native_expert_parity_q4_0_q4_1 ......   Passed    0.32 sec
+      Start 91: native_expert_parity_q5_1_min
+10/11 Test #91: native_expert_parity_q5_1_min .......   Passed    0.12 sec
+      Start 92: native_expert_parity_bf16_embd
+11/11 Test #92: native_expert_parity_bf16_embd ......   Passed    0.16 sec
+
+100% tests passed, 0 tests failed out of 11
+
+Total Test time (real) =   4.30 sec

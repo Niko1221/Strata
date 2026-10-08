@@ -1,0 +1,16 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+    Start 25: dma_batch_parity
+1/5 Test #25: dma_batch_parity .................   Passed    3.39 sec
+    Start 43: native_multi_parity
+2/5 Test #43: native_multi_parity ..............   Passed    0.40 sec
+    Start 55: kv_stream_parity
+3/5 Test #55: kv_stream_parity .................   Passed   19.46 sec
+    Start 62: pinned_shared_test
+4/5 Test #62: pinned_shared_test ...............   Passed    0.10 sec
+    Start 64: cuda_device_selftest
+5/5 Test #64: cuda_device_selftest .............   Passed    0.13 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  23.55 sec

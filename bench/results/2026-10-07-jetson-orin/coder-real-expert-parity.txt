@@ -1,0 +1,193 @@
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 0   iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.26e-02  gpu rel 1.09e-02  cpu-gpu 1.34e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 1   iq2_s   /q2_0    blob  1510400  cpu rel 1.25e-02  gpu rel 1.10e-02  cpu-gpu 1.40e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 2   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.32e-02  gpu rel 1.18e-02  cpu-gpu 1.45e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 3   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.32e-02  gpu rel 1.14e-02  cpu-gpu 1.43e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 4   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.32e-02  gpu rel 1.16e-02  cpu-gpu 1.52e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 5   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.34e-02  gpu rel 1.16e-02  cpu-gpu 1.54e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 6   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.41e-02  gpu rel 1.11e-02  cpu-gpu 1.62e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 7   iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.27e-02  gpu rel 1.09e-02  cpu-gpu 1.55e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 8   iq2_s   /q2_0    blob  1510400  cpu rel 1.25e-02  gpu rel 1.11e-02  cpu-gpu 1.37e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 9   iq2_s   /iq4_nl  blob  1971200  cpu rel 1.30e-02  gpu rel 1.11e-02  cpu-gpu 1.46e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 10  iq2_s   /q2_0    blob  1510400  cpu rel 1.31e-02  gpu rel 1.14e-02  cpu-gpu 1.55e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 11  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.29e-02  gpu rel 1.11e-02  cpu-gpu 1.41e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 12  iq3_xxs /q2_0    blob  1715200  cpu rel 1.33e-02  gpu rel 1.18e-02  cpu-gpu 1.50e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 13  iq2_s   /q2_0    blob  1510400  cpu rel 1.30e-02  gpu rel 1.17e-02  cpu-gpu 1.64e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 14  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.36e-02  gpu rel 1.15e-02  cpu-gpu 1.59e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 15  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.27e-02  gpu rel 1.15e-02  cpu-gpu 1.53e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 16  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.36e-02  gpu rel 1.10e-02  cpu-gpu 1.58e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 17  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.24e-02  gpu rel 1.09e-02  cpu-gpu 1.43e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 18  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.27e-02  gpu rel 1.11e-02  cpu-gpu 1.53e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 19  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.36e-02  gpu rel 1.14e-02  cpu-gpu 1.59e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 20  iq3_xxs /q2_0    blob  1715200  cpu rel 1.33e-02  gpu rel 1.17e-02  cpu-gpu 1.57e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 21  iq3_s   /q2_0    blob  1868800  cpu rel 1.33e-02  gpu rel 1.13e-02  cpu-gpu 1.58e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 22  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.29e-02  gpu rel 1.12e-02  cpu-gpu 1.51e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 23  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.32e-02  gpu rel 1.18e-02  cpu-gpu 1.58e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 24  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.30e-02  gpu rel 1.14e-02  cpu-gpu 1.33e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 25  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.30e-02  gpu rel 1.10e-02  cpu-gpu 1.50e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 26  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.27e-02  gpu rel 1.17e-02  cpu-gpu 1.52e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 27  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.34e-02  gpu rel 1.14e-02  cpu-gpu 1.52e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 28  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.27e-02  gpu rel 1.14e-02  cpu-gpu 1.50e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 29  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.27e-02  gpu rel 1.11e-02  cpu-gpu 1.50e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 30  iq3_xxs /q2_0    blob  1715200  cpu rel 1.31e-02  gpu rel 1.22e-02  cpu-gpu 1.48e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 31  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.25e-02  gpu rel 1.13e-02  cpu-gpu 1.49e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 32  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.31e-02  gpu rel 1.04e-02  cpu-gpu 1.51e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 33  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.32e-02  gpu rel 1.13e-02  cpu-gpu 1.51e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 34  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.28e-02  gpu rel 1.15e-02  cpu-gpu 1.46e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 35  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.34e-02  gpu rel 1.14e-02  cpu-gpu 1.61e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 36  iq2_s   /q2_0    blob  1510400  cpu rel 1.26e-02  gpu rel 1.11e-02  cpu-gpu 1.46e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 37  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.31e-02  gpu rel 1.11e-02  cpu-gpu 1.51e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 38  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.30e-02  gpu rel 1.22e-02  cpu-gpu 1.56e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 39  iq2_s   /iq4_nl  blob  1971200  cpu rel 1.30e-02  gpu rel 1.17e-02  cpu-gpu 1.48e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 40  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.35e-02  gpu rel 1.18e-02  cpu-gpu 1.62e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 41  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.31e-02  gpu rel 1.11e-02  cpu-gpu 1.56e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 42  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.34e-02  gpu rel 1.16e-02  cpu-gpu 1.47e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 43  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.32e-02  gpu rel 1.14e-02  cpu-gpu 1.53e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 44  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.30e-02  gpu rel 1.10e-02  cpu-gpu 1.43e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 45  iq3_s   /iq4_nl  blob  2329600  cpu rel 1.34e-02  gpu rel 1.17e-02  cpu-gpu 1.48e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 46  iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.34e-02  gpu rel 1.17e-02  cpu-gpu 1.50e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+layer 47  iq4_xs  /iq4_nl  blob  2662400  cpu rel 1.35e-02  gpu rel 1.15e-02  cpu-gpu 1.54e-02  ok
+native_expert_parity: 0 failures

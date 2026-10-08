@@ -1,0 +1,2 @@
+Synthetic fixtures: three experts per tensor, BF16 dense tensor and F32 norm.
+Q2_0, Q4_0 and Q8_0 streamed GGUF tensor types and data bytes match the original quantizers and source dense/norm data.

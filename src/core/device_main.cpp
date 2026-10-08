@@ -65,6 +65,10 @@ int main(int argc, char** argv) {
     try {
         const strata::core::DeviceInfo d = strata::core::device_info(0);
         std::printf("device %d: %s\n", d.ordinal, d.name.c_str());
+        if (d.integrated)
+            std::printf("  shared physical RAM (CUDA memory is not extra capacity beside host RAM)\n"
+                        "  managed memory %d, concurrent managed access %d, mapped host memory %d\n",
+                        d.managed_memory, d.concurrent_managed_access, d.can_map_host_memory);
 #if defined(STRATA_USE_HIP)
         std::printf("  HIP arch            %s wave32 (compiled for %s)\n", d.arch.c_str(),
                     strata::core::compiled_gpu_archs());

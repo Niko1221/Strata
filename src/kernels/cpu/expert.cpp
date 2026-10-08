@@ -5,11 +5,14 @@
 // include/strata/kernels/cpu/expert.hpp.  Read that header first; it says why each piece is shaped this way.
 #include "strata/kernels/cpu/expert.hpp"
 
+#include "strata/platform/cpu_arch.hpp"
+#if STRATA_CPU_X86
 #include <immintrin.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
 #include <cpuid.h>
+#endif
 #endif
 
 #include <cmath>
@@ -76,6 +79,7 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
     a.nchunks = n / QKA;
     for (int chunk = 0; chunk < a.nchunks; ++chunk) {
         const float* xb = x + chunk * QKA;
+        #if STRATA_CPU_X86
         __m256 v0 = _mm256_loadu_ps(xb);
         __m256 v1 = _mm256_loadu_ps(xb + 8);
         __m256 v2 = _mm256_loadu_ps(xb + 16);
@@ -102,6 +106,26 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
         i0 = _mm256_permutevar8x32_epi32(i0, _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
         int8_t* q = a.q + chunk * QKA;
         _mm256_storeu_si256((__m256i*) q, i0);
+        #else
+        float amax = 0.0f;
+        for (int j = 0; j < QKA; ++j) amax = std::fmax(amax, std::fabs(xb[j]));
+        const float d = amax / 127.0f;
+        const __fp16 half = (__fp16) d;
+        uint16_t half_d;
+        std::memcpy(&half_d, &half, sizeof half_d);
+        // Pinned ggml's ARM quantizer computes the reciprocal of d. Computing
+        // 127/amax instead changes a few rounding ties (the x86 path uses it).
+        const float inverse = d != 0.0f ? 1.0f / d : 0.0f;
+        int8_t* q = a.q + chunk * QKA;
+        for (int j = 0; j < QKA; ++j) {
+            // Explicit ties-to-even, independent of the process rounding mode.
+            const float v = xb[j] * inverse;
+            const float lo = std::floor(v);
+            const float frac = v - lo;
+            const int base = (int) lo;
+            q[j] = (int8_t) (base + (frac > 0.5f || (frac == 0.5f && (base & 1))));
+        }
+        #endif
         int32_t sum = 0;
         for (int j = 0; j < QKA; ++j) sum += q[j];
         a.scale[chunk] = h2f((const uint8_t*) &half_d);
@@ -120,6 +144,7 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
 ///
 /// The result is the 32 codes of ONE ACTIVATION CHUNK (4 qword lanes), which is the unit the Q8_1 scale is
 /// defined on - not the 64-weight block.
+#if STRATA_CPU_X86
 inline __m256i unpack_q2_0(const uint8_t* codes) {
     const __m128i packed = _mm_loadl_epi64((const __m128i*) codes);   // 8 bytes -> 4 u16 in the low half
     const __m256i lanes = _mm256_cvtepu16_epi64(packed);              // 4 qwords, 8 codes each
@@ -244,16 +269,44 @@ inline float row_dot(const uint8_t* codes, const uint8_t* scales, const ActQ& a,
     return hsum_ps(acc) - corr;
 }
 
+#else
+// Portable packed-Q2 rows: integer chunks are exact, with ggml's generic
+// two-chunk FP32 reduction. Single and grouped tokens use the same sequence.
+inline float row_dot(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
+    float result = 0.0f;
+    for (int b = 0; b < nblocks; ++b) {
+        float block = 0.0f;
+        for (int half = 0; half < 2; ++half) {
+            int dot = 0;
+            for (int j = 0; j < QKA; ++j) {
+                const int k = half * QKA + j;
+                const int code = (codes[b * 16 + k / 4] >> (2 * (k % 4))) & 3;
+                dot += (code - 1) * a.q[b * QK + k];
+            }
+            block += a.scale[2 * b + half] * float(dot);
+        }
+        result += h2f(scales + 2 * b) * block;
+    }
+    return result;
+}
+#endif
+
 // VNNI's integer partial sums are exact. Remove the Q2_0 code offset BEFORE
 // conversion to float, then follow the pinned generic CPU dot's two-chunk and
 // per-64-block reduction. Its x86 type trait selects this generic reduction even
 // in the AVX-512 oracle build. The legacy eight-lane FP32 reduction above has a
 // different rounding order and remains the default.
 inline int chunk_dot_oracle(const uint8_t* codes, const int8_t* q, int sum) {
+#if STRATA_CPU_X86
     const __m256i lanes = block_dot(codes, q);
     const __m128i halves = _mm_add_epi32(_mm256_castsi256_si128(lanes), _mm256_extracti128_si256(lanes, 1));
     const __m128i pairs = _mm_hadd_epi32(halves, halves);
     return _mm_cvtsi128_si32(_mm_hadd_epi32(pairs, pairs)) - sum;
+#else
+    int dot = -sum;
+    for (int j = 0; j < QKA; ++j) dot += ((codes[j / 4] >> (2 * (j % 4))) & 3) * q[j];
+    return dot;
+#endif
 }
 
 inline float row_dot_oracle(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
@@ -275,6 +328,7 @@ inline float row_dot_oracle(const uint8_t* codes, const uint8_t* scales, const A
 template<int NT>
 inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const ActQ* const* a, int nblocks,
                           float* res) {
+#if STRATA_CPU_X86
     if (kZmm) { row_dot_multi_z<NT>(codes, scales, a, nblocks, res); return; }
     __m256 acc[NT];
     float corr[NT];
@@ -295,6 +349,9 @@ inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const Act
         }
     }
     for (int t = 0; t < NT; ++t) res[t] = hsum_ps(acc[t]) - corr[t];
+#else
+    for (int t = 0; t < NT; ++t) res[t] = row_dot(codes, scales, *a[t], nblocks);
+#endif
 }
 
 template<int NT>
@@ -347,6 +404,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
     // Plan v0.3 P6: AVX-512, the same operations per element as the scalar loop below (max of |x|, one multiply,
     // +-0.5 away from zero, truncation, clamp), so the result is bitwise the scalar one.  The scalar loop took
     // ~22 us per 2560 values - 3.2 ms of every speculative round.
+#if STRATA_CPU_X86
     {
         const __m512 half = _mm512_set1_ps(0.5f), mhalf = _mm512_set1_ps(-0.5f), zero = _mm512_setzero_ps();
         const __m512i lo = _mm512_set1_epi32(-127), hi = _mm512_set1_epi32(127);
@@ -373,6 +431,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
         }
         return;
     }
+#endif
     for (int k = 0; k < a.nchunks; ++k) {
         const float* xb = x + k * QKA;
         float amax = 0.f;
@@ -505,6 +564,7 @@ void s2_expert_down_rows_multi(const uint8_t* blob, const ActQ* const* a2, int n
 namespace {
 template<int NT>
 inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
+#if STRATA_CPU_X86
     __m512 acc[NT], corr[NT];
     for (int t = 0; t < NT; ++t) { acc[t] = _mm512_setzero_ps(); corr[t] = _mm512_setzero_ps(); }
     const __m512i base = _mm512_setr_epi32(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1);
@@ -533,6 +593,22 @@ inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks,
         }
     }
     for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(acc[t]) - _mm512_reduce_add_ps(corr[t]);
+#else
+    for (int t = 0; t < NT; ++t) {
+        float result = 0.0f;
+        for (int b = 0; b < nblocks; ++b) {
+            const uint8_t* w = row + b * BB;
+            float block = 0.0f;
+            for (int half = 0; half < 2; ++half) {
+                const int chunk = 2 * b + half;
+                const int dot = chunk_dot_oracle(w + 2 + half * 8, a[t]->q + chunk * QKA, a[t]->sum[chunk]);
+                block += a[t]->scale[chunk] * float(dot);
+            }
+            result += h2f(w) * block;
+        }
+        res[t] = result;
+    }
+#endif
 }
 template<int NT>
 void q2g_rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0, int r1) {

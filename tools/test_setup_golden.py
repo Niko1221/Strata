@@ -92,6 +92,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             setup.mark(dst)
 
         patches = [
+            mock.patch.object(setup, "arm64_host", lambda: False),  # Fixtures describe x86 PCs, regardless of test host.
             mock.patch.object(setup, "ROOT", t),
             mock.patch.object(setup, "GPU_PICK", None),
             mock.patch.object(setup, "data_folder", lambda d: (t / "data", [])),

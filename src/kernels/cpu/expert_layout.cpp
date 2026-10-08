@@ -6,11 +6,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "strata/platform/cpu_arch.hpp"
+#if STRATA_CPU_X86
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
 #else
 #include <cpuid.h>
+#endif
 #endif
 #include <fstream>
 #include <sstream>
@@ -39,6 +42,9 @@ int cpu_isa_cap() {
 }
 
 bool cpu_avx512_ok() {
+#if !STRATA_CPU_X86
+    return false;
+#else
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
         if (cpu_isa_cap() < 3) return false;
@@ -69,9 +75,13 @@ bool cpu_avx512_ok() {
         return ((ebx >> 16) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u) && ((ecx >> 1) & 1u);
     }();
     return ok;
+#endif
 }
 
 bool cpu_avx512bw_ok() {
+#if !STRATA_CPU_X86
+    return false;
+#else
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
         unsigned r[4] = {0, 0, 0, 0};
@@ -101,9 +111,13 @@ bool cpu_avx512bw_ok() {
         return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u);
     }();
     return ok;
+#endif
 }
 
 bool cpu_avx2_ok() {
+#if !STRATA_CPU_X86
+    return false;
+#else
     static const bool ok = [] {
         if (cpu_isa_cap() < 2) return false;
         unsigned r[4] = {0, 0, 0, 0};
@@ -134,9 +148,13 @@ bool cpu_avx2_ok() {
         return ((r[1] >> 5) & 1u) != 0;                    // AVX2
     }();
     return ok;
+#endif
 }
 
 bool cpu_avx1_ok() {
+#if !STRATA_CPU_X86
+    return false;
+#else
     // AVX (Sandy Bridge, 2011): AVX + OSXSAVE with the OS saving the YMM state; FMA, F16C and AVX2 not needed.
     // From the Strata_Dirigo fork (rwkeyes).
     static const bool ok = [] {
@@ -160,9 +178,13 @@ bool cpu_avx1_ok() {
         return (xcr0 & 0x6) == 0x6;
     }();
     return ok;
+#endif
 }
 
 bool cpu_sse42_ok() {
+#if !STRATA_CPU_X86
+    return false;
+#else
     static const bool ok = [] {
         unsigned r[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
@@ -175,6 +197,7 @@ bool cpu_sse42_ok() {
         return ((r[2] >> 20) & 1u) && ((r[2] >> 23) & 1u);   // SSE4.2, POPCNT
     }();
     return ok;
+#endif
 }
 
 const char* isa_floor_build() {
@@ -189,12 +212,17 @@ const char* isa_floor_build() {
 
 namespace {
 void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
+#if !STRATA_CPU_X86
+    (void) leaf; (void) sub;
+    for (int i = 0; i < 4; ++i) r[i] = 0;
+#else
 #if defined(_MSC_VER)
     int x[4];
     __cpuidex(x, (int) leaf, (int) sub);
     for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
 #else
     __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
 #endif
 }
 }  // namespace
@@ -265,6 +293,12 @@ bool cpu_avxvnni_ok() {
 }
 
 std::string cpu_name() {
+#if !STRATA_CPU_X86
+    std::ifstream model("/proc/device-tree/model");
+    std::string name;
+    if (std::getline(model, name, '\0') && !name.empty()) return name;
+    return "ARM64";
+#else
     unsigned r[12] = {};
 #if defined(_MSC_VER)
     int x[4];
@@ -285,6 +319,7 @@ std::string cpu_name() {
     std::string name(s);
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
+#endif
 }
 
 // ---- the AVX-512 probe and the oracle flag (#795) ----
@@ -313,6 +348,7 @@ const char* CpuFeatures::reason() const {
 
 CpuFeatures cpu_features() {
     CpuFeatures f;
+#if STRATA_CPU_X86
     int reg[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(reg, 0);
@@ -331,10 +367,14 @@ CpuFeatures cpu_features() {
     f.avx512vl = (ebx >> 31) & 1u;
     f.avx512_vnni = (ecx >> 11) & 1u;
     f.avx512_vbmi = (ecx >> 1) & 1u;
+#endif
     return f;
 }
 
 void cpu_require_expert_support() {
+#if !STRATA_CPU_X86
+    return;  // The portable Q2 path has no AVX requirement.
+#else
     const CpuFeatures f = cpu_features();
     if (f.usable()) return;
     std::fprintf(stderr,
@@ -343,17 +383,26 @@ void cpu_require_expert_support() {
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
     std::exit(1);
+#endif
 }
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#if STRATA_CPU_X86
     else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#else
+    else q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#endif
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
+#if STRATA_CPU_X86
     else act_quant_q8_1_avx2(x, n, a);
+#else
+    else act_quant_q8_1(x, n, a);
+#endif
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)

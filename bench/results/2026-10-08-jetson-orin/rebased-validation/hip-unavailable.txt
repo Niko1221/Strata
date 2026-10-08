@@ -1,0 +1,15 @@
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- The HIP compiler identification is unknown
+CMake Error at /home/calvin/.local/lib/python3.10/site-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineHIPCompiler.cmake:174 (message):
+  Failed to find ROCm root directory.
+Call Stack (most recent call first):
+  cmake/hip_backend.cmake:45 (enable_language)
+  CMakeLists.txt:123 (include)
+
+
+-- Configuring incomplete, errors occurred!

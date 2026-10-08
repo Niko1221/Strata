@@ -1,3 +1,4 @@
+#include "strata/platform/cpu_arch.hpp"
 // src/kernels/cpu/pool_test.cpp - P2.S3's test for the expert pool.
 //
 // The pool's correctness claims are small and specific, so they are checked directly rather than through a
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
     }
 
     const cpu::CpuFeatures feat = cpu::cpu_features();
-    if (!feat.usable()) {
+    if (STRATA_CPU_X86 && !feat.usable()) {
         std::printf("  CPU lacks %s - the VNNI path cannot run here; pool test SKIPPED, not passed.\n",
                     feat.reason());
         std::printf("\npool: 0 failures, 1 SKIPPED\n");

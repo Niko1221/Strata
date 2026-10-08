@@ -1,0 +1,28 @@
+-- Strata: CUDA enabled, arch 87
+-- strata: pack/full/experts.bin absent - the expert arena load test is NOT registered
+CMake Warning (dev) at /home/calvin/.local/lib/python3.10/site-packages/cmake/data/share/cmake-3.31/Modules/FetchContent.cmake:1953 (message):
+  Calling FetchContent_Populate(strata_llamacpp) is deprecated, call
+  FetchContent_MakeAvailable(strata_llamacpp) instead.  Policy CMP0169 can be
+  set to OLD to allow FetchContent_Populate(strata_llamacpp) to be called
+  directly for now, but the ability to call it with declared details will be
+  removed completely in a future version.
+Call Stack (most recent call first):
+  CMakeLists.txt:1246 (FetchContent_Populate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: aarch64
+-- GGML_SYSTEM_ARCH: ARM
+-- Including CPU backend
+-- ARM detected
+-- ARM detected flags: -mcpu=cortex-a78ae+crypto+flagm+pauth+noprofile+nossbs
+-- Checking for ARM features using flags:
+--   -U__ARM_FEATURE_MATMUL_INT8
+--   -U__ARM_FEATURE_SVE
+--   -mcpu=cortex-a78ae+crypto+flagm+pauth+noprofile+nossbs+dotprod+noi8mm+nosve
+-- Adding CPU backend variant ggml-cpu: -U__ARM_FEATURE_MATMUL_INT8;-U__ARM_FEATURE_SVE;-mcpu=cortex-a78ae+crypto+flagm+pauth+noprofile+nossbs+dotprod+noi8mm+nosve
+-- ggml version: 0.24.0
+-- ggml commit:  3cf03257f
+-- Configuring done (2.9s)
+-- Generating done (0.4s)
+-- Build files have been written to: /tmp/strata-orin-build

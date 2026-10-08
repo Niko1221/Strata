@@ -1,0 +1,23 @@
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: 0.60 GiB really free for a 0.00 GiB page-locked complement; the model files' cached pages were released: 0.60 GiB free
+FileExpertSource: the rest comes from reclaimed cache of other files: page-locking it in steps, as far as the RAM allows (#1250)
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; 0.00 GiB page-locked after taking the pages in steps;
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB page-locked cache complement
+FileExpertSource: 0.56 GiB really free for a 0.00 GiB page-locked complement; the model files' cached pages were released: 0.56 GiB free
+FileExpertSource: the rest comes from reclaimed cache of other files: page-locking it in steps, as far as the RAM allows (#1250)
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: mapped pinned cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s; 0.00 GiB page-locked after taking the pages in steps;
+FileExpertSource: exchange buffer rotation enabled: 2 buffers, 1382400 bytes each; no host commit memcpy
+FileExpertSource: RAM budget 0.00 GiB: 2 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 1/1 (0.00 GiB, 0 s)
+FileExpertSource: pageable resident cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s
+FileExpertSource: exchange rotation unavailable; retaining copy path: requires equal-size expert blocks and a fully mapped/pinned RAM complement
+io prefetch: 0 read ahead, 0 used, 300 skipped, pread 0 B: bytes PASS
+rotation integration: rotate=0 pinned=1 exchanges=64 commit_ms=9.03544 exact_bytes=PASS
+rotation integration: rotate=1 pinned=1 exchanges=64 commit_ms=0.023712 exact_bytes=PASS
+rotation integration: rotate=1 pinned=0 exchanges=64 commit_ms=9.09486 exact_bytes=PASS
+file_expert_source_test: PASS

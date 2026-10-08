@@ -1,0 +1,13 @@
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_0    /q4_0    blob  2764800  cpu rel 1.29e-02  gpu rel 1.29e-02  cpu-gpu 9.45e-08  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_K    /q5_1    blob  3072000  cpu rel 1.39e-02  gpu rel 1.21e-02  cpu-gpu 1.48e-02  ok
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q8_0    /q8_0    blob  5222400  cpu rel 1.22e-02  gpu rel 1.22e-02  cpu-gpu 9.46e-08  ok
+native_expert_parity: 0 failures

@@ -1,0 +1,9 @@
+READY 2560
+OK 16 4 4 28
+
+load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks
+load_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024
+load_hparams: more info: https://github.com/ggml-org/llama.cpp/issues/16842
+
+strata-vision: model files loaded in 1.5 s
+strata-vision: warmed up at 16 image tokens in 0.4 s

@@ -524,6 +524,42 @@ slowly, the engine prints a hint under its `loaded ... GiB at ...` line naming t
 
 ## Linux
 
+### Jetson AGX Orin (ARM64, CUDA 12.6)
+
+The `feat/jetson-orin-arm64` branch builds on the Jetson AGX Orin 32 GB with
+JetPack 6.2, GCC 11.4 and nvcc 12.6.68, targeting sm_87. See the
+[implementation plan and validation status](JETSON_ORIN_PLAN.md) and
+[portability tests](../bench/results/2026-10-07-jetson-orin/README.md) and
+[real-model results](../bench/results/2026-10-08-jetson-orin/README.md).
+The pinned Coder IQ1_M model runs with file-backed experts and MTP on this Orin.
+Three runs per prompt size measured median decode throughput of 18.6–21.6
+tokens/s for 64-token outputs at context 4096, with 172–1069 prompt tokens.
+A 31234-token prompt passed at context 32768 and retained at least 7.33 GiB
+available physical RAM across startup, the request and recovery. The CPU and
+CUDA image encoders and repeated image API requests also passed
+with a 56-by-56 fixture and a 16-token encoder cap. Larger images and other
+quantizations have not been validated on this host. The results record raw-token
+log-probability differences against the CPU reference; universal numerical
+parity is not established.
+
+CPU and GPU allocations share physical RAM. Setup builds the engine locally
+with `./setup.sh --cuda 12`; it keeps JetPack's toolkit and does not download an
+x86 engine. Its initial context recommendation is 32768. The runtime cache
+budget uses currently available physical memory, bounded by cgroups and CUDA's
+allocation ceiling, with six GiB reserved by default. Swap does not increase
+this budget. `STRATA_UMA_HEADROOM_GIB` sets the reserve in whole GiB; the default
+is an allocation policy, not a measured inference requirement. Integrated-device
+auto cache sizing also leaves 3072 MiB for late workspaces unless an explicit
+`--vram-reserve-mib` is supplied. Startup checks available physical RAM after
+initialization. These checks cannot reserve RAM against other processes.
+
+Expert files fall back to file-backed loading when the full host arena exceeds
+the shared budget. CUDA allocations and mapped registered host buffers retain
+their existing roles. Orin reports managed memory support but no concurrent
+managed access; managed allocations cannot replace concurrently polled
+CPU/GPU control buffers.
+
+
 ```bash
 ./setup.sh
 ```
@@ -1648,3 +1684,23 @@ The page uses relative URLs and works through the existing host binding or a rev
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
 The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, which is dead after the first hyper-connection broadcast: T x 2560 floats less VRAM per chunk (320 MiB at 32768 rows). The planner still counts those bytes by default, so the auto chunk and the cache slots the prompt path borrows are exactly those of 0.1.40.3 and the output bits are unchanged. `STRATA_EMB_REUSE_ACCOUNT=1` lets the planner use the saved bytes: where VRAM limits the chunk it grows (RTX 3060, IQ3_XXS: 6400 to 6656 tokens, 1652 to 1670 borrowed slots, prompt about +3.9%). A different chunk changes the prompt path's rounding, so prompt residuals are not byte-identical to the default; greedy output matched in our runs. Opt-in until it has a KL measurement.
+
+
+### Orin rebase and context measurements, 2026-10-08
+
+The SM87 CUDA build rebased onto upstream `fb58e0d` (0.1.41) passed 102 eligible
+CTest cases across the initial run and targeted rerun, all 48 native Coder
+expert-layer checks and seven real API checks. Three original model-fixture
+CTest cases were not validated; HIP/SYCL toolchains and desktop GPU runtime
+were unavailable. See the [recorded checks and exclusions](../bench/results/2026-10-08-jetson-orin/README.md#rebase-onto-upstream-0141).
+
+On the 32 GB AGX Orin, the same pinned Coder IQ1_M model with file-backed
+experts, MTP spec 4 and prefill batch 64 passed capacities 1K, 2K, 4K, 8K,
+16K, 32K, 64K, 128K and 256K. One 261,936-token prompt completed at 58.5
+prompt tokens/s and generated 64 tokens at 6.6 decode tokens/s; recovery
+passed and at least 9.33 GiB physical RAM remained available. Swap was in use,
+clocks were unlocked, and automatic cache sizes differed between builds.
+This tests execution, not long-context recall quality. The
+[parametric report](../bench/results/2026-10-08-jetson-orin/README.md#parametric-context-comparison)
+contains the same-day baseline, matched three-run ranges, actual prompt
+lengths, allocations and raw results.

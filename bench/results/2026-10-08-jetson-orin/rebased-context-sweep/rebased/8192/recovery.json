@@ -1,0 +1,46 @@
+{
+  "start_time": 1791470171.6152525,
+  "end_time": 1791470173.3208213,
+  "pattern_repeats": 1,
+  "round": 100,
+  "task": "recall",
+  "output_cap": 8,
+  "http_status": 200,
+  "response": {
+    "id": "chatcmpl-7b646a9de0ad4662b75ab936",
+    "object": "chat.completion",
+    "created": 1791470171,
+    "model": "Orin-rebased-ctx8192",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "OK"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 37,
+      "completion_tokens": 2,
+      "total_tokens": 39,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 37,
+      "prompt_ms": 1450.3,
+      "prompt_per_token_ms": 39.197,
+      "prompt_per_second": 25.5,
+      "predicted_n": 2,
+      "predicted_ms": 239.5,
+      "predicted_per_token_ms": 119.75,
+      "predicted_per_second": 8.4,
+      "draft_n": 3,
+      "draft_n_accepted": 3
+    }
+  }
+}

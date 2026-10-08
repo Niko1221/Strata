@@ -1,0 +1,8 @@
+{
+  "purpose": "synthetic CPU/GPU encoder comparison fixture",
+  "size": [
+    56,
+    56
+  ],
+  "sha256": "821fc92247c54993fb9ba26f3580b09d264b5ac743a5cf24e22fa5ac54573275"
+}

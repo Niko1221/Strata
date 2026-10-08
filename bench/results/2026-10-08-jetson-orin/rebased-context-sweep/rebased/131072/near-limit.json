@@ -1,0 +1,46 @@
+{
+  "start_time": 1791473282.0392518,
+  "end_time": 1791475175.370948,
+  "pattern_repeats": 32704,
+  "round": 99,
+  "task": "throughput",
+  "output_cap": 64,
+  "http_status": 200,
+  "response": {
+    "id": "chatcmpl-2336a01c21814196bfb8a449",
+    "object": "chat.completion",
+    "created": 1791473282,
+    "model": "Orin-rebased-ctx131072",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "A computer processes information through a complex, hierarchical system that begins with the processor, or CPU, which acts as the central engine for all computational tasks. The processor operates by fetching instructions from memory, decoding them into machine code, and executing them using specialized arithmetic and logic units. This fetch-decode-execute cycle is fundamental"
+        },
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 130864,
+      "completion_tokens": 64,
+      "total_tokens": 130928,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 130864,
+      "prompt_ms": 1887623.1,
+      "prompt_per_token_ms": 14.424,
+      "prompt_per_second": 69.3,
+      "predicted_n": 64,
+      "predicted_ms": 5484.6,
+      "predicted_per_token_ms": 85.697,
+      "predicted_per_second": 11.7,
+      "draft_n": 87,
+      "draft_n_accepted": 34
+    }
+  }
+}

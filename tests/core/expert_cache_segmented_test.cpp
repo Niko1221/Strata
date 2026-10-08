@@ -51,6 +51,10 @@ int main() {
         return 77;
     }
     constexpr int64_t kBlob = 1 << 20, kSlots = 96, kSeg = 8ll << 20;
+    int device = 0;
+    cudaDeviceProp properties{};
+    if (cudaGetDevice(&device) != cudaSuccess || cudaGetDeviceProperties(&properties, device) != cudaSuccess)
+        return fail("device properties");
     for (int sized = 0; sized < 2; ++sized) {
         strata::core::ExpertCache c;
         c.set_segment_bytes(kSeg);
@@ -73,8 +77,12 @@ int main() {
         if (c.slots() != 32 || c.mapped_bytes() != 32ll << 20 || c.bytes() != 32ll << 20)
             return fail("shrunk sizes");
         if (c.full_slots() != kSlots || c.full_bytes() != kSlots * kBlob) return fail("full sizes");
-        const size_t freed = free_vram() - before;
-        if (freed + (8u << 20) < (size_t) (64ll << 20)) {   // ~64 MiB back to the driver (WDDM rounds a little)
+        const size_t after = free_vram();
+        const size_t freed = after >= before ? after - before : 0;
+        if (properties.integrated)
+            std::printf("shared RAM free-byte delta: %lld (host-wide observation)\n",
+                        (long long) after - (long long) before);
+        if (!properties.integrated && freed + (8u << 20) < (size_t) (64ll << 20)) {
             std::fprintf(stderr, "freed %zu bytes\n", freed);
             return fail("VRAM not given back");
         }

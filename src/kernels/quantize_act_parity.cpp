@@ -160,7 +160,11 @@ void reference_q8_K(const float* x, long long n, std::vector<uint8_t>& blocks, s
         const float iscale = scale_num / max;              // -127 by default; -128 is the rival reading
         int8_t* qs = (int8_t*) (out + 4);
         for (int j = 0; j < QK; ++j) {
-            const int v = nearest_int_host(iscale * xb[j]);
+            // The contract rounds the FP32 multiply before nearest_int's
+            // magic-number addition. ARM can otherwise contract both into
+            // an FMA when this helper is inlined, changing exact tie cases.
+            volatile float product = iscale * xb[j];
+            const int v = nearest_int_host(product);
             qs[j] = (int8_t) std::min(127, v);
         }
         int16_t* bsums = (int16_t*) (out + 4 + QK);

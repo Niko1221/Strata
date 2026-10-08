@@ -1,0 +1,24 @@
+{
+  "prompt": "<|im_start|>user\nReply with exactly Hello Orin.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "ids": [
+    248045,
+    846,
+    198,
+    20206,
+    440,
+    6681,
+    21251,
+    2441,
+    258,
+    13,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    271,
+    248069,
+    271
+  ]
+}

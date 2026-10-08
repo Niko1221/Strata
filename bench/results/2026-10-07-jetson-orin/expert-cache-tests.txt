@@ -1,0 +1,10 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+    Start 61: expert_cache_memory_test
+1/2 Test #61: expert_cache_memory_test .........   Passed    0.27 sec
+    Start 62: expert_cache_memory_refusal
+2/2 Test #62: expert_cache_memory_refusal ......   Passed    0.10 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.38 sec

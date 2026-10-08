@@ -599,6 +599,10 @@ def two_socket_note(sockets) -> list[str]:
             "the config's args (START-HERE --calibrate measures it on this PC)"]
 
 
+def arm64_host():
+    return platform.machine().lower() in ("aarch64", "arm64")
+
+
 def cpu_info():
     """(name, avx2, avx512): avx512 means everything Strata's fast AVX-512 kernels use (F, BW, VL, VNNI, VBMI),
     the same test the engine makes (cpu_avx512_ok), not just AVX-512F."""
@@ -611,8 +615,10 @@ def cpu_info():
         avx512 = bool(pf(41)) and _cpuid_avx512_full()
     else:
         try:
-            txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            with open("/proc/cpuinfo") as cpu_file:
+                txt = cpu_file.read()
+            flags_match = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)
+            flags = set(flags_match.group(1).split()) if flags_match else set()
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
@@ -647,6 +653,8 @@ def cpu_floor(avx2: bool) -> str:
     """The experimental older-CPU build this PC needs (#394 #595 #623): "" with AVX2 (the normal engine), "avx" (Sandy /
     Ivy Bridge, AMD Bulldozer), "none" (SSE4.2 + POPCNT: Nehalem, Westmere), or "unsupported".  STRATA_ISA_FLOOR=avx|
     none asks for that build on any PC (testing it on a newer one)."""
+    if arm64_host():
+        return ""  # Native ARM/NEON backend, not an older x86 ISA floor.
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced
@@ -656,7 +664,8 @@ def cpu_floor(avx2: bool) -> str:
         f = _cpuid_floor()
     else:
         try:
-            txt = open("/proc/cpuinfo").read()
+            with open("/proc/cpuinfo") as cpu_file:
+                txt = cpu_file.read()
             flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
         except (OSError, AttributeError):
             flags = set()
@@ -726,8 +735,59 @@ def _cpuid_avx2() -> bool:
         return False
 
 
+def cuda_driver_gpus():
+    """CUDA driver discovery on ARM, where Tegra's nvidia-smi may omit VRAM.
+    No model, CUDA context, toolkit install, or large allocation is required.
+    Attribute numbers are the public CUdevice_attribute values in cuda.h.
+    """
+    try:
+        lib = ctypes.CDLL("libcuda.so.1")
+        def call(name, args, types):
+            fn = getattr(lib, name)
+            fn.argtypes = types
+            fn.restype = ctypes.c_int
+            if fn(*args) != 0:
+                raise OSError(f"{name} failed")
+        ptr = ctypes.POINTER(ctypes.c_int)
+        call("cuInit", [0], [ctypes.c_uint])
+        count, version = ctypes.c_int(), ctypes.c_int()
+        call("cuDeviceGetCount", [ctypes.byref(count)], [ptr])
+        call("cuDriverGetVersion", [ctypes.byref(version)], [ptr])
+        found = []
+        for i in range(count.value):
+            dev = ctypes.c_int()
+            call("cuDeviceGet", [ctypes.byref(dev), i], [ptr, ctypes.c_int])
+            name = ctypes.create_string_buffer(256)
+            call("cuDeviceGetName", [name, len(name), dev], [ctypes.c_char_p, ctypes.c_int, ctypes.c_int])
+            def attr(key):
+                value = ctypes.c_int()
+                call("cuDeviceGetAttribute", [ctypes.byref(value), key, dev], [ptr, ctypes.c_int, ctypes.c_int])
+                return value.value
+            total = ctypes.c_size_t()
+            call("cuDeviceTotalMem_v2", [ctypes.byref(total), dev], [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int])
+            major, minor, integrated = attr(75), attr(76), bool(attr(18))
+            g = {"index": i, "name": name.value.decode("utf-8", "replace"), "arch": str(major * 10 + minor),
+                 "driver": f"CUDA API {version.value // 1000}.{version.value % 1000 // 10}",
+                 "driver_api": version.value, "vram_gb": total.value / 2**30,
+                 "managed_memory": bool(attr(83)), "concurrent_managed_access": bool(attr(89)),
+                 "can_map_host_memory": bool(attr(19)), "host_register_supported": bool(attr(99))}
+            if integrated:
+                physical = min(ram_gb(), total.value / 2**30)
+                g.update({"uma": True, "dedicated_gb": 0.0, "shared_gb": physical,
+                          "vram_gb": max(0.0, physical - UMA_OS_LEFT_GB),
+                          "jetson": arm64_host() and major == 8 and minor == 7})
+            found.append(g)
+        return found
+    except (OSError, AttributeError):
+        return []
+
+
 def gpus():
     """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
+    if arm64_host():
+        found = cuda_driver_gpus()
+        if found:
+            return found
     s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
              "--format=csv,noheader,nounits"])
     found = []
@@ -2804,6 +2864,8 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
     """The ready-made engine in engine/ (kept between runs), or None when there is none for this PC.
     updating: called to replace an installed engine, which starts instead when this fails (no compile).
     toolkit 12: the experimental CUDA 12 engine (CUDA12_ASSET) in engine-cuda12/."""
+    if arm64_host():
+        return None  # Published engine archives are x86-64, including CUDA 12.
     eng = engine_dir(toolkit)
     asset = CUDA12_ASSET if int(toolkit) == 12 else PREBUILT_ASSET
     info = eng / "BUILD.json"
@@ -2941,7 +3003,8 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
-        if meta.get("src") == source_hash(ENGINE_SOURCES) and \
+        if (not arm64_host() or meta.get("cpu_arch") == "arm64") and \
+                meta.get("src") == source_hash(ENGINE_SOURCES) and \
                 (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
             return
     elif ver >= MIN_ENGINE:
@@ -2985,6 +3048,8 @@ def update_installed_engine(url_base, toolkit=None) -> None:
 
 def pip_cuda_libs(toolkit=13) -> None:
     """NVIDIA's cuBLAS and CUDA runtime for a ready-made engine, from pip: CUDA 13's, or the CUDA 12 engine's."""
+    if arm64_host():
+        return  # JetPack provides the runtime and cuBLAS; desktop wheels must not replace them.
     if int(toolkit) == 12:
         pip_install(CUDA12_WHEELS, "NVIDIA CUDA 12 libraries for the experimental engine (cuBLAS, CUDA runtime; ~0.7 GB)")
     else:
@@ -3027,6 +3092,14 @@ def sm120_nvcc(nvcc, cuda_v, archs):
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
+    if gpu.get("jetson"):
+        nvcc, cuda_v = find_nvcc(below=(13, 0))
+        if nvcc is None or cuda_v < (12, 6):
+            fail("Jetson Orin needs the JetPack CUDA 12.6 toolkit",
+                 "install JetPack's development packages (nvidia-jetpack-dev), then run setup again")
+        if shutil.which("g++") is None:
+            fail("g++ is missing", "install build-essential, then run setup again")
+        return nvcc, None
     # #295: Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_60/sm_70; gpu["toolkit"] = 12: the
     # experimental CUDA 12 engine for any cards (--cuda 12, docs/OLDER_GPUS.md)
     old = int(gpu.get("toolkit") or (12 if min(archs) < CUDA13_MIN_ARCH else 13)) == 12
@@ -3102,13 +3175,27 @@ def install_build_tools(gpu, yes):
     return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
+def build_jobs():
+    jobs = max(2, (os.cpu_count() or 4) // 2)
+    if WIN or not arm64_host():
+        return jobs
+    # CUDA compilation shares RAM with the GPU on Jetson. Keep two GiB aside
+    # and allow two GiB per job; these are conservative build heuristics.
+    try:
+        with open("/proc/meminfo") as f:
+            available = next(int(line.split()[1]) * 1024 for line in f if line.startswith("MemAvailable:"))
+    except (OSError, ValueError, StopIteration, IndexError):
+        return 1
+    return min(jobs, max(1, (available - 2 * 2**30) // (2 * 2**30)))
+
+
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install cmake ninja")
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
-    build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
+    build = [cmake, "--build", str(bdir), "--target", target, "-j", str(build_jobs())]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
     if WIN:
@@ -3186,7 +3273,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     toolkit 12 (default: 12 for a card older than CUDA 13 supports): the experimental CUDA 12 engine, in
     engine-cuda12/ with its own build folders."""
     if toolkit is None:
-        toolkit = 12 if min(int(x) for x in gpu.get("archs", [gpu["arch"]])) < CUDA13_MIN_ARCH else 13
+        toolkit = 12 if gpu.get("jetson") or min(int(x) for x in gpu.get("archs", [gpu["arch"]])) < CUDA13_MIN_ARCH else 13
     t12 = int(toolkit) == 12
     eng = engine_dir(toolkit)
     eng.mkdir(exist_ok=True)
@@ -3194,6 +3281,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
     want_vision = vision != "none"
     local = meta.get("source") == "local"
+    host_arch = "arm64" if arm64_host() else platform.machine().lower()
+    arch_matches = meta.get("cpu_arch", "" if arm64_host() else host_arch) == host_arch
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
     built = {int(x) for x in meta.get("archs", [])}
@@ -3201,9 +3290,11 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     # same; the compile keeps the generations it was built for
     new_arch = local and not set(archs) <= built
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
-    engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
+    engine_ok = local and arch_matches and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
         (meta.get("isa_floor") or "") == floor
-    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
+    vision_ok = not want_vision or (arch_matches and (eng / VEXE).exists() and
+                                   (vision != "gpu" or meta.get("vision") == "gpu") and
+                                   (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
@@ -3212,6 +3303,11 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": toolkit}, yes)
     cuda_archs = ";".join(str(x) for x in archs)
     bdir, vdir = (ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else (ROOT / "build", ROOT / "build-vision")
+    if not arch_matches:
+        # CMake cannot reuse a cached compiler/CPU target from another host architecture.
+        for folder in (bdir, vdir):
+            if folder.exists():
+                shutil.rmtree(folder)
     if not engine_ok:
         say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
             "10-20 minutes, once) ..." if new_arch else
@@ -3236,8 +3332,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
+    vision_kind = "gpu" if want_vision and vision_ok and meta.get("vision") == "gpu" else vision
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
-                                 "vision": vision, **({"toolkit": 12} if t12 else {}),
+                                 "vision": vision_kind, "cpu_arch": host_arch, **({"toolkit": 12} if t12 else {}),
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None,
                                  **({"isa_floor": floor} if floor else {})}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
@@ -4862,12 +4959,21 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
-        cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
+        memory_text = (f"{gpu['shared_gb']:.1f} GiB shared physical RAM ({gpu['vram_gb']:.1f} GiB after OS headroom)"
+                       if gpu.get("uma") else f"{gpu['vram_gb']:.1f} GB VRAM")
+        ok(f"GPU: {gpu['name']}, {memory_text}, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        if gpu.get("jetson"):
+            if str(a.cuda) == "13":
+                fail("Jetson Orin support uses JetPack's CUDA 12.6 toolkit", "use --cuda 12")
+            cuda_tk, why = 12, "Jetson Orin uses the installed JetPack CUDA 12.6 toolkit"
+            if gpu.get("driver_api", 0) < 12060:
+                fail("Jetson's CUDA driver API is older than 12.6", "update JetPack's compute stack")
+        else:
+            cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
         min_driver = CUDA12_MIN_DRIVER if cuda_tk == 12 else MIN_DRIVER
-        if driver_major(gpu) < min_driver:
+        if not gpu.get("jetson") and driver_major(gpu) < min_driver:
             fail(f"the NVIDIA driver is too old ({gpu['driver']}; {min_driver} or newer is needed)",
                  "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again" +
                  ("" if cuda_tk == 12 else f" (or --cuda 12: the experimental CUDA 12 engine runs with driver "
@@ -4909,7 +5015,10 @@ def main() -> int:
     floor = cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if arm64_host():
+        ok("ARM64: the engine is compiled locally; CPU experts use the native ARM backend")
+        a.build = True
+    elif not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
@@ -4936,6 +5045,8 @@ def main() -> int:
                 verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
                                                  else "the rest is read from the SSD as needed)"))
+                if gpu.get("jetson"):
+                    verdict = "fits with file-backed experts (CPU and GPU share RAM; the runtime sizes its cache)"
             any_fits = any_fits or not verdict.startswith("does not fit")
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
         if not any_fits:
@@ -4984,6 +5095,8 @@ def main() -> int:
         if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
+            if gpu.get("jetson"):
+                fit = "   <- file-backed experts; GPU cache sized from shared RAM at startup"
         say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
@@ -5034,6 +5147,8 @@ def main() -> int:
     tag = fam["tag"] + model                           # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
+    if gpu.get("jetson"):
+        rec_ctx = min(rec_ctx, 32768)  # Context, weights and expert caches share this 32 GB pool.
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
         rec_ctx = 8192 if small < 14 else 32768
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
@@ -5138,6 +5253,11 @@ def main() -> int:
                 if share < 0.6:
                     warn("most of the experts are read from the SSD while it answers: expect it to be much slower "
                          "than with enough RAM (a faster SSD and a smaller size help)")
+        elif gpu.get("jetson"):
+            ok(f"low-RAM mode: {model}'s experts use file-backed storage; CPU and GPU share {ram:.1f} GiB RAM. "
+               "The runtime sizes its GPU cache from available physical memory with headroom.")
+            if resident:
+                say("  The requested RAM complement is bounded by that same pool and falls back to file reads if needed.")
         elif resident:
             ok(f"low-RAM mode: the GPU holds ~{100 * share:.0f}% of {model}'s experts ({arena:.0f} GB) and the other "
                f"~{rest:.0f} GB stay in RAM ({ram:.0f} GB), read once from a copy in the model folder")
@@ -5413,7 +5533,8 @@ def main() -> int:
     if budget is not None and not q4_split:   # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N
         args += ["--resident-budget-gib", f"{budget:g}"]   # GiB kept in RAM (#498: a layer split has no budget)
     if vision != "none":
-        args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
+        vision_reserve = max(VISION[vision]["reserve_mib"], 3072) if gpu.get("jetson") else VISION[vision]["reserve_mib"]
+        args += ["--vision", "--vram-reserve-mib", str(vision_reserve)]
         if vision == "gpu" and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
             # a tip only (recommend, never force): on a 12 GB card the encoder's 700 MiB can leave ~200 MiB free
             print(f"  tip: images on a {gpu['vram_gb']:.0f} GB card can leave little VRAM free; if a request stalls, "
@@ -5422,12 +5543,18 @@ def main() -> int:
         if "--vram-reserve-mib" in args:
             i = args.index("--vram-reserve-mib") + 1
             if vision == "gpu" and a.vram_reserve_mib < int(args[i]):
-                warn(f"--vram-reserve-mib {a.vram_reserve_mib}: the image encoder on the GPU needs ~{args[i]} MiB of "
-                     "it; kept as you chose (it may run out of VRAM when it reads a picture)")
+                if gpu.get("jetson"):
+                    warn(f"--vram-reserve-mib {a.vram_reserve_mib}: below the {args[i]} MiB shared RAM reserve "
+                         "for the image encoder and engine workspaces; kept as you chose (it may reduce physical RAM headroom)")
+                else:
+                    warn(f"--vram-reserve-mib {a.vram_reserve_mib}: the image encoder on the GPU needs ~{args[i]} MiB of "
+                         "it; kept as you chose (it may run out of VRAM when it reads a picture)")
             args[i] = str(a.vram_reserve_mib)
         else:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
-        ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
+        memory_name = "Shared RAM" if gpu.get("uma") else "VRAM"
+        memory_purpose = "other programs and workspaces" if gpu.get("uma") else "other programs"
+        ok(f"{memory_name} kept free for {memory_purpose}: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that

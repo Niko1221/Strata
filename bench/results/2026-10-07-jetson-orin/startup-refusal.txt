@@ -1,0 +1,2 @@
+return code 1
+strata generate: no shared physical RAM remains after 1024.00 GiB headroom; free memory before starting the model (STRATA_UMA_HEADROOM_GIB sets headroom)
