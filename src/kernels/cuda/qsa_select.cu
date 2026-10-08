@@ -866,6 +866,85 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(co
 }
 
 #if !defined(__HIPCC__)
+// ---- prompt calls on cards without the tensor-core scorer (Turing): block_scores_kernel's scores, BITWISE, with a
+// thread per (query, head) instead of a warp per (query, block).  There a warp spends 20 shuffles and five 512-byte
+// loads per score; here a lane holds its query head (128 floats) in registers, every lane of the warp reads the same
+// key from shared memory (a broadcast), and the 4-value partials are added in the tree lane 0 of the xor-shuffle sum
+// computes: partial g covers values 4g..4g+3, level o adds g and g + o.  Float addition is commutative, so the same
+// pairs in the same tree give the same bits.  The heads are then summed 0..3 from 0.0f as there.  Blocks < n_bid only:
+// the tail block n_bid (the `dead` key, +1e9) is block_scores_tail_kernel's.
+constexpr int TS_Q = 64;     // queries per CTA (8 per warp, a lane per query head)
+constexpr int TS_KB = 32;    // key blocks per shared-memory tile
+constexpr int TS_BR = 512;   // key blocks per CTA
+
+__device__ __forceinline__ float ts_part(const float4 k4, const float4 q4) {
+    return k4.x * q4.x + k4.y * q4.y + k4.z * q4.z + k4.w * q4.w;   // block_scores_kernel's per-lane expression
+}
+
+__global__ void __launch_bounds__(256, 1) block_scores_thread_kernel(const float* __restrict__ pooled,
+                                                                    const float* __restrict__ q_idx,
+                                                                    const int32_t* __restrict__ steps, int64_t nq,
+                                                                    int64_t max_blocks, int64_t reach,
+                                                                    float* __restrict__ out) {
+    __shared__ __align__(16) float4 ks[TS_KB][IDX_DIM / 4];
+    __shared__ float so[TS_Q][TS_KB + 1];
+    __shared__ int64_t s_nbid[TS_Q];
+    const int t = threadIdx.x, lane = t & 31;
+    const int ql = (t >> 5) * 8 + (lane >> 2), h = lane & 3;   // this lane's query (in the CTA) and head
+    const int64_t q0 = (int64_t) blockIdx.y * TS_Q, qi = q0 + ql;
+    if (t < TS_Q) s_nbid[t] = q0 + t < nq ? steps[(q0 + t) * kStepCount + kStepNBid] : -1;
+    float4 qv[IDX_DIM / 4];
+    {
+        const float4* src = reinterpret_cast<const float4*>(q_idx + (qi < nq ? qi : 0) * IDX_HEADS * IDX_DIM + h * IDX_DIM);
+#pragma unroll
+        for (int g = 0; g < IDX_DIM / 4; ++g) qv[g] = src[g];
+    }
+    __syncthreads();
+    int64_t top = -1;   // the largest n_bid of the CTA's queries: blocks at or past it are never written here
+    for (int i = 0; i < TS_Q; ++i) top = s_nbid[i] > top ? s_nbid[i] : top;
+    const int64_t b_lo = (int64_t) blockIdx.x * TS_BR;
+    int64_t b_hi = b_lo + TS_BR;
+    if (b_hi > reach) b_hi = reach;
+    if (b_hi > top) b_hi = top;
+    if (b_hi > max_blocks) b_hi = max_blocks;
+    for (int64_t b0 = b_lo; b0 < b_hi; b0 += TS_KB) {
+        const int nb = (int) (b_hi - b0 < TS_KB ? b_hi - b0 : TS_KB);
+        __syncthreads();   // the previous tile's reads of ks and so are done
+        for (int i = t; i < nb * (IDX_DIM / 4); i += blockDim.x)
+            ks[i / (IDX_DIM / 4)][i % (IDX_DIM / 4)] = reinterpret_cast<const float4*>(pooled + (b0 + i / (IDX_DIM / 4)) * IDX_DIM)[i % (IDX_DIM / 4)];
+        __syncthreads();
+        for (int j = 0; j < nb; ++j) {
+            const float4* k = ks[j];
+            float c[4];
+#pragma unroll
+            for (int g = 0; g < 4; ++g)
+                c[g] = ((ts_part(k[g], qv[g]) + ts_part(k[g + 16], qv[g + 16])) +
+                        (ts_part(k[g + 8], qv[g + 8]) + ts_part(k[g + 24], qv[g + 24]))) +
+                       ((ts_part(k[g + 4], qv[g + 4]) + ts_part(k[g + 20], qv[g + 20])) +
+                        (ts_part(k[g + 12], qv[g + 12]) + ts_part(k[g + 28], qv[g + 28])));
+            const float d = (c[0] + c[2]) + (c[1] + c[3]);
+            const float r = d > 0.0f ? d : 0.0f;
+            const float r1 = __shfl_down_sync(0xffffffffu, r, 1), r2 = __shfl_down_sync(0xffffffffu, r, 2),
+                        r3 = __shfl_down_sync(0xffffffffu, r, 3);
+            if (h == 0) {
+                float score = 0.0f;
+                score += r;
+                score += r1;
+                score += r2;
+                score += r3;
+                so[ql][j] = score;
+            }
+        }
+        __syncthreads();
+        for (int i = t; i < TS_Q * nb; i += blockDim.x) {
+            const int q = i / nb, j = i % nb;
+            if (b0 + j < s_nbid[q]) out[(q0 + q) * max_blocks + b0 + j] = so[q][j];
+        }
+    }
+}
+#endif
+
+#if !defined(__HIPCC__)
 // ---- the decode top-k on a thread-block cluster (sm_90+; S19).  One CTA per query (block_topk_reg_kernel, or
 // block_topk_kernel above 33,792 blocks: a --max-context over ~135K) makes four radix passes and two scans over up to
 // 65,538 blocks on ONE SM while the rest of the GPU idles - a decode window has 1-5 queries.  Here a cluster of CL_N
@@ -1108,6 +1187,20 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         return;
     }
     const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+#if !defined(__HIPCC__)
+    // prompt calls (an active-block count): the thread-per-head kernel, the same bits.  STRATA_SCORES_THREAD=0: the warp
+    // kernel below
+    static const bool thread = [] { const char* v = std::getenv("STRATA_SCORES_THREAD"); return v == nullptr || std::atoi(v) != 0; }();
+    if (thread && active_blocks > 0) {
+        const dim3 tgrid((unsigned) ((reach + TS_BR - 1) / TS_BR), (unsigned) ((nq + TS_Q - 1) / TS_Q));
+        block_scores_thread_kernel<<<tgrid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks, reach,
+                                                                             scores);
+        block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks, scores);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores thread: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
+#endif
     const dim3 grid((unsigned) ((reach + SCORE_WARPS - 1) / SCORE_WARPS), (unsigned) nq);
     block_scores_kernel<<<grid, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, max_blocks,
                                                                               scores);
