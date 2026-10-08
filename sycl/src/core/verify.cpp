@@ -2390,7 +2390,14 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
 }
 
 namespace { bool g_commit_async = false; }
-void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
+// SYCL port: the commit graph is waited for by default. With the asynchronous commit (the default of the other backends) a
+// decode on the A770 stopped for good after 100 to 600 windows: the compute engine sat in a semaphore wait that nothing
+// signalled, the card busy at full clock, the copy engine idle, the kernel log silent, the process unkillable until the
+// pod was deleted. The synchronous commit finished both 3,000-token runs (the asynchronous one hung every time), and
+// costs about 10% on a short decode. STRATA_COMMIT_ASYNC=1 turns the asynchronous commit back on.
+void Verifier::set_commit_async(bool on) {
+    g_commit_async = on && std::getenv("STRATA_COMMIT_ASYNC") != nullptr && std::getenv("STRATA_COMMIT_SYNC") == nullptr;
+}
 
 bool Verifier::commit(int n_keep, std::string &err) try {
     const OnDevice on_device(device_);
