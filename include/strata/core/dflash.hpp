@@ -116,9 +116,10 @@ public:
 
     /// Uploads the BF16 weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
     /// the expert cache is sized, like MtpDrafter::load.  `target_g` is the target's geometry (its
-    /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` caps the
-    /// cells the drafter's attention sees (the reference attends to every cell; 0 = every cell the
-    /// session's cache could hold).
+    /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` sizes the
+    /// drafter's context: the attention sees cells [0, window) and the pools hold exactly those
+    /// cells (the reference attends to every cell; 0 = every cell the session's cache could hold,
+    /// which prices five FP16 pools at 20 KiB per cell).
     /// `mask_override`: the CLI's --dflash-mask-token (-1 = the artifact's metadata decides; the
     /// effective id is the override when given, else the metadata, and must sit inside the target's
     /// vocabulary - generate.cpp validates it against n_vocab).
