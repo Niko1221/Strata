@@ -15,10 +15,16 @@
 namespace strata::core {
 namespace gemv {
 
-/// The projection accounting `gemv_quantized` charges to.  One process-wide record, reset by the prefill
-/// report; see the header for what each field means and why the split matters.
+/// The projection accounting `gemv_quantized` charges to.  One record a THREAD, reset by the prefill report;
+/// see the header for what each field means and why the split matters.
+///
+/// It was one record a process, which was the same thing while the stages of a layer split ran one after
+/// another on the token loop's own thread.  The chunk pipeline gives each stage a thread, so a process-wide
+/// record would be four threads incrementing one `unordered_map` - a measurement that corrupts the thing it
+/// measures.  Every caller here resets and reads it back on the same thread and the same chunk, so a
+/// thread-local one is not a compromise: it is the report each stage's own chunk prints.
 ProjStats& proj_stats() {
-    static ProjStats s;
+    static thread_local ProjStats s;
     return s;
 }
 void proj_stats_reset() { proj_stats() = ProjStats{}; }

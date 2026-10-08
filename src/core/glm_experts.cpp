@@ -74,6 +74,10 @@ void GlmExpertPool::count_routing(const bool on) {
 
 bool GlmExpertPool::run(int64_t layer, const float* x, const int32_t* ids, int64_t nt, int64_t k, float* out,
                         std::string& err) {
+    // One caller at a time; see the note on `serial_`.  Taken before anything is validated, so the failure
+    // paths below are inside it too and a refused call cannot leave another stage waiting on a half-started
+    // batch.
+    std::lock_guard<std::mutex> serial(serial_);
     if (src_ == nullptr) { err = "glm5-next expert pool was never initialised"; return false; }
     // k < k_ is the VRAM tier's misses (`glm_gpu_experts`): the pool computes only the experts the card does
     // not hold.  More than the pool was sized for would write past its `slot_`/`jobs_`, which is why the upper

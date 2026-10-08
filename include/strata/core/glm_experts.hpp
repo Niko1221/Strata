@@ -30,6 +30,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,16 @@ private:
     /// Size `jobs_`/`head_`/`next_`/`act_` for a chunk of `nt` tokens of a layer whose fmt is `f`.  A no-op
     /// once the largest chunk seen covers `nt`, which is every call after the first of a given size.
     bool grow_to(const strata::kernels::cpu::NativeFmt& f, int64_t nt);
+
+    /// **THE POOL TAKES ONE CALLER, AND A PIPELINE HAS SEVERAL.**  `run` is a host-thread protocol over
+    /// `ExpertPool`'s own members - the batch, the job array, the per-job scratch, the epoch - and none of it
+    /// is re-entrant.  It never had to be: every caller was the token loop, one layer at a time.  The chunk
+    /// pipeline runs a stage a thread, so two stages can reach a MoE layer at the same instant and both would
+    /// be writing `mjobs_`.  This makes them wait instead, which costs the pipeline nothing it was going to get
+    /// anyway - the pool is one shared object with one set of cores, so it is the floor under the whole thing
+    /// and the pipeline's win is exactly the GPU time it hides behind it.  Taken for the DURATION of a call,
+    /// not per layer, so the failure paths (`err` set, `return false`) release it too.
+    std::mutex serial_;
 
     ExpertSource* src_ = nullptr;
     strata::kernels::cpu::ExpertPool* pool_ = nullptr;

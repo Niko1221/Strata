@@ -1145,8 +1145,13 @@ struct SectionTimer {
 /// invisible to the section accounting either way, since a stage never shares a chunk's boundaries with
 /// another.  The events are deliberately never destroyed: a destructor would run after the CUDA context is
 /// gone, which is the very error this avoids, and they go with the context anyway.
+///
+/// The table is `thread_local` on top of that, because the chunk pipeline runs a stage a thread and the lazy
+/// `resize` below is not atomic: four stages meeting a chunk for the first time would grow one vector at once
+/// and read each other's half-written pointers.  A thread is on one device for its whole life, so a table a
+/// thread still gives each stage exactly the one timer it had.
 SectionTimer& section_timer() {
-    static std::vector<SectionTimer*> per_device;
+    static thread_local std::vector<SectionTimer*> per_device;
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0) dev = 0;
     if ((size_t) dev >= per_device.size()) per_device.resize((size_t) dev + 1, nullptr);

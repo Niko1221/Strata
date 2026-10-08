@@ -7255,15 +7255,251 @@ int main(int argc, char** argv) {
                 }
                 return true;
             };
-            // ---- **THE CHUNKED PROMPT CALL: ONE STAGE, OR EVERY STAGE IN ORDER.**  It used to be one stage only,
-            // because `session_token_chunk` refused a layer range and the hand-off carried a single residual.
-            // Both are gone: `c.R` is `T` rows on every stage, so a stage's INPUT is its predecessor's `c.R` and
-            // its OUTPUT is its own, and the only new work is moving `ct` rows instead of one.
+            // ---- **THE CHUNK PIPELINE: A THREAD A STAGE, TWO BUFFERS A BOUNDARY.**
             //
-            // The stages stay strictly ordered, exactly as `glm_token_split` keeps them: each boundary's D2H is
-            // followed by a stream sync, so stage `i+1` cannot read a row stage `i` has not finished writing.
-            // That is also why the H2D below needs no sync of its own - it is issued on the same stream the
-            // stage's layers run on, so it is ordered behind nothing and in front of everything that reads it.
+            // The chunked prompt call used to be `for i in stages` with a D2H and a `cudaStreamSynchronize` at
+            // every boundary, all on this thread: the four cards took turns and three of them were idle at any
+            // instant.  The first family pipelines this (upstream `44bd7ad`), and the shape it uses is the one
+            // here - a stage a worker, its successor launched against the buffer it just filled.
+            //
+            // **WHAT IT IS WORTH, AND WHY IT IS NOT FOUR TIMES.**  Measured on this box, one 512-token chunk
+            // of the 4-way split, `STRATA_GLM_PREFILL_TIME=1`: stage 0 (layers 0-11) 5.81 s, stage 1 6.78 s,
+            // stage 2 6.28 s, stage 3 4.67 s - 23.5 s in all, of which the CPU expert pool is 15.3 s and the
+            // cards 7.7 s.  The pool is ONE shared object on one set of cores, so overlapping the stages
+            // cannot divide it: it is a serial 15.3 s under every schedule, and 23.5/15.3 = 1.54x is the whole
+            // of what a pipeline can reach here.  It is worth reaching because it costs the GPU time nothing:
+            // the cards sum to 7.7 s they were spending one after another.
+            //
+            // Stage 0 stays on this thread.  Its input is the chunk's own embeddings, which the loop above
+            // writes into stage 0's residual immediately before this call and which stage 0's PREVIOUS chunk
+            // is still reading from until its own D2H is done - so it cannot be handed to a worker without a
+            // second residual there, and its predecessor is a `cudaDeviceSynchronize` on the token stream.  The
+            // other stages get a thread each and run every chunk in order.
+            //
+            // The strict ordering the inline version kept is kept exactly: a producer waits for its slot to be
+            // free, and a consumer releases it only after the H2D has read it.  What changed is which stages
+            // are waiting on which - a stage now waits on its own boundary instead of on the whole chain.
+            struct GlmChunkPipe {
+                struct Slot {
+                    std::mutex mu;
+                    std::condition_variable cv;
+                    bool ready = false;   ///< the producer has filled this buffer for the chunk that owns it
+                    bool free = true;     ///< the consumer has finished with the chunk before last that owned it
+                };
+                /// `unique_ptr`, not `Slot` by value: a `Slot` holds a mutex and a condition variable, so it is
+                /// neither copyable nor movable and no container can hold one directly.
+                std::vector<std::unique_ptr<Slot>> slots;   ///< (stages - 1) boundaries, two buffers each
+                std::vector<void*> bufs;      ///< pinned host residuals, indexed the same way
+                std::vector<std::thread> threads;
+                std::vector<void*> R;         ///< each stage's chunk residual, device side
+                std::vector<int> dev;
+                std::vector<cudaStream_t> cs;
+                /// The stage's own work, so this struct does not need the enclosing lambda's locals.
+                std::function<bool(int, int64_t, int64_t)> run_stage;
+                uint64_t stride = 0;          ///< bytes one token of the residual takes
+                int n = 0;
+                std::mutex mu;
+                std::condition_variable cv;
+                /// (pos, ct), one per submitted chunk, appended by the main thread under `mu`.  Every stage
+                /// reads all of it, in order - see `worker`.
+                std::vector<std::pair<int64_t, int64_t>> jobs;
+                std::atomic<bool> done{false};
+                std::atomic<bool> abort{false};
+                /// Chunks the LAST stage has finished.  `finish` waits for this to reach the number of
+                /// published chunks - see there for why ending on the submitter's last chunk is wrong.
+                ///
+                /// A count of CHUNKS and not of tokens: the only reader wants to know when the stages behind
+                /// have drained, and the prompt's own token count is the submitter's `read_n`, which is what
+                /// the heartbeat reports.  A second counter of finished *tokens* would be a number nothing
+                /// reads - it was one until the pipe was made to die with the request.
+                std::atomic<size_t> last_done{0};
+                std::string err;              ///< the first failure, under `mu`
+
+                Slot& slot(int b, size_t j) { return *slots[(size_t) b * 2 + (j & 1)]; }
+                void* buf(int b, size_t j) { return bufs[(size_t) b * 2 + (j & 1)]; }
+
+                /// The wait predicates are re-tested on a timeout as well as on a notify.  Every wake here is
+                /// paired with its own mutex, so a notify cannot be lost, but a failure has to unblock four
+                /// threads on four different mutexes and a bounded re-check makes that impossible to get
+                /// subtly wrong.  Nothing waits unless something is actually stuck, so it costs nothing.
+                /// A function, not a `static constexpr` member: a local class may not have static data members,
+                /// and this one is declared inside `main`.
+                static constexpr std::chrono::milliseconds kTick() { return std::chrono::milliseconds(50); }
+
+                void fail(const std::string& e) {
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (err.empty()) err = e;
+                    }
+                    abort.store(true);
+                    for (auto& sp : slots) sp->cv.notify_all();
+                    cv.notify_all();
+                }
+                /// Stage `b+1`: wait for chunk `j` to arrive on boundary `b`, then read it onto that card.
+                bool take(int b, size_t j, uint64_t bytes, std::string& e) {
+                    Slot& s = slot(b, j);
+                    {
+                        std::unique_lock<std::mutex> lk(s.mu);
+                        // A LOOP, not a predicate-and-test.  The wait is bounded so that a failure can unblock
+                        // four threads on four different mutexes, which means it returns on a plain timeout as
+                        // well - and a timeout is not a failure.  Only `abort` is.
+                        //
+                        // **`done` IS NOT A STOP CONDITION HERE, AND PUTTING IT HERE WAS A BUG.**  The stages
+                        // run two chunks apart per boundary, so the last one can be six chunks behind the
+                        // thread that submits them; ending the request on `done` then killed a stage that was
+                        // still waiting for a hand-off it was owed, and reported it as a failure - measured:
+                        // "the chunk pipeline stopped before chunk 2 could cross boundary 2", on a five-chunk
+                        // prompt that had submitted all five.  `finish` now waits for every published chunk
+                        // before it sets `done`, so the only thing that can stop a `take` early is `abort`.
+                        while (!s.ready && !abort.load()) s.cv.wait_for(lk, kTick());
+                        if (!s.ready) {
+                            e = "the chunk pipeline stopped before chunk " + std::to_string(j) +
+                                " could cross boundary " + std::to_string(b);
+                            return false;
+                        }
+                    }
+                    if (cudaMemcpyAsync(R[(size_t) b + 1], buf(b, j), (size_t) bytes, cudaMemcpyHostToDevice,
+                                        cs[(size_t) b + 1]) != cudaSuccess ||
+                        cudaStreamSynchronize(cs[(size_t) b + 1]) != cudaSuccess) {
+                        e = "strata serve: the residual hand-off to CUDA" + std::to_string(dev[(size_t) b + 1]) +
+                            " failed: " + cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
+                    // THE COPY HAS TO BE DONE BEFORE THE SLOT IS RELEASED, not merely ordered on the stream:
+                    // the producer writes to this host buffer and the copy engine reads it, and only the sync
+                    // says the reader is finished.
+                    {
+                        std::lock_guard<std::mutex> lk(s.mu);
+                        s.ready = false;
+                        s.free = true;
+                    }
+                    s.cv.notify_all();
+                    return true;
+                }
+                /// Stage `b`: wait for boundary `b`'s slot to be free, then leave chunk `j` in it.
+                bool give(int b, size_t j, uint64_t bytes, std::string& e) {
+                    Slot& s = slot(b, j);
+                    {
+                        std::unique_lock<std::mutex> lk(s.mu);
+                        while (!s.free && !abort.load()) s.cv.wait_for(lk, kTick());   // see `take`
+                        if (!s.free) {
+                            e = "the chunk pipeline stopped before chunk " + std::to_string(j) +
+                                " could leave boundary " + std::to_string(b);
+                            return false;
+                        }
+                    }
+                    if (cudaMemcpyAsync(buf(b, j), R[(size_t) b], (size_t) bytes, cudaMemcpyDeviceToHost,
+                                        cs[(size_t) b]) != cudaSuccess ||
+                        cudaStreamSynchronize(cs[(size_t) b]) != cudaSuccess) {
+                        e = "strata serve: the residual hand-off from CUDA" + std::to_string(dev[(size_t) b]) +
+                            " failed: " + cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(s.mu);
+                        s.ready = true;
+                        s.free = false;
+                    }
+                    s.cv.notify_all();
+                    return true;
+                }
+                /// **EVERY STAGE WALKS THE CHUNKS IN ORDER, AND THAT IS NOT AN OPTIMISATION.**
+                ///
+                /// The obvious shape - one work queue, whichever idle worker claims the next chunk runs it -
+                /// DEADLOCKS here, and it is worth writing down why, because the queue looks correct.  Stage
+                /// `s` can only do chunk `j` once stage `s-1` has handed chunk `j` over, so a worker's jobs are
+                /// not interchangeable: the stage-3 thread can claim chunk 0 and will then wait at boundary 2
+                /// for a hand-off that only the stage-1 thread can make - and the stage-1 thread is idle,
+                /// because the chunk it was supposed to take has already been claimed.  Measured on the first
+                /// run of this code: four chunk summaries and then nothing, at 0% CPU, forever.
+                ///
+                /// So each worker is pinned to its stage and takes the chunks in the one order that works.  The
+                /// `jobs` record is still shared and still published under `mu`; what is per-stage is the index.
+                /// The back-pressure falls out of the two-slot boundaries: the main thread cannot publish chunk
+                /// `j+2` at boundary 0 until stage 1 has taken chunk `j`, and stage 1 cannot reach `j+2` until
+                /// stage 2 has taken `j`, and so on down the line.
+                void worker(int stage) {
+                    std::string e;
+                    for (size_t j = 0;; ++j) {
+                        int64_t pos = 0, ct = 0;
+                        {
+                            std::unique_lock<std::mutex> lk(mu);
+                            while (j >= jobs.size() && !done.load() && !abort.load()) cv.wait_for(lk, kTick());
+                            // Only reachable with `done` or `abort` set: a worker must drain every chunk that
+                            // WAS published before it stops, and `finish` publishes nothing new.
+                            if (j >= jobs.size()) break;
+                            pos = jobs[j].first;
+                            ct = jobs[j].second;
+                        }
+                        if (abort.load()) break;
+                        const uint64_t bytes = (uint64_t) ct * stride;
+                        if (!take(stage - 1, j, bytes, e)) { fail(e); break; }
+                        if (!run_stage(stage, pos, ct)) { fail(e); break; }
+                        if (stage + 1 < n && !give(stage, j, bytes, e)) { fail(e); break; }
+                        if (stage + 1 == n) {
+                            last_done.fetch_add(1, std::memory_order_release);
+                            cv.notify_all();
+                        }
+                    }
+                }
+                /// Every chunk is in: let the workers finish what they have and join them.
+                ///
+                /// **THE WAIT FOR `last_done` IS THE WHOLE POINT.**  `done` means "nothing more will be
+                /// published", not "stop now" - the stages behind this thread are still holding hand-offs that
+                /// were published to them, and joining before they drain would end the request with a stage
+                /// still reading a residual the session is about to rewind under.  Both the failed and the
+                /// cancelled exit land here too, which is why `abort` short-circuits the wait.
+                bool finish() {
+                    size_t want = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        want = jobs.size();
+                    }
+                    {
+                        std::unique_lock<std::mutex> lk(mu);
+                        while (!abort.load() && last_done.load() < want) cv.wait_for(lk, kTick());
+                    }
+                    done.store(true);
+                    cv.notify_all();
+                    for (auto& sp : slots) sp->cv.notify_all();
+                    for (std::thread& t : threads)
+                        if (t.joinable()) t.join();
+                    return err.empty();
+                }
+                /// The pinned hand-off buffers are the pipe's own, since the pipeline replaced the single
+                /// `hand[]` residual the serial arm still uses.  `cudaHostAlloc` has no owner, so without this
+                /// every pipe a request builds leaks `(stages - 1) * 2 * hand_bytes` - 192 MiB on a four-card
+                /// split, a request.
+                ///
+                /// Not `cudaFreeHost` on a pipe whose threads are live: `reset` is only ever reached from
+                /// `finish` (which joins) or from the buffer allocation's own failure path (where no thread has
+                /// been spawned yet).
+                ~GlmChunkPipe() {
+                    for (void* b : bufs)
+                        if (b != nullptr) cudaFreeHost(b);
+                }
+            };
+            std::unique_ptr<GlmChunkPipe> chunk_pipe;
+            // ---- **THE CHUNKED PROMPT CALL: ONE STAGE, OR EVERY STAGE AS A PIPELINE.**  It used to be one
+            // stage only, because `session_token_chunk` refused a layer range and the hand-off carried a
+            // single residual.  Both are gone: `c.R` is `T` rows on every stage, so a stage's INPUT is its
+            // predecessor's `c.R` and its OUTPUT is its own, and the only new work is moving `ct` rows instead
+            // of one.
+            /// ONE STAGE'S CHUNK, on its own `err` so the pipeline's four threads do not write one string, and
+            /// with the caller's own `OnDevice` guard.  Both schedules call this: the pipe from a worker thread,
+            /// the `STRATA_GLM_NO_PIPE` arm from this one, so the two arms run the same code and only the
+            /// schedule differs.
+            auto glm_chunk_stage = [&](int i, int64_t ps, int64_t c, std::string& e) -> bool {
+                const strata::core::OnDevice oni(grs[(size_t) i].dev);
+                if (!strata::core::session_token_chunk(*grs[(size_t) i].wt, g, ps, /*pos_base=*/0, c,
+                                                       *grs[(size_t) i].ss, (void*) grs[(size_t) i].cs, glm_pool_fn,
+                                                       glm_pool_user, e)) {
+                    std::fprintf(stderr, "strata serve: session_token_chunk (CUDA%d): %s\n", grs[(size_t) i].dev,
+                                 e.c_str());
+                    return false;
+                }
+                return true;
+            };
             auto glm_token_chunk = [&](int64_t pos, int64_t ct) -> bool {
                 if (!split_run) {
                     const strata::core::OnDevice on0(0);
@@ -7276,33 +7512,123 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 }
-                for (size_t i = 0; i < grs.size(); ++i) {
-                    const strata::core::OnDevice oni(grs[i].dev);
-                    if (i > 0) {
-                        if (cudaMemcpyAsync(grs[i].ss->glm_chunk.R, hand[i - 1], (size_t) ct * (size_t) res_bytes,
+                // STRATA_GLM_NO_PIPE: the pre-pipeline schedule, kept as the A/B arm.  It is the same code the
+                // pipe replaced - `for i in stages`, a D2H and a `cudaStreamSynchronize` at every boundary,
+                // all on this thread - so one binary can measure the pipeline against the thing it replaced
+                // and the two must produce the SAME tokens.  Read once; the cost of `getenv` here is nothing
+                // against a chunk.
+                static const bool pipe_off = std::getenv("STRATA_GLM_NO_PIPE") != nullptr;
+                if (pipe_off) {
+                    for (size_t i = 0; i < grs.size(); ++i) {
+                        if (i > 0 &&
+                            cudaMemcpyAsync(grs[i].ss->glm_chunk.R, hand[i - 1], (size_t) ct * res_bytes,
                                             cudaMemcpyHostToDevice, grs[i].cs) != cudaSuccess) {
-                            std::fprintf(stderr, "strata serve: the residual hand-off to CUDA%d failed\n", grs[i].dev);
+                            err = "the residual hand-off to CUDA" + std::to_string(grs[i].dev) + " failed";
+                            return false;
+                        }
+                        std::string e;
+                        if (!glm_chunk_stage((int) i, pos, ct, e)) {
+                            err = e;
+                            return false;
+                        }
+                        if (i + 1 < grs.size() &&
+                            (cudaMemcpyAsync(hand[i], grs[i].ss->glm_chunk.R, (size_t) ct * res_bytes,
+                                             cudaMemcpyDeviceToHost, grs[i].cs) != cudaSuccess ||
+                             cudaStreamSynchronize(grs[i].cs) != cudaSuccess)) {
+                            err = "the residual hand-off from CUDA" + std::to_string(grs[i].dev) + " failed";
                             return false;
                         }
                     }
-                    err.clear();
-                    if (!strata::core::session_token_chunk(*grs[i].wt, g, pos, /*pos_base=*/0, ct, *grs[i].ss,
-                                                           (void*) grs[i].cs, glm_pool_fn, glm_pool_user, err)) {
-                        std::fprintf(stderr, "strata serve: session_token_chunk (CUDA%d): %s\n", grs[i].dev,
-                                     err.c_str());
-                        return false;
+                    return true;
+                }
+                if (chunk_pipe == nullptr) {
+                    chunk_pipe.reset(new GlmChunkPipe());
+                    GlmChunkPipe& p = *chunk_pipe;
+                    p.n = (int) grs.size();
+                    p.stride = res_bytes;
+                    p.run_stage = [&](int i, int64_t ps, int64_t c) -> bool {
+                        // The stage's own `err`, not the enclosing one: four of these run at once.
+                        std::string e;
+                        return glm_chunk_stage(i, ps, c, e);
+                    };
+                    for (size_t i = 0; i < grs.size(); ++i) {
+                        p.R.push_back(grs[i].ss->glm_chunk.R);
+                        p.dev.push_back(grs[i].dev);
+                        p.cs.push_back(grs[i].cs);
                     }
-                    if (i + 1 < grs.size()) {
-                        if (cudaMemcpyAsync(hand[i], grs[i].ss->glm_chunk.R, (size_t) ct * (size_t) res_bytes,
-                                            cudaMemcpyDeviceToHost, grs[i].cs) != cudaSuccess ||
-                            cudaStreamSynchronize(grs[i].cs) != cudaSuccess) {
-                            std::fprintf(stderr, "strata serve: the residual hand-off from CUDA%d failed\n",
-                                         grs[i].dev);
-                            return false;
+                    for (size_t i = 0; i + 1 < grs.size(); ++i)
+                        for (int k = 0; k < 2; ++k) {
+                            void* h = nullptr;
+                            if (cudaHostAlloc(&h, (size_t) hand_bytes, cudaHostAllocDefault) != cudaSuccess) {
+                                std::fprintf(stderr,
+                                             "strata serve: the pipelined hand-off between CUDA%zu and CUDA%zu "
+                                             "failed (%llu MiB more of pinned host memory; a smaller --prefill "
+                                             "is the fix)\n",
+                                             i, i + 1, (unsigned long long) (hand_bytes >> 20));
+                                chunk_pipe.reset();
+                                return false;
+                            }
+                            p.bufs.push_back(h);
+                            p.slots.push_back(std::make_unique<GlmChunkPipe::Slot>());
                         }
-                    }
+                    for (int s = 1; s < p.n; ++s) p.threads.emplace_back([&p, s] { p.worker(s); });
+                }
+                GlmChunkPipe& p = *chunk_pipe;
+                if (p.abort.load()) {
+                    err = p.err.empty() ? "the chunk pipeline stopped" : p.err;
+                    return false;
+                }
+                size_t j = 0;
+                {
+                    std::lock_guard<std::mutex> lk(p.mu);
+                    p.jobs.emplace_back(pos, ct);
+                    j = p.jobs.size() - 1;
+                }
+                p.cv.notify_all();
+                const uint64_t bytes = (uint64_t) ct * (uint64_t) res_bytes;
+                // Stage 0 on this thread, then its own boundary.
+                if (!p.run_stage(0, pos, ct)) {
+                    // `fail` and not just a return: a worker is already waiting on this chunk's boundary-0 slot
+                    // (the job was published before stage 0 ran), and only `abort` unblocks it.
+                    err = "stage 0 of the chunk pipeline failed";
+                    p.fail(err);
+                    return false;
+                }
+                std::string e;
+                if (p.n > 1 && !p.give(0, j, bytes, e)) {
+                    err = e;
+                    p.fail(e);
+                    return false;
                 }
                 return true;
+            };
+            /// Drain: the chunk loop has submitted everything it is going to, so let the stages behind finish.
+            /// Called on every exit from the loop, including the failed and cancelled ones - a stage still
+            /// reading a residual this thread is about to move on from is the one way this can go wrong.
+            auto glm_chunk_pipe_drain = [&]() -> bool {
+                if (chunk_pipe == nullptr) return true;
+                const bool ok = chunk_pipe->finish();
+                if (!ok) {
+                    err = chunk_pipe->err.empty() ? "the chunk pipeline failed" : chunk_pipe->err;
+                    std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                }
+                // **THE PIPE LIVES FOR ONE REQUEST.  KEEPING IT ALIVE WAS A HANG ON THE SECOND ONE.**
+                //
+                // `chunk_pipe` sits OUTSIDE the serve loop (`for (;;)`, below), because a request is not the
+                // only thing in this scope - so a pipe left standing would be found non-null by the next
+                // request, which would then publish its chunks into it.  Everything about that fails: `finish`
+                // has already set `done`, so the stage threads have left their loops and been joined (and
+                // therefore cannot be re-spawned by the `== nullptr` test that builds one); `jobs` still holds
+                // the previous request's entries, so the new chunks are numbered after them; and `last_done`,
+                // which `finish` waits on, starts the new request at the OLD count, so the wait for
+                // `jobs.size()` can never be satisfied.  The second request hangs: no error, no tokens, the
+                // submitter stopped at the first boundary no one is left to read.
+                //
+                // Draining and rebuilding costs the pinned buffers and four threads a request, which is the
+                // honest price of the hand-off buffers being the pipe's (see the destructor).  A request that
+                // never chunked - `--prefill 1`, or no layer split - never builds one and is unaffected.
+                chunk_pipe.reset();
+                return ok;
             };
             // `glm_put` WITHOUT ITS `pos == 0` BRANCH: writing one token's embedding into an explicit residual
             // row.  A chunk writes `ct` of them and zeroes ONCE for itself, so the branch - which would wipe the
@@ -7539,9 +7865,31 @@ int main(int argc, char** argv) {
                         read_n += ct;
                         // PP <position reached> <prompt tokens> <ms> <fresh tok/s>: also the server's heartbeat.
                         // Once a chunk here rather than every 8 tokens - a chunk is the unit the read now has.
+                        //
+                        // **THE POSITION IS THE TOKENS THIS LOOP HAS HANDED OVER, NOT THE LAST STAGE'S
+                        // COUNT.**  `read_n` is the same counter the prompt's own summary line reports and the
+                        // same point `consumed` has been advanced to, so it is what this thread has taken out of
+                        // the request; the stages behind it lag by the pipeline's depth (two slots a boundary, so
+                        // up to six chunks), which is a constant and not a fraction.
+                        //
+                        // **THE LAG IS NOT ONLY COSMETIC, and at long context it is the difference between a
+                        // request and a kill.**  The server takes this position as its liveness signal and
+                        // derives the next silence deadline from the chunk it names - `server.py:1488`,
+                        // `allow = max(silence, PP_SLACK * chunk / rate)`, `PP_SLACK` 3.0.  While the position
+                        // keeps moving that is three times this chunk's own time; while it is stalled the
+                        // chunk is ZERO tokens and the deadline falls back to the flat `silence` (300 s by
+                        // default).  So a position that reports a stage behind is fine on a short prompt and
+                        // fatal on a long one: measured here, the last stage had completed 0 of 2,214 tokens at
+                        // 41 s, and a chunk of this box's long-context work is ~100 s and up.
+                        //
+                        // The cost is the rate, which during the fill is the submitter's and never quite the
+                        // prompt's.  That is what the drained `PP` after the loop is for, and the line the
+                        // server reports the prompt with (`prompt_ms`) is measured after the drain too, so the
+                        // number that ends up in front of a user is the true one.
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
-                        std::printf("PP %lld %lld %.0f %.1f\n", (long long) (p + ct), (long long) n, ms,
-                                    ms > 0.0 ? 1000.0 * (double) read_n / ms : 0.0);
+                        const int64_t shown = read_n;
+                        std::printf("PP %lld %lld %.0f %.1f\n", (long long) (c + shown), (long long) n, ms,
+                                    ms > 0.0 ? 1000.0 * (double) shown / ms : 0.0);
                         std::fflush(stdout);
                     }
                 } else {
@@ -7559,7 +7907,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+                // THE PIPELINE IS DRAINED ON EVERY EXIT, INCLUDING THE FAILED AND CANCELLED ONES.  A stage
+                // thread still reading a residual this thread is about to rewind the session under is the one
+                // way this can go wrong, and the window is exactly the stages behind the last chunk.
+                if (!glm_chunk_pipe_drain() && !failed) failed = true;
                 const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+                // The LAST heartbeat, and it is the whole prompt: `read_n` is every token this loop handed
+                // over, and the drain above has just seen all of them finish, so this is the one `PP` whose
+                // position, time and rate are the prompt's own rather than the submitter's.  Printed on every
+                // exit and not only when there was a pipeline - the loop's own last print is inside the loop,
+                // which a cancelled read leaves early.
+                {
+                    std::printf("PP %lld %lld %.0f %.1f\n", (long long) (c + read_n), (long long) n, prompt_ms,
+                                prompt_ms > 0.0 ? 1000.0 * (double) read_n / prompt_ms : 0.0);
+                    std::fflush(stdout);
+                }
                 if (failed) {
                     // a layer failure is not a bad request: the state cannot be trusted from here
                     std::printf("ERR %s\n", err.empty() ? "the layer loop failed" : err.c_str());
