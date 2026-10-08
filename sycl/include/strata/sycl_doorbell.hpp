@@ -10,12 +10,17 @@
 #include <sycl/sycl.hpp>
 #include <sycl/ext/intel/experimental/cache_control_properties.hpp>
 #include <cstdint>
+#include <cstdlib>
+#include <unordered_map>
+#include <mutex>
+#include <string>
+#include "strata/sycl_queue.hpp"
 
 namespace strata {
 using sys_atomic_u32 = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::system>;
 
 // A system-scope atomic load of host USM is still served from the GPU's cache on an Arc Pro B60 (NEO 26.31,
-// oneAPI 2026.1.1): a device spin never sees the host's store and runs to kSpinMax every time (bounded host/GPU
+// oneAPI 2026.1.1): a device spin never sees the host's store and runs to the spin bound every time (bounded host/GPU
 // ping-pong: 263 ms per round trip, 168 of 200 waits hit the bound). An explicit uncached L1+L3 read hint goes to
 // memory every time: 2.4 us per round trip, 0 of 200. The acquire fence keeps the compiler from hoisting the load
 // out of a spin loop. -DSTRATA_DOORBELL_ATOMIC_LOAD restores the atomic load.
@@ -43,14 +48,30 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
 // stays wedged until a reboot - measured twice. With a bound the failure is a wrong window instead, which the
 // verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
-// The bound is the build's (CMake STRATA_SYCL_SPIN_MAX): 20,000 reads for the B-series (bmg) AOT builds, whose
-// device-plan windows only spin in a failure and where a longer spin is what makes the xe driver reset the GT; 2,000,000
-// (a few seconds) elsewhere. On an Arc A-series (i915) the CPU computes the experts the card does not hold and the GPU
-// waits for it at every layer: 20,000 reads is a few tens of milliseconds, the first request after a start (cold pages,
-// slow CPU layers) is slower than that, the GPU gave up, went on with the experts' outputs missing, and the answer was
-// token 0 ("!!!!!") or the engine crashed in the CPU pool on the garbage routing it read next.
-#ifndef STRATA_SYCL_SPIN_MAX
-#define STRATA_SYCL_SPIN_MAX 20000u
+// The bound is per device, chosen at run time (spin_max below): 20,000 reads on a card under the xe driver (the B-series
+// on Linux), whose device-plan windows only spin in a failure and where a longer spin is what makes the driver reset the
+// GT; 2,000,000 (a few seconds) elsewhere, Windows included (a JIT/OpenCL B-series build measured faster with the long
+// bound, #1397). On an Arc A-series (i915) the CPU computes the experts the card does not hold and the GPU waits for it at
+// every layer: 20,000 reads is a few tens of milliseconds, the first request after a start (cold pages, slow CPU
+// layers) is slower than that, the GPU gave up, went on with the experts' outputs missing, and the answer was token 0
+// ("!!!!!") or the engine crashed in the CPU pool on the garbage routing it read next.
+// STRATA_SPIN_MAX=<reads> overrides both; a build's -DSTRATA_SYCL_SPIN_MAX=<reads> (CMake) fixes one bound for every
+// device. The device functions take the bound as an argument: the launchers pass spin_max(queue).
+inline uint32_t spin_max(const sycl::queue& q) {
+    static std::mutex mu;
+    static std::unordered_map<sycl::device, uint32_t> cache;
+    const sycl::device d = q.get_device();
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = cache.find(d);
+    if (it != cache.end()) return it->second;
+    uint32_t v;
+    if (const char* e = std::getenv("STRATA_SPIN_MAX"); e && std::atol(e) > 0) v = (uint32_t) std::atol(e);
+#ifdef STRATA_SYCL_SPIN_MAX
+    else v = STRATA_SYCL_SPIN_MAX;
+#else
+    else v = intel_gpu_driver() == "xe" ? 20000u : 2000000u;
 #endif
-inline constexpr uint32_t kSpinMax = STRATA_SYCL_SPIN_MAX;
+    cache.emplace(d, v);
+    return v;
+}
 }  // namespace strata

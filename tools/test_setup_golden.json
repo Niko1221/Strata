@@ -233,8 +233,7 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -279,8 +278,7 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -325,8 +323,7 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -371,8 +368,7 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -457,8 +453,7 @@
     "65536",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -503,8 +498,7 @@
     "65536",
     "--kv",
     "int8",
-    "--resident-experts",
-    "--remote-expert-opt"
+    "--resident-experts"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -548,8 +542,7 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8",
-    "--remote-expert-opt"
+    "int8"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -593,8 +586,7 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8",
-    "--remote-expert-opt"
+    "int8"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",

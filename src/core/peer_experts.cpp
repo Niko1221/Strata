@@ -98,6 +98,7 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         int a = 0, b = 0;
         cudaDeviceCanAccessPeer(&a, 0, device);
         cudaDeviceCanAccessPeer(&b, device, 0);
+        if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && std::atoi(np) != 0) a = 0;   // test knob: pretend the pair has no P2P
         p2p_ = a && b;
         if (p2p_) {
             On on0(0);
