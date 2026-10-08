@@ -649,8 +649,15 @@ def hub_from_config(cfg: dict, mcp_config_path: str | None = None) -> McpHub | N
     """The run config's `"mcp_servers"` (or `"mcpServers"`) plus the servers in the --mcp-config file (Claude
     Desktop's format: {"mcpServers": {...}}); a name in both takes the file's entry.  None when there are none."""
     servers = {}
-    servers.update(servers_from(cfg.get("mcp_servers"), "config mcp_servers"))
-    servers.update(servers_from(cfg.get("mcpServers"), "config mcpServers"))
+
+    def merge(block, where):
+        servers.update(servers_from(block, where))
+        for name, entry in (block or {}).items():
+            if isinstance(entry, dict) and entry.get("disabled") is True:
+                servers.pop(str(name), None)
+
+    merge(cfg.get("mcp_servers"), "config mcp_servers")
+    merge(cfg.get("mcpServers"), "config mcpServers")
     if mcp_config_path:
         try:
             with open(mcp_config_path, encoding="utf-8-sig") as f:
@@ -660,7 +667,7 @@ def hub_from_config(cfg: dict, mcp_config_path: str | None = None) -> McpHub | N
         block = data.get("mcpServers", data.get("mcp_servers")) if isinstance(data, dict) else None
         if block is None:
             raise SystemExit(f"[strata] --mcp-config {mcp_config_path}: expected {{\"mcpServers\": {{...}}}}")
-        servers.update(servers_from(block, f"--mcp-config {mcp_config_path}"))
+        merge(block, f"--mcp-config {mcp_config_path}")
     if not servers:
         return None
     return McpHub(servers, settings_from(cfg))
