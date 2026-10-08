@@ -2,8 +2,8 @@
 //
 //   1. `auto` picks the most groups, at most one per stage, that divide the slots;
 //   2. a layer split with --batch >= 2 and no --batch-groups means `auto` (0.1.41);
-//   3. --batch-mtp turns that default into one group, and says which feature did it;
-//   4. a number or `auto` given explicitly is honoured, with or without --batch-mtp;
+//   3. --batch-mtp (or --adapt-async 1) turns that default into one group, and says which feature did it;
+//   4. a number or `auto` given explicitly is honoured, with or without those features;
 //   5. no layer split: the number given (1) stays.
 #include "strata/program/batch_groups.hpp"
 
@@ -46,13 +46,25 @@ int main() {
         check(r.groups == 1 && !r.from_auto, "no layer split: one group");
     }
 
-    {   // the shape this is for: parallel 2 on a 2-GPU split with --batch-mtp
+    {   // the production shape: parallel 2 on a 2-GPU split with --batch-mtp
         bg::Input i = in(2, 1);
         i.batch_mtp = true;
         const auto r = bg::resolve(i);
         check(r.groups == 1 && r.from_auto && r.serial == bg::Serial::BatchMtp && r.would_be == 2,
               "--batch-mtp, nothing given: one group, because of --batch-mtp");
         check(bg::serial_what(r.serial)[0] == '-', "the reason names the feature");
+    }
+    {
+        bg::Input i = in(2, 1);
+        i.adapt_async = true;
+        const auto r = bg::resolve(i);
+        check(r.groups == 1 && r.serial == bg::Serial::AdaptAsync, "--adapt-async 1, nothing given: one group");
+    }
+    {
+        bg::Input i = in(2, 1);
+        i.batch_mtp = true;
+        i.adapt_async = true;
+        check(bg::resolve(i).serial == bg::Serial::BatchMtp, "both: --batch-mtp is named");
     }
     {   // nothing to give way: the slots do not divide, so auto is one group anyway and there is nothing to say
         bg::Input i = in(3, 1);
@@ -65,6 +77,7 @@ int main() {
         i.set = true;
         i.given = 2;
         i.batch_mtp = true;
+        i.adapt_async = true;
         const auto r = bg::resolve(i);
         check(r.groups == 2 && !r.from_auto && r.serial == bg::Serial::None, "--batch-groups 2 with --batch-mtp: 2");
         i.given = 1;

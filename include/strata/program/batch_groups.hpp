@@ -2,9 +2,10 @@
 //
 // `--batch-groups N` pipelines N groups of slots through the stages of a layer split; `--batch-groups auto` picks the
 // most groups (at most one per stage) that divide the slots.  Since 0.1.41 a layer split with `--batch` >= 2 and no
-// `--batch-groups` at all means `auto`.  The pipelined path does not run `--batch-mtp`'s drafts, so when `--batch-mtp`
-// is asked for and the number of groups was NOT given, `auto` resolves to one group (the serial windows the drafts run
-// in) and says why.  A number or `auto` given on the command line is honoured as before.
+// `--batch-groups` at all means `auto`.  The pipelined path does not run `--batch-mtp`'s drafts or the batch
+// adaptive tier (`--adapt-async 1` between batch windows), so when one of those is asked for and the number of groups
+// was NOT given, `auto` resolves to one group (the serial windows they run in) and says why.  A number or `auto`
+// given on the command line is honoured as before.
 //
 // Pure (no GPU, no environment read): generate.cpp passes in what it knows.
 #pragma once
@@ -12,7 +13,7 @@
 namespace strata::program::batch_groups {
 
 /// What kept `auto` from pipelining.
-enum class Serial { None, BatchMtp };
+enum class Serial { None, BatchMtp, AdaptAsync };
 
 struct Input {
     bool set = false;          ///< --batch-groups was given (a number or `auto`)
@@ -21,12 +22,13 @@ struct Input {
     int batch = 0;             ///< the slots
     int later_stages = 0;      ///< the layer split's stages after CUDA0 (0: no layer split)
     bool batch_mtp = false;    ///< --batch-mtp is on (it passed the gates that do not concern the groups)
+    bool adapt_async = false;  ///< --adapt-async 1 was asked for
 };
 
 struct Result {
     int groups = 1;
     bool from_auto = false;            ///< the number came from `auto` (given or the 0.1.41 default)
-    Serial serial = Serial::None;      ///< `auto` would have pipelined, but --batch-mtp needs the serial windows
+    Serial serial = Serial::None;      ///< `auto` would have pipelined, but this feature needs the serial windows
     int would_be = 1;                  ///< what `auto` would have picked without it (== groups unless `serial`)
 };
 
@@ -48,15 +50,16 @@ inline Result resolve(const Input& in) {
     r.from_auto = true;
     r.would_be = auto_groups(in.later_stages, in.batch);
     r.groups = r.would_be;
-    if (!in.set && r.would_be > 1 && in.batch_mtp) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
-        r.serial = Serial::BatchMtp;
-        r.groups = 1;
+    if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
+        if (in.batch_mtp) r.serial = Serial::BatchMtp;
+        else if (in.adapt_async) r.serial = Serial::AdaptAsync;
+        if (r.serial != Serial::None) r.groups = 1;
     }
     return r;
 }
 
 inline const char* serial_what(Serial s) {
-    return s == Serial::BatchMtp ? "--batch-mtp" : "";
+    return s == Serial::BatchMtp ? "--batch-mtp" : s == Serial::AdaptAsync ? "--adapt-async 1" : "";
 }
 
 }  // namespace strata::program::batch_groups

@@ -3877,9 +3877,9 @@ int main(int argc, char** argv) {
     // With a layer split the slots' drafters live on the LAST stage's GPU (where the solo drafter, the head and the final
     // residual rows are); the windows are the ones --batch runs, two rows per slot, through every stage.
     // --batch-groups: given as a number or auto, or (0.1.41) auto by default for a layer split with --batch >= 2.  The
-    // pipelined slot groups do not run --batch-mtp's drafts, so when it is asked for and the groups were not given, the
-    // default is one group (batch_groups.hpp).  Evaluated again once the slots that fit are known, and BEFORE the
-    // --batch-mtp gate below, which must see the resolved number.
+    // pipelined slot groups run neither --batch-mtp's drafts nor the batch adaptive tier (--adapt-async 1), so when one of
+    // them is asked for and the groups were not given, the default is one group (batch_groups.hpp).  Evaluated again
+    // once the slots that fit are known, and BEFORE the --batch-mtp gate below, which must see the resolved number.
     auto batch_groups_for = [&](bool mtp_on) {
         strata::program::batch_groups::Input bin;
         bin.set = o.batch_groups_set;
@@ -3888,6 +3888,7 @@ int main(int argc, char** argv) {
         bin.batch = o.batch;
         bin.later_stages = (int) stages.size();
         bin.batch_mtp = mtp_on;
+        bin.adapt_async = o.adapt_async != 0;
         return strata::program::batch_groups::resolve(bin);
     };
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
@@ -3926,7 +3927,7 @@ int main(int argc, char** argv) {
     // --batch-groups auto: the pipeline needs one group per GPU stage to keep every card busy (4 x R9700, 8 clients:
     // 90 tok/s in one group, 136 in 2, 166 in 4).  The most groups, at most one per stage, that divide the slots.
     // The default (0.1.41: a layer split with --batch pipelines one group per stage; --batch-groups 1 opts out) gives
-    // way to --batch-mtp, which needs the serial windows: one group, said once.
+    // way to --batch-mtp and --adapt-async 1, which need the serial windows: one group, said once.
     int groups_said = 0;
     auto resolve_groups_auto = [&] {
         const auto r = batch_groups_for(batch_mtp);
