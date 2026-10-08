@@ -1,0 +1,13 @@
+{
+ "source": "local-hip",
+ "backend": "hip",
+ "version": "0.1.40.2",
+ "archs": [
+  "gfx1201"
+ ],
+ "vision": "none",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "src": "72af3ad7bd9126f6"
+}

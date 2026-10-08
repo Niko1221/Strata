@@ -1,0 +1,24 @@
+{
+ "n_samples": 381,
+ "units": "engine_* are smaps_rollup kB; vram_* are bytes from /sys .../mem_info_vram_used; *_gib converted",
+ "engine_rss_gib": {
+  "min": 86.56,
+  "max": 89.76
+ },
+ "engine_locked_gib": {
+  "min": 26.82,
+  "max": 26.82
+ },
+ "mem_available_gib": {
+  "min": 29.32,
+  "max": 32.57
+ },
+ "vram_card0_gib": {
+  "min": 15.59,
+  "max": 15.59
+ },
+ "vram_card1_gib": {
+  "min": 15.69,
+  "max": 15.69
+ }
+}

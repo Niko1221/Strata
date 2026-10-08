@@ -1,0 +1,64 @@
+{
+ "exe": "/store/PCI4-1/llama.cpp/strata/engine/strata",
+ "args": [
+  "--pack",
+  "/store/PCI4-1/llama.cpp/Strata-data/packs/iq3_s",
+  "--native",
+  "/store/PCI4-1/llama.cpp/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/store/PCI4-1/llama.cpp/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--ple-io",
+  "ram",
+  "--expert-profile",
+  "/store/PCI4-1/llama.cpp/strata/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto:32768",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/store/PCI4-1/llama.cpp/Strata-data/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--remote-expert-opt",
+  "--conversation-cache-mib",
+  "8192",
+  "--conversation-cache-slots",
+  "4"
+ ],
+ "cwd": "/store/PCI4-1/llama.cpp/strata",
+ "tokenizer": "/store/PCI4-1/llama.cpp/Strata-data/packs/iq3_s/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_s",
+ "log": "/store/PCI4-1/llama.cpp/strata/strata-iq3_s.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "port": 11634,
+ "backend": "hip",
+ "env": {
+  "STRATA_HIPBLASLT_TUNING": "/store/PCI4-1/llama.cpp/strata/tools/hip/gfx1201-hipblaslt-100202.txt"
+ },
+ "gpu": [
+  1,
+  0
+ ],
+ "gpus_asked": true,
+ "layer_split": "24",
+ "reasoning_budget_tokens": 4096,
+ "sampling": {
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "repetition_penalty": 1.05,
+  "penalty_last_n": 256
+ },
+ "host": "0.0.0.0",
+ "api_key": "REDACTED"
+}

@@ -1,0 +1,56 @@
+{
+ "model_repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+ "revision": "not recorded (downloaded 2026-10-05); shard SHA-256 not matched against the repo's .sha256 files",
+ "quantization": "IQ3_S",
+ "gguf": [
+  {
+   "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "bytes": 54817524224
+  },
+  {
+   "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "bytes": 28800138432
+  }
+ ],
+ "ple_shard_note": "shard 2 (...00002...) is the PLE table (--ple-gguf), locked in RAM with --ple-io ram",
+ "native_pack": {
+  "path": "Strata-data/packs/iq3_s",
+  "files": {
+   "conversions.json": 306,
+   "dense.bin": 1538035200,
+   "index.txt": 93685,
+   "native_experts.txt": 3304
+  },
+  "conversions": {
+   "schema": 1,
+   "tool": "tools/iq_pack.py",
+   "compat_bf16": false,
+   "source_shards": [
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "size": 54817524224
+    },
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "size": 28800138432
+    }
+   ],
+   "tensors": []
+  }
+ },
+ "expert_profile": {
+  "path": "data/expert-profile.bin",
+  "bytes": 196632,
+  "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+ },
+ "mtp": {
+  "path": "Strata-data/mtp/rt",
+  "manifest": "Strata-data/mtp/mtp-manifest.json (hash list copied into this folder)"
+ },
+ "engine": {
+  "path": "engine/strata",
+  "bytes": 23616968,
+  "sha256": "eae78a89ebbe972b3cd9f04738f6ac26203c2da32628f9888b4999dc8e74b560",
+  "build": "engine/BUILD.json (copied)"
+ }
+}
