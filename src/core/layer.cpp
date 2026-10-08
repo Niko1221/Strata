@@ -27,6 +27,7 @@
 #include "strata/kernels/native_flash_attn.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/qsa_select.hpp"
@@ -332,7 +333,11 @@ st_begin(layer, 15, stream);
     if (!w_out->native_data) {
         quantize_q8_K(b.y, b.y_q8k, g.ssm_value_dim, stream);
         quantize_q8_0(b.y, b.y_q8_0, g.ssm_value_dim, stream);
-    }    if (!gemv_quantized(*w_out, p_out, f_out, b.y_q8_0, b.y_q8k, out, g.ssm_value_dim, g.n_embd,                        v.name("ssm_out.weight"), stream, err, b.y)) return false;    st_end(layer, 15, stream);    return true;}
+    }    if (!gemv_quantized(*w_out, p_out, f_out, b.y_q8_0, b.y_q8k, out, g.ssm_value_dim, g.n_embd,                        v.name("ssm_out.weight"), stream, err, b.y)) return false;
+    // --lora: out += s B (A y), the adapter on this projection
+    try { strata::kernels::lora_apply(layer, b.y, 0, 1, out, 0, stream); }
+    catch (const std::exception& error) { err = v.name("lora") + ": " + error.what(); return false; }
+       st_end(layer, 15, stream);    return true;}
 // ================================ the MoE block ================================
 uint64_t moe_buffers_bytes(const ModelGeometry& g, int64_t k) {    const uint64_t parts[] = {        (uint64_t) g.n_embd * 2,
 // x_bf16
@@ -1172,7 +1177,10 @@ try {
 } else {
     s_gemv_q8k_split(b.attn_q8k, p_o.codes, p_o.scales, p_o.offset, out,
                     g.n_head * g.head_dim, g.n_embd, f_o, stream);
-}    return true;}
+}
+// --lora: out += s B (A attn32)
+try { strata::kernels::lora_apply(layer, b.attn32, 0, 1, out, 0, stream); }
+catch (const std::exception& error) { err = v.name("lora") + ": " + error.what(); return false; }    return true;}
 // ================================ THE DOORBELL ================================
 namespace {}
 // namespace
