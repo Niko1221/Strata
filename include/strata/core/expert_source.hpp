@@ -161,8 +161,8 @@ public:
     virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return nullptr; }
     /// A file-backed source: start reading this expert's pages now (it will be needed by the CPU); no-op elsewhere.
     virtual void prefetch(int64_t layer, int64_t expert) { (void) layer; (void) expert; }
-    /// A file-backed source: this expert lives in VRAM, so its pages need not stay in RAM - hand them back to the
-    /// kernel (a later read re-reads the file; no result depends on it).  Returns the bytes released; 0 elsewhere.
+    /// A file-backed source: this expert was copied to VRAM or a host staging buffer, so its file pages need not
+    /// stay in RAM. A later read can reload the file. Returns the bytes advised for release; 0 elsewhere.
     virtual uint64_t release(int64_t layer, int64_t expert) { (void) layer; (void) expert; return 0; }
     /// Whether the verify window may give the GPU a PCIe share of this layer's misses at all (each expert is still
     /// checked with `pinned`).  The arena answers per layer through its expert 0; the resident RAM mode's compact
@@ -603,8 +603,8 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// With io prefetch in the experts.bin tier, the mapping itself (blob() may hand out a recycled staging buffer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
-    /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
-    /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
+    /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after a GPU upload or host
+    /// staging copy completes. Never touches the resident complement or staging buffers. Disabled by default.
     uint64_t release(int64_t layer, int64_t expert) override;
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;

@@ -404,8 +404,8 @@ struct Stager {
     // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most kMaxBatch and kRing)
     static constexpr int kMaxBatch = 32;
     int batch = 1;
-    // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
-    // role slices; a pointer to it would not live as long as the queue)
+    // A null `src` is copied by `from` (CS-T: a GGUF read in place assembles its three role slices).
+    // Keep the source and expert id for stable blobs too, so their file pages can be released after the host copy.
     struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t l = 0, e = 0; };
     std::vector<uint8_t*> buf;
     std::vector<char> pinned;
@@ -493,7 +493,7 @@ struct Stager {
                 core::ExpertSource* from = nullptr;
                 for (int i = j; i < j + k; ++i) {
                     const Job& jb = jobs[(size_t) i];
-                    if (jb.from == nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
+                    if (jb.src != nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
                     from = jb.from;
                     rl[nr] = jb.l; re[nr] = jb.e; rd[nr] = buf[i % kRing]; ++nr;
                 }
@@ -501,7 +501,15 @@ struct Stager {
                     std::fprintf(stderr, "prefill: the expert source could not copy experts %d.. of layer %d\n", re[0], rl[0]);
                     std::abort();
                 }
-                for (int i = j; i < j + k; ++i) ready[(size_t) i].store(1, std::memory_order_release);
+                for (int i = j; i < j + k; ++i) {
+#if defined(_WIN32)
+                    // DMA reads the staging buffer now; STRATA_FILE_RELEASE=1 can trim the source's file pages.
+                    // It leaves the mapping, resident RAM copies and pinned buffers intact.
+                    const Job& jb = jobs[(size_t) i];
+                    if (jb.from != nullptr) jb.from->release(jb.l, jb.e);
+#endif
+                    ready[(size_t) i].store(1, std::memory_order_release);
+                }
                 active.fetch_sub(1, std::memory_order_acq_rel);
             }
         }
@@ -2270,7 +2278,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         if (!m.src->pinned(l, e)) {
                             job = (int) js.size();
-                            js.push_back({b, (size_t) lay0.blob_bytes(l)});
+                            js.push_back({b, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
                         }
                     }
                     seq.push_back({(int32_t) l, e, b, job});
@@ -3548,7 +3556,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 }
                                 const uint8_t* b = m.src->blob_stable(l, e);
                                 if (!b) { err = "prefill: expert source has no blob"; return false; }
-                                js.push_back({b, (size_t) lay.blob_bytes(l)});
+                                js.push_back({b, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
                             }
                             m.stager->start(std::move(js));
                         }
