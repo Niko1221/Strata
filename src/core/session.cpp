@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -882,7 +883,12 @@ bool glm_gpu_layer(SessionState& s, int64_t l, std::vector<float>& x, std::vecto
                    std::string& err) {
     static const bool check = [] {
         const char* v = std::getenv("STRATA_GLM_GPU_CHECK");
-        return v != nullptr && v[0] == '1';
+        return v != nullptr && (v[0] == '1' || v[0] == '2');
+    }();
+    // =2 also measures what a WRONG slot would look like, on the same data (see the block below).
+    static const bool selftest = [] {
+        const char* v = std::getenv("STRATA_GLM_GPU_CHECK");
+        return v != nullptr && v[0] == '2';
     }();
     static thread_local std::vector<int32_t> miss, sub;
     cudaStream_t cs = (cudaStream_t) stream;
@@ -909,7 +915,8 @@ bool glm_gpu_layer(SessionState& s, int64_t l, std::vector<float>& x, std::vecto
         for (size_t j = 0; j < hp.size(); ++j) hid[j] = ids[(size_t) hp[j]];
         std::vector<float> cpu(hp.size() * (size_t) n), gpu((size_t) n);
         if (!pool(user, l, x.data(), hid.data(), 1, (int64_t) hid.size(), cpu.data(), err)) return false;
-        double worst = 0.0, scale = 0.0;
+        double worst = 0.0, scale = 0.0, sum_abs = 0.0, sum_sq = 0.0;
+        int64_t cnt = 0;
         for (size_t j = 0; j < hp.size(); ++j) {
             if (cudaMemcpyAsync(gpu.data(), parts + (size_t) hp[j] * (size_t) n, (size_t) n * sizeof(float),
                                 cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
@@ -918,12 +925,57 @@ bool glm_gpu_layer(SessionState& s, int64_t l, std::vector<float>& x, std::vecto
             }
             if (cudaStreamSynchronize(cs) != cudaSuccess) { err = "waiting for a hit to read back"; return false; }
             for (int64_t c = 0; c < n; ++c) {
-                worst = std::max(worst, (double) std::fabs(gpu[(size_t) c] - cpu[j * (size_t) n + (size_t) c]));
-                scale = std::max(scale, (double) std::fabs(cpu[j * (size_t) n + (size_t) c]));
+                const double ref = cpu[j * (size_t) n + (size_t) c];
+                worst = std::max(worst, (double) std::fabs(gpu[(size_t) c] - ref));
+                // The MEAN and the rms are what say how big the difference is TYPICALLY: `worst` is a maximum
+                // over k * n_embd values, so on its own it reads as the error rather than as its tail.  Both
+                // numbers are over the same set, so their ratio is the honest one-line figure.
+                sum_abs += (double) std::fabs(gpu[(size_t) c] - ref);
+                sum_sq += (double) ref * (double) ref;
+                ++cnt;
+                scale = std::max(scale, (double) std::fabs(ref));
             }
         }
-        std::fprintf(stderr, "strata glm gpu check: layer %lld, %zu hits, max |gpu - cpu| %.3e (max |cpu| %.3e)\n",
-                     (long long) l, hp.size(), worst, scale);
+        const double rms = std::sqrt(sum_sq / (double) cnt);
+        std::fprintf(stderr, "strata glm gpu check: layer %lld, %zu hits, max |gpu - cpu| %.3e, mean %.3e "
+                             "(max |cpu| %.3e, rms %.3e: max/rms %.2e, mean/rms %.2e)\n",
+                     (long long) l, hp.size(), worst, sum_abs / (double) cnt, scale, rms, worst / rms,
+                     sum_abs / (double) cnt / rms);
+        // AND IT FAILS THE REQUEST WHEN THE SLOT IS HOLDING SOMETHING ELSE, which is the whole reason this env
+        // var exists: a mis-slotted expert produces a plausible token.  The bar is 1.0 of the row's own rms, and
+        // it sits in a gap that was MEASURED, not assumed.  On the 4-way rig (UD-IQ4_XS, 5070 layer-checks over
+        // two generations) the correct slot's max/rms had a median of 9.6e-2 and a worst of 2.8e-1 - the same
+        // 1.5e-2 relative the engine's own `native_expert_parity` records for this path's activation rounding -
+        // and a WRONG slot, measured on the same data as the card's hit against the CPU's row for a different
+        // expert of the same layer, ran from 2.2 to 5.6 (median) with a floor of 2.2.  So the bar has 3.6x of
+        // headroom above the worst correct layer and 2.2x of margin below the best wrong one.
+        // STRATA_GLM_GPU_CHECK=2 prints that wrong-slot figure as it goes.
+        if (selftest && hp.size() > 1) {
+            std::vector<int32_t> other(1, ids[(size_t) hp[1]]);
+            std::vector<float> oc((size_t) n);
+            if (!pool(user, l, x.data(), other.data(), 1, 1, oc.data(), err)) return false;
+            if (cudaMemcpyAsync(gpu.data(), parts + (size_t) hp[0] * (size_t) n, (size_t) n * sizeof(float),
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+                err = "reading a hit back for the wrong-slot self-test";
+                return false;
+            }
+            if (cudaStreamSynchronize(cs) != cudaSuccess) return false;
+            double ow = 0.0, oa = 0.0, orms = 0.0;
+            for (int64_t c = 0; c < n; ++c) {
+                const double d = std::fabs(gpu[(size_t) c] - oc[(size_t) c]);
+                ow = std::max(ow, d);
+                oa += d;
+                orms += (double) oc[(size_t) c] * (double) oc[(size_t) c];
+            }
+            orms = std::sqrt(orms / (double) n);
+            std::fprintf(stderr, "strata glm gpu check: layer %lld wrong-slot self-test: max/rms %.2e, "
+                                 "mean/rms %.2e\n", (long long) l, ow / orms, oa / (double) n / orms);
+        }
+        if (rms > 0.0 && worst / rms > 1.0) {
+            err = "the VRAM tier's slot for layer " + std::to_string(l) + " holds the wrong expert (max |gpu - "
+                  "cpu| is " + std::to_string(worst / rms) + " of the row's rms; STRATA_GLM_GPU_CHECK is on)";
+            return false;
+        }
     }
     return true;
 }

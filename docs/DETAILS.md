@@ -1397,6 +1397,59 @@ Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 15
 
 ---
 
+## GLM-5.3-Flash (`glm5-next`): the switches it adds
+
+GLM-5.3-Flash is served from a pack built by `tools/iq_pack.py` (the routed experts in `native_experts.txt`), and the
+engine picks the architecture out of the pack. Everything below is off unless you ask for it, and a Qwen3.8-Flash-Next
+run never reads any of it.
+
+**`--dsa`** — attend the 2,048 cache cells the DSA k-pool indexer selects, instead of the whole cache. Below about
+2,048 cells the two are the same attention and the answers are unchanged; above them, attending to everything is
+attending to more than the model means to. Opt-in so the two modes can be compared on one prompt.
+
+**`--mtp-block`** — load the model's own next-token-prediction block (the `nextn.*` tensors past the trunk) and run
+it. Only a pack built with `iq_pack.py --mtp` carries those tensors natively; a pack without them loads and runs
+either way, with the block simply not there. The block drafts tokens and on this architecture nothing verifies them
+yet, so this is a measurement switch rather than a speed one — `--mtp-probe` is the one that turns it into a number,
+against the oracle.
+
+**`--glm-gpu-experts N`** — put the routed experts in VRAM, `N` MiB of them (`-1`, the default, is off; `0` means
+every free byte less `STRATA_GLM_GPU_RESERVE_MIB`, 2,048 by default). A token routes 8 experts over 42 layers —
+3.92 GB read on the host every token — and that read is what a decode step spends its time on. With the tier on, the
+card computes the experts it holds and the CPU pool computes the rest; the hits are queued first, so the card works
+while the CPU thread works, and only the misses cross PCIe. Each card gets `budget / (its own MoE layers × blob
+bytes)` slots a layer, which on a layer split is four times the quota one whole-model sizing would leave it.
+
+Measured on 2× RTX 3060 12 GB + 2× RTX 5060 8 GB, UD-IQ4_XS, `--layer-split auto` over all four, `--prefill 256`,
+16K context, one request at a time, greedy, 64 tokens after a 344-token prompt:
+
+| | decode | prompt reading |
+|---|---|---|
+| off (the CPU pool alone) | 6.7 tok/s (6.66 6.72 6.73 6.76 6.8) | 344 tokens in 31 s |
+| `--glm-gpu-experts 0` | **9.6 tok/s** (8.29 on the first tokens, then 9.28 9.52 9.57 9.67 9.75 9.90) | 344 tokens in 31 s |
+
+That is **+43%** on decode, and the prompt reading is unchanged — prefill still routes every token through the pool.
+The tier took 19.1 GiB of VRAM in all: 61 / 53 / 22 / 30 slots a MoE layer on CUDA0..3, 1,719 of the model's 12,096
+(layer, expert) pairs, and it served 3.97 of the 8 experts a token routes per layer (49.7%) on the card. Slot counts
+differ per card because each is sized against its own free memory after its own weights, session and snapshot.
+
+**It is not bit-identical to the CPU path, and the difference is measured rather than assumed.** The card quantizes
+the layer's activation its own way (q8_1) where the CPU uses its own format, which is the same difference the engine's
+`native_expert_parity` records for the GPU expert path: 1.5e-2 relative. Over 5,070 layer-checks on the rig above, a
+hit differed from what the CPU pool would have produced by a mean of 1.6e-2 of the row's rms, with the worst single
+value at 2.8e-1. Greedy answers on the test prompt part at a near tie after about 220 characters; everything before
+that is identical.
+
+**`STRATA_GLM_GPU_CHECK=1`** recomputes every hit on the CPU, prints the figures per layer, and *fails the request*
+when a hit differs from the CPU's by more than the row's own rms. A slot holding the wrong expert cannot hide under
+that bar: measured on the same 4-way rig, a wrong slot ran from 2.2 to 5.6 (median 5.6) while the correct one's worst
+layer was 0.28, so the bar sits in a 7.9× gap. `STRATA_GLM_GPU_CHECK=2` also prints the wrong-slot figure as it goes.
+
+One interaction worth knowing: with the tier on, `--expert-profile-save` counts only the experts the card did *not*
+hold, so the profile it writes is the misses' routing and not the router's.
+
+---
+
 ## Experimental speed projection (EXPERIMENTAL, off by default)
 
 **This is an experiment, not a finished feature.** It ships with Strata but stays off unless you turn it on.
