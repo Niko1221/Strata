@@ -1469,6 +1469,12 @@ session rows that cost are 30.2 MiB at 128, 120.6 MiB at 512, 482.5 MiB at 2048 
 read costs 90 MiB, about 2% of what the smallest card in that rig has free, while 2048's extra 6% costs 362 MiB
 more of the memory the expert tier wants. `--prefill 1` is the one-token-at-a-time control arm.
 
+The curve is flat once a prompt is long enough to need several chunks: a 5,294-token prompt on the same rig reads
+in 350.1 s at `--prefill 1024`, 344.3 s at 2048 and 350.8 s at 4096 — 15.1, 15.4 and 15.1 tokens a second, a 2%
+spread — while the session rows grow to 241.3 / 482.5 / 965.1 MiB. So the fixed cost a chunk pays is spent by
+1024 on a prompt this long, and going past it buys nothing and costs memory; `--prefill 8192` is not a bigger
+chunk at all, it is silently clamped to the pool's 4096.
+
 Measured on the rig above, UD-IQ4_XS over four cards, 344-token prompt, `--prefill 256`:
 
 | | prefill |
