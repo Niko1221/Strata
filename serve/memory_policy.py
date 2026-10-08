@@ -33,6 +33,7 @@ class MemoryPolicy:
         self.configured_reserve_floor = self.reserve_floor
         self.fixed_resource_limits = False
         self.reclaim_gpu_headroom = False  # co-adaptive owner only; legacy presets keep their admission rule
+        self.gpu_capacity_ceiling = False
         self.overhead = self._setting(config, "overhead_ram_gib", 2, 2, 128)
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
         self.pressure_duration = self._setting(config, "pressure_seconds", 60, 2, 3600)
@@ -69,6 +70,8 @@ class MemoryPolicy:
         if not all(_number(snapshot.get(k)) for k in keys):
             return None
         stamp = snapshot["sampled_at"]
+        if snapshot.get("native_capacity_required") and not _number(snapshot.get("native_free_mib")):
+            return None
         if not 0 <= now - stamp <= self.max_age:
             return None
         for prefix in ("ram", "gpu_mem"):
@@ -192,6 +195,8 @@ class MemoryPolicy:
         self.reconcile_after_load = self.mode == "live" and completed and loaded
         if loaded or reason == "native_error":
             self.pressure_recovery_ceiling_gib = None
+        if loaded:
+            self.gpu_capacity_ceiling = False
         self.gpu_baseline = None
         self._reset_windows()
 
@@ -201,6 +206,10 @@ class MemoryPolicy:
         The service calls this after recording a matching terminal applied ACK.
         Proposals, progress, errors and failed writes never arm recovery.
         """
+        if limitation == "gpu_capacity":
+            self.gpu_capacity_ceiling = True
+        if plan.get("reason") == "sustained_pressure":
+            self.gpu_capacity_ceiling = False
         if (self.fixed_resource_limits or self.mode != "live" or not self.recovery_duration
                 or self.current is None):
             self.pressure_recovery_ceiling_gib = None
@@ -363,11 +372,14 @@ class MemoryPolicy:
         shrink = pressure and (ram_delta <= -1 or vram_delta >= 32)
         # Use raw headroom as well as the rounded budget: rounding cannot earn
         # a two-GiB expansion from slightly less safe space.
-        ram_grow = ram_delta >= 2 and free_ram - self.headroom >= 2
+        ram_grow = (ram_delta >= 2 and free_ram - self.headroom >= 2) or (
+            .25 <= ram_delta < 2 and plan["resident_budget_gib"] == self.cap
+            and free_ram - self.headroom >= ram_delta + .25)
         # A floor already reached is not a ceiling: newly freed GPU capacity can
         # admit more experts even when the reserve value itself is unchanged.
         # Native VMM admission leaves its additional mapping-granule margin.
-        vram_grow = vram_delta <= -32 or self.reclaim_gpu_headroom and free_vram >= self.reserve_floor + 256
+        vram_grow = not self.gpu_capacity_ceiling and (vram_delta <= -32 or
+                    self.reclaim_gpu_headroom and free_vram >= self.reserve_floor + 256)
         grow = not pressure and (ram_grow or vram_grow)
         self.pressure_since = (stamp if self.pressure_since is None else self.pressure_since) if shrink else None
         self.growth_since = (stamp if self.growth_since is None else self.growth_since) if not pressure and ram_grow else None
@@ -380,7 +392,8 @@ class MemoryPolicy:
             plan["vram_reserve_mib"] = max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"])
             reason = "sustained_pressure"
         elif ram_ready or vram_ready:
-            plan = {"resident_budget_gib": self.current["resident_budget_gib"] + 2 if ram_ready else
+            plan = {"resident_budget_gib": min(self.cap, plan["resident_budget_gib"],
+                                               self.current["resident_budget_gib"] + 2) if ram_ready else
                     self.current["resident_budget_gib"],
                     "vram_reserve_mib": max(plan["vram_reserve_mib"],
                                             self.current["vram_reserve_mib"] - 128) if vram_ready else

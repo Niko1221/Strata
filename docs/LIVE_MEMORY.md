@@ -173,6 +173,21 @@ records actual sizes, not the target, and exposes a separate `limitation` for co
 allocations. It rejects stale acknowledgements from a different engine process or
 request. Control lines never enter the generated-token stream.
 
+This port also emits `CAPACITY free_mib=... total_mib=... resident_mib=... cache_mib=...`
+at existing host safe points, at most once per second. `free_mib` is from `cudaMemGetInfo`, not NVML.
+The reader timestamps it and binds it to the native process; decisions require a reading no older than
+five seconds. Failed or missing native readings freeze resizing. Prompt work may delay the next safe
+point, so this is sampled headroom, not an instantaneous reserve guarantee. No extra device synchronization
+is introduced for telemetry.
+
+If an acknowledgement reports an unchanged `prefill_cache_floor` or `reserve_unreachable`,
+the server suppresses equivalent repeated requests until capacity, target or RAM work changes. It does
+not claim the reserve was reached. The fixed attention, graph and staging minimum still exists.
+These known minimum-capacity errors do not apply the generic ten-minute allocation-failure backoff to a
+later, lower reserve. Recovery still requires its normal fresh-telemetry dwell. Other allocation errors
+retain the existing backoff. This distinction was added after a real local test released GPU cache but
+then failed to recover promptly because the prior target exceeded the prompt-cache minimum.
+
 Completed steps remain committed when a later step fails. The status exposes the resulting actual sizes and
 error, and the policy backs off. Allocation refusal does not trigger a model reload. A fatal GPU/driver error
 can still end the process, as with ordinary inference; this protocol is not device-failure recovery.

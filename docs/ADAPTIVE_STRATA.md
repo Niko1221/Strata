@@ -1,6 +1,6 @@
 # Adaptive Strata: research and experimental groundwork
 
-Status: isolated research branch, 2026-10-08. Not a released feature or a measured speed improvement.
+Status: isolated research branch, 2026-10-08. Not a released feature or a proven general speed improvement.
 Production configuration is unchanged. The intended objective is correct agentic task completion in less
 wall-clock time while leaving resources available to foreground applications.
 
@@ -12,9 +12,10 @@ should choose among supported CPU and GPU execution paths, RAM and VRAM residenc
 model files according to measured completion cost. Returning resources to Strata after another workload
 finishes is part of the objective.
 
-This branch currently provides live expert-cache resizing and an experimental single-GPU routing heuristic.
+This branch currently provides live expert-cache resizing and experimental single-GPU routing from matched
+measurements. Uncalibrated routing keeps the configured split.
 It does not provide general tensor relocation, live CPU-worker resizing, multi-GPU balancing, SSD selection,
-storage-aware routing or a calibrated cost model. Some allocations still have a fixed GPU minimum.
+storage-aware routing or an online tensor cost model. Some allocations still have a fixed GPU minimum.
 
 ## Existing Strata work and attribution
 
@@ -162,23 +163,70 @@ An example decision: a GPU kernel taking 0.4 ms plus 1.2 ms of exposed transfer 
 path. If CPU contention stretches that same path to 3.0 ms, promotion may become worthwhile. These are
 illustrative numbers, not measurements. The controller must learn actual costs for each inference phase.
 
-## Current heuristic and its limits
+## Current controller and its limits
 
 The new `coadaptive` block is disabled when absent. `{"enabled": true}` defaults to `"mode": "shadow"`:
-it samples and reports suggestions, but does not alter resource targets or routing. Live heuristic testing
+it samples and reports suggestions, but does not alter resource targets or routing. Live testing
 requires explicit `"mode": "live"`, enabled live memory, an explicit `--pcie-frac`, and resource presets off.
 An explicit per-request PCIe fraction still wins.
 
-The heuristic treats CPU and GPU pressure independently, requires fresh readings, returns to baseline
+The capacity controller treats CPU and GPU pressure independently, requires fresh readings, returns to baseline
 after sustained quiet, and immediately cancels promotion into a newly pressured destination. GPU occupancy
 while Strata is active is not attributed to another application; an attributable provider or recent idle
 measurement is needed. Host commit pressure is included on Windows.
 
-Its fixed thresholds and fractional routing adjustments are not calibrated. It changes routing only at
-request boundaries and cannot yet reduce CPU worker count or follow changing load in a long generation.
-Shadow mode is the default specifically because passing direction tests does not prove lower completion time.
+Capacity thresholds are conservative controls, not a speed model. Native `CAPACITY` messages report CUDA
+allocator headroom, resident RAM and GPU cache size at existing host safe points, at most once per second.
+Readings expire after five seconds and belong to one native process. Missing native capacity freezes
+allocation decisions instead of falling back to a more optimistic NVML number. These are sampled readings;
+they cannot guarantee an instantaneous reserve against another application's sudden allocation.
 
-## Local validation of the port
+Startup fitting reserve and running headroom have separate meanings. Optional `min_free_vram_mib` in
+`coadaptive` sets the latter (at least 256 MiB); the local experiment uses 320 MiB and a 448 MiB startup
+reserve. This extra room covers observed lazy allocations. Native acknowledgements, not requested sizes,
+determine actual allocations. An unchanged, unreachable prompt-cache floor does not repeatedly stall
+inference with the same request. RAM relief remains possible independently. Recovery includes the final
+partial two-GiB RAM step.
+
+`serve/routing_costs.py` applies the measured-cost principle from ATSInfer sections 4.3-4.4 and StarPU,
+without copying their source or tensor scheduling algorithms. Optional `routing_profile` points to a
+schema-1 calibration file with validated matched samples. The fingerprint includes the engine binary,
+launch arguments, model asset metadata, relevant environment, CPU/GPU identity and OS. This is an
+invalidation key, not proof that the model's entire contents were hashed.
+
+Routing requires fresh attributable external CPU/GPU readings, matching RAM/cache allocations and a
+calibrated context range. At least three common pairs must each beat baseline by more than five percent
+and ten milliseconds, plus any supplied switch penalty. The measured wall time already includes exposed
+transfers and file waits; do not add those same intervals again. Profiles require a creation timestamp and
+expire after one day. Sampling settings and prompt-read/output bounds must also match; a warm decode
+sample cannot authorize a cold or longer request. The current server conservatively assumes the entire
+input may need reading; it does not guess which recurrent/prefix snapshot will be reusable.
+Wrong identity, noise, stale readings, changed capacity or an uncovered workload keeps the
+configured split. No background prompts or autonomous calibration are submitted.
+
+The current integration decides after the request queue, before generation. Explicit request settings
+win, vision requests retain their configured route, and parallel serving is excluded by live memory.
+It cannot yet adjust CPU workers or routing within a long generation. The small local decode calibration
+does not predict reasoning length or complete agent tasks; a faster token rate does not establish shorter
+successful completion. No local alternative has passed the conservative routing gate so far.
+
+Example additions to a compatible single-GPU configuration:
+
+```json
+"memory_policy": {
+  "enabled": true, "mode": "live", "min_ram_headroom_gib": 4,
+  "pressure_seconds": 4, "recovery_seconds": 30
+},
+"coadaptive": {
+  "enabled": true, "mode": "shadow", "min_free_vram_mib": 320
+}
+```
+
+Change the latter mode to `live` only for an isolated validation. Leave `routing_profile` absent until
+there is trustworthy calibration for that exact runtime. The RAM cap and startup reserve still belong
+in the native arguments. Shadow mode is the default because direction tests do not prove faster tasks.
+
+## Initial local validation of the port
 
 Machine: Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB, 64 GiB installed DDR5; Windows; IQ3_S; 65,536 configured
 context. This short test did not fill 64K, test vision inputs, run Hermes tools or simulate external workloads.
@@ -204,6 +252,63 @@ context. This short test did not fill 64K, test vision inputs, run Hermes tools 
 These are functional smoke results. Prompt reuse, changing output length, rounding and changed placement
 make the three response durations unsuitable for a speed comparison. There is no demonstrated agentic
 completion-time gain or complete adaptive-resource implementation yet.
+
+## Current implementation measurements (2026-10-08)
+
+Same laptop/model, 65,536 configured context, seven CPU workers, MTP four, IQ3_S, existing projection
+and vision configuration. Isolated live-memory engine: 32 GiB resident cap, 448 MiB startup fitting reserve,
+320 MiB runtime headroom target. These are not a before/after comparison against the daily 36 GiB runtime.
+
+Automatic RAM control, using real physical/commit readings and changing the desired free-RAM target,
+released 32 -> 30.488 GiB in 13.03 seconds and recovered to 31.999 GiB in 39.17 seconds, including the
+stability dwell. The same process answered correctly before and after both changes. This avoids allocating
+a dangerous competing RAM load, but does not substitute for a long foreground-application pressure test.
+The first harness used a one-second poll and repeatedly saw duplicate sensor samples; the normal service
+cadence of two seconds passed. Stale/replayed samples still cannot earn a stability window.
+
+An exploratory sweep used 24 warm 128-token decode measurements at `pcie_frac` 0.15, 0.37, 0.65 and 0.85,
+both idle and under a four-thread external CPU load. No alternative cleared the conservative matched
+decode-cost gate. One 0.15 CPU-load quality check exhausted a 1,024-token reasoning budget without final
+code, so those timing rows were excluded. Some initial idle samples overlapped a unit suite; this sweep
+is exploratory and was not used to change defaults.
+
+A separate comparison, with no concurrent build/test suite, alternated 0.37 and 0.65 for three repetitions
+per condition. Each response implemented a C++20 `unique_sorted` function and had to compile and pass
+104 executable cases (empty input, negatives, duplicates, integer extremes and deterministic random data).
+High thinking remained enabled, with greedy sampling, seed 42 and a 2,048-token output limit.
+
+| External load | PCIe fraction | Correct runs | Median complete task (range), seconds | Median decode tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| Idle | 0.37 | 3/3 | 38.24 (31.51-48.55) | 17.84 |
+| Idle | 0.65 | 3/3 | 46.44 (41.06-97.05) | 18.09 |
+| Four CPU threads | 0.37 | 3/3 | 55.10 (39.23-69.82) | 17.02 |
+| Four CPU threads | 0.65 | 3/3 | 42.71 (35.73-43.55) | 17.19 |
+
+Times include generation, compilation and execution. Only the first idle 0.37 request was cold (1.594 s
+prompt processing; the other idle prompts took about 0.23-0.26 s). Three samples of one small function
+cannot establish a general code-agent win. Output length varied substantially despite identical sampling:
+the loaded-CPU medians favored 0.65 by about 22.5%, while idle medians were about 21.4% worse. This is a
+workload-dependent lead, not proof of a scheduling improvement or bit-exact generation.
+
+Sampled native free VRAM stayed at least 324 MiB during the repeated task comparison and available RAM
+at least 12.39 GiB. The exploratory sweep's minima were 326 MiB and 10.39 GiB. Native samples can miss a
+short allocation peak; these are not instantaneous guarantees. No foreground game, filled 64K context or
+long Hermes project was tested. The interactive experiment keeps 0.37 and omits the warm-decode profile.
+
+The full server suite ran 736 tests with six skips before the final GPU-floor recovery correction. The
+final affected suite passed 126 tests; five native memory/conversation tests also passed. The GPU test
+found that a known `prefill_cache_floor` error incorrectly delayed a later lower target by ten minutes.
+Known floor errors now suppress repeated impossible requests while allowing normal debounced recovery;
+generic allocation errors retain their backoff. The real-model retest released GPU cache from 672 to
+640 MiB in 9.05 seconds, then recovered to 704 MiB in 34.13 seconds including dwell. It reported a
+deliberately unreachable target in 9.03 seconds and held the request count steady for another 16 seconds.
+The same process continued answering correctly at each stage. This test changed the requested headroom;
+it did not allocate a competing GPU workload. Native free VRAM was sampled at no less than 392 MiB.
+
+An isolated normal HTTP server then passed a real image request (red square) and a tool-call/result
+continuation. It advertised 65,536 context and vision enabled, with high reasoning defaults; sampled
+native free VRAM stayed at least 342 MiB and available RAM at least 11.56 GiB. This is API acceptance,
+not a completed Hermes project. All test processes were stopped afterward; production was not modified.
 
 ## Acceptance gates before an upstream feature PR
 

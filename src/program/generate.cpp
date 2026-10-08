@@ -7920,8 +7920,22 @@ int main(int argc, char** argv) {
         };
         // Main-thread only. The reader queues control lines even while GEN is running; the actual mutation
         // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
+        Clock::time_point capacity_at{};
         auto service_memory = [&]() {
           try {
+            // The engine's allocator view can differ substantially from NVML on WDDM.
+            // Observe on this CUDA-owning thread at existing boundaries; no extra synchronization.
+            if (o.live_memory && Clock::now() - capacity_at >= std::chrono::seconds(1)) {
+                capacity_at = Clock::now();
+                size_t available = 0, total = 0;
+                const bool ok = cudaMemGetInfo(&available, &total) == cudaSuccess;
+                std::printf("CAPACITY free_mib=%lld total_mib=%lld resident_mib=%llu cache_mib=%llu\n",
+                            ok ? (long long) (available >> 20) : -1ll,
+                            ok ? (long long) (total >> 20) : -1ll,
+                            (unsigned long long) (src.resident_bytes() >> 20),
+                            (unsigned long long) (xcache.committed_bytes() >> 20));
+                std::fflush(stdout);
+            }
             // Prefill owns the borrowed addresses from lend through the final refill. In particular on_chunk
             // is not a resize boundary: later chunks and draft-KV callbacks still use those raw views.
             if (live_prompt_active) return;

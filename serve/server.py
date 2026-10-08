@@ -63,6 +63,7 @@ from serve.winjob import contain  # noqa: E402
 from serve.memory_policy import MemoryPolicy  # noqa: E402
 from serve.resource_presets import ResourcePresets, WorkloadSampler, clean_config as clean_resource_config  # noqa: E402
 from serve.coadaptive import CoAdaptive  # noqa: E402
+from serve.routing_costs import runtime_key  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -726,6 +727,7 @@ class StrataEngine:
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
         self.wlock = self.pipe_lock                     # all protocol writers share the same pipe owner
+        self.native_capacity = None                    # never carry allocator readings across a restart
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
 
@@ -747,6 +749,10 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("CAPACITY "):
+                if self.proc is proc:
+                    self.native_capacity = self._capacity_reading(line, proc, time.time())
+                continue
             if line.startswith("MEMORY "):
                 ack = self._memory_ack(line)
                 if ack is not None:
@@ -769,6 +775,20 @@ class StrataEngine:
 
     def live_memory_capable(self):
         return self.info.get("live_memory") == 1 and self.info.get("memory_protocol") == 1
+
+    @staticmethod
+    def _capacity_reading(line, proc, now):
+        try:
+            data = dict(part.split("=", 1) for part in line.split()[1:])
+            if set(data) != {"free_mib", "total_mib", "resident_mib", "cache_mib"}:
+                return None
+            data = {k: int(v) for k, v in data.items()}
+            if (not 0 <= data["free_mib"] <= data["total_mib"] or data["total_mib"] <= 0
+                    or data["resident_mib"] < 0 or data["cache_mib"] < 0):
+                return None
+            return {**data, "proc": proc, "sampled_at": now}
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _memory_ack(line):
@@ -2522,6 +2542,7 @@ class Service:
         self.memory_retry_at = 0
         self.memory_error = None
         self.memory_limitation = None
+        self.memory_floor_ack = None
         self.resource_presets = ResourcePresets()
         self.coadaptive = CoAdaptive()
         self.resource_limits = None
@@ -2816,6 +2837,7 @@ class Service:
         self.memory_retry_at = 0
         self.memory_error = None
         self.memory_limitation = None
+        self.memory_floor_ack = None
 
     def configure_resources(self, config):
         """Startup configuration or validated live selection; never reinitialize allocation state."""
@@ -2838,6 +2860,11 @@ class Service:
         if controller.enabled and (policy is None or policy.mode != "live" or self.resource_presets.enabled
                                    or "--pcie-frac" not in args):
             raise ValueError("coadaptive needs live memory, explicit --pcie-frac, and resource presets disabled")
+        if controller.enabled and controller.routing.profile is not None:
+            try:
+                controller.runtime_key = runtime_key(self.engine)
+            except (OSError, ValueError):
+                controller.runtime_key = None  # unknown identity cannot authorize a routing change
         with self.memory_lock:
             self.coadaptive = controller
             if policy is not None:
@@ -2893,6 +2920,7 @@ class Service:
         return self.resource_status()
 
     def _invalidate_live_memory(self):
+        self.memory_floor_ack = None
         self.memory_live_pending = None
         self.memory_pending = None
         self.memory_policy.current = None
@@ -2920,6 +2948,10 @@ class Service:
             reason = pending["plan"]["reason"] if status == "applied" else "native_" + status
             self.memory_policy.live_actual(ack["resident_mib"], ack["vram_reserve_mib"],
                                            now, reason, completed=status == "applied")
+            if ack["expert_cache_mib"] < self.engine.info.get("expert_cache_mib", 0):
+                # A previous growth ceiling no longer describes a cache that
+                # subsequently shrank, including partially completed error paths.
+                self.memory_policy.gpu_capacity_ceiling = False
             self.engine.info.update(arena_mib=ack["resident_mib"],
                                     expert_cache_mib=ack["expert_cache_mib"],
                                     expert_slots=ack["expert_slots"], vram_free_mib=ack["vram_free_mib"],
@@ -2929,19 +2961,40 @@ class Service:
                 self.memory_live_pending = None
             if status == "error":
                 self.memory_error = ack.get("error", "native_error")
-                self.memory_retry_at = now + self.memory_policy.cooldown
+                if self.memory_error in ("prefill_cache_floor", "reserve_unreachable"):
+                    # A fixed GPU minimum is not a transient allocation failure.
+                    # Suppress the same impossible target, but let a lower target
+                    # recover after its normal stability dwell rather than ten minutes.
+                    self.memory_floor_ack = ack
+                    self.memory_limitation = self.memory_error
+                    self.memory_retry_at = 0
+                else:
+                    self.memory_retry_at = now + self.memory_policy.cooldown
             elif status == "applied":
                 self.memory_error = None
                 self.memory_limitation = ack.get("error") if ack.get("error") not in (None, "none", "") else None
+                self.memory_floor_ack = (ack if self.memory_limitation in
+                                         ("prefill_cache_floor", "reserve_unreachable") else None)
                 if pending.get("resource_generation", 0) == self.resource_generation:
                     self.memory_policy.complete_live_plan(pending["plan"], pending["resident_before_gib"],
                                                           self.memory_limitation)
 
     def memory_snapshot(self, fresh=False):
         telemetry = getattr(self, "telemetry", None)
-        if fresh and telemetry is not None:
-            return telemetry.capacity()
-        return telemetry.snapshot().get("now", {}) if telemetry is not None else {}
+        snapshot = (telemetry.capacity() if fresh else telemetry.snapshot().get("now", {})) if telemetry else {}
+        snapshot = dict(snapshot)
+        native = getattr(self.engine, "native_capacity", None)
+        if self.loaded() and getattr(self.engine, "live_memory_capable", lambda: False)():
+            # Never grow from a stale, wrong-process, failed or missing allocator reading.
+            valid = (native is not None and native["proc"] is self.engine.proc
+                     and 0 <= time.time() - native["sampled_at"] <= 5)
+            snapshot["native_capacity_required"] = True
+            snapshot["native_free_mib"] = native["free_mib"] if valid else None
+            if valid:
+                total = native["total_mib"] * 2**20
+                snapshot["gpu_mem_total"] = total
+                snapshot["gpu_mem_used"] = total - native["free_mib"] * 2**20
+        return snapshot
 
     def observe_memory(self):
         if self.memory_policy is None:
@@ -2976,6 +3029,13 @@ class Service:
             if live:
                 if plan is None:
                     return
+                floor = getattr(self, "memory_floor_ack", None)
+                if (floor is not None and plan["vram_reserve_mib"] >= floor["vram_reserve_mib"]
+                        and abs(plan["resident_budget_gib"] * 1024 - floor["resident_mib"]) < 64
+                        and snapshot.get("native_free_mib") is not None
+                        and abs(snapshot["native_free_mib"] - floor["vram_free_mib"]) < 128):
+                    self.memory_last_reason = "native_gpu_floor"
+                    return  # unchanged non-evictable floor: do not repeatedly stall inference
                 # A failed allocation delays growth, not relief for other apps.
                 # The policy requires sustained pressure and forbids either
                 # cache from growing in a pressure plan.
@@ -3037,6 +3097,8 @@ class Service:
             return {"enabled": False}
         with self.memory_lock:
             return {**self.memory_policy.status(), "enabled": True,
+                    "native_capacity": {k: v for k, v in (getattr(self.engine, "native_capacity", None) or {}).items()
+                                        if k != "proc"},
                     "coadaptive": self.coadaptive.status(time.time()),
                     "pending": self.memory_pending is not None or self.memory_live_pending is not None,
                     "request_id": self.memory_live_pending["id"] if self.memory_live_pending else None,
@@ -3601,12 +3663,6 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        # Reuse the native request's existing expert split; explicit caller values
-        # win. Capacity changes use MEMORY independently at native safe points.
-        with self.memory_lock:
-            route = self.coadaptive.fraction(time.time()) if self.coadaptive.active else None
-        if route is not None and (sampling or {}).get("pcie_frac") is None:
-            sampling = {**(sampling or {}), "pcie_frac": route}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
@@ -3671,6 +3727,17 @@ class Service:
                     # (parallel requests do not hold the fifo: one of them starts it, the others wait for that)
                     with (self.fifo if par else contextlib.nullcontext()):
                         self.ensure_loaded()
+                    # Decide after the FIFO wait, using fresh allocator/workload data.
+                    # This does not issue calibration requests on the user's behalf.
+                    if self.coadaptive.enabled and not par and not emb and (sampling or {}).get("pcie_frac") is None:
+                        with self.memory_lock:
+                            native = getattr(self.engine, "native_capacity", None)
+                            if native is not None and native["proc"] is not self.engine.proc:
+                                native = None
+                            route = self.coadaptive.choose_route(self.memory_snapshot(), native,
+                                                                 len(ids), max_new, time.time(), sampling)
+                            if self.coadaptive.active:
+                                sampling = {**(sampling or {}), "pcie_frac": route}
                     with self.status_lock:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
