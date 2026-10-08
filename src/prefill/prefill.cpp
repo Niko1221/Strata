@@ -1743,31 +1743,70 @@ void Prefill::set_ring_budget(int slots, int64_t small_max) {
 double Prefill::pinned_share() { return g_pinned_share; }
 int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 
-// STRATA_PREFILL_PIPE=1 (opt-in): a layer split reads a prompt as a pipeline - stage s reads chunk c while stage s+1
-// reads chunk c-1 - so the prompt costs about (S - 1 + n/C) stage-chunk times, and a stage-chunk costs its layers
-// x (b + a C): a fixed pass over the layer's experts per chunk (b) and a per-token part (a). Few large chunks keep
-// the later stages waiting (one 7680-token chunk of a 10.7K prompt: the first of four stages carried 24 of 36 s);
-// many small ones pay b again and again. The minimum of (S - 1 + n/C)(b + a C) is at C = sqrt(n (b/a) / (S - 1)).
-// b/a is measured in tokens: ~1000 on a PH402 (four GP100 dies, Flash-Next IQ3_XXS: b ~ 80 ms and a ~ 0.08 ms per
-// layer, from STRATA_PREFILL_TIMING at two chunk sizes); it is set by the model's experts-per-token ratio more
-// than by the card. STRATA_PREFILL_PIPE=<b/a> sets it (1 = the default 1024). The chunk is rounded up to the
-// 256-token grid, at least 512, at most the buffers' chunk, and evened out over the chunks it takes (no short
-// last one). The chunk geometry changes the rounding, so it is off by default.
-int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages) {
-    static const double ratio = [] {
-        const char* v = std::getenv("STRATA_PREFILL_PIPE");
-        if (v == nullptr || v[0] == '\0' || (v[0] == '0' && v[1] == '\0')) return 0.0;
-        const double r = std::atof(v);
-        return r > 1.0 ? r : 1024.0;
-    }();
-    if (ratio <= 0.0 || stages < 2 || n <= 0 || cap <= 0) return cap;
-    const double best = std::sqrt((double) n * ratio / (double) (stages - 1));
-    int64_t want = std::max<int64_t>(512, (((int64_t) best + 255) / 256) * 256);
-    if (want >= n) return cap;                                     // one chunk anyway
-    want = std::min(want, cap);
-    const int64_t k = (n + want - 1) / want;                       // chunks
-    const int64_t even = (((n + k - 1) / k + 255) / 256) * 256;    // the same count, evened out
-    return std::min(even, cap);
+// STRATA_PREFILL_PIPE (opt-in): a layer split reads a prompt as a pipeline - stage s reads chunk c while stage s+1
+// reads chunk c-1. A stage-chunk costs its layers x (b + a C): a fixed part per chunk (b: the pass over the layer's
+// experts - dequantized, or streamed over PCIe where they are not in VRAM) and a part per token (a). The prompt then
+// takes about sum_i (b + a C_i) + (S - 1) max_i (b + a C_i) for chunks C_i over S stages: few large or uneven chunks
+// keep the later stages waiting (a 10.7K prompt in a 7680 and a 3011 chunk over four GP100 dies: the first stage
+// carried 24 of 36 s), many small ones pay b again and again. In units of a that is k r + n + (S - 1)(r + C) for k
+// chunks of C tokens (the last one the rest) and r = b/a, so the rule tries every chunk count from the fewest the
+// buffers allow, each chunk evened out on the 256-token grid and at least 512, and keeps the cheapest - when it
+// beats today's split (chunks of `cap`, the last the rest) by 3%. r differs by an order of magnitude between rigs:
+// 700-900 tokens measured on four GP100 dies (every expert in VRAM, slow arithmetic), about 6000 on two RTX 3090 Ti
+// (fast arithmetic, part of the experts streamed and dequantized per chunk), so STRATA_PREFILL_PIPE=1 measures it
+// (PipeFit). With r not known yet only today's chunk count is evened out, which in this model is never slower.
+int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {
+    if (stages < 2 || n <= 0 || cap <= 0) return cap;
+    const double r = ratio > 0.0 ? ratio : 0.0, S1 = (double) (stages - 1);
+    auto cost = [&](int64_t c) {   // chunks of c tokens, the last the rest
+        const int64_t k = (n + c - 1) / c;
+        return (double) k * r + (double) n + S1 * (r + (double) std::min(c, n));
+    };
+    const int64_t today = std::min(n, cap);
+    const double today_cost = cost(today);
+    const int64_t k_min = (n + cap - 1) / cap;
+    const int64_t k_max = ratio > 0.0 ? std::max<int64_t>(k_min, std::min<int64_t>(64, (n + 511) / 512)) : k_min;
+    int64_t best = today;
+    double best_cost = today_cost;
+    for (int64_t k = k_min; k <= k_max; ++k) {
+        const int64_t c = std::min(cap, std::max<int64_t>(512, (((n + k - 1) / k + 255) / 256) * 256));
+        const double v = cost(c);
+        if (v < best_cost) { best_cost = v; best = c; }
+    }
+    return (best < today && best_cost < 0.97 * today_cost) ? best : cap;
+}
+
+// b/a from the first stage's recent prompts, one point each (chunk size, median time of its full chunks): a Theil-Sen
+// line ms = b + a tokens - the median slope over the pairs whose sizes differ by 25% or more, the median intercept -
+// over points of at least two sizes (the largest 1.5x the smallest or more), b and a both positive. A prompt read
+// while something else slowed the card is one point, so it moves the median little (a least-squares line over every
+// chunk doubled b/a on a PH402 after one such prompt).
+double Prefill::PipeFit::ratio() const {
+    if (n < 3) return 0.0;
+    double lo = 1e30, hi = 0;
+    for (int i = 0; i < n; ++i) { lo = std::min(lo, (double) tokens[i]); hi = std::max(hi, (double) tokens[i]); }
+    if (hi < 1.5 * lo) return 0.0;
+    std::vector<double> v;
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j) {
+            const double ci = (double) tokens[i], cj = (double) tokens[j];
+            if (std::max(ci, cj) >= 1.25 * std::min(ci, cj)) v.push_back((ms[j] - ms[i]) / (cj - ci));
+        }
+    if (v.size() < 2) return 0.0;
+    auto median = [](std::vector<double>& x) {
+        const size_t h = x.size() / 2;
+        std::nth_element(x.begin(), x.begin() + (std::ptrdiff_t) h, x.end());
+        const double hi_v = x[h];
+        if (x.size() % 2) return hi_v;
+        return 0.5 * (hi_v + *std::max_element(x.begin(), x.begin() + (std::ptrdiff_t) h));
+    };
+    const double a = median(v);
+    if (a <= 0.0) return 0.0;
+    v.clear();
+    for (int i = 0; i < n; ++i) v.push_back(ms[i] - a * (double) tokens[i]);
+    const double b = median(v);
+    if (b <= 0.0) return 0.0;
+    return std::min(262144.0, std::max(128.0, b / a));
 }
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
@@ -2031,12 +2070,29 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // place of a --peer-device peer, and gives the stage back its own buffers when the run ends
     // the chunk this prompt is read in: the buffers' size, or with STRATA_PREFILL_PIPE on a layer split the one that
     // keeps every stage busy. Only the first stage chooses: a later one is handed one chunk at a time.
+    // STRATA_PREFILL_PIPE: unset or 0 off; 1 b/a measured on this rig (the first stage's chunk times); a number > 1 b/a
+    static const double pipe_env = [] {
+        const char* v = std::getenv("STRATA_PREFILL_PIPE");
+        if (v == nullptr || v[0] == '\0' || (v[0] == '0' && v[1] == '\0')) return 0.0;
+        const double r = std::atof(v);
+        return r > 1.0 ? r : -1.0;
+    }();
     int stages = 1;
     for (const Prefill* p = next_; p != nullptr; p = p->next_) ++stages;
-    const int64_t C = hand_in_ == nullptr ? pipeline_chunk(n, m.T, stages) : m.T;
-    if (C < m.T && hand_in_ == nullptr)
-        std::fprintf(stderr, "strata prefill: %lld tokens in %lld-token chunks over %d stages (STRATA_PREFILL_PIPE)\n",
-                     (long long) n, (long long) C, stages);
+    const bool pipe_first = pipe_env != 0.0 && hand_in_ == nullptr && stages > 1;
+    if (pipe_first && !pipe_cur_ms_.empty()) {   // the last prompt's point: its full chunks' median time
+        std::vector<double> v = pipe_cur_ms_;
+        std::nth_element(v.begin(), v.begin() + (std::ptrdiff_t) (v.size() / 2), v.end());
+        pipe_fit_.add(pipe_cur_tokens_, v[v.size() / 2]);
+        pipe_cur_ms_.clear();
+    }
+    const double pipe_ratio = pipe_env > 0.0 ? pipe_env : pipe_fit_.ratio();
+    const int64_t C = pipe_first ? pipeline_chunk(n, m.T, stages, pipe_ratio) : m.T;
+    if (pipe_first && C < std::min(n, m.T))
+        std::fprintf(stderr, "strata prefill: %lld tokens in %lld-token chunks over %d stages (STRATA_PREFILL_PIPE, b/a %s)\n",
+                     (long long) n, (long long) C, stages,
+                     pipe_ratio > 0.0 ? (std::to_string((long long) pipe_ratio) + (pipe_env > 0.0 ? " given" : " measured")).c_str()
+                                      : "not measured yet: today's chunk count, evened out");
     const bool single_chunk = hand_in_ == nullptr ? n <= C : single_chunk_;
     const bool helped = single_chunk && bind_stage_helper(n);
     if (helped) std::swap(m.pp, m.help_pp);
@@ -3934,6 +3990,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: the layer split's hand-off: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
+            }
+            // STRATA_PREFILL_PIPE=1: this stage's time for the chunk, before it waits for the next stage
+            if (pipe_first && pipe_env < 0.0 && T >= 256) {
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - tsetup).count();
+                if (c0 == 0) { pipe_cur_tokens_ = T; pipe_cur_ms_.clear(); }
+                if (T == pipe_cur_tokens_) pipe_cur_ms_.push_back(ms);   // the last, shorter chunk is left out
+                static const bool pipe_log = [] { const char* v = std::getenv("STRATA_PREFILL_PIPE_LOG"); return v && v[0] == '1'; }();
+                if (pipe_log)
+                    std::fprintf(stderr, "strata prefill pipe: chunk at %lld of %lld (%lld tokens) %.1f ms; b/a now %.0f\n",
+                                 (long long) c0, (long long) n, (long long) T, ms, pipe_fit_.ratio());
             }
             // Wait only for the DIRECT successor's previous chunk. That successor
             // may already have forwarded its older chunk to later GPUs.

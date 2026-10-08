@@ -154,33 +154,52 @@ into the card that owns the layer.
 ## Prompt chunks sized for the pipeline (`STRATA_PREFILL_PIPE=1`, opt-in)
 
 `--prefill auto` takes the largest chunk the buffers allow (up to 8192), which is what one card wants: a chunk costs a
-pass over its layers' experts plus a part per token, so few large chunks are cheapest. On a split that is the wrong
-end of the trade: with a chunk as big as the prompt the later cards wait while the first one reads it, and with a few
-large chunks the pipeline barely fills (a 10.7K-token prompt in a 7680 and a 3011 chunk over four stages: the first
-stage carried 24 of the 36 s). With `STRATA_PREFILL_PIPE=1` the first stage reads each prompt in the chunk that
-minimizes the pipeline's time: about (S - 1 + n/C) stage-chunks of (b + a C), whose minimum is at
-C = sqrt(n (b/a) / (S - 1)) for n tokens and S stages, b the per-chunk pass and a the per-token part of a layer.
-b/a is in tokens, set more by the model (its experts per token) than by the card: ~1000 for Flash-Next on the
-cards below, the default 1024; `STRATA_PREFILL_PIPE=<b/a>` sets another. The chunk is rounded up to the 256-token
-grid, at least 512, at most the buffers' chunk (keep `--prefill auto` so the buffers allow long prompts their larger
-chunks), and evened out over the chunks it takes; a prompt the rule would read in one chunk keeps today's path. The
-chunk geometry changes the rounding, so it is opt-in. One line in the log says what it chose:
+fixed pass over its layers' experts (b: dequantized, or streamed over PCIe where they are not in VRAM) plus a part per
+token (a), so few large chunks are cheapest. A layer split reads a prompt as a pipeline - stage s reads chunk c while
+stage s+1 reads chunk c-1 - and then takes about sum_i (b + a C_i) + (S - 1) max_i (b + a C_i) for chunks C_i over S
+stages: large or uneven chunks keep the later cards waiting (a 10.7K-token prompt in a 7680 and a 3011 chunk over
+four stages: the first stage carried 24 of the 36 s), small ones pay b again and again.
 
-    strata prefill: 10041 tokens in 2048-token chunks over 4 stages (STRATA_PREFILL_PIPE)
+With `STRATA_PREFILL_PIPE=1` the first stage measures b/a (in tokens) on the rig itself and reads each prompt in the
+chunk count with the least pipeline time, when that beats today's split by 3% or more: every count from the fewest the
+buffers allow is tried, each chunk evened out on the 256-token grid (at least 512, at most the buffers' chunk; keep
+`--prefill auto` so long prompts may use large chunks). The measurement is one point per prompt - the chunk size and
+the median time of its full chunks on the first stage, before it waits for the next one - and a Theil-Sen line over
+the last 16 points, so a prompt read while something else slowed the card moves it little. Until it has points of two
+sizes (the larger 1.5x the smaller or more) it only evens out today's chunk count, which in this model is never slower.
+b/a differs by an order of magnitude between rigs, which is why it is measured: 700-900 tokens on four GP100 dies
+(every expert in VRAM, slow arithmetic), about 6000 on two RTX 3090 Ti (part of the experts streamed and dequantized
+per chunk, fast arithmetic). `STRATA_PREFILL_PIPE=<b/a>` fixes it instead of measuring; `STRATA_PREFILL_PIPE_LOG=1`
+prints every chunk time and the fitted b/a. The chunk geometry changes the rounding, so it is opt-in. One line in the
+log says what it chose:
 
-Measured on four GP100 dies (PH402 SKU 200, `--layer-split 12,24,36`, Flash-Next IQ3_XXS, 64K context), prompt
-tok/s, fresh prompts, two interleaved rounds (each within 0.2%):
+    strata prefill: 10058 tokens in 1280-token chunks over 4 stages (STRATA_PREFILL_PIPE, b/a 706 measured)
 
-| Prompt tokens | `--prefill auto` | `--prefill 2048` | `--prefill auto` + `STRATA_PREFILL_PIPE=1` (chunk) |
+Four GP100 dies (PH402 SKU 200, `--layer-split 12,24,36`, Flash-Next IQ3_XXS, 64K context), prompt tok/s, fresh
+prompts, two interleaved rounds (each within 0.2%). The last column is the rule with b/a 1024; with b/a measured
+(Swift 1.5 IQ3_XXS, 1M context, two starts) the same chunks and speeds come from the second prompt on (b/a settles at
+700-890), and the first prompts are read in today's chunk count, evened out:
+
+| Prompt tokens | `--prefill auto` | `--prefill 2048` | `--prefill auto` + `STRATA_PREFILL_PIPE` (chunk) |
 | ---: | ---: | ---: | ---: |
 | 2,013 | 180.9 | 181.4 | 228.0 (1024) |
 | 3,865 | 207.6 | 276.5 | 312.4 (1024) |
 | 10,041 | 261.1 | 433.0 | 432.6 (2048) |
 | 28,998 | 475.7 | 554.1 | 559.7 (3328) |
 
-To measure b and a on another rig: `STRATA_PREFILL_TIMING=1` logs each stage's GPU time per chunk; two prompts read
-at two chunk sizes give a stage-chunk time t = layers x (b + a C) for each, and b/a = (t1 C2 - t2 C1) / (t2 - t1)
-(the layer count cancels). Not measured here on two-card splits, where S - 1 = 1 makes the chosen chunks larger and the gain smaller.
+Two RTX 3090 Ti (CUDA 12.9 build for sm_86, two stages, Swift 1.5 IQ3_XXS, 1M context, 13,371 of 24,576 experts in
+VRAM), prompt tok/s, fresh prompts, two starts per arm, each reading the four prompts twice (the cold first pass after
+a card was freed is left out); b/a measured 5836 and 6432:
+
+| Prompt tokens | `--prefill auto` | + `STRATA_PREFILL_PIPE=1` (chunk) | for comparison: b/a fixed at 1024 |
+| ---: | ---: | ---: | ---: |
+| 2,035 | 694-815 | 698-816 (today's) | 560-562 |
+| 3,887 | 1,127-1,207 | 1,115-1,227 (today's) | 880-885 |
+| 10,063 | 1,437-1,553 | 1,654-1,681 (2 x 5120) | 1,109-1,113 |
+| 29,019 | 2,532-2,603 | 2,566-2,620 (today's) | 2,064-2,089 |
+
+A fixed b/a of 1024 was a loss of 19-24% there, and on two RTX 4090 with `STRATA_PF_FUSED=1` a loss of 22-36% at
+2.7-21K tokens (reported in the PR by MistyMoonR) - the reason the rule measures it.
 
 ## Limits (for now)
 
