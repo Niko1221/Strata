@@ -2063,7 +2063,7 @@ unchanged. (llama.cpp's own video helper writes a `Video:` label and a `[0m5.00s
 it marks, which leaves frame 0 unpaired and shifts every label; with it, answers placed events about 1 s late.)
 
 **Any length is one request.** `strata-vision` reads the video's length and plans within a budget: every frame at 2 fps
-and ~448 tokens per pair while that fits, then smaller frames down to 128 per pair, then a lower frame rate spread
+and up to 768 tokens per pair (Qwen's own default, qwen-vl-utils) while that fits, then smaller frames down to 128 per pair, then a lower frame rate spread
 over the whole video. The budget is 60% of the context (at most 224K, the Qwen3.8-Flash-Next card's setting for
 hour-scale video), shared by the videos of one request. It encodes 64 frames at a time, so its memory does not grow
 with the length.
@@ -2071,7 +2071,7 @@ with the length.
 | `"vision"` key | Default | What it does |
 | --- | --- | --- |
 | `video_fps` | 2 | frames sampled per second, at most |
-| `video_tokens` | 448 | each frame is sized so a pair is about this many tokens (one token per 32x32 pixels; 448 = 896x504 at 16:9) |
+| `video_tokens` | 768 | each frame is sized so a pair is at most this many tokens (one token per 32x32 pixels; 768 = 1152x640 at 16:9) |
 | `video_total_tokens` | 0 | the whole video's budget; 0 = automatic: `video_context_share` of the context, at most 224K |
 | `video_context_share` | 0.6 | the share of the context an automatic budget takes (64K: ~39K tokens; 256K: 157K) |
 | `video_min_tokens` | 128 | the smallest a frame pair gets before the frame rate drops instead (Qwen3-VL's minimum) |
@@ -2083,7 +2083,8 @@ A request can set `fps`, `max_frames`, `tokens`, `total_tokens` and `max_side` f
 (`STRATA_VISION_VIDEO_S` in seconds, 0 = no limit), where a picture gets 300 s (`STRATA_VISION_ENCODE_S`).
 
 **Measured** (encoder on an RTX 5070 Ti, built with CUDA 12.8 for sm_120, or an i9-13900K's 16 threads; the model
-IQ2_XS on the 5070 Ti, or IQ3_S on an RTX 2080 Ti with 94 GB of RAM; thinking off):
+IQ2_XS on the 5070 Ti, or IQ3_S on an RTX 2080 Ti with 94 GB of RAM; thinking off; frame pairs at most 448
+tokens, the default before it became 768):
 
 | Video | Budget | Frames | Tokens | Encode |
 | --- | ---: | ---: | ---: | ---: |
@@ -2098,8 +2099,8 @@ IQ2_XS on the 5070 Ti, or IQ3_S on an RTX 2080 Ti with 94 GB of RAM; thinking of
   at 7:20 and the banner at 7:13 right (it said 3 seconds long); 38,589 prompt tokens, 68 s, the follow-up 2.9 s from
   the conversation cache. At 256K: both right including the 2 seconds; 157,124 tokens, 328 s, the follow-up 5.5 s.
 - Small text (a 12-second 1080p clip, busy background, a 20 px HUD changing at 6 s, an 18 px sign, three 28 px
-  subtitles): at ~100 tokens per pair (448 px frames) 0/3 subtitles and 1/4 HUD values right; at the defaults 3/3
-  subtitles at their exact seconds and the sign; with `"fps": 1, "tokens": 1024` also 4/4 HUD values and the change at
+  subtitles): at ~100 tokens per pair (448 px frames) 0/3 subtitles and 1/4 HUD values right; at 448 tokens per pair
+  (896x504) 3/3 subtitles at their exact seconds and the sign; with `"fps": 1, "tokens": 1024` also 4/4 HUD values and the change at
   6 s. For small text, ask for that.
 - Two videos compared in one request (a 51-second 1080p gameplay recording as Video A, a copy as B with the minimap
   blacked out, 30% saturation and 1.25x speed): all three found - the black box, the washed-out colours through the
