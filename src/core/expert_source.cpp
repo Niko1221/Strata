@@ -48,6 +48,7 @@
 #endif
 #if defined(__linux__)
 #include <cerrno>
+#include "strata/core/on_device.hpp"   // OnDevice: the lend save runs on a pool thread, not on the card's own
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
 #include <sys/syscall.h>
 #endif
@@ -899,6 +900,11 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 void FileExpertSource::close() {
     io_stop();
     inputs_.clear();
+    lend_offsets_.clear();
+    lend_reserved_ = 0;
+    cached_pairs_.clear();
+    file_reads_cached_.store(0, std::memory_order_relaxed);
+    file_bytes_cached_.store(0, std::memory_order_relaxed);
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
@@ -2038,7 +2044,8 @@ uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
 bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
-    uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank) {
+    uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank,
+    const std::vector<int32_t>& additional_pair_slots, const std::vector<int64_t>& additional_lend_from) {
     err.clear();
     const auto pin_t0 = std::chrono::steady_clock::now();
     if (base_ == nullptr) { err = "FileExpertSource: open the mapped experts before pinning a complement"; return false; }
@@ -2092,6 +2099,7 @@ bool FileExpertSource::pin_cache_complement(
 #endif
     const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
     uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
+    uint64_t total_cap = 0;   // a RAM budget caps the whole copy: the ranked complement plus the loan's space
     uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
     if (budget_bytes > 0) {
         // CS-T: a RAM budget.  The complement's experts in `rank` order (the expert profile, hottest first) while
@@ -2144,10 +2152,21 @@ bool FileExpertSource::pin_cache_complement(
                      (double) budget_bytes / 1073741824.0, (long long) held, (double) bytes / 1073741824.0);
         offsets.swap(ranked);
         bytes = at;
-        lend_from_slot = -1;
+        // #403 turned the loan off when a budget was given, because the arena then grew past the RAM the first
+        // reading had measured.  The ceiling is what should decide, not the absence of a budget: the budget now
+        // caps the whole copy - the ranked complement plus whatever of the loan still fits under it.
+        total_cap = budget_bytes;
     }
 
-    const bool lend = lend_from_slot >= 0 && lend_from_slot < n_slots && additional_gpu_pairs.empty();
+    // The lend region can be kept beside a later stage's cache: the plan below takes the core (the primary slots
+    // that stay cached) and the additional pairs together, which is the same call the no-split form makes with an
+    // empty one.  Measured on the running box with the loan off, a 5.5k prompt reads 22.91 GB off the drive at
+    // 1.54 GB/s, and the lend region's 3.75 GiB a pass is most of what stays after the read-back tier.
+    // An expert is in RAM exactly when no GPU slot holds it - that is the mode's whole rule, and the loan is the
+    // exception that has to be asked for: holding space (or bytes) for experts that sit in a GPU slot is the
+    // duplication that put this box into swap.  On UD-IQ4_XS the complement is 39.2 GiB and both stages' loans
+    // another 9.36 GiB, and 48.6 GiB of expert RAM plus the engine's own ~10 GiB does not fit in 62.7.
+    const bool lend = lend_keeps_ram_ && lend_from_slot >= 0 && lend_from_slot < n_slots;
     uint64_t budget = std::numeric_limits<uint64_t>::max();
     if (bytes > 0 || lend) {
         // #403: with a budget, the reading it was sized from - a second reading a few MB lower (the engine's own
@@ -2160,6 +2179,7 @@ bool FileExpertSource::pin_cache_complement(
         }
         const uint64_t available = std::min(physical, commit);
         budget = available > headroom_bytes ? available - headroom_bytes : 0;
+        if (total_cap > 0 && budget > total_cap) budget = total_cap;   // the caller's ceiling caps the whole copy
         if (bytes > budget) {
             char message[320];
             std::snprintf(message, sizeof message,
@@ -2174,17 +2194,79 @@ bool FileExpertSource::pin_cache_complement(
     // The prompt path's lend region: its slots' experts are streamed from here during a prompt and copied back into
     // their slots after it, so the ones that fit are kept here too (from the last slot down: a short prompt lends
     // only the last few).  The rest keep the mapped-file fallback.
+    // The prompt path's lend region: the experts in the slots it lends get space in the copy - held empty, not
+    // filled (see `lend_save`/`lend_release`) - so a prompt's refill reads RAM rather than the drive.  From the last
+    // slot down: a short prompt lends only the last few.  A later stage lends from its own cache too (measured on
+    // UD-IQ4_XS: CUDA1 borrows 2074 of its 3468 slots, 4.68 GiB a prompt), so its lendable experts are candidates
+    // here as well - after this stage's, and only in whatever the ceiling still leaves, because the copy is what
+    // decode reads every token.
     int64_t keep_from = n_slots;
     if (lend) {
         keep_from = detail::choose_resident_keep_from(slot_bytes, bytes, budget, lend_from_slot);
         if (keep_from < 0) keep_from = n_slots;
-        if (keep_from < n_slots) {
-            std::vector<std::pair<int32_t, int32_t>> core;
+        uint64_t primary_reserve = 0;
+        for (int64_t s = keep_from; s < n_slots; ++s) primary_reserve += slot_bytes[(size_t) s];
+        std::vector<uint8_t> additional_keep(additional_gpu_pairs.size(), 0);
+        uint64_t additional_reserve = 0;
+        const bool stage_slots = additional_pair_slots.size() == additional_gpu_pairs.size() &&
+                                 additional_lend_from.size() == additional_gpu_pairs.size();
+        if (stage_slots && bytes + primary_reserve <= budget) {
+            uint64_t left = budget - bytes - primary_reserve;
+            for (size_t i = 0; i < additional_gpu_pairs.size(); ++i) {
+                if (additional_pair_slots[i] < additional_lend_from[i]) continue;
+                const uint64_t b = layer_blob_bytes_[(size_t) additional_gpu_pairs[i].first];
+                if (b > left) continue;
+                additional_keep[i] = 1;
+                additional_reserve += b;
+                left -= b;
+            }
+        }
+        if (keep_from < n_slots || additional_reserve > 0) {
+            std::vector<std::pair<int32_t, int32_t>> core, additional_core;
             core.reserve(primary_gpu_pairs.size());
+            additional_core.reserve(additional_gpu_pairs.size());
             for (size_t i = 0; i < primary_gpu_pairs.size(); ++i)
                 if (pair_slot[i] < keep_from) core.push_back(primary_gpu_pairs[i]);
-            if (!detail::make_cache_complement_plan(n_layers_, n_expert_, layer_blob_bytes_, core,
-                                                    additional_gpu_pairs, offsets, bytes, err)) return false;
+            for (size_t i = 0; i < additional_gpu_pairs.size(); ++i)
+                if (!additional_keep[i]) additional_core.push_back(additional_gpu_pairs[i]);
+            if (!detail::make_cache_complement_plan(n_layers_, n_expert_, layer_blob_bytes_, core, additional_core,
+                                                    offsets, bytes, err)) return false;
+            // Space in the copy for the experts in the slots a prompt will lend, **not filled at startup**: those
+            // bytes sit in their slots until a prompt overwrites them, and holding a RAM copy of them as well is
+            // what made RAM plus VRAM exceed the model on a 62 GB box (42.4 GiB in RAM and 17.6 in VRAM against
+            // 56.3 GiB of experts).  `lend_save` moves them here when the loan goes out and `lend_release` frees
+            // the space when the refill lands, so an expert is in one tier at a time.
+            int64_t additional_kept = 0;
+            for (size_t i = 0; i < primary_gpu_pairs.size(); ++i) {
+                if (pair_slot[i] < keep_from) continue;
+                const int32_t layer = primary_gpu_pairs[i].first, expert = primary_gpu_pairs[i].second;
+                if (layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) continue;
+                const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+                if (index >= offsets.size() || offsets[index] == kNoComplement) continue;
+                if (index >= lend_offsets_.size()) lend_offsets_.resize(offsets.size(), kNoComplement);
+                lend_offsets_[index] = offsets[index];
+                offsets[index] = kNoComplement;
+                ++lend_reserved_;
+            }
+            for (size_t i = 0; i < additional_gpu_pairs.size(); ++i) {
+                if (!additional_keep[i]) continue;
+                const int32_t layer = additional_gpu_pairs[i].first, expert = additional_gpu_pairs[i].second;
+                if (layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) continue;
+                const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+                if (index >= offsets.size() || offsets[index] == kNoComplement) continue;
+                if (index >= lend_offsets_.size()) lend_offsets_.resize(offsets.size(), kNoComplement);
+                lend_offsets_[index] = offsets[index];
+                offsets[index] = kNoComplement;
+                ++lend_reserved_;
+                ++additional_kept;
+            }
+            if (additional_kept > 0)
+                std::fprintf(stderr, "FileExpertSource: %lld of the later stages' lendable experts hold space in the "
+                                     "copy too (%.2f GiB held empty; the rest of their loan stays on the files)\n",
+                             (long long) additional_kept, (double) additional_reserve / 1073741824.0);
+            else if (stage_slots && !additional_gpu_pairs.empty())
+                std::fprintf(stderr, "FileExpertSource: no room under the ceiling for the later stages' loan; those "
+                                     "experts are read from the files when their slots are lent\n");
         }
     }
 
@@ -2442,6 +2524,7 @@ bool FileExpertSource::pin_cache_complement(
     std::mutex fail_mu;
     const auto copy_t0 = std::chrono::steady_clock::now();
     std::string fail_msg;
+    int released_warned = 0;   // the GGUF page-cache release: say once if the filesystem cannot do it
     auto fail = [&](const std::string& m) {
         std::lock_guard<std::mutex> lock(fail_mu);
         if (fail_msg.empty()) fail_msg = m;
@@ -2516,6 +2599,48 @@ bool FileExpertSource::pin_cache_complement(
                 return;
             }
             }
+            else {
+                // The GGUF in place: the same release, per role slice.  It was missing, and it is the difference
+                // between booting and not: the build reads the complement (39.2 GiB on UD-IQ4_XS) into the pinned
+                // arena and leaves every page it read in the file cache as well, so a 62.7 GiB machine is holding
+                // ~78 GiB of expert bytes halfway through the load and goes into swap before the copy finishes.
+                // The bytes are in the arena now; the file is needed again only for experts OUTSIDE the copy, and
+                // those pages are not touched here.  A filesystem that cannot drop cache (ntfs3) is a warning, not
+                // a failed load.
+                const uint64_t page = (uint64_t) page_size;
+                for (int r = 0; r < 3; ++r) {
+                    const size_t i = (size_t) (3 * layer + r);
+                    if (i >= role_ptr_.size() || role_bytes_[i] == 0) continue;
+                    // The role's bytes through the one mapping this source owns; a split-file layout (base_ null, or
+                    // a role mapped elsewhere) is left alone rather than released at a wrong offset.
+                    const uint8_t* rp = role_ptr_[i];
+                    if (rp == nullptr || base_ == nullptr || rp < base_ || rp >= base_ + mapped_bytes_) continue;
+                    const uint64_t role_off = (uint64_t) (rp - base_);
+                    const uint64_t per = role_bytes_[i];
+                    // Only the experts that are now in the arena.  Dropping the layer's whole range also dropped the
+                    // pages of the experts a GPU cache holds - and those are exactly the ones the prompt's loan
+                    // reads back every chunk, so the refill went from a page-cache hit to a drive read and the free
+                    // RAM could no longer hold them.
+                    int64_t run = -1;
+                    for (int64_t e = 0; e <= n_expert_; ++e) {
+                        const bool in_copy = e < n_expert_ &&
+                            offsets[(size_t) layer * (size_t) n_expert_ + (size_t) e] != kNoComplement;
+                        if (in_copy && run < 0) run = e;
+                        if (in_copy || run < 0) continue;
+                        const uint64_t off = role_off + (uint64_t) run * per;
+                        const uint64_t len = per * (uint64_t) (e - run);
+                        const uint64_t start = off - off % page;
+                        const uint64_t end_rem = (off + len) % page;
+                        const uint64_t extra = end_rem == 0 ? 0 : page - end_rem;
+                        if (posix_fadvise(fd_, (off_t) start, (off_t) (len + (start - off) + extra),
+                                          POSIX_FADV_DONTNEED) != 0 && released_warned++ == 0)
+                            std::fprintf(stderr, "FileExpertSource: NOTE: the file cache cannot be released on this "
+                                                 "filesystem (%s); the complement's pages stay cached on top of the "
+                                                 "arena\n", std::strerror(errno));
+                        run = -1;
+                    }
+                }
+            }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
             if (done % 8 == 0 || done == n_layers_)
@@ -2564,8 +2689,9 @@ bool FileExpertSource::pin_cache_complement(
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - pin_t0).count(),
                  note.empty() ? "" : "; ", note.c_str());
     if (lend)
-        std::fprintf(stderr, "FileExpertSource: %lld of the prompt path's %lld lendable slots keep their experts in RAM "
-                             "too%s\n", (long long) complement_lent_slots_, (long long) (n_slots - lend_from_slot),
+        std::fprintf(stderr, "FileExpertSource: %lld of the prompt path's %lld lendable slots have their space held "
+                             "in RAM (empty until the loan goes out)%s\n", (long long) complement_lent_slots_,
+                     (long long) (n_slots - lend_from_slot),
                      complement_lent_slots_ < n_slots - lend_from_slot
                          ? " (the others are read from the file when lent: not enough RAM for them)" : "");
     if (!additional_gpu_pairs.empty()) {
@@ -2579,6 +2705,55 @@ bool FileExpertSource::pin_cache_complement(
 const uint8_t* FileExpertSource::resident_blob(size_t index) const {
     if (exchange_storage_.active()) return exchange_storage_.resident(index).host;
     return detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr);
+}
+
+bool FileExpertSource::lend_save(const ExpertCache& cache, int device,
+                                 const std::vector<std::pair<int32_t, int32_t>>& lent, std::string& err) {
+    if (!complement_ready_ || complement_host_ == nullptr) return true;   // no RAM copy: the refill reads the files, as before
+    int64_t moved = 0, unreserved = 0;
+    for (const auto& pr : lent) {
+        const int32_t index = pr.first;
+        if (index < 0 || (size_t) index >= lend_offsets_.size() || lend_offsets_[(size_t) index] == kNoComplement) {
+            ++unreserved;
+            continue;
+        }
+        if (complement_offsets_[(size_t) index] != kNoComplement) continue;   // already saved (another chunk of one prompt)
+        const uint8_t* src = cache.device_slot(pr.second);
+        if (src == nullptr) { ++unreserved; continue; }
+        const int64_t layer = (int64_t) index / (int64_t) n_expert_;
+        if (layer < 0 || layer >= n_layers_) { ++unreserved; continue; }
+        const uint64_t bytes = layer_blob_bytes_[(size_t) layer];
+        const uint64_t at = lend_offsets_[(size_t) index];
+        if (at > complement_bytes_ || bytes > complement_bytes_ - at) { ++unreserved; continue; }
+        uint8_t* dst = (uint8_t*) complement_host_ + (size_t) at;
+        const strata::core::OnDevice on(device);
+        const bool ok = cudaMemcpy(dst, src, (size_t) bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
+        (void) cudaGetLastError();
+        if (!ok) { err = "FileExpertSource: saving a lent slot's expert into the RAM copy failed"; return false; }
+        // The byte lives here now, and the slot holds prompt bytes: one tier, not two.
+        complement_offsets_[(size_t) index] = at;
+        if (!cached_pairs_.empty() && (size_t) index < cached_pairs_.size()) cached_pairs_[(size_t) index] = 0;
+        ++moved;
+    }
+    lend_saved_ += moved;
+    std::fprintf(stderr, "FileExpertSource: lend save: %lld experts moved out of the cache slots into the space the "
+                         "RAM copy holds for them (%lld had none and stay on the files)\n",
+                 (long long) moved, (long long) unreserved);
+    std::fflush(stderr);
+    return true;
+}
+
+void FileExpertSource::lend_release(const std::vector<std::pair<int32_t, int32_t>>& lent) {
+    for (const auto& pr : lent) {
+        const int32_t index = pr.first;
+        if (index < 0 || (size_t) index >= lend_offsets_.size() || lend_offsets_[(size_t) index] == kNoComplement)
+            continue;
+        // The adaptive tier may have moved the space to another expert in the meantime; then the offset no longer
+        // matches and the space is already spoken for.
+        if (complement_offsets_[(size_t) index] == lend_offsets_[(size_t) index])
+            complement_offsets_[(size_t) index] = kNoComplement;
+        if (!cached_pairs_.empty() && (size_t) index < cached_pairs_.size()) cached_pairs_[(size_t) index] = 1;
+    }
 }
 
 bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {

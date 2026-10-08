@@ -432,6 +432,13 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    /// Read an expert the GPU caches hold back over PCIe instead of reading it from the files.  Off by default:
+    /// The prompt path's lendable slots keep their experts in the RAM copy beside a layer split too (on by default;
+    /// `--no-lend-keeps-ram` restores the form that leaves the loan to the files).
+    /// Hold space in the RAM copy for the experts in the slots a prompt lends, so its refill reads RAM instead of
+    /// the files.  Off by default: that space is a RAM copy of an expert sitting in a GPU slot, and on a 62.7 GiB
+    /// box the complement plus both stages' loans does not fit.
+    bool lend_keeps_ram = false;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -1732,6 +1739,7 @@ int main(int argc, char** argv) {
             o.prefill_chunk = o.prefill_auto ? o.prefill_auto_max : std::atoll(v.c_str());
         }
         else if (a == "--no-split-rows") o.no_split_rows = true;
+        else if (a == "--lend-keeps-ram") o.lend_keeps_ram = true;
         else if (a == "--no-prefill-borrow") o.no_prefill_borrow = true;
         else if (a == "--vram-elastic") o.vram_elastic = true;
         else if (a == "--vram-segment-mib") o.vram_segment_mib = std::atoll(next("--vram-segment-mib"));
@@ -5996,16 +6004,34 @@ int main(int argc, char** argv) {
             const int64_t k = plan_lend(chunk);
             if (k > 0) lend_from = xcache.slots() - k;
         }
-        // a layer split: the experts every later stage's cache holds are left out of the RAM copy, as CUDA0's are
-        // (with them the copy keeps no lend region: pin_cache_complement turns the loan off)
+        // a layer split: the experts every later stage's cache holds are left out of the RAM copy, as CUDA0's are.
+        // Their slots come along too, because a stage lends from its own cache as well (measured on UD-IQ4_XS:
+        // CUDA1 borrows 2074 of its 3468 slots, 4.68 GiB a prompt) and those experts need space here or the drive.
         std::vector<std::pair<int32_t, int32_t>> stage_pairs;
-        for (auto& st : stages)
+        std::vector<int32_t> stage_pair_slots;
+        std::vector<int64_t> stage_lend_from;
+        const int64_t stage_k = o.prefill_chunk > 0 && !o.no_prefill_borrow ? plan_lend(o.prefill_chunk) : 0;
+        for (auto& st : stages) {
+            const int64_t st_lend_from = stage_k > 0 && st->cache.slots() > stage_k ? st->cache.slots() - stage_k : -1;
             for (int64_t l = st->lb; l < st->le; ++l)
-                for (int64_t e = 0; e < g.n_expert; ++e)
-                    if (st->cache.slot_of(l, e) >= 0) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+                for (int64_t e = 0; e < g.n_expert; ++e) {
+                    const int32_t s = st->cache.slot_of(l, e);
+                    if (s < 0) continue;
+                    stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+                    stage_pair_slots.push_back(s);
+                    stage_lend_from.push_back(st_lend_from);
+                }
+        }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
+        // The headroom applies with or without a budget: what the engine pins after the copy (the K/V streaming's
+        // host region, the exchange buffers, the image encoder's process) comes out of the same RAM, and a copy
+        // sized to `available - 8 GiB` still puts a 62 GB box into swap when those land.
+        if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
+            o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
+        src.lend_keeps_ram(o.lend_keeps_ram);
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
-                                                    o.resident_headroom, o.resident_budget, &rank_all);
+                                                    o.resident_headroom, o.resident_budget, &rank_all,
+                                                    stage_pair_slots, stage_lend_from);
         std::string whole_err;
         if (!resident_ok && o.resident_soft) {
             // #467: the whole complement does not fit - keep what does, the hottest by the profile, through the #403
@@ -6060,12 +6086,14 @@ int main(int argc, char** argv) {
                              (double) adapt_batch * 3.0 * 1048576.0 / 1073741824.0 * (o.adapt_async ? 2 : 1),
                              o.adapt_swaps > adapt_batch ? " (asked for more than 256: capped)" : "");
             std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
-                                 "cache; adaptive swaps %s\n",
+                                 "cache; adaptive swaps %s%s\n",
                          (double) src.resident_bytes() / 1073741824.0,
                          src.complement_pinned() ? "page-locked" : src.locked_bytes() > 0 ? "locked" : "pageable",
                          (long long) xcache.resident(),
                          o.adapt_every > 0 && o.adapt_swaps > 0 ? "exchange them with the GPU cache (no file reads)"
-                                                                : "off");
+                                                                : "off",
+                         src.lend_reserved() > 0
+                             ? "; the space of the prompt's lendable slots is held empty until the loan goes out" : "");
         } else if (o.resident_soft) {
             std::fprintf(stderr, "strata generate: WARNING: the resident RAM mode does not fit (%s); the experts the "
                                  "GPU does not hold are read from the model folder through the OS file cache "
@@ -9424,6 +9452,7 @@ int main(int argc, char** argv) {
                 for (const auto& [i, slot] : p.lent)
                     srcp->release(i / g.n_expert, i % g.n_expert);
 #endif
+                srcp->lend_release(p.lent);   // the copies landed in their slots: the space in the copy is free again
                 p.lent.clear();
                 p.lent_chunk = 0;
                 return true;
@@ -9501,6 +9530,9 @@ int main(int argc, char** argv) {
                             }
                         }
                     p.lent_chunk = want;
+                    // The slots are about to hold prompt bytes: move the experts out of them into the space the RAM
+                    // copy holds for exactly this, so each byte is in one tier and the refill never reads a drive.
+                    if (!p.lent.empty() && !srcp->lend_save(*p.cache, p.dev, p.lent, e)) return false;
                 }
                 if (any) res_upload();
                 if (trace) {
@@ -10983,6 +11015,12 @@ int main(int argc, char** argv) {
                                                      : (uint64_t) k * (uint64_t) blob;
                 std::fprintf(stderr, "strata generate: prompt path borrows %lld cache slots (%.2f GiB)\n", (long long) k,
                              (double) borrow_bytes / 1073741824.0);
+                // The slots are about to hold prompt bytes: move the experts out of them into the space the RAM copy
+                // holds for exactly this, so each byte is in one tier and the refill never reads a drive.
+                if (!lent.empty() && !srcp->lend_save(xcache, 0, lent, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
             }
         }
         if (borrow == nullptr)
@@ -11034,6 +11072,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
                 return 1;
             }
+            srcp->lend_release(lent);   // the copies landed in their slots: the space in the copy is free again
 #if defined(_WIN32)
             for (const auto& [i, slot] : lent)
                 srcp->release(i / g.n_expert, i % g.n_expert);
