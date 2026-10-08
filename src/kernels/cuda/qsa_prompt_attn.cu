@@ -91,8 +91,11 @@ struct Smem {
     static constexpr int NG = KV_MODE == 4 ? HD / QK4_0 : 4;      // scale groups per row (q4_0: 8 of 32, else 4 of 64)
     __half qh[16][QS];
     __half ql[16][QS];
-    KElem k[CH][KROW];
-    VElem v[CH][VROW];
+    // int8 K/V (mode 1): K is read only by the scores and V only by p.v, so they share one buffer - V is stored over K
+    // after the scores (prompt_attn_kernel).  37.9 -> 29.2 KB: two blocks fit an SM's 64 KB on Turing instead of one.
+    struct Rows { KElem k[CH][KROW]; VElem v[CH][VROW]; };
+    struct SharedRows { union { KElem k[CH][KROW]; VElem v[CH][VROW]; }; };
+    typename std::conditional<KV_MODE == 1, SharedRows, Rows>::type kv;
     float ks[CH][NG];
     float vs[CH][NG];
     float s[16][CH + 1];
@@ -145,8 +148,51 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
 #pragma unroll
     for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
 
+    // int8 K/V: the next chunk's rows are loaded into registers while this chunk computes (Turing has no cp.async, and
+    // at 1 block per SM the gather's latency was the kernel's largest stall), then stored to shared memory exactly as
+    // the gather below stores them: the same bytes in the same places, the same arithmetic after.
+    constexpr bool PREFETCH = KV_MODE == 1;
+    constexpr int KP = HD / 16;                               // 16-byte pieces per int8 row
+    constexpr int PPT = PREFETCH ? CH * KP / THREADS : 1;     // pieces per thread
+    static_assert(!PREFETCH || (CH * KP) % THREADS == 0 && CH * 4 == THREADS, "prefetch layout");
+    uint4 pk[PPT], pv[PPT];
+    float pa = 0.0f, pb = 0.0f;
+    auto row_of = [&](int c0, int c) -> long long {          // as S.row below; -1 past the chunk's cells
+        if (c >= min(CH, n - c0)) return -1;
+        const int cell = ids[c0 + c];
+        const long long page = (long long) p.page_table[cell / page_size];
+        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+    };
+    auto fetch = [&](int c0) {
+        if constexpr (PREFETCH) {
+#pragma unroll
+            for (int j = 0; j < PPT; ++j) {
+                const int i = t + j * THREADS, c = i / KP, pc = i % KP;
+                const long long r = row_of(c0, c);
+                pk[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc) : make_uint4(0, 0, 0, 0);
+                pv[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc) : make_uint4(0, 0, 0, 0);
+            }
+            const int c = t / 4, g = t % 4;
+            const long long r = row_of(c0, c);
+            pa = r >= 0 ? __half2float(__ushort_as_half(p.k_scale[r * (HD / KV_Q8_GROUP) + g])) : 0.0f;
+            pb = r >= 0 ? __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + g])) : 0.0f;
+        }
+    };
+    if constexpr (PREFETCH) fetch(0);
+
     for (int c0 = 0; c0 < n; c0 += CH) {
         const int nh = min(CH, n - c0);
+        if constexpr (PREFETCH) {
+            __syncthreads();   // the previous chunk's p.v is done with k, v, s
+#pragma unroll
+            for (int j = 0; j < PPT; ++j) {
+                const int i = t + j * THREADS, c = i / KP, pc = i % KP;
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.k[c][0]) + pc * 16) = pk[j];
+            }
+            S.ks[t / 4][t % 4] = pa;
+            S.vs[t / 4][t % 4] = pb;
+            __syncthreads();
+        } else {
         if (t < CH) {
             long long r = -1;
             if (t < nh) {
@@ -186,7 +232,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                                     __vsub4((w[2] >> 4) & 0x0F0F0F0Fu, 0x08080808u),
                                     __vsub4((w[3] >> 4) & 0x0F0F0F0Fu, 0x08080808u));
                 }
-                int8_t* dst = kv == 0 ? &S.k[c][b * QK4_0] : &S.v[c][b * QK4_0];
+                int8_t* dst = kv == 0 ? &S.kv.k[c][b * QK4_0] : &S.kv.v[c][b * QK4_0];
                 reinterpret_cast<uint4*>(dst)[0] = lo;
                 reinterpret_cast<uint4*>(dst)[1] = hi;
                 (kv == 0 ? S.ks : S.vs)[c][b] = d;
@@ -203,7 +249,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     else   // modes 1 and 3: the K side is INT8
                         kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
                 }
-                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.k[c][0]) + pc * 16) = kx;
             }
             if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
                 constexpr int BLKS = HD / QK4_0;
@@ -212,14 +258,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     const int c = i / BLKS, b = i % BLKS;
                     const long long r = S.row[c];
 #pragma unroll
-                    for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
+                    for (int j = 0; j < QK4_0; ++j) S.kv.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
                         const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + r * BYTES) + b;
                         const float d = __half2float(__ushort_as_half(blk->d));
 #pragma unroll
                         for (int j = 0; j < QK4_0 / 2; ++j) {
-                            S.v[c][b * QK4_0 + j] = __float2half_rn((float) ((int)(blk->qs[j] & 0x0F) - 8) * d);
-                            S.v[c][b * QK4_0 + j + QK4_0 / 2] =
+                            S.kv.v[c][b * QK4_0 + j] = __float2half_rn((float) ((int)(blk->qs[j] & 0x0F) - 8) * d);
+                            S.kv.v[c][b * QK4_0 + j + QK4_0 / 2] =
                                 __float2half_rn((float) ((int)(blk->qs[j] >> 4) - 8) * d);
                         }
                     }
@@ -236,7 +282,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                         else
                             vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
                     }
-                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
+                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = vx;
                 }
             }
             for (int i = t; i < CH * 4; i += THREADS) {
@@ -259,6 +305,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             }
         }
         __syncthreads();
+        }
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per scale group (64 dims; q4_0's 32)
         constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG;   // groups per row, 16-dim MMA steps per group
 #pragma unroll
@@ -281,11 +328,11 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     al[2] = *reinterpret_cast<const uint32_t*>(&S.ql[gid][k0 + 2 * tig + 8]);
                     al[3] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig + 8]);
                     if constexpr (KV_MODE != 0) {   // modes 1 and 3: the K side is INT8 codes
-                        b[0] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig]));
-                        b[1] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig + 8]));
+                        b[0] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.kv.k[cb + gid][k0 + 2 * tig]));
+                        b[1] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.kv.k[cb + gid][k0 + 2 * tig + 8]));
                     } else {
-                        b[0] = *reinterpret_cast<const uint32_t*>(&S.k[cb + gid][k0 + 2 * tig]);
-                        b[1] = *reinterpret_cast<const uint32_t*>(&S.k[cb + gid][k0 + 2 * tig + 8]);
+                        b[0] = *reinterpret_cast<const uint32_t*>(&S.kv.k[cb + gid][k0 + 2 * tig]);
+                        b[1] = *reinterpret_cast<const uint32_t*>(&S.kv.k[cb + gid][k0 + 2 * tig + 8]);
                     }
                     mma16816(tg, ah, b);
 #ifndef D1_NO_QLO
@@ -305,6 +352,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -INFINITY;
         }
         __syncthreads();
+        if constexpr (PREFETCH) {   // the scores are done with K: V goes over it (read after the softmax's barrier)
+#pragma unroll
+            for (int j = 0; j < PPT; ++j) {
+                const int i = t + j * THREADS, c = i / KP, pc = i % KP;
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = pv[j];
+            }
+            if (c0 + CH < n) fetch(c0 + CH);   // the next chunk's rows, in flight while this one finishes
+        }
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
             constexpr int PER = CH / 8;
@@ -382,13 +437,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     const int d = warp * 64 + j * 8 + gid;
                     uint32_t b[2];
                     if constexpr (KV_MODE == 1 || KV_MODE == 4) {
-                        const uint32_t x0 = (uint8_t) S.v[cA][d] | ((uint32_t) (uint8_t) S.v[cA + 1][d] << 8);
-                        const uint32_t x1 = (uint8_t) S.v[cB][d] | ((uint32_t) (uint8_t) S.v[cB + 1][d] << 8);
+                        const uint32_t x0 = (uint8_t) S.kv.v[cA][d] | ((uint32_t) (uint8_t) S.kv.v[cA + 1][d] << 8);
+                        const uint32_t x1 = (uint8_t) S.kv.v[cB][d] | ((uint32_t) (uint8_t) S.kv.v[cB + 1][d] << 8);
                         b[0] = i8x2_to_h2(x0);
                         b[1] = i8x2_to_h2(x1);
                     } else {
-                        const __half2 h0 = __halves2half2(S.v[cA][d], S.v[cA + 1][d]);
-                        const __half2 h1 = __halves2half2(S.v[cB][d], S.v[cB + 1][d]);
+                        const __half2 h0 = __halves2half2(S.kv.v[cA][d], S.kv.v[cA + 1][d]);
+                        const __half2 h1 = __halves2half2(S.kv.v[cB][d], S.kv.v[cB + 1][d]);
                         b[0] = *reinterpret_cast<const uint32_t*>(&h0);
                         b[1] = *reinterpret_cast<const uint32_t*>(&h1);
                     }
