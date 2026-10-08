@@ -155,7 +155,7 @@ __global__ void matmul_kernel(const uint8_t* __restrict__ W, int64_t rows, int i
         if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) Y[(int64_t) t * y_stride + r] = acc;
+    if (threadIdx.x == 0) Y[(int64_t) t * y_stride + r] = red[0];
 }
 
 // ---------------------------------------------------------------- MoE kernels

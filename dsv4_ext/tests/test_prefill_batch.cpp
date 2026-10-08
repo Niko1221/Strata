@@ -72,12 +72,13 @@ static Trace run_sequential(const std::vector<std::string>& shards, const std::v
 }
 
 /// Run the prompt in chunks of exactly `chunk` tokens (the last chunk may be shorter).
-static Trace run_chunked(const std::vector<std::string>& shards, const std::vector<int>& ids, bool qat, int chunk) {
+static Trace run_chunked(const std::vector<std::string>& shards, const std::vector<int>& ids, bool qat, int chunk, bool gpu = false, int max_layers = -1) {
     RunOpts o;
     o.prefill_chunk = chunk;
     o.qat_sim = qat;
     o.verbose = false;
-    o.gpu = false;
+    o.max_layers = max_layers;
+    o.gpu = gpu;                // true: the device path (gpu::matmul / experts_batch), CUDA or emulated
     o.ctx = 512;
     Model m;
     std::string err;
@@ -95,6 +96,13 @@ static Trace run_chunked(const std::vector<std::string>& shards, const std::vect
         std::vector<float> lg;
         m.forward_chunk(ids.data() + i, n, pos, (i + (size_t) n == ids.size()) ? &lg : nullptr);
         m.end_chunk(n);
+        // The per-token chunk trace has the same row width as last_routing, and its last row is that token.
+        const std::vector<int>& cr = m.chunk_routing();
+        const size_t row = m.last_routing.size();
+        CHECK(m.chunk_routing_n() == n);
+        CHECK(cr.size() >= (size_t) n * row);
+        if (cr.size() >= (size_t) n * row && m.chunk_routing_n() == n)
+            CHECK(std::equal(m.last_routing.begin(), m.last_routing.end(), cr.begin() + (size_t) (n - 1) * row));
         tr.last_logits = lg;
         tr.last_routing = m.last_routing;
         tr.chunk_ends.push_back(i + (size_t) n - 1);
@@ -108,15 +116,19 @@ int main(int argc, char** argv) {
     std::vector<std::string> shards;
     std::vector<int> ids;
     bool qat = true;
+    bool with_gpu = false;
+    double tol = 1e-3;   // see the comment at the CHECK below: re-measure on the real model with --tol
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--model" && i + 1 < argc) shards.push_back(argv[++i]);
         else if (a == "--ids" && i + 1 < argc) ids = split_ids(argv[++i]);
         else if (a == "--no-qat-sim") qat = false;
-        else { std::printf("usage: %s --model TINY.gguf --ids a,b,c[,...] [--no-qat-sim]\n", argv[0]); return 2; }
+        else if (a == "--gpu") with_gpu = true;
+        else if (a == "--tol" && i + 1 < argc) tol = std::atof(argv[++i]);
+        else { std::printf("usage: %s --model TINY.gguf --ids a,b,c[,...] [--no-qat-sim] [--gpu] [--tol T]\n", argv[0]); return 2; }
     }
     if (shards.empty() || ids.size() < 4) {
-        std::printf("usage: %s --model TINY.gguf --ids a,b,c[,...] [--no-qat-sim]\n", argv[0]);
+        std::printf("usage: %s --model TINY.gguf --ids a,b,c[,...] [--no-qat-sim] [--gpu] [--tol T]\n", argv[0]);
         return 2;
     }
 
@@ -124,10 +136,14 @@ int main(int argc, char** argv) {
     if (g_fail) return 1;
     CHECK(base.last_logits.size() > 0);
 
-    // The tiny model's sliding window caps the chunk at that window, so the list stays inside it.
-    const int chunks[] = {1, 2, 3, 4, 5, 8};
+    // The tiny model's sliding window (tools/tiny_model.py: WIN = 4) caps the chunk, and load() clamps a
+    // larger request down to it, so sizes above 4 would silently re-test 4. The list stays inside the window.
+    const int chunks[] = {1, 2, 3, 4};
+    // CPU chunked runs, then (with --gpu) the same chunks on the device path against the CPU reference.
+    for (int pass = 0; pass < (with_gpu ? 2 : 1); ++pass)
     for (int chunk : chunks) {
-        const Trace got = run_chunked(shards, ids, qat, chunk);
+        const bool gpu = pass == 1;
+        const Trace got = run_chunked(shards, ids, qat, chunk, gpu);
         if (g_fail) return 1;
 
         // The routing of the LAST token of the prompt must be identical: the router sees the same
@@ -146,15 +162,22 @@ int main(int argc, char** argv) {
                 max_rel = std::max(max_rel, d / scale);
             }
         }
-        std::printf("chunk=%-3d routing differs=%d  logit max|delta|=%.3e max rel=%.3e\n",
-                    chunk, routing_diff, max_abs, max_rel);
+        std::printf("%s chunk=%-3d routing differs=%d  logit max|delta|=%.3e max rel=%.3e\n",
+                    gpu ? "gpu" : "cpu", chunk, routing_diff, max_abs, max_rel);
         CHECK(routing_diff == 0);
         // row_dots() walks the same blocks with the same double accumulator as row_dot(), so every
         // single product is bit-identical. What is left is the ORDER of the float sums: the
         // sequential path adds a token's routed experts in routing order, the batched path in expert
         // order. Over 43 layers that is float noise, and 1e-3 is what it measures at on the tiny
         // model - a real bug moves a logit by orders of magnitude more.
-        CHECK(max_abs < 1e-3);
+        CHECK(max_abs < tol);
+    }
+
+    // --max-layers: the chunk trace must keep the n_layer*K row width (unused layers stay -1).
+    {
+        const Trace part = run_chunked(shards, ids, qat, 4, false, 2);
+        CHECK(!part.last_routing.empty());
+        std::printf("max-layers=2 chunk trace rows consistent\n");
     }
 
     std::printf("%s\n", g_fail ? "PREFILL BATCH TESTS FAILED" : "ALL PREFILL BATCH TESTS PASSED");
