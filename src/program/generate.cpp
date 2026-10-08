@@ -933,7 +933,7 @@ void usage() {
                  "                       (default) or one per stream (llama.cpp's MTP graph)\n"
                  "  --mtp-q4 all|proj|head  opt-in: the draft layer's projections and/or draft head as 4-bit copies\n"
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
-                 "  --dflash GGUF        experimental: the standalone DeepSpec DFlash block drafter (docs/DFLASH.md)\n"
+                 "  --dflash GGUF        experimental: DFlash GGUF (BF16/Q8_0/Q5_0/Q4_0; CLI and server)\n"
                  "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
                  "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
                  "  --dflash-head GGUF   experimental draft-only output.weight; target verification keeps its own head\n"
@@ -2534,7 +2534,7 @@ int main(int argc, char** argv) {
         else if (a == "--dflash") o.dflash = next("--dflash");
         else if (a == "--dflash-head") o.dflash_head = next("--dflash-head");
         else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
-        else if (a == "--dflash-window") o.dflash_window = std::max(1024LL, std::atoll(next("--dflash-window")));
+        else if (a == "--dflash-window") o.dflash_window = std::max(0LL, std::atoll(next("--dflash-window")));
         else if (a == "--dflash-mask-token") o.dflash_mask = std::atoll(next("--dflash-mask-token"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
@@ -2741,6 +2741,19 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    if (!o.dflash.empty() && o.serve) {
+        if (o.batch > 0 || !o.layer_split.empty()) {
+            std::fprintf(stderr, "strata serve: DFlash currently requires one GPU and serial requests\n");
+            return 2;
+        }
+        // Target-only snapshots do not contain the drafter's five context pools. Rebuild both
+        // contexts for every request until DFlash snapshots are supported.
+        o.prompt_cache = 0;
+        o.conversation_cache_mib = 0;
+        o.conversation_cache_slots = 0;
+        std::fprintf(stderr, "dflash: server uses full prompt reads; target-only prompt snapshots are disabled\n");
+    }
+
     strata::core::set_coupled_draft(o.coupled_draft);
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
@@ -5007,7 +5020,7 @@ int main(int argc, char** argv) {
             bool remote = false;
             for (const int r : o.expert_cache_remote) remote = remote || r > 0;
             const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
-            const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
+            const bool on = asked && o.dflash.empty() && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
@@ -5362,7 +5375,7 @@ int main(int argc, char** argv) {
                          (long long) effective_mask, (long long) dg.vocab);
             return 2;
         }
-        if (!o.greedy) {
+        if (!o.greedy && !o.serve) {
             std::fprintf(stderr, "strata generate: --dflash drafts greedy-only (docs/DFLASH.md); this run samples, "
                                  "so the drafter would never be used - drop --dflash or run greedy\n");
             return 2;
@@ -5371,17 +5384,12 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < dg.target_layers.size(); ++i) taps += (i ? "," : "") + std::to_string(dg.target_layers[i]);
         std::fprintf(stderr,
                      "dflash: %s: %lld layers, hidden %lld, %lldQ/%lldKV x %lld, MLP %lld, taps [%s], trained block "
-                     "%lld, pass K=%d, mask %lld, rope theta %.3g, %.1f MiB of BF16 weights\n",
+                     "%lld, pass K=%d, mask %lld, rope theta %.3g, %.1f MiB of weights\n",
                      o.dflash.c_str(), (long long) dg.layers, (long long) dg.hidden, (long long) dg.n_head,
                      (long long) dg.n_head_kv, (long long) dg.head_dim, (long long) dg.intermediate, taps.c_str(),
                      (long long) dg.block_size, dflash_k, (long long) effective_mask,
                      dg.rope_theta, (double) dflash.artifact().weight_bytes() / 1048576.0);
         std::fprintf(stderr, "dflash: prompt-lookup drafting is off (one model drafter at a time)\n");
-        if (o.serve) {
-            std::fprintf(stderr, "strata generate: --dflash with --serve is not wired in this build yet; "
-                                 "run the plain generate loop\n");
-            return 2;
-        }
         // The weights and the drafter's K/V pools land BEFORE the expert cache is sized, like the
         // MTP drafter's; the head/embedding bind follows the native head's load below.
         {
@@ -8065,6 +8073,15 @@ int main(int argc, char** argv) {
                          (long long) xcache.slots(), (long long) (g.n_layers * g.n_expert));
         if (share_pool && stages.empty() && !multi_gpu && share_has_work && !share_default_ok()) share_has_work = false;   // H11
         strata::prefill::Prefill::arm_cpu_share(share_pool, share_pool && stages.empty() && !multi_gpu && share_has_work);
+        const bool has_dflash = !o.dflash.empty();
+        if (has_dflash) {
+            const auto& taps = dflash.artifact().geom().target_layers;
+            sp.set_tap_layers(taps.data(), (int) taps.size());
+            sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
+                return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+            };
+        }
+
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
@@ -8751,6 +8768,10 @@ int main(int argc, char** argv) {
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (has_dflash) {
+            const auto& taps = dflash.artifact().geom().target_layers;
+            ver.set_tap_layers(taps.data(), (int) taps.size());
+        }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -12731,6 +12752,8 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    if (has_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
+                        return false;
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
@@ -13421,6 +13444,9 @@ int main(int argc, char** argv) {
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
             req_sp.greedy = req_temperature <= 0.0f;
+            const bool req_dflash = has_dflash && req_sp.greedy;
+            if (has_dflash && !req_dflash)
+                std::fprintf(stderr, "dflash: sampled request decoded without the drafter\n");
             req_sp.temperature = req_temperature;
             req_sp.top_p = req_top_p;
             req_sp.top_k = req_top_k;
@@ -13669,6 +13695,7 @@ int main(int argc, char** argv) {
                 for (int64_t t : ids) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
             }
             bool first_window = true;
+            bool dflash_ready = false;
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
@@ -14365,7 +14392,7 @@ int main(int argc, char** argv) {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
+                int T = req_dflash && dflash_ready ? dflash_k + 1 : use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 if (use_mtp && req_spec_min_p > 0.0) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
@@ -14575,8 +14602,17 @@ int main(int argc, char** argv) {
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
+                bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                if (req_dflash && !eos && produced_n < max_new) {
+                    if (adapt_thr.joinable()) adapt_thr.join();
+                    drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err);
+                    // Finish near the context limit with target-only windows rather than
+                    // proposing a block which the next verification window cannot fit.
+                    dflash_ready = drafted && p + a + 1 + dflash_k + 1 <= o.max_context;
+                    if (dflash_ready)
+                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, dflash_k, drafts.data(), err);
+                }
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
