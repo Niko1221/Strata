@@ -3104,6 +3104,8 @@ def slot_save_dir(value, base: str | None = None) -> str:
     return path
 
 class Service:
+    GPU_BUSY_PCT = 10.0                   # the GPU load gpu_busy() and the usage stats call "the card is working"
+
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False):
@@ -3694,7 +3696,19 @@ class Service:
             if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
-                self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
+                self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= self.GPU_BUSY_PCT
+            # every reading also becomes watt-hours for the usage stats, so the Monitor can bill the electricity
+            self.telemetry.on_sample = self._sample_power
+
+    def _sample_power(self, sample: dict, dt: float) -> None:
+        """One reading from the hardware sampler (serve/telemetry.py) folded into the usage stats: the card's own
+        draw, over the seconds it was held, becomes watt-hours.  The rest of the box is not measured - it is added
+        when the bill is drawn, at the pricing's `other_watts` - so a machine whose power cannot be read still keeps
+        the seconds and loses only the card's share of the bill."""
+        store = getattr(self, "usage", None)
+        if store is None:
+            return
+        store.record_energy(sample.get("gpu_power"), dt, busy=(sample.get("gpu_util") or 0) >= self.GPU_BUSY_PCT)
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -7197,7 +7211,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None]
+                   hub.close if hub is not None else None, getattr(getattr(svc, "usage", None), "flush", None)]
         for close in filter(None, closers):
             try:
                 close()

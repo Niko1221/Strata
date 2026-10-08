@@ -175,7 +175,7 @@
         <div class="table-wrap" id="usage-days-wrap" hidden>
           <table class="st-table">
             <thead><tr><th>Day</th><th class="num">Requests</th><th class="num">Prompt</th><th class="num">Reused</th>
-              <th class="num">Output</th><th class="num">Cost</th></tr></thead>
+              <th class="num">Output</th><th class="num">kWh</th><th class="num">Cost</th></tr></thead>
             <tbody id="usage-days-body"></tbody>
           </table>
         </div>
@@ -214,7 +214,10 @@
       <div class="st-card price-card" id="price-card">
         <div class="req-head"><span class="card-title">Token pricing</span><span class="muted small" id="price-file"></span></div>
         <p class="muted small">The prices the Monitor's cost readout uses, per million tokens. Set your own, or
-          leave a field empty for the default. Cached input is what the conversation cache reused.</p>
+          leave a field empty for the default. Cached input is what the conversation cache reused. The card's own
+          power is measured once a second, so the electricity is a real reading, not an estimate; <b>Other
+          hardware</b> is what the rest of the box (CPU, board, drives) adds on top of it, and <b>Electricity</b>
+          is what a kilowatt-hour costs where you are.</p>
         <div class="price-grid">
           <div class="st-field">
             <label class="st-label" for="price-currency">Currency</label>
@@ -234,6 +237,14 @@
           <div class="st-field">
             <label class="st-label" for="price-output">Output <output>per 1M tokens</output></label>
             <input class="st-input" id="price-output" type="number" min="0" step="any" placeholder="default">
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="price-kwh">Electricity <output>per kWh</output></label>
+            <input class="st-input" id="price-kwh" type="number" min="0" step="any" placeholder="default">
+          </div>
+          <div class="st-field">
+            <label class="st-label" for="price-other-w">Other hardware <output>watts</output></label>
+            <input class="st-input" id="price-other-w" type="number" min="0" step="any" placeholder="default">
           </div>
         </div>
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="price-save" type="button">Save</button>

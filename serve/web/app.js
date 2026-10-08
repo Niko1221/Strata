@@ -240,33 +240,55 @@ function renderConvCache(c) {
 
 // token use kept across starts (GET /usage, in /metrics): today, all time, and the cost at the current prices
 const CUR = {CNY: "¥", USD: "$", EUR: "€", JPY: "¥", GBP: "£"};
+function moneyOf(v, cur) {
+  const sym = CUR[cur] || "";
+  if (!v) return `${sym}0`;
+  return v < 0.01 ? `${sym}${v.toFixed(4)}` : `${sym}${v.toFixed(2)}`;
+}
 function money(c) {
   if (!c || c.total_cost == null) return "–";
-  const v = c.total_cost, sym = CUR[c.currency] || "";
-  if (v === 0) return `${sym}0`;
-  return v < 0.01 ? `${sym}${v.toFixed(4)}` : `${sym}${v.toFixed(2)}`;
+  return moneyOf(c.total_cost, c.currency);
+}
+// the electricity a day holds: the card's own reading, plus the rest of the box, at the price per kWh
+function energyLine(d) {
+  const c = (d && d.cost) || {};
+  if (c.energy_kwh == null) return "–";
+  const kwh = c.energy_kwh;
+  const size = kwh < 0.1 ? `${(kwh * 1000).toFixed(1)} Wh` : `${kwh.toFixed(2)} kWh`;
+  const secs = (d && d.seconds) || 0;
+  const avg = secs > 0 ? (c.gpu_energy_wh || 0) / (secs / 3600) : 0;
+  return `${size} at ${avg.toFixed(0)} W · ${moneyOf(c.energy_cost, c.currency)}`;
 }
 function renderUsage(u, pricing) {
   const card = $("usage-card");
   card.hidden = !u;
   if (!u) return;                                        // an older server
   const t = u.today || {}, a = u.total || {};
+  const tokens = (d) => `${fmt(d.requests)} requests · ${fmt(d.prompt_tokens)} prompt · ${fmt(d.reused)} reused · ${fmt(d.output_tokens)} written`;
   facts($("usage-facts"), [
-    ["Today", `${fmt(t.requests)} requests · ${fmt(t.prompt_tokens)} prompt · ${fmt(t.reused)} reused · ${fmt(t.output_tokens)} written`],
-    ["Today's cost", money(t.cost)],
-    ["All time", `${fmt(a.requests)} requests · ${fmt(a.prompt_tokens)} prompt · ${fmt(a.reused)} reused · ${fmt(a.output_tokens)} written`],
-    ["All-time cost", money(a.cost)],
+    ["Today", tokens(t)],
+    ["Today's tokens", moneyOf((t.cost || {}).token_cost, (t.cost || {}).currency)],
+    ["Today's electricity", energyLine(t)],
+    ["Today's total", money(t.cost)],
+    ["All time", tokens(a)],
+    ["All-time tokens", moneyOf((a.cost || {}).token_cost, (a.cost || {}).currency)],
+    ["All-time electricity", energyLine(a)],
+    ["All-time total", money(a.cost)],
   ]);
   const p = pricing || {};
   $("usage-pricing-note").textContent = p.input_per_mtok != null
-    ? `${p.input_per_mtok} / ${p.cached_input_per_mtok} / ${p.output_per_mtok} per 1M in·cached·out (${p.currency})` : "";
+    ? `${p.input_per_mtok} / ${p.cached_input_per_mtok} / ${p.output_per_mtok} per 1M in·cached·out · `
+      + `${p.price_per_kwh} per kWh + ${p.other_watts} W (${p.currency})` : "";
   const days = (u.days || []).filter((d) => d.requests);
   $("usage-days-wrap").hidden = days.length < 2;
   $("usage-days-body").innerHTML = days.map((d) => `<tr><td>${esc(d.date)}</td><td class="num">${fmt(d.requests)}</td>
     <td class="num">${fmt(d.prompt_tokens)}</td><td class="num">${fmt(d.reused)}</td>
-    <td class="num">${fmt(d.output_tokens)}</td><td class="num">${esc(money(d.cost))}</td></tr>`).join("");
-  $("usage-note").textContent = "Kept per day across starts, next to the run config. The cost is what these tokens "
-    + "would have cost at API prices — set your own under About > Token pricing.";
+    <td class="num">${fmt(d.output_tokens)}</td>
+    <td class="num">${(((d.cost || {}).energy_kwh) || 0).toFixed(2)}</td>
+    <td class="num">${esc(money(d.cost))}</td></tr>`).join("");
+  $("usage-note").textContent = "Kept per day across starts, next to the run config. The card's power is measured "
+    + "once a second while Strata runs, so the electricity counts idle time too; the tokens are what they would "
+    + "have cost at API prices — both under About > Token pricing.";
 }
 
 function renderTotals(t) {
@@ -534,17 +556,17 @@ $("cfg-save").addEventListener("click", async () => {
 // ------------------------------------------------------------------ Token pricing (GET /usage, POST /pricing)
 // The prices the Monitor's cost readout uses. They live next to the run config (strata-<model>.pricing.json);
 // an empty field is the default. The card shows the current values, which come with the metrics poll.
+const PRICE_FIELDS = [["price-input", "input_per_mtok"], ["price-cached", "cached_input_per_mtok"],
+                      ["price-output", "output_per_mtok"], ["price-kwh", "price_per_kwh"],
+                      ["price-other-w", "other_watts"]];
 function fillPricing(p) {
   if (!p) return;
   $("price-currency").value = p.currency || "CNY";
-  $("price-input").value = p.input_per_mtok ?? "";
-  $("price-cached").value = p.cached_input_per_mtok ?? "";
-  $("price-output").value = p.output_per_mtok ?? "";
+  for (const [id, key] of PRICE_FIELDS) $(id).value = p[key] ?? "";
 }
 $("price-save").addEventListener("click", async () => {
   const pricing = {currency: $("price-currency").value};
-  for (const [id, key] of [["price-input", "input_per_mtok"], ["price-cached", "cached_input_per_mtok"],
-                           ["price-output", "output_per_mtok"]]) {
+  for (const [id, key] of PRICE_FIELDS) {
     const s = $(id).value.trim();
     pricing[key] = s === "" ? null : Number(s);
   }
@@ -562,7 +584,7 @@ $("price-save").addEventListener("click", async () => {
 });
 $("price-default").addEventListener("click", () => {
   $("price-currency").value = "CNY";
-  for (const id of ["price-input", "price-cached", "price-output"]) $(id).value = "";
+  for (const [id] of PRICE_FIELDS) $(id).value = "";
   $("price-msg").textContent = "Save to go back to the default prices.";
 });
 

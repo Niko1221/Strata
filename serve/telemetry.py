@@ -537,6 +537,10 @@ class Telemetry:
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
+        # a hook(sample, dt) run once per reading, right after it is taken - for the usage stats, which need the
+        # card's own power over real time (serve/usage.py's record_energy).  Set it before the thread starts if the
+        # first second matters; the sampler never waits for it and never lets it end the thread.
+        self.on_sample = None
         self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -598,14 +602,23 @@ class Telemetry:
         self._stop.set()
 
     def _loop(self):
+        last = time.monotonic()
         while not self._stop.is_set():
             s = self.sample()
+            now = time.monotonic()
+            dt = max(0.0, now - last)                   # a reading covers the time since the last one: the sampling
+            last = now                                  # itself, plus the wait - not exactly 1 s
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
                           "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+            if self.on_sample is not None:
+                try:
+                    self.on_sample(s, dt)
+                except Exception as e:                  # a hook that fails must not end the sampler
+                    print(f"[strata] the telemetry hook failed: {e}", flush=True)
             self._stop.wait(1.0)
 
     def snapshot(self):
