@@ -164,6 +164,15 @@ def to_metal(cfg: dict) -> dict:
     return out
 
 
+_write_setup_config = S.write_setup_config
+
+
+def write_setup_config(cfg_path, cfg, source=None):
+    """setup.write_setup_config (#629) with the config converted first: it compares the earlier run config with this
+    one, so a HIP-form one made every run again name the Metal engine's --gguf as dropped and replace the .bak."""
+    return _write_setup_config(cfg_path, cfg if cfg.get("backend") == "metal" else to_metal(cfg), source)
+
+
 def install(argv) -> None:
     if platform.machine() != "arm64":
         S.fail("this Mac has an Intel processor; Strata's Metal engine runs on Apple Silicon (M1 or newer) only")
@@ -225,6 +234,7 @@ def install(argv) -> None:
             Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         return write(model, cfg_path, port, open_browser)
     S.write_run_script = write_run_script
+    S.write_setup_config = write_setup_config
 
     if not gpu["wired_limit_set"]:
         S.say(f"  The GPU may use about {gpu['vram_gb']:.0f} GB of this Mac's {ram:.0f} GB (macOS' default share). "

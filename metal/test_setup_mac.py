@@ -1,7 +1,11 @@
 """metal/setup_mac.py's config conversion, without a GPU, a model or the network:  python -m unittest metal.test_setup_mac"""
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,6 +52,21 @@ class ToMetal(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 M.to_metal(cfg)
         self.assertIn("rope scaling", fail.call_args[0][0])
+
+
+class RunAgain(unittest.TestCase):
+    def test_an_unchanged_config_keeps_its_bak_and_names_nothing_dropped(self):
+        # #629's merge compared the Metal config on disk with setup's HIP-form one: "--gguf" was "dropped" every run
+        M.MTP.update(on=False, dir=None)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps(M.to_metal(dict(HIP_CFG)), indent=1))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                M.write_setup_config(p, dict(HIP_CFG))
+            self.assertNotIn("--gguf", out.getvalue())
+            self.assertFalse(p.with_name(p.name + ".bak").exists(), out.getvalue())
+            self.assertEqual(json.loads(p.read_text())["backend"], "metal")
 
 
 if __name__ == "__main__":
