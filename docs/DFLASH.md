@@ -180,3 +180,45 @@ comparing).
 
 Known limitations of the first implementation are listed at the end of this file after the
 measurements.
+
+
+## Draft-only head quantization experiment
+
+`--dflash-head HEAD.gguf` loads a separate `output.weight` for DFlash. The target
+verifier keeps its original head. The file is loaded before automatic expert-cache
+sizing, so its extra device memory reduces the space available for experts.
+Without this flag DFlash uses the shared target head and allocates no extra head.
+
+Export a head with the offline tool (the repository's gguf-py is used only here):
+
+```bash
+python tools/dflash_head_quantize.py TARGET_SHARD.gguf --type Q8_0 -o head-Q8_0.gguf
+python tools/dflash_head_quantize.py TARGET_SHARD.gguf --type Q4_0 -o head-Q4_0.gguf
+# Add --dflash-head head-Q4_0.gguf to the existing DFlash command.
+```
+
+These files re-quantize the source tensor. Exporting Q8 from a Q5_K source does
+not restore precision lost in Q5_K. The tool records tensor hashes and weight
+reconstruction errors in a JSON file beside the export.
+
+On an RTX 4070 Ti SUPER, IQ3_XXS target, K=6, fixed expert budget 3500,
+128-token math fixture and 256 generated tokens, three alternating runs gave
+median throughput 40.20 tok/s with the shared Q5_K head, 40.21 with Q8_0 and
+40.80 with Q4_0. Q8 adds 644.2 MiB of weights; Q4 adds 341.0 MiB. A separate
+CUDA-event capture measured 1.213, 1.137 and 0.828 ms per head projection,
+respectively. The event capture is excluded from throughput measurements.
+
+Q4 changed the generated code continuation and reduced its acceptance in a
+single code run. Q8 and Q4 both changed the chat continuation. These heads are
+experiments, remain opt-in, and have not passed a general greedy-output gate.
+See `bench/results/2026-10-08-dflash-opt/REPORT.md` for commands, cache capacity,
+conditional acceptance, common-prefix evidence and limitations.
+
+For diagnostic evidence, `STRATA_DF_EVENTS=1` records individual GPU section
+and CPU enqueue times. Their sum is not decode wall time. `STRATA_DF_CYCLES=PATH`
+writes proposal IDs, verifier IDs, accepted prefix, anchor position and correction
+per cycle. `STRATA_DF_TARGET_PROBE=POSITION` prints the verifier's top two logits
+at a requested absolute input position, before any benchmark follow override.
+These diagnostics are disabled by default. Parity captures also contain full
+head logits, quantized activations and argmax IDs; check these with
+`tools/dflash_head_parity.py --head HEAD.gguf --dir PARITY_DIRECTORY`.

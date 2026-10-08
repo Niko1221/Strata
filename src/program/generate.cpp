@@ -11495,6 +11495,17 @@ int main(int argc, char** argv) {
         // --spec-follow: the run ends with the continuation
         const int64_t max_new = follow.empty() ? o.max_new : std::min<int64_t>(o.max_new, (int64_t) follow.size());
         int64_t follow_differ = 0, follow_emitted = 0;
+        const char* df_probe_env = use_dflash ? std::getenv("STRATA_DF_TARGET_PROBE") : nullptr;
+        const int64_t df_probe_pos = df_probe_env ? std::atoll(df_probe_env) : -1;
+        // Optional cycle evidence for prefix-survival analysis. No I/O when disabled.
+        const char* df_trace_path = use_dflash ? std::getenv("STRATA_DF_CYCLES") : nullptr;
+        const auto close_trace = [](FILE* f) { std::fclose(f); };
+        std::unique_ptr<FILE, decltype(close_trace)> df_trace(
+            df_trace_path ? std::fopen(df_trace_path, "w") : nullptr, close_trace);
+        if (df_trace_path && !df_trace) {
+            std::fprintf(stderr, "strata generate: cannot open STRATA_DF_CYCLES %s\n", df_trace_path);
+            return 1;
+        }
         if (thits.d_res == nullptr) {
             std::fprintf(stderr, "strata generate: --spec needs the device residency table (--expert-profile, "
                                  "--expert-cache and the token graph)\n");
@@ -11805,6 +11816,23 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            if (df_probe_env && p <= df_probe_pos && df_probe_pos < p + T) {
+                std::vector<float> probe((size_t) n_vocab);
+                const int row = (int) (df_probe_pos - p);
+                if (!ver.copy_logits(row, probe.data())) {
+                    std::fprintf(stderr, "strata generate: target probe copy failed\n");
+                    return 1;
+                }
+                int best = 0, second = 1;
+                if (probe[second] > probe[best]) std::swap(best, second);
+                for (int i = 2; i < n_vocab; ++i) {
+                    if (probe[i] > probe[best]) { second = best; best = i; }
+                    else if (probe[i] > probe[second]) second = i;
+                }
+                std::fprintf(stderr, "dflash target probe: pos=%lld window_pos=%lld row=%d top1=%d score=%.9g top2=%d score=%.9g margin=%.9g\n",
+                             (long long) df_probe_pos, (long long) p, row, best, probe[best], second, probe[second],
+                             probe[best] - probe[second]);
+            }
             // STRATA_DFLASH_TAPS: the window's tap rows [0, T) go to the fixture file before the commit
             if (g_tap_dump != nullptr && ver.n_taps() > 0) {
                 g_tap_stride_bytes = (size_t) ver.tap_stride() * 4;
@@ -11839,6 +11867,15 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            if (df_trace) {
+                std::fprintf(df_trace.get(), "{\"anchor_pos\":%lld,\"K\":%d,\"L\":%d,\"bootstrap\":%s,\"correction\":%d,\"emitted\":%lld,\"draft\":[",
+                             (long long) p, T - 1, a, first_window ? "true" : "false", outv[(size_t) a],
+                             (long long) std::min<int64_t>(a + 1, max_new - produced.size()));
+                for (int i = 1; i < T; ++i) std::fprintf(df_trace.get(), "%s%d", i > 1 ? "," : "", window[(size_t) i]);
+                std::fprintf(df_trace.get(), "],\"target\":[");
+                for (int i = 0; i < T; ++i) std::fprintf(df_trace.get(), "%s%d", i ? "," : "", outv[(size_t) i]);
+                std::fprintf(df_trace.get(), "]}\n");
+            }
             if (use_dflash && std::getenv("STRATA_DF_DBG") != nullptr) {
                 std::fprintf(stderr, "df dbg: window picks:");
                 for (int i = 0; i < T; ++i) std::fprintf(stderr, " %d", outv[(size_t) i]);
