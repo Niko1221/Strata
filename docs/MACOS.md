@@ -76,8 +76,10 @@ If setup stops, it says what is missing and the command that fixes it.
   59-69 °C die. The cause was not isolated; macOS's power management is the likely one. A single long answer, Q2_0 and
   MTP off were not measured this way. See [Why the speed changes](#why-the-speed-changes);
   [macmon](https://github.com/vladkens/macmon) (`brew install macmon`, no sudo) shows the GPU's clock live.
-- **Power.** Keep a laptop plugged in and out of Low Power Mode. If your Mac has it, *System Settings > Battery >
-  Energy Mode > High Power* may help long answers; its effect on Strata was not measured.
+- **Power.** Keep a laptop plugged in and out of Low Power Mode, and set *System Settings > Battery > Energy Mode* to
+  *High Power* where your Mac has it. Measured with GPT-OSS 120B on the test Mac (96 W adapter): 900-word answers ran at
+  35 tok/s in *Automatic* (GPU 364-807 MHz) and 46-53 tok/s in *High Power* (GPU 880-1,150 MHz, up to 83 °C, louder
+  fans); a short answer right after a long one went from 33 to 49 tok/s.
 - **Disk.** The download is 66.4 GB (67.3 GB with the image encoder); installed with the engine, about 70 GB. `--mtp on`
   adds about 12 GB. Keep the model on the internal SSD: its 28 GB n-gram table is not loaded into memory, its rows are
   read from the model file as they are needed.
