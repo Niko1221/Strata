@@ -188,6 +188,18 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// A new explicit pin replaces the previous one. Keep its matching checkpoints;
+// older documents remain reusable, but no longer prevent ordinary eviction.
+template<class Token>
+void conversation_unpin_other_prefixes(std::vector<ConversationCheckpoint>& checkpoints,
+                                      const std::vector<Token>& prompt,
+                                      const std::vector<ConversationImageKey>& images,
+                                      int64_t pin, bool same_cvec) {
+    for (auto& c : checkpoints)
+        if (c.pinned && (!same_cvec || (int64_t) c.ids.size() != pin || conversation_prefix(c, prompt, images) != pin))
+            c.pinned = false;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -253,6 +265,13 @@ public:
         bytes_ -= out.bytes();
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         return out;
+    }
+
+    template<class Token>
+    void unpin_other_prefixes(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images,
+                              int64_t pin, bool cvec) {
+        for (auto& e : entries_)
+            conversation_unpin_other_prefixes(e.checkpoints, prompt, images, pin, e.cvec == cvec);
     }
 
     // Reserve before allocating a snapshot. held is an incoming image removed

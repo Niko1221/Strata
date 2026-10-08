@@ -8911,6 +8911,14 @@ int main(int argc, char** argv) {
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
             const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            // Replace an explicit shared prefix before choosing/taking a parked image:
+            // otherwise old pins can fill every slot and permanently prevent parking.
+            if (req_pin > 0 && req_pin < n - 1 && req_ckpt && o.prompt_cache >= 3) {
+                strata::core::conversation_unpin_other_prefixes(checks, ids, req_imgs, req_pin, cvec_cached == want_cvec);
+                for (auto& sl : bs)
+                    strata::core::conversation_unpin_other_prefixes(sl.checks, ids, req_imgs, req_pin, sl.cvec == want_cvec);
+                conversations.unpin_other_prefixes(ids, req_imgs, req_pin, want_cvec);
+            }
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)

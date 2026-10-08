@@ -325,5 +325,49 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {   // Replacing a document must not leave every parked slot permanently pinned.
+        auto first = image({1,2,3}), second = image({9,8,7});
+        first.checkpoints.push_back(first.live);
+        second.checkpoints.push_back(second.live);
+        first.checkpoints.back().ids = {1,2};
+        second.checkpoints.back().ids = {9,8};
+        first.checkpoints.back().pinned = second.checkpoints.back().pinned = true;
+        ConversationCache cache(4096, 2);
+        check(cache.put(std::move(first)) && cache.put(std::move(second)), "two old document pins fill the slots");
+        check(!cache.make_room(image({4,5,6}).bytes()), "stale pins would prevent all further parking");
+        const size_t bytes = cache.bytes();
+        cache.unpin_other_prefixes(b, {}, 2, true);
+        check(cache.size() == 2 && cache.bytes() == bytes && cache.evictions() == 0,
+              "selecting a new pin changes protection, not stored state or accounting");
+        check(cache.best(a, {}, true).tokens == 3, "the old document remains reusable until evicted");
+        check(cache.put(image({4,5,6})), "a new conversation can be parked after replacing the pin");
+        check(cache.best(a, {}, true).tokens == 0 && cache.best(b, {}, true).tokens == 3,
+              "pressure evicts the old pin and preserves the selected document");
+        auto selected = cache.take(cache.best(b, {}, true).index);
+        check(selected.pinned(), "the matching incoming image keeps its pin when taken");
+    }
+    {   // Active and batch checkpoint chains use the same token/image/mode rule.
+        ConversationCheckpoint cp;
+        cp.ids = {1,2}; cp.imgs = {{1,11}}; cp.pinned = true;
+        cp.gdn = {7,8};
+        std::vector<ConversationCheckpoint> chain{cp};
+        conversation_unpin_other_prefixes(chain, a, {{1,11},{3,99}}, 2, true);
+        check(chain[0].pinned, "same prefix stays pinned; later images do not matter");
+        conversation_unpin_other_prefixes(chain, a, {{1,12}}, 2, true);
+        check(!chain[0].pinned && chain[0].ids == cp.ids && chain[0].gdn == cp.gdn,
+              "a changed prefix image releases only the pin");
+        chain = {cp};
+        conversation_unpin_other_prefixes(chain, a, {{1,11}}, 1, true);
+        check(!chain[0].pinned, "a different boundary replaces the old pin");
+        chain = {cp};
+        conversation_unpin_other_prefixes(chain, b, {{1,11}}, 2, true);
+        check(!chain[0].pinned, "equal boundary lengths do not confuse different documents");
+        chain = {cp};
+        conversation_unpin_other_prefixes(chain, a, {{1,11}}, 2, false);
+        check(!chain[0].pinned, "a different steering mode replaces the old pin");
+        chain[0].pinned = false;
+        conversation_unpin_other_prefixes(chain, a, {{1,11}}, 2, true);
+        check(!chain[0].pinned, "matching an ordinary checkpoint does not create a pin");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
