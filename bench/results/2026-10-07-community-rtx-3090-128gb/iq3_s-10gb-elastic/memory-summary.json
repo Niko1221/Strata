@@ -1,0 +1,18 @@
+{
+  "samples": 373,
+  "gpu_used_mib_peak": 14291.0,
+  "gpu_free_mib_min": 10285.0,
+  "ram_used_gib_peak": 59.75,
+  "engine_pss_gib_peak": 53.11,
+  "swap_used_kib_first": 64,
+  "swap_used_kib_peak": 64,
+  "vram_reserve": {
+    "reserve_mib": 10240,
+    "expert_slots": 2870,
+    "expert_slots_full": 7795,
+    "expert_cache_mib": 5632,
+    "expert_cache_full_mib": 15136,
+    "vram_free_mib": 9967,
+    "prompt_chunk": 8192
+  }
+}

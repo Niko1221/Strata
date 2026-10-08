@@ -1,0 +1,61 @@
+{
+  "service": "strata",
+  "model": "qwen3.8-flash-next-iq3_s",
+  "loaded": true,
+  "auto_load": true,
+  "structured_output": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "prompt_and_validate",
+    "constrained_decoding": false,
+    "stream_buffered": true
+  },
+  "engine": "0.1.40.3",
+  "started": 1791401567,
+  "uptime_s": 1,
+  "cache_max_tokens": 262144,
+  "context": {
+    "native": 262144,
+    "max_positions": 262144
+  },
+  "concurrency": {
+    "serving": 1,
+    "requested": 1
+  },
+  "dialects": [
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/responses"
+  ],
+  "vision": {
+    "enabled": true,
+    "available": true,
+    "error": null
+  },
+  "activity": {
+    "requests": 0,
+    "in_flight": 0,
+    "last_request_at": null
+  },
+  "last_timings": null,
+  "vram": {
+    "elastic": true
+  },
+  "machine": {
+    "at": 1791401568,
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "used_mib": 24118.0,
+      "total_mib": 24576.0,
+      "util_pct": 0,
+      "temp_c": 56,
+      "power_w": 155.484
+    },
+    "ram": {
+      "used_gib": 57.8,
+      "total_gib": 125.7
+    }
+  }
+}

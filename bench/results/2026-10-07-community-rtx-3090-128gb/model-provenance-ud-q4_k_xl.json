@@ -1,0 +1,30 @@
+{
+  "model_dir": "/mnt/nvme1/models/unsloth-UD-Q4_K_XL",
+  "files": {
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf": {
+      "bytes": 10946624,
+      "sha256": "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082",
+      "source": "setup .done"
+    },
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf": {
+      "bytes": 49859583136,
+      "sha256": "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9",
+      "source": "setup .done"
+    },
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf": {
+      "bytes": 49376141504,
+      "sha256": "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3",
+      "source": "setup .done"
+    },
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf": {
+      "bytes": 12087983520,
+      "sha256": "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a",
+      "source": "setup .done"
+    },
+    "mmproj-Qwen3.8-Flash-Next-BF16.gguf": {
+      "bytes": 907543008,
+      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+      "source": "hashed"
+    }
+  }
+}
