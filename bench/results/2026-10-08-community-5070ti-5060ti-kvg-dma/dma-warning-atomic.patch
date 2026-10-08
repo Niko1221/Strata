@@ -1,0 +1,22 @@
+--- a/include/strata/core/dma_batch.hpp
++++ b/include/strata/core/dma_batch.hpp
+@@ -16,6 +16,7 @@
+ #include <cuda_runtime.h>
+ 
+ #include <array>
++#include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
+@@ -84,9 +85,8 @@
+             for (size_t i = 0; i < n; ++i) { dsts[i] = dst[i]; sizes[i] = bytes[i]; }
+             const cudaError_t e = cudaMemcpyBatchAsync(dsts.data(), srcs.data(), sizes.data(), n, &attr, &first, 1, stream);
+             if (e == cudaSuccess) return cudaSuccess;
+-            static bool warned = false;
+-            if (!warned) {
+-                warned = true;
++            static std::atomic<bool> warned{false};
++            if (!warned.exchange(true, std::memory_order_relaxed)) {
+                 std::fprintf(stderr, "strata: cudaMemcpyBatchAsync failed (%s); the uploads go one copy at a time\n",
+                              cudaGetErrorString(e));
+             }

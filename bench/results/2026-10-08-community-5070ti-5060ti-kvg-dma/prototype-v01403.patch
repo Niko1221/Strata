@@ -1,0 +1,1309 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 995765a..9cb6072 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -549,6 +549,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+   add_executable(strata src/program/generate.cpp)
+   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
+   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
++  option(STRATA_BUILD_DUAL_VMM_TEST "Build the standalone two-GPU VMM ownership test" OFF)
++  if(STRATA_BUILD_DUAL_VMM_TEST AND STRATA_ENABLE_CUDA)
++    add_executable(dual_vmm_test tests/core/dual_vmm_test.cpp src/core/vmm.cpp)
++    target_include_directories(dual_vmm_test PRIVATE include)
++    target_link_libraries(dual_vmm_test PRIVATE CUDA::cudart)
++    add_executable(dual_dma_test tests/core/dual_dma_test.cpp)
++    target_include_directories(dual_dma_test PRIVATE include)
++    target_link_libraries(dual_dma_test PRIVATE CUDA::cudart)
++    add_executable(dma_alias_lifetime_test tests/core/dma_alias_lifetime_test.cpp)
++    target_include_directories(dma_alias_lifetime_test PRIVATE include)
++    target_link_libraries(dma_alias_lifetime_test PRIVATE CUDA::cudart)
++  endif()
+ 
+   if(STRATA_ENABLE_HIP)
+     enable_testing()
+diff --git a/include/strata/core/dma_batch.hpp b/include/strata/core/dma_batch.hpp
+index 199cbe8..fdc34b0 100644
+--- a/include/strata/core/dma_batch.hpp
++++ b/include/strata/core/dma_batch.hpp
+@@ -16,6 +16,7 @@
+ #include <cuda_runtime.h>
+ 
+ #include <array>
++#include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
+@@ -34,30 +35,68 @@ inline int dma_batch_mode(int default_mode = 0) {
+     }();
+     return mode;
+ }
++struct DmaBatchStats {
++    std::atomic<uint64_t> batches{0}, copies{0}, bytes{0}, fallbacks{0}, hints{0};
++    std::atomic<uint64_t> staged_batches{0}, staged_bytes{0}, staging_capacity{0};
++};
++inline DmaBatchStats& dma_batch_stats(int device) {
++    static std::array<DmaBatchStats, 16> stats;
++    return stats[(size_t) (device >= 0 && device < 16 ? device : 0)];
++}
++inline bool dma_overlap_hint_compiled() {
++#if !defined(STRATA_USE_HIP) && defined(CUDART_VERSION) && CUDART_VERSION >= 13040
++    return true;
++#else
++    return false;
++#endif
++}
+ 
+ namespace detail {
+ 
++struct HostAliases {
++    std::mutex mu;
++    std::unordered_map<int, std::unordered_map<const void*, const void*>> devices;
++};
++inline HostAliases& host_aliases() { static HostAliases aliases; return aliases; }
++
+ // A registered Windows host pointer may differ from its device-visible alias; the batch API needs the alias
+ // (cudaMemcpyAsync(kind=HostToDevice) resolves it itself).  The experts' blobs are fixed, so each is looked up once.
+ inline cudaError_t host_alias(const void* p, const void** out) {
+-    static std::mutex mu;
+-    static std::unordered_map<const void*, const void*> cache;
++    int device = -1;
++    const cudaError_t selected = cudaGetDevice(&device);
++    if (selected != cudaSuccess) return selected;
++    auto& aliases = host_aliases();
+     {
+-        std::lock_guard<std::mutex> lk(mu);
++        std::lock_guard<std::mutex> lk(aliases.mu);
++        auto& cache = aliases.devices[device];
+         const auto it = cache.find(p);
+         if (it != cache.end()) { *out = it->second; return cudaSuccess; }
+     }
+     void* alias = nullptr;
+     const cudaError_t e = cudaHostGetDevicePointer(&alias, const_cast<void*>(p), 0);
+     if (e != cudaSuccess) return e;
+-    std::lock_guard<std::mutex> lk(mu);
+-    cache.emplace(p, alias);
++    std::lock_guard<std::mutex> lk(aliases.mu);
++    aliases.devices[device].emplace(p, alias);
+     *out = alias;
+     return cudaSuccess;
+ }
+ 
+ }  // namespace detail
+ 
++/// Before freeing/unregistering transient host storage, after its copies have completed, remove every cached
++/// interior address on every device. Fixed expert blobs need no invalidation during their session lifetime.
++inline void forget_host_aliases(const void* base, size_t bytes) {
++    const uintptr_t begin = reinterpret_cast<uintptr_t>(base);
++    auto& aliases = detail::host_aliases();
++    std::lock_guard<std::mutex> lk(aliases.mu);
++    for (auto& device : aliases.devices)
++        for (auto it = device.second.begin(); it != device.second.end();) {
++            const uintptr_t address = reinterpret_cast<uintptr_t>(it->first);
++            if (address >= begin && address - begin < bytes) it = device.second.erase(it);
++            else ++it;
++        }
++}
++
+ /// `n` independent copies, dst[i] <- src[i] (bytes[i] each), on `stream`.  The sources are immutable pinned host
+ /// blobs and the destinations disjoint; the caller keeps them alive until the stream completes.  Ordering with
+ /// earlier and later work on the stream is that of the copies one by one.  Returns the first error (the loop
+@@ -68,6 +107,9 @@ inline cudaError_t copy_blobs(void* const* dst, const void* const* src, const si
+ #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(CUDART_VERSION) && CUDART_VERSION >= 13000
+     constexpr size_t cap = 128;
+     if (batch_mode != 0 && n > 1 && n <= cap) {
++        int device = 0;
++        (void) cudaGetDevice(&device);
++        auto& stats = dma_batch_stats(device);
+         std::array<const void*, cap> srcs{};
+         bool aliased = true;
+         for (size_t i = 0; i < n; ++i)
+@@ -83,15 +125,27 @@ inline cudaError_t copy_blobs(void* const* dst, const void* const* src, const si
+             std::array<size_t, cap> sizes{};
+             for (size_t i = 0; i < n; ++i) { dsts[i] = dst[i]; sizes[i] = bytes[i]; }
+             const cudaError_t e = cudaMemcpyBatchAsync(dsts.data(), srcs.data(), sizes.data(), n, &attr, &first, 1, stream);
+-            if (e == cudaSuccess) return cudaSuccess;
+-            static bool warned = false;
+-            if (!warned) {
+-                warned = true;
++            if (e == cudaSuccess) {
++                const uint64_t before = stats.batches.fetch_add(1, std::memory_order_relaxed);
++                stats.copies.fetch_add(n, std::memory_order_relaxed);
++                uint64_t total = 0;
++                for (size_t i = 0; i < n; ++i) total += bytes[i];
++                stats.bytes.fetch_add(total, std::memory_order_relaxed);
++                if (batch_mode == 2 && dma_overlap_hint_compiled()) stats.hints.fetch_add(1, std::memory_order_relaxed);
++                if (before == 0)
++                    std::fprintf(stderr, "strata DMA CUDA%d: actual cudaMemcpyBatchAsync mode=%d copies=%zu overlap_hint=%d\n",
++                                 device, batch_mode, n, batch_mode == 2 && dma_overlap_hint_compiled() ? 1 : 0);
++                return cudaSuccess;
++            }
++            static std::atomic<bool> warned{false};
++            if (!warned.exchange(true, std::memory_order_relaxed)) {
+                 std::fprintf(stderr, "strata: cudaMemcpyBatchAsync failed (%s); the uploads go one copy at a time\n",
+                              cudaGetErrorString(e));
+             }
+             (void) cudaGetLastError();
+         }
++        (void) cudaGetLastError();  // an unregistered host source is an expected loop fallback
++        stats.fallbacks.fetch_add(1, std::memory_order_relaxed);
+     }
+ #else
+     (void) batch_mode;
+diff --git a/include/strata/core/dma_staging.hpp b/include/strata/core/dma_staging.hpp
+new file mode 100644
+index 0000000..18b0869
+--- /dev/null
++++ b/include/strata/core/dma_staging.hpp
+@@ -0,0 +1,102 @@
++#pragma once
++#include "strata/core/dma_batch.hpp"
++#include <algorithm>
++#include <cstring>
++
++namespace strata::core {
++
++/// Optional pageable-to-pinned staging for one device's adaptive stream. The owner decides the fixed upper
++/// bound from its swap count and largest expert blob. Direct pinned copies and disabled DMA keep the old path.
++/// A completion event protects CPU writes on reuse, independently of the residency controller's pending event.
++class AdaptiveDmaStaging {
++public:
++    explicit AdaptiveDmaStaging(size_t bound) : bound_(std::min<size_t>(bound, 256ull << 20)) {}
++    AdaptiveDmaStaging(const AdaptiveDmaStaging&) = delete;
++    AdaptiveDmaStaging& operator=(const AdaptiveDmaStaging&) = delete;
++    ~AdaptiveDmaStaging() {
++        if (!host_) return;
++        int previous = -1;
++        (void) cudaGetDevice(&previous);
++        (void) cudaSetDevice(device_);
++        (void) cudaDeviceSynchronize();
++        forget_host_aliases(host_, capacity_);
++        (void) cudaFreeHost(host_);
++        if (ready_) (void) cudaEventDestroy(ready_);
++        dma_batch_stats(device_).staging_capacity.fetch_sub(capacity_, std::memory_order_relaxed);
++        if (previous >= 0 && previous != device_) (void) cudaSetDevice(previous);
++    }
++
++    cudaError_t copy(void* const* dst, const void* const* src, const size_t* bytes, size_t n,
++                     cudaStream_t stream, int mode, bool enabled) {
++#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(CUDART_VERSION) && CUDART_VERSION >= 13000
++        if (enabled && mode != 0 && n > 1 && n <= 128) {
++            bool registered = true;
++            for (size_t i = 0; i < n; ++i) {
++                const void* alias = nullptr;
++                if (detail::host_alias(src[i], &alias) != cudaSuccess) { registered = false; break; }
++            }
++            (void) cudaGetLastError();
++            if (!registered) {
++                size_t total = 0;
++                for (size_t i = 0; i < n; ++i) {
++                    if (bytes[i] > bound_ - total) return copy_blobs(dst, src, bytes, n, stream, mode);
++                    total += bytes[i];
++                }
++                if (total == 0) return copy_blobs(dst, src, bytes, n, stream, mode);
++                int device = -1;
++                cudaError_t e = cudaGetDevice(&device);
++                if (e != cudaSuccess) return e;
++                if (host_ && device != device_) return cudaErrorInvalidDevice;
++                if (live_) {
++                    e = cudaEventSynchronize(ready_);
++                    if (e != cudaSuccess) return e;
++                    live_ = false;
++                }
++                if (!host_) {
++                    cudaEvent_t ready = nullptr;
++                    e = cudaEventCreateWithFlags(&ready, cudaEventDisableTiming);
++                    if (e != cudaSuccess) return e;
++                    // Keep one stable allocation. Round only to 64 KiB, not a fixed 256 MiB per GPU.
++                    const size_t capacity = (bound_ + 65535) / 65536 * 65536;
++                    uint8_t* host = nullptr;
++                    e = cudaHostAlloc((void**) &host, capacity, cudaHostAllocPortable | cudaHostAllocMapped);
++                    if (e != cudaSuccess) {
++                        (void) cudaEventDestroy(ready);
++                        (void) cudaGetLastError();
++                        return copy_blobs(dst, src, bytes, n, stream, mode);
++                    }
++                    host_ = host; capacity_ = capacity; device_ = device; ready_ = ready;
++                    dma_batch_stats(device).staging_capacity.fetch_add(capacity, std::memory_order_relaxed);
++                    std::fprintf(stderr, "strata adaptive DMA bounce CUDA%d: %.1f MiB portable pinned staging\n",
++                                 device, (double) capacity / 1048576.0);
++                }
++                const void* staged[128] = {};
++                size_t offset = 0;
++                for (size_t i = 0; i < n; ++i) {
++                    std::memcpy(host_ + offset, src[i], bytes[i]);
++                    staged[i] = host_ + offset;
++                    offset += bytes[i];
++                }
++                e = copy_blobs(dst, staged, bytes, n, stream, mode);
++                if (e != cudaSuccess) return e;
++                dma_batch_stats(device).staged_batches.fetch_add(1, std::memory_order_relaxed);
++                dma_batch_stats(device).staged_bytes.fetch_add(total, std::memory_order_relaxed);
++                e = cudaEventRecord(ready_, stream);
++                if (e == cudaSuccess) live_ = true;
++                return e;
++            }
++        }
++#else
++        (void) enabled;
++#endif
++        return copy_blobs(dst, src, bytes, n, stream, mode);
++    }
++    size_t capacity() const { return capacity_; }
++private:
++    size_t bound_ = 0, capacity_ = 0;
++    uint8_t* host_ = nullptr;
++    int device_ = -1;
++    cudaEvent_t ready_ = nullptr;
++    bool live_ = false;
++};
++}  // namespace strata::core
+diff --git a/include/strata/core/layer.hpp b/include/strata/core/layer.hpp
+index 9e0361a..57b1ac4 100644
+--- a/include/strata/core/layer.hpp
++++ b/include/strata/core/layer.hpp
+@@ -300,6 +300,9 @@ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(VmmChunk)>
+ /// Physical bytes the elastic pools hold, and what all of them would at the full context.
+ uint64_t qsa_kv_elastic_mapped_bytes();
+ uint64_t qsa_kv_elastic_full_bytes();
++/// This device's registered KV pool bytes (including fixed drafter pools); excludes rope/GDN/scratch.
++uint64_t qsa_kv_allocated_bytes();
++uint64_t qsa_kv_capacity_bytes();
+ int64_t qsa_kv_resident();
+ /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
+ /// in whole blocks) must fit at once, with room to spare.
+diff --git a/include/strata/core/vmm.hpp b/include/strata/core/vmm.hpp
+index d8bcf0b..52d5b8f 100644
+--- a/include/strata/core/vmm.hpp
++++ b/include/strata/core/vmm.hpp
+@@ -16,6 +16,10 @@ using VmmChunk = unsigned long long;
+ bool vmm_available();
+ /// The chunk size (0 when not available).
+ uint64_t vmm_granularity();
++/// Runtime device ordinal; -1 when CUDA is unavailable. Physical chunks and ranges keep this owner.
++int vmm_current_device();
++/// The physical chunk's owner, or -1 for an invalid handle.
++int vmm_chunk_device(VmmChunk h);
+ /// A new physical chunk on the current device (0: out of memory), and its release.
+ VmmChunk vmm_chunk_new();
+ void vmm_chunk_free(VmmChunk h);
+@@ -32,6 +36,8 @@ public:
+     /// Unmaps and frees every chunk, then the addresses.
+     void release();
+     uint8_t* base() const { return (uint8_t*) (uintptr_t) base_; }
++    int device() const { return device_; }
++    uint64_t granularity() const { return gran_; }
+     int64_t chunks() const { return (int64_t) h_.size(); }
+     bool mapped(int64_t i) const { return i >= 0 && i < chunks() && h_[(std::size_t) i] != 0; }
+     int64_t mapped_count() const;
+@@ -48,6 +54,8 @@ private:
+     /// chunk counts as mapped without access.
+     bool commit_run(int64_t lo, int64_t hi);
+     unsigned long long base_ = 0;
++    int device_ = -1;
++    uint64_t gran_ = 0;
+     std::vector<VmmChunk> h_;   // per chunk: its physical chunk, 0 = unmapped
+ };
+ 
+diff --git a/src/core/layer.cpp b/src/core/layer.cpp
+index a6ade32..4fff204 100644
+--- a/src/core/layer.cpp
++++ b/src/core/layer.cpp
+@@ -526,9 +526,10 @@ struct ElasticPool {
+     int64_t n_slots = 0, page_size = 0;
+ };
+ std::vector<std::unique_ptr<ElasticPool>> g_pools;
++std::vector<std::pair<int, uint64_t>> g_fixed_kv_bytes;
+ 
+ int64_t pool_chunks(const ElasticPool& p, size_t a, int64_t slots) {
+-    const uint64_t G = strata::core::vmm_granularity();
++    const uint64_t G = p.range.granularity();
+     return (int64_t) (((uint64_t) slots * p.per_slot[a] + G - 1) / G);
+ }
+ int64_t pool_slots(const ElasticPool& p, int64_t cells) {
+@@ -536,7 +537,7 @@ int64_t pool_slots(const ElasticPool& p, int64_t cells) {
+ }
+ /// Whole page slots every array of the pool has mapped.
+ int64_t pool_slots_mapped(const ElasticPool& p) {
+-    const uint64_t G = strata::core::vmm_granularity();
++    const uint64_t G = p.range.granularity();
+     int64_t slots = p.n_slots;
+     for (size_t a = 0; a < p.off.size(); ++a) {
+         const int64_t c0 = (int64_t) (p.off[a] / G);
+@@ -548,7 +549,7 @@ int64_t pool_slots_mapped(const ElasticPool& p) {
+     return slots;
+ }
+ bool pool_grow(ElasticPool& p, int64_t cells, const std::function<strata::core::VmmChunk()>& take) {
+-    const uint64_t G = strata::core::vmm_granularity();
++    const uint64_t G = p.range.granularity();
+     const int64_t slots = pool_slots(p, cells);
+     for (size_t a = 0; a < p.off.size(); ++a) {
+         const int64_t c0 = (int64_t) (p.off[a] / G), c1 = c0 + pool_chunks(p, a, slots);
+@@ -579,14 +580,18 @@ void qsa_set_kv_elastic(bool enabled, int64_t init_cells) {
+ }
+ bool qsa_kv_elastic() { return g_kv_elastic; }
+ int64_t qsa_kv_elastic_cells() {
++    const int device = strata::core::vmm_current_device();
+     int64_t cells = std::numeric_limits<int64_t>::max();
+-    for (const auto& p : g_pools) cells = std::min<int64_t>(cells, pool_slots_mapped(*p) * p->page_size);
+-    return cells;
++    for (const auto& p : g_pools)
++        if (p->range.device() == device) cells = std::min<int64_t>(cells, pool_slots_mapped(*p) * p->page_size);
++    return cells == std::numeric_limits<int64_t>::max() ? 0 : cells;
+ }
+ int64_t qsa_kv_elastic_need(int64_t cells) {
+-    const uint64_t G = strata::core::vmm_granularity();
++    const int device = strata::core::vmm_current_device();
+     int64_t n = 0;
+     for (const auto& p : g_pools) {
++        if (p->range.device() != device) continue;
++        const uint64_t G = p->range.granularity();
+         const int64_t slots = pool_slots(*p, cells);
+         for (size_t a = 0; a < p->off.size(); ++a) {
+             const int64_t c0 = (int64_t) (p->off[a] / G), c1 = c0 + pool_chunks(*p, a, slots);
+@@ -596,14 +601,17 @@ int64_t qsa_kv_elastic_need(int64_t cells) {
+     return n;
+ }
+ bool qsa_kv_elastic_grow(int64_t cells, const std::function<strata::core::VmmChunk()>& take) {
++    const int device = strata::core::vmm_current_device();
+     for (auto& p : g_pools)
+-        if (!pool_grow(*p, cells, take)) return false;
++        if (p->range.device() == device && !pool_grow(*p, cells, take)) return false;
+     return cudaDeviceSynchronize() == cudaSuccess;
+ }
+ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(strata::core::VmmChunk)>& give) {
+-    const uint64_t G = strata::core::vmm_granularity();
++    const int device = strata::core::vmm_current_device();
+     int64_t n = 0;
+     for (auto& p : g_pools) {
++        if (p->range.device() != device) continue;
++        const uint64_t G = p->range.granularity();
+         const int64_t slots = pool_slots(*p, cells);
+         for (size_t a = 0; a < p->off.size(); ++a) {
+             const int64_t c0 = (int64_t) (p->off[a] / G), c1 = c0 + pool_chunks(*p, a, slots);
+@@ -615,15 +623,31 @@ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(strata::co
+     return n;
+ }
+ uint64_t qsa_kv_elastic_mapped_bytes() {
++    const int device = strata::core::vmm_current_device();
+     uint64_t n = 0;
+-    for (const auto& p : g_pools) n += (uint64_t) p->range.mapped_count() * strata::core::vmm_granularity();
++    for (const auto& p : g_pools)
++        if (p->range.device() == device) n += (uint64_t) p->range.mapped_count() * p->range.granularity();
+     return n;
+ }
+ uint64_t qsa_kv_elastic_full_bytes() {
++    const int device = strata::core::vmm_current_device();
+     uint64_t n = 0;
+-    for (const auto& p : g_pools) n += (uint64_t) p->range.chunks() * strata::core::vmm_granularity();
++    for (const auto& p : g_pools)
++        if (p->range.device() == device) n += (uint64_t) p->range.chunks() * p->range.granularity();
+     return n;
+ }
++uint64_t qsa_kv_allocated_bytes() {
++    const int device = strata::core::vmm_current_device();
++    uint64_t bytes = qsa_kv_elastic_mapped_bytes();
++    for (const auto& entry : g_fixed_kv_bytes) if (entry.first == device) bytes += entry.second;
++    return bytes;
++}
++uint64_t qsa_kv_capacity_bytes() {
++    const int device = strata::core::vmm_current_device();
++    uint64_t bytes = qsa_kv_elastic_full_bytes();
++    for (const auto& entry : g_fixed_kv_bytes) if (entry.first == device) bytes += entry.second;
++    return bytes;
++}
+ namespace {
+ 
+ /// How one state holds its K/V: `mode` as in QsaState::kv_mode, `slots` VRAM pages of `pages` logical ones.
+@@ -707,6 +731,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
+     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
+     const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+     st.kv_elastic = -1;
++    if (!(g_kv_elastic && p.mode == 0))
++        g_fixed_kv_bytes.emplace_back(strata::core::vmm_current_device(),
++                                     kv_pool_bytes(s, p.slots, st.kv_hybrid, st.kv_int8 || st.kv_hybrid));
+     if (g_kv_elastic && p.mode == 0) {
+         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
+         const uint64_t slot_rows = (uint64_t) s.n_head_kv * s.page_size;
+diff --git a/src/core/vmm.cpp b/src/core/vmm.cpp
+index e69d2b8..4fac5e3 100644
+--- a/src/core/vmm.cpp
++++ b/src/core/vmm.cpp
+@@ -5,6 +5,8 @@
+ #include <cuda_runtime.h>
+ 
+ #include <mutex>
++#include <map>
++#include <memory>
+ 
+ namespace strata::core {
+ namespace {
+@@ -20,6 +22,7 @@ struct Api {
+     decltype(&cuMemMap) map = nullptr;
+     decltype(&cuMemUnmap) unmap = nullptr;
+     decltype(&cuMemSetAccess) access = nullptr;
++    decltype(&cuMemGetAllocationPropertiesFromHandle) properties = nullptr;
+ };
+ 
+ template <class F> bool resolve(const char* name, F& f) {
+@@ -39,17 +42,27 @@ template <class F> bool resolve(const char* name, F& f) {
+ }
+ 
+ // never destroyed: the K/V pools and the cache release their chunks from static destructors at exit
+-const Api& api() {
+-    static Api& a = *new Api;
+-    static std::once_flag once;
+-    std::call_once(once, [] {
++const Api& api(int device = -1) {
++    static std::mutex& mu = *new std::mutex;
++    static auto& devices = *new std::map<int, std::unique_ptr<Api>>;
++    if (device < 0 && cudaGetDevice(&device) != cudaSuccess) {
++        static const Api unavailable;
++        return unavailable;
++    }
++    std::lock_guard<std::mutex> lock(mu);
++    const auto old = devices.find(device);
++    if (old != devices.end()) return *old->second;
++    auto owned = std::make_unique<Api>();
++    Api& a = *owned;
++    a.dev = device;
++    auto initialize = [&] {
+         decltype(&cuDeviceGetAttribute) attr = nullptr;
+         decltype(&cuMemGetAllocationGranularity) granularity = nullptr;
+-        if (cudaGetDevice(&a.dev) != cudaSuccess) return;
+         if (!resolve("cuDeviceGetAttribute", attr) || !resolve("cuMemGetAllocationGranularity", granularity) ||
+             !resolve("cuMemAddressReserve", a.reserve) || !resolve("cuMemAddressFree", a.free_va) ||
+             !resolve("cuMemCreate", a.create) || !resolve("cuMemRelease", a.release) || !resolve("cuMemMap", a.map) ||
+-            !resolve("cuMemUnmap", a.unmap) || !resolve("cuMemSetAccess", a.access))
++            !resolve("cuMemUnmap", a.unmap) || !resolve("cuMemSetAccess", a.access) ||
++            !resolve("cuMemGetAllocationPropertiesFromHandle", a.properties))
+             return;
+         int vmm = 0;
+         if (attr(&vmm, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, (CUdevice) a.dev) != CUDA_SUCCESS || !vmm)
+@@ -62,14 +75,28 @@ const Api& api() {
+         if (granularity(&g, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || g == 0) return;
+         a.gran = g;
+         a.ok = true;
+-    });
+-    return a;
++    };
++    initialize();
++    const Api* result = owned.get();
++    devices.emplace(device, std::move(owned));
++    return *result;
+ }
+ 
+ }  // namespace
+ 
+ bool vmm_available() { return api().ok; }
+ uint64_t vmm_granularity() { return api().ok ? api().gran : 0; }
++int vmm_current_device() {
++    int device = -1;
++    return cudaGetDevice(&device) == cudaSuccess ? device : -1;
++}
++int vmm_chunk_device(VmmChunk h) {
++    const Api& a = api();
++    CUmemAllocationProp prop{};
++    if (!a.ok || h == 0 || a.properties(&prop, (CUmemGenericAllocationHandle) h) != CUDA_SUCCESS ||
++        prop.location.type != CU_MEM_LOCATION_TYPE_DEVICE) return -1;
++    return prop.location.id;
++}
+ 
+ VmmChunk vmm_chunk_new() {
+     const Api& a = api();
+@@ -95,17 +122,21 @@ bool VmmRange::reserve(uint64_t bytes) {
+     CUdeviceptr p = 0;
+     if (a.reserve(&p, (size_t) (n * a.gran), 0, 0, 0) != CUDA_SUCCESS) return false;
+     base_ = (unsigned long long) p;
++    device_ = a.dev;
++    gran_ = a.gran;
+     h_.assign((size_t) n, 0);
+     return true;
+ }
+ 
+ void VmmRange::release() {
+     if (base_ == 0) return;
+-    const Api& a = api();
++    const Api& a = api(device_);
+     for (int64_t i = 0; i < chunks(); ++i) vmm_chunk_free(unmap(i));
+-    a.free_va((CUdeviceptr) base_, (size_t) ((uint64_t) h_.size() * a.gran));
++    a.free_va((CUdeviceptr) base_, (size_t) ((uint64_t) h_.size() * gran_));
+     base_ = 0;
+     h_.clear();
++    device_ = -1;
++    gran_ = 0;
+ }
+ 
+ int64_t VmmRange::mapped_count() const {
+@@ -115,7 +146,10 @@ int64_t VmmRange::mapped_count() const {
+ }
+ 
+ bool VmmRange::map_one(int64_t i, VmmChunk h) {
+-    const Api& a = api();
++    const Api& a = api(device_);
++    CUmemAllocationProp prop{};
++    if (!a.ok || a.properties(&prop, (CUmemGenericAllocationHandle) h) != CUDA_SUCCESS ||
++        prop.location.type != CU_MEM_LOCATION_TYPE_DEVICE || prop.location.id != device_) return false;
+     if (a.map((CUdeviceptr) (base_ + (uint64_t) i * a.gran), (size_t) a.gran, 0, (CUmemGenericAllocationHandle) h, 0) !=
+         CUDA_SUCCESS)
+         return false;
+@@ -125,7 +159,7 @@ bool VmmRange::map_one(int64_t i, VmmChunk h) {
+ 
+ bool VmmRange::set_access(int64_t lo, int64_t hi) {
+     if (hi <= lo) return true;
+-    const Api& a = api();
++    const Api& a = api(device_);
+     CUmemAccessDesc d{};
+     d.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+     d.location.id = a.dev;
+@@ -142,7 +176,7 @@ bool VmmRange::commit_run(int64_t lo, int64_t hi) {
+ 
+ VmmChunk VmmRange::unmap(int64_t i) {
+     if (!mapped(i)) return 0;
+-    const Api& a = api();
++    const Api& a = api(device_);
+     const VmmChunk h = h_[(size_t) i];
+     if (a.unmap((CUdeviceptr) (base_ + (uint64_t) i * a.gran), (size_t) a.gran) != CUDA_SUCCESS) return 0;
+     h_[(size_t) i] = 0;
+@@ -156,6 +190,8 @@ VmmChunk VmmRange::unmap(int64_t i) {
+ namespace strata::core {
+ bool vmm_available() { return false; }
+ uint64_t vmm_granularity() { return 0; }
++int vmm_current_device() { return -1; }
++int vmm_chunk_device(VmmChunk) { return -1; }
+ VmmChunk vmm_chunk_new() { return 0; }
+ void vmm_chunk_free(VmmChunk) {}
+ bool VmmRange::reserve(uint64_t) { return false; }
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index ce8e004..484a3ba 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -17,6 +17,7 @@
+ #include "strata/platform/memory.hpp"
+ #include "strata/core/arch_defaults.hpp"
+ #include "strata/core/dma_batch.hpp"
++#include "strata/core/dma_staging.hpp"
+ #include "strata/core/device.hpp"
+ #include "strata/core/remote_expert_opt.hpp"
+ #include "strata/core/expert_cache.hpp"
+@@ -1017,6 +1018,7 @@ struct GpuStage {
+     strata::prefill::Prefill sp;
+     cudaStream_t adapt_stream = nullptr;
+     cudaEvent_t adapt_ev = nullptr;
++    int64_t kv_loan_top = -1;                         ///< prompt buffers remain mapped above this slot
+     bool adapt_live = false;                             ///< swaps of this request are in flight on it
+     int32_t* mrope = nullptr;                            ///< --vision: the image-position table on its device
+ };
+@@ -2966,6 +2968,33 @@ int main(int argc, char** argv) {
+             o.pipeline_windows = 0;
+         }
+     }
++    // Enable elastic pools before ANY stage or drafter initializes its session.
++    // Each VMM range and QSA pool records its device; physical chunks never cross GPUs.
++    {
++        const char* ev = std::getenv("STRATA_KV_GROW");
++        const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
++        bool remote = false;
++        for (const int r : o.expert_cache_remote) remote = remote || r > 0;
++        bool on = asked && !split_same && (!multi_gpu || o.serve) && o.kv_resident <= 0 &&
++                  !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
++                  o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
++        if (on) {
++            const strata::core::OnDevice main_device(0);
++            on = strata::core::vmm_available();
++            for (const int dev : split_devs) {
++                const strata::core::OnDevice stage_device(dev);
++                on = on && strata::core::vmm_current_device() == dev && strata::core::vmm_available();
++            }
++        }
++        const strata::core::OnDevice main_device(0);
++        const char* iv = std::getenv("STRATA_KV_GROW_INIT");
++        strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
++        strata::core::ExpertCache::set_vmm(on);
++        if (asked && !on)
++            std::fprintf(stderr, "strata generate: --kv-grow is off: VMM/profile/whole-GPU-KV required; no batch, resident-CPU, helper, peer or elastic-cache; split needs serve and distinct GPU stages\n");
++        else if (on)
++            std::fprintf(stderr, "strata generate: --kv-grow: independent KV and expert budgets on %zu GPU(s)\n", split_devs.size() + 1);
++    }
+     // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
+     // head, made on its device before the host arena is mapped (as the drafter below, for the same WDDM reason)
+     std::vector<std::unique_ptr<GpuStage>> stages;
+@@ -3696,25 +3725,6 @@ int main(int argc, char** argv) {
+     {
+         const strata::core::OnDevice on0(0);
+         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
+-        // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
+-        // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
+-        {
+-            const char* ev = std::getenv("STRATA_KV_GROW");
+-            bool remote = false;
+-            for (const int r : o.expert_cache_remote) remote = remote || r > 0;
+-            const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
+-            const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
+-                            !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
+-                            strata::core::vmm_available() &&
+-                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
+-                            o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+-            if (asked && !on)
+-                std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
+-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+-            const char* iv = std::getenv("STRATA_KV_GROW_INIT");
+-            strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
+-            strata::core::ExpertCache::set_vmm(on);
+-        }
+         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
+             std::fprintf(stderr, "strata generate: session state allocation failed\n");
+             return 1;
+@@ -5754,30 +5764,58 @@ int main(int argc, char** argv) {
+         std::vector<strata::core::VmmChunk> spare;   // out of the cache, not (yet) in the K/V
+         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
+     } kvg;
+-    auto kvg_start = [&](int64_t top) {
+-        kvg.on = strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
+-                 !host_res.empty() && srcp != nullptr && top > kvg.floor;
+-        if (!kvg.on) return;
+-        kvg.top = kvg.lo = top;
+-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+-        if (const char* v = std::getenv("STRATA_KV_GROW_STEP"); v != nullptr && std::atoll(v) > 0) kvg.step = std::atoll(v);
+-        // tests: the cache keeps this many slots (its size: the K/V grows into new VRAM only)
+-        if (const char* v = std::getenv("STRATA_KV_GROW_FLOOR"); v != nullptr && std::atoll(v) > 0) kvg.floor = std::atoll(v);
+-        std::fprintf(stderr, "strata generate: elastic K/V: %lld of %lld cells in VRAM (%.2f of %.2f GiB); the expert "
+-                             "cache (%lld slots) gives the K/V room below slot %lld as the context grows\n",
+-                     (long long) kvg.cells, (long long) o.max_context,
++    std::vector<KvGrow> stage_kvg(stages.size());
++    auto kvg_start_one = [&](KvGrow& state, strata::core::ExpertCache& cache, int32_t* device_res,
++                             int dev, int64_t top) {
++        const strata::core::OnDevice device(dev);
++        state.on = strata::core::qsa_kv_elastic() && cache.vmm_range() != nullptr && device_res != nullptr &&
++                   !host_res.empty() && srcp != nullptr && top > state.floor;
++        if (!state.on) return;
++        state.top = state.lo = top;
++        state.cells = strata::core::qsa_kv_elastic_cells();
++        if (const char* v = std::getenv("STRATA_KV_GROW_STEP"); v != nullptr && std::atoll(v) > 0) state.step = std::atoll(v);
++        if (const char* v = std::getenv("STRATA_KV_GROW_FLOOR"); v != nullptr && std::atoll(v) > 0) state.floor = std::atoll(v);
++        std::fprintf(stderr, "strata generate: elastic K/V CUDA%d: %lld/%lld cells, %.2f/%.2f GiB; cache %lld slots, loan above %lld\n",
++                     dev, (long long) state.cells, (long long) o.max_context,
+                      (double) strata::core::qsa_kv_elastic_mapped_bytes() / 1073741824.0,
+-                     (double) strata::core::qsa_kv_elastic_full_bytes() / 1073741824.0, (long long) xcache.slots(),
+-                     (long long) top);
++                     (double) strata::core::qsa_kv_elastic_full_bytes() / 1073741824.0,
++                     (long long) cache.slots(), (long long) top);
++    };
++    auto kvg_start = [&](int64_t top) -> bool {
++        kvg_start_one(kvg, xcache, d_res, 0, top);
++        for (size_t i = 0; i < stages.size(); ++i) {
++            GpuStage& st = *stages[i];
++            kvg_start_one(stage_kvg[i], st.cache, st.d_res, st.dev,
++                          st.kv_loan_top >= 0 ? st.kv_loan_top : st.cache.slots());
++        }
++        if (strata::core::qsa_kv_elastic()) {
++            if (!kvg.on) { std::fprintf(stderr, "strata: elastic main KV has no cache controller\n"); return false; }
++            for (size_t i = 0; i < stages.size(); ++i) {
++                const strata::core::OnDevice device(stages[i]->dev);
++                if (strata::core::qsa_kv_elastic_full_bytes() > 0 && !stage_kvg[i].on) {
++                    std::fprintf(stderr, "strata: elastic CUDA%d KV has no cache controller\n", stages[i]->dev);
++                    return false;
++                }
++            }
++        }
++        return true;
++    };
++    auto kvg_min_cells = [&]() {
++        int64_t cells = kvg.cells;
++        for (const auto& state : stage_kvg) if (state.on) cells = std::min(cells, state.cells);
++        return cells;
+     };
+     // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
+     // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
+-    auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
++    auto kvg_ensure_one = [&](KvGrow& kvg, strata::core::ExpertCache& xcache,
++                              const std::vector<std::pair<int32_t, int32_t>>& profile, int32_t* device_res,
++                              int dev, int64_t lb, int64_t le, int64_t cells) -> bool {
++        const strata::core::OnDevice device(dev);
++        if (strata::core::vmm_current_device() != dev) return false;
+         if (!kvg.on || cells <= kvg.cells) return true;
+         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
+         const int64_t need = strata::core::qsa_kv_elastic_need(target);
+         if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
+-        quiesce();
+         strata::core::VmmRange& r = *xcache.vmm_range();
+         const uint64_t G = strata::core::vmm_granularity();
+         std::vector<int32_t> owner;   // slot -> residency index
+@@ -5803,12 +5841,12 @@ int main(int argc, char** argv) {
+         while ((int64_t) kvg.spare.size() + freeable() < need && kvg.lo > kvg.floor) {
+             if (owner.empty()) {
+                 owner.assign((size_t) xcache.slots(), -1);
+-                for (size_t i = 0; i < host_res.size(); ++i)
++                for (size_t i = (size_t) (lb * g.n_expert); i < (size_t) (le * g.n_expert); ++i)
+                     if (host_res[i] >= 0 && host_res[i] < xcache.slots()) owner[(size_t) host_res[i]] = (int32_t) i;
+                 rank.assign(host_res.size(), (int32_t) profile.size());
+                 for (size_t r = 0; r < profile.size(); ++r)
+                     rank[(size_t) profile[r].first * (size_t) g.n_expert + (size_t) profile[r].second] = (int32_t) r;
+-                for (size_t i = 0; i < host_res.size(); ++i)
++                for (size_t i = (size_t) (lb * g.n_expert); i < (size_t) (le * g.n_expert); ++i)
+                     if (host_res[i] >= kvg.top) cold.emplace_back(heat((int32_t) i), (int32_t) i);
+                 std::sort(cold.begin(), cold.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+             }
+@@ -5849,7 +5887,7 @@ int main(int argc, char** argv) {
+                     if (const strata::core::VmmChunk h = r.unmap(c)) kvg.spare.push_back(h);
+         }
+         if (gave > 0 &&
+-            cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
++            cudaMemcpy(device_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+             std::fprintf(stderr, "strata: the residency table upload failed: %s\n", cudaGetErrorString(cudaGetLastError()));
+             return false;
+         }
+@@ -5876,13 +5914,16 @@ int main(int argc, char** argv) {
+     };
+     // A request that needs far fewer cells than the K/V holds gives the rest back: the slots refill with the
+     // profile's hottest experts the GPU does not hold.  Run on a quiet device (as kvg_ensure's `quiesce`).
+-    auto kvg_trim = [&](int64_t cells, int64_t hold) -> bool {   // `hold`: the cells a parked conversation could need
++    auto kvg_trim_one = [&](KvGrow& kvg, strata::core::ExpertCache& xcache,
++                            const std::vector<std::pair<int32_t, int32_t>>& profile, int32_t* device_res,
++                            int dev, int64_t cells) -> bool {
++        const strata::core::OnDevice device(dev);
++        if (strata::core::vmm_current_device() != dev) return false;
+         if (!kvg.on) return true;
+         // #1128: a parked conversation comes back through kvg_ensure's grow, so a K/V that fell to a short request's
+         // size is grown again (its experts shuffled again) after every short request in between: the K/V keeps the
+         // longest parked conversation's cells while it is parked
+-        const int64_t want = std::max<int64_t>(cells, hold);
+-        const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
++        const int64_t target = std::max<int64_t>(kvg.step, (cells + kvg.step - 1) / kvg.step * kvg.step);
+         if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
+         strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
+         kvg.cells = strata::core::qsa_kv_elastic_cells();
+@@ -5935,7 +5976,7 @@ int main(int argc, char** argv) {
+         }
+         for (const auto& [i, s] : filled) host_res[i] = s;
+         kvg.refilled += (int64_t) filled.size();
+-        if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess)
++        if (cudaMemcpy(device_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess)
+             return false;
+         for (const strata::core::VmmChunk h : kvg.spare) strata::core::vmm_chunk_free(h);   // new ones, if any
+         kvg.spare.clear();
+@@ -5944,6 +5985,76 @@ int main(int argc, char** argv) {
+                              "the profile\n", (long long) kvg.cells, (long long) (kvg.lo - lo0));
+         return true;
+     };
++    auto kvg_upload_all = [&]() -> bool {
++        { const strata::core::OnDevice device(0); if (d_res && res_put(d_res) != cudaSuccess) return false; }
++        for (const auto& st : stages) {
++            const strata::core::OnDevice device(st->dev);
++            if (st->d_res && res_put(st->d_res) != cudaSuccess) return false;
++        }
++        return true;
++    };
++    auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
++        if (!kvg.on) return true;
++        bool need = cells > kvg.cells;
++        for (const auto& state : stage_kvg) need = need || (state.on && cells > state.cells);
++        if (!need) return true;
++        quiesce();
++        for (const auto& st : stages) {
++            const strata::core::OnDevice device(st->dev);
++            if (cudaDeviceSynchronize() != cudaSuccess) return false;
++        }
++        if (!kvg_ensure_one(kvg, xcache, profile, d_res, 0, 0, multi_gpu ? split_at[0] : g.n_layers, cells)) return false;
++        for (size_t i = 0; i < stages.size(); ++i) {
++            GpuStage& st = *stages[i];
++            if (!kvg_ensure_one(stage_kvg[i], st.cache, st.profile, st.d_res, st.dev, st.lb, st.le, cells)) return false;
++        }
++        return kvg_upload_all();
++    };
++    auto kvg_trim = [&](int64_t cells, int64_t hold = 0) -> bool {
++        if (!kvg.on) return true;
++        cells = std::min<int64_t>(o.max_context, std::max(cells, hold));
++        for (const auto& st : stages) {
++            const strata::core::OnDevice device(st->dev);
++            if (cudaDeviceSynchronize() != cudaSuccess) return false;
++        }
++        if (!kvg_trim_one(kvg, xcache, profile, d_res, 0, cells)) return false;
++        for (size_t i = 0; i < stages.size(); ++i) {
++            GpuStage& st = *stages[i];
++            if (!kvg_trim_one(stage_kvg[i], st.cache, st.profile, st.d_res, st.dev, cells)) return false;
++        }
++        return kvg_upload_all();
++    };
++    auto kvg_metadata = [&]() {
++        std::string text = "dev_build=pp32-dual-v2 kv_grow_active=" + std::to_string(kvg.on ? 1 : 0) + " dma_requested=" + std::to_string(strata::core::dma_batch_mode()) +
++                           " dma_overlap_hint_compiled=" + std::to_string(strata::core::dma_overlap_hint_compiled() ? 1 : 0);
++        auto append = [&](int dev, int64_t lb, int64_t le, const strata::core::ExpertCache& cache, const KvGrow& state) {
++            const strata::core::OnDevice device(dev);
++            int64_t live = 0;
++            for (int64_t l = lb; l < le; ++l)
++                for (int64_t e = 0; e < g.n_expert; ++e)
++                    if (!host_res.empty() && host_res[(size_t) (l * g.n_expert + e)] >= 0) ++live;
++            char fields[512];
++            std::snprintf(fields, sizeof(fields), " kv_gpu%d_mib=%.3f kv_gpu%d_full_mib=%.3f kv_gpu%d_cells=%lld expert_gpu%d_live=%lld expert_gpu%d_slots=%lld",
++                          dev, (double) strata::core::qsa_kv_allocated_bytes() / 1048576.0,
++                          dev, (double) strata::core::qsa_kv_capacity_bytes() / 1048576.0,
++                          dev, (long long) (state.on ? state.cells : o.max_context),
++                          dev, (long long) live, dev, (long long) cache.slots());
++            const auto& dma = strata::core::dma_batch_stats(dev);
++            char transfer[640];
++            std::snprintf(transfer, sizeof(transfer), " dma_gpu%d_batches=%llu dma_gpu%d_copies=%llu dma_gpu%d_mib=%.3f dma_gpu%d_fallbacks=%llu dma_gpu%d_hints=%llu dma_gpu%d_staging_mib=%.3f dma_gpu%d_staged_mib=%.3f",
++                          dev, (unsigned long long) dma.batches.load(), dev, (unsigned long long) dma.copies.load(),
++                          dev, (double) dma.bytes.load() / 1048576.0, dev, (unsigned long long) dma.fallbacks.load(),
++                          dev, (unsigned long long) dma.hints.load(),
++                          dev, (double) dma.staging_capacity.load() / 1048576.0,
++                          dev, (double) dma.staged_bytes.load() / 1048576.0);
++            text += transfer;
++            text += fields;
++        };
++        append(0, 0, multi_gpu ? split_at[0] : g.n_layers, xcache, kvg);
++        for (size_t i = 0; i < stages.size(); ++i)
++            append(stages[i]->dev, stages[i]->lb, stages[i]->le, stages[i]->cache, stage_kvg[i]);
++        return text;
++    };
+     // ---- the resident RAM mode (--resident-experts / --resident-cpu-experts): the experts the GPU cache does not
+     // hold are copied from experts.bin into RAM once, so no decode or prompt step reads the file (the plain mmap
+     // mode reads them through the OS file cache, which a small-RAM PC keeps giving back to the SSD).  Built here,
+@@ -6366,6 +6477,7 @@ int main(int argc, char** argv) {
+                 GpuStage& st = *stages[i];
+                 st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
+                 const strata::core::OnDevice on(st.dev);
++                st.kv_loan_top = i + 1 < pf_parts.size() ? pf_parts[i + 1].first : -1;
+                 void* sb = nullptr;              // this stage's own loan, out of its own cache
+                 uint64_t sbb = 0;
+                 // `first < 0`: no loan was taken (nothing was lendable), so this stage allocates its own buffers
+@@ -6521,7 +6633,7 @@ int main(int argc, char** argv) {
+                 }
+             }
+         }
+-        kvg_start(borrow != nullptr ? (int64_t) lend_first : xcache.slots());
++        if (!kvg_start(borrow != nullptr ? (int64_t) lend_first : xcache.slots())) return 1;
+         // the penalty-history buffer: one row per verify-window row (`penalty_rows`), each the last
+         // `penalty_last_n` tokens that row's pick follows, -1 padded in front.  Allocated once at the cap for
+         // the widest window; a request without penalties gets a null buffer and takes the byte-for-byte
+@@ -7237,6 +7349,26 @@ int main(int argc, char** argv) {
+         std::vector<std::pair<int32_t, int32_t>> pending;
+         int pending_age = 0;   // the windows the pending swaps have waited (adapt_lag)
+         std::vector<void*> pin_live;   // the swaps' locked arena pages (pin_blob), unlocked once they have landed
++        // Preserve the original per-device adaptive streams and pending residency events. Optional host staging
++        // has its own reuse fence and a fixed bound derived from the swaps this device can receive.
++        auto dma_staging_bound = [&](int64_t lb, int64_t le) -> size_t {
++            constexpr size_t limit = 256ull << 20;
++            size_t largest = 0;
++            for (int64_t l = lb; l < le; ++l)
++                largest = std::max(largest, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
++            const size_t copies = (size_t) std::clamp(o.adapt_swaps, 0, 128);
++            return copies == 0 ? 0 : largest > limit / copies ? limit : largest * copies;
++        };
++        strata::core::AdaptiveDmaStaging main_dma_bounce(dma_staging_bound(0, multi_gpu ? split_at[0] : g.n_layers));
++        std::vector<std::unique_ptr<strata::core::AdaptiveDmaStaging>> stage_dma_bounce;
++        for (const auto& st : stages)
++            stage_dma_bounce.emplace_back(std::make_unique<strata::core::AdaptiveDmaStaging>(dma_staging_bound(st->lb, st->le)));
++        const bool dma_bounce_on = [] { const char* e = std::getenv("STRATA_DMA_BOUNCE"); return e && e[0] == '1'; }();
++        auto adaptive_dma_flush = [&](std::vector<void*>& dst, const std::vector<const void*>& sources,
++                                      const std::vector<size_t>& bytes, cudaStream_t stream, int mode,
++                                      strata::core::AdaptiveDmaStaging& bounce) -> cudaError_t {
++            return bounce.copy(dst.data(), sources.data(), bytes.data(), dst.size(), stream, mode, dma_bounce_on);
++        };
+         cudaEvent_t adapt_ev = nullptr;
+         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
+         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
+@@ -7333,10 +7465,12 @@ int main(int argc, char** argv) {
+             }
+             bool main_live = false;
+             // STRATA_DMA_BATCH (F12): the main device's copies as one cudaMemcpyBatchAsync (mode 0: one each)
+-            const int dma_mode = multi_gpu ? 0 : strata::core::dma_batch_mode();
++            const int dma_mode = strata::core::dma_batch_mode();
+             std::vector<void*> cp_dst;
+             std::vector<const void*> cp_src;
+             std::vector<size_t> cp_bytes;
++            struct StageDma { std::vector<void*> dst; std::vector<const void*> src; std::vector<size_t> bytes; };
++            std::vector<StageDma> stage_dma(stages.size());
+             for (size_t si = 0; si < swaps.size(); ++si) {
+                 const Swap& s = swaps[si];
+                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
+@@ -7346,10 +7480,18 @@ int main(int argc, char** argv) {
+                 GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
+                 const strata::core::OnDevice on(gs ? gs->dev : -1);
+                 if (dma_mode != 0 && slot >= 0 && b != nullptr) {
+-                    cp_dst.push_back(xcache.device_slot(slot));
+-                    cp_src.push_back(b);
+-                    cp_bytes.push_back((size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
+-                    main_live = true;
++                    if (gs) {
++                        StageDma& batch = stage_dma[(size_t) stn - 1];
++                        batch.dst.push_back(gs->cache.device_slot(slot));
++                        batch.src.push_back(b);
++                        batch.bytes.push_back((size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
++                        gs->adapt_live = true;
++                    } else {
++                        cp_dst.push_back(xcache.device_slot(slot));
++                        cp_src.push_back(b);
++                        cp_bytes.push_back((size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
++                        main_live = true;
++                    }
+                     host_res[out] = strata::core::kNotResident;
+                     srcp->prefetch(s.layer, s.out);
+                     pending.emplace_back((int32_t) in, slot);
+@@ -7369,12 +7511,19 @@ int main(int argc, char** argv) {
+                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
+                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
+             }
+-            if (!cp_dst.empty() && strata::core::copy_blobs(cp_dst.data(), cp_src.data(), cp_bytes.data(), cp_dst.size(),
+-                                                            adapt_stream, dma_mode) != cudaSuccess) {
++            if (!cp_dst.empty() && adaptive_dma_flush(cp_dst, cp_src, cp_bytes, adapt_stream, dma_mode, main_dma_bounce) != cudaSuccess) {
+                 std::fprintf(stderr, "strata serve: adaptive swap copy failed (batched): %s\n",
+                              cudaGetErrorString(cudaGetLastError()));
+                 return false;
+             }
++            for (size_t i = 0; i < stages.size(); ++i) {
++                StageDma& batch = stage_dma[i];
++                if (batch.dst.empty()) continue;
++                GpuStage& stage = *stages[i];
++                const strata::core::OnDevice device(stage.dev);
++                if (adaptive_dma_flush(batch.dst, batch.src, batch.bytes, stage.adapt_stream, dma_mode,
++                                       *stage_dma_bounce[i]) != cudaSuccess) return false;
++            }
+             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
+             (void) main_live;
+             for (auto& st : stages)
+@@ -7881,7 +8030,7 @@ int main(int argc, char** argv) {
+                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
+                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
+-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
++                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION " %s\n",
+                         (long long) o.max_context, o.kv.c_str(),
+                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
+                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
+@@ -7894,7 +8043,7 @@ int main(int argc, char** argv) {
+                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
+                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
+                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
+-                                       " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
++                                       " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "", kvg_metadata().c_str());
+         }
+         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
+         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
+@@ -8921,7 +9070,7 @@ int main(int argc, char** argv) {
+             auto kv_quiesce = [&] { cudaDeviceSynchronize(); apply_pending(true); };
+             if (kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
+                 // a failed growth may leave the tier half-changed: the engine stops (as for any CUDA failure)
+-                if (!kvg_ensure(n + 256, kv_quiesce)) {
++                if (!kvg_ensure(n + max_new + 64, kv_quiesce)) {
+                     std::printf("ERR the K/V cannot grow to this prompt: no VRAM is left\n");
+                     std::fflush(stdout);
+                     return 1;
+@@ -9120,7 +9269,7 @@ int main(int argc, char** argv) {
+                 kv_quiesce();
+                 // STRATA_KV_GROW_HOLD=1 (opt-in): keep the K/V as long as the longest parked conversation; default: trim to this request alone, as 0.1.40
+                 static const bool hold_on = [] { const char* v = std::getenv("STRATA_KV_GROW_HOLD"); return v != nullptr && std::atoi(v) != 0; }();
+-                if (!kvg_trim(n + 256, hold_on ? conversations.longest_tokens() + 256 : 0)) {
++                if (!kvg_trim(n + max_new + 64, hold_on ? conversations.longest_tokens() + max_new + 64 : 0)) {
+                     std::printf("ERR the K/V could not give its VRAM back to the expert cache\n");
+                     std::fflush(stdout);
+                     return 1;
+@@ -10476,7 +10625,7 @@ int main(int argc, char** argv) {
+                                cudaMemcpyHostToDevice);
+                 }
+                 // the elastic K/V: the window's cells and the drafter's beyond them
+-                if (kvg.on && p + T + 64 > kvg.cells &&
++                if (kvg.on && p + T + 64 > kvg_min_cells() &&
+                     !kvg_ensure(p + T + 64, [&] { cudaDeviceSynchronize(); apply_pending(true); })) {
+                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
+                     return 1;
+@@ -10723,13 +10872,13 @@ int main(int argc, char** argv) {
+                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
+                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
+-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s\n",
++            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s %s\n",
+                         (long long) produced_n,
+                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
+                         (long long) resume, (long long) req_hits, (long long) req_look,
+                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
+                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
+-                        (long long) req_offload, chain_txt);
++                        (long long) req_offload, chain_txt, kvg_metadata().c_str());
+             std::fflush(stdout);
+             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
+                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
+@@ -10947,7 +11096,7 @@ int main(int argc, char** argv) {
+                 const int32_t first = (int32_t) (xcache.slots() - k);
+                 // the elastic K/V first: its hot experts move into slots of the loan, which are refilled after it
+                 kvg_started = true;
+-                kvg_start(first);
++                if (!kvg_start(first)) return 1;
+                 if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
+                 for (size_t i = 0; i < host_res.size(); ++i)
+                     if (host_res[i] >= first) {
+@@ -10986,7 +11135,7 @@ int main(int argc, char** argv) {
+         }
+         if (!kvg_started) {   // the elastic K/V: every cell this run can reach (no loan)
+             kvg_started = true;
+-            kvg_start(xcache.slots());
++            if (!kvg_start(xcache.slots())) return 1;
+             if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
+         }
+         const Clock::time_point tp0 = Clock::now();
+@@ -11037,7 +11186,7 @@ int main(int argc, char** argv) {
+ 
+     if (!kvg_started) {   // the elastic K/V of a prompt that was not read in batches
+         kvg_started = true;
+-        kvg_start(xcache.slots());
++        if (!kvg_start(xcache.slots())) return 1;
+         if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
+     }
+     for (int64_t pos = pos_start;; ++pos) {
+diff --git a/tests/core/dma_alias_lifetime_test.cpp b/tests/core/dma_alias_lifetime_test.cpp
+new file mode 100644
+index 0000000..c8cfc49
+--- /dev/null
++++ b/tests/core/dma_alias_lifetime_test.cpp
+@@ -0,0 +1,34 @@
++#include "strata/core/dma_batch.hpp"
++#include <cstdio>
++
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
++
++int main() {
++    int count = 0;
++    CHECK(cudaGetDeviceCount(&count) == cudaSuccess && count >= 2);
++    unsigned char* host = nullptr;
++    CHECK(cudaHostAlloc((void**) &host, 65536, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess);
++    const void* interior = host + 4096;
++    for (int device = 0; device < 2; ++device) {
++        CHECK(cudaSetDevice(device) == cudaSuccess);
++        const void* alias = nullptr;
++        CHECK(strata::core::detail::host_alias(interior, &alias) == cudaSuccess);
++    }
++#ifndef STRATA_DMA_LEGACY_REPRO
++    strata::core::forget_host_aliases(host, 65536);
++#endif
++    CHECK(cudaFreeHost(host) == cudaSuccess);
++    // Query only: never read or copy freed memory. A lifetime-aware cache must re-query CUDA and reject it.
++    for (int device = 0; device < 2; ++device) {
++        CHECK(cudaSetDevice(device) == cudaSuccess);
++        const void* alias = nullptr;
++        const auto e = strata::core::detail::host_alias(interior, &alias);
++        if (e == cudaSuccess) {
++            std::fprintf(stderr, "BUG reproduced: CUDA%d returned a cached alias for freed pinned storage\n", device);
++            return 1;
++        }
++        (void) cudaGetLastError();
++    }
++    std::puts("dma_alias_lifetime_test: freed interior addresses rejected on both devices");
++    return 0;
++}
+diff --git a/tests/core/dual_dma_test.cpp b/tests/core/dual_dma_test.cpp
+new file mode 100644
+index 0000000..a909c29
+--- /dev/null
++++ b/tests/core/dual_dma_test.cpp
+@@ -0,0 +1,85 @@
++#include "strata/core/dma_batch.hpp"
++#include "strata/core/dma_staging.hpp"
++#include <cuda_runtime.h>
++#include <array>
++#include <cstdio>
++#include <cstring>
++#include <vector>
++#include <chrono>
++#include <thread>
++
++static void CUDART_CB delay(void*) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
++
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
++
++int main() {
++    int count = 0;
++    CHECK(cudaGetDeviceCount(&count) == cudaSuccess && count >= 2);
++    constexpr size_t n = 4, bytes = 4096;
++    unsigned char* host = nullptr;
++    CHECK(cudaHostAlloc((void**) &host, n * bytes, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess);
++    for (size_t i = 0; i < n; ++i) std::memset(host + i * bytes, int(0x30 + i), bytes);
++    for (int device = 0; device < 2; ++device) {
++        CHECK(cudaSetDevice(device) == cudaSuccess);
++        unsigned char* target = nullptr;
++        cudaStream_t stream = nullptr;
++        CHECK(cudaMalloc((void**) &target, n * bytes) == cudaSuccess);
++        CHECK(cudaStreamCreate(&stream) == cudaSuccess);
++        void* dst[n]; const void* src[n]; size_t sizes[n];
++        for (size_t i = 0; i < n; ++i) { dst[i] = target + i * bytes; src[i] = host + i * bytes; sizes[i] = bytes; }
++        for (int mode : {1, 2}) {
++            CHECK(cudaMemsetAsync(target, 0, n * bytes, stream) == cudaSuccess);
++            const auto before = strata::core::dma_batch_stats(device).batches.load();
++            CHECK(strata::core::copy_blobs(dst, src, sizes, n, stream, mode) == cudaSuccess);
++            CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
++            CHECK(strata::core::dma_batch_stats(device).batches.load() == before + 1);
++            std::vector<unsigned char> actual(n * bytes);
++            CHECK(cudaMemcpy(actual.data(), target, actual.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++            CHECK(std::memcmp(actual.data(), host, actual.size()) == 0);
++        }
++        // Unregistered sources must still copy correctly through the loop fallback.
++        std::array<unsigned char, n * bytes> pageable{};
++        for (size_t i = 0; i < n; ++i) { std::memset(pageable.data() + i * bytes, int(0x50 + device + i), bytes); src[i] = pageable.data() + i * bytes; }
++        const auto fallback = strata::core::dma_batch_stats(device).fallbacks.load();
++        CHECK(strata::core::copy_blobs(dst, src, sizes, n, stream, 1) == cudaSuccess);
++        CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
++        CHECK(strata::core::dma_batch_stats(device).fallbacks.load() == fallback + 1);
++        std::array<unsigned char, n * bytes> actual{};
++        CHECK(cudaMemcpy(actual.data(), target, actual.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++        CHECK(actual == pageable);
++        // Force the first upload to remain queued while its CPU staging is reused for a second pattern.
++        // Both destinations must retain their own bytes; the source arrays themselves are pageable.
++        {
++            strata::core::AdaptiveDmaStaging stage(n * bytes);
++            unsigned char* second = nullptr;
++            CHECK(cudaMalloc((void**) &second, n * bytes) == cudaSuccess);
++            // Allocate and register the staging storage before inserting the delay: cudaHostAlloc may itself
++            // synchronize the device, which would otherwise consume the delay and weaken this regression.
++            CHECK(stage.copy(dst, src, sizes, n, stream, 1, true) == cudaSuccess);
++            CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
++            CHECK(cudaLaunchHostFunc(stream, delay, nullptr) == cudaSuccess);
++            CHECK(stage.copy(dst, src, sizes, n, stream, 1, true) == cudaSuccess);
++            const auto first_pattern = pageable;
++            for (size_t i = 0; i < n; ++i) {
++                std::memset(pageable.data() + i * bytes, int(0x70 + device + i), bytes);
++                dst[i] = second + i * bytes;
++            }
++            CHECK(stage.copy(dst, src, sizes, n, stream, 1, true) == cudaSuccess);
++            CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
++            CHECK(cudaMemcpy(actual.data(), target, actual.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++            CHECK(actual == first_pattern);
++            CHECK(cudaMemcpy(actual.data(), second, actual.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++            CHECK(actual == pageable);
++            CHECK(stage.capacity() == 65536);  // bounded staging replaces 256 MiB, without altering the output
++            CHECK(cudaFree(second) == cudaSuccess);
++        }
++        CHECK(strata::core::dma_batch_stats(device).staging_capacity.load() == 0);
++        CHECK(cudaStreamDestroy(stream) == cudaSuccess);
++        CHECK(cudaFree(target) == cudaSuccess);
++    }
++    strata::core::forget_host_aliases(host, n * bytes);
++    CHECK(cudaFreeHost(host) == cudaSuccess);
++    std::printf("dual_dma_test: both GPUs mode1/mode2 batch, pageable fallback and delayed staging reuse passed; overlap_hint_compiled=%d\n",
++                strata::core::dma_overlap_hint_compiled() ? 1 : 0);
++    return 0;
++}
+diff --git a/tests/core/dual_vmm_test.cpp b/tests/core/dual_vmm_test.cpp
+new file mode 100644
+index 0000000..9d67cca
+--- /dev/null
++++ b/tests/core/dual_vmm_test.cpp
+@@ -0,0 +1,63 @@
++#include "strata/core/vmm.hpp"
++#include <cuda_runtime.h>
++#include <array>
++#include <cstdio>
++
++using namespace strata::core;
++static int failures = 0;
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); ++failures; return 1; } } while (0)
++
++int main() {
++    int count = 0;
++    CHECK(cudaGetDeviceCount(&count) == cudaSuccess && count >= 2);
++    std::array<VmmRange, 2> cache, kv;
++    std::array<uint8_t*, 2> cache_address{}, kv_address{};
++    std::array<uint64_t, 2> gran{};
++    for (int device = 0; device < 2; ++device) {
++        CHECK(cudaSetDevice(device) == cudaSuccess);
++        CHECK(vmm_available());
++        gran[device] = vmm_granularity();
++        CHECK(gran[device] > 0);
++        CHECK(cache[device].reserve(4 * gran[device]));
++        CHECK(kv[device].reserve(4 * gran[device]));
++        CHECK(cache[device].device() == device && kv[device].device() == device);
++        cache_address[device] = cache[device].base();
++        kv_address[device] = kv[device].base();
++        CHECK(cache[device].map_range(0, 4, [] { return VmmChunk{0}; }));
++        CHECK(cudaMemset(cache[device].base(), 0x20 + device, gran[device]) == cudaSuccess);
++        VmmChunk donated = cache[device].unmap(3);
++        CHECK(donated != 0 && vmm_chunk_device(donated) == device);
++        CHECK(kv[device].map_range(0, 1, [&] { VmmChunk h = donated; donated = 0; return h; }));
++        CHECK(cudaMemset(kv[device].base(), 0x70 + device, gran[device]) == cudaSuccess);
++        CHECK(kv[device].map_range(1, 2, [] { return VmmChunk{0}; }));
++        CHECK(cudaMemset(kv[device].base() + gran[device], 0x40 + device, gran[device]) == cudaSuccess);
++        CHECK(cudaDeviceSynchronize() == cudaSuccess);
++    }
++    for (int device = 0; device < 2; ++device) {
++        CHECK(cudaSetDevice(device) == cudaSuccess);
++        std::array<uint8_t, 64> data{};
++        CHECK(cudaMemcpy(data.data(), cache[device].base(), data.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++        for (uint8_t b : data) CHECK(b == 0x20 + device);
++        CHECK(cudaMemcpy(data.data(), kv[device].base(), data.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++        for (uint8_t b : data) CHECK(b == 0x70 + device);
++        VmmChunk returned = kv[device].unmap(1);
++        CHECK(returned != 0 && vmm_chunk_device(returned) == device);
++        CHECK(cache[device].map_range(3, 4, [&] { VmmChunk h = returned; returned = 0; return h; }));
++        CHECK(cudaMemcpy(data.data(), cache[device].base() + 3 * gran[device], data.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
++        for (uint8_t b : data) CHECK(b == 0x40 + device);
++        CHECK(cache[device].base() == cache_address[device] && kv[device].base() == kv_address[device]);
++    }
++    // A chunk from GPU0 must never become GPU1's KV, even on a machine with peer access.
++    CHECK(cudaSetDevice(0) == cudaSuccess);
++    VmmChunk wrong = vmm_chunk_new();
++    CHECK(wrong != 0 && vmm_chunk_device(wrong) == 0);
++    CHECK(cudaSetDevice(1) == cudaSuccess);
++    CHECK(!kv[1].map_range(2, 3, [&] { VmmChunk h = wrong; wrong = 0; return h; }));
++    CHECK(!kv[1].mapped(2) && kv[1].mapped_count() == 1);
++    // Destruction/release still uses the range's owner after another device became current.
++    cache[0].release(); kv[0].release();
++    CHECK(cache[0].base() == nullptr && kv[0].base() == nullptr);
++    CHECK(cudaGetLastError() == cudaSuccess);
++    std::printf("dual_vmm_test: GPU ownership, cache/KV exchange, data retention, stable addresses and foreign-chunk rejection passed\n");
++    return failures ? 1 : 0;
++}
+diff --git a/tools/test_done_dual_metadata.py b/tools/test_done_dual_metadata.py
+new file mode 100644
+index 0000000..45ba645
+--- /dev/null
++++ b/tools/test_done_dual_metadata.py
+@@ -0,0 +1,20 @@
++"""Regression for unchanged legacy DONE fields and per-device extension fields."""
++import pathlib
++import sys
++
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
++from serve.server import StrataEngine
++
++engine = StrataEngine.__new__(StrataEngine)
++engine.info = {}
++engine._parse_done('DONE 8 32768 15000 70 stop 6 7 0 90 100 1 2 3.5 32768 4')
++legacy = dict(engine.last)
++assert legacy['generated'] == 8 and legacy['prompt_tokens'] == 32768
++assert legacy['offloaded'] == 4 and legacy['reused'] == 0 and legacy['file_mb'] == 3.5
++engine._parse_done('DONE 8 32768 15000 70 stop 6 7 0 90 100 1 2 3.5 32768 4 '
++                   'kv_gpu0_mib=320.5 kv_gpu1_mib=160 kv_grow_active=1 '
++                   'dma_gpu0_batches=12 dma_gpu1_batches=7 dev_build=pp32-dual-v1')
++assert all(engine.last[key] == value for key, value in legacy.items())
++assert engine.last['kv_gpu0_mib'] == 320.5 and engine.last['kv_gpu1_mib'] == 160
++assert engine.info['dma_gpu1_batches'] == 7 and engine.info['dev_build'] == 'pp32-dual-v1'
++print('DONE legacy and independent GPU metadata regression passed')
+diff --git a/serve/server.py b/serve/server.py
+index d3b31c9..1f4c986 100644
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -851,7 +852,17 @@ class StrataEngine:
+         self.info = {**info, **self.info}
+ 
+     def _parse_done(self, line):
+-        f = line.split()
++        tokens = line.split()
++        f = [token for token in tokens if "=" not in token]
++        measurements = {}
++        for token in tokens:
++            if "=" not in token:
++                continue
++            key, value = token.split("=", 1)
++            try:
++                measurements[key] = int(value) if value.lstrip("-").isdigit() else float(value)
++            except ValueError:
++                measurements[key] = value
+         self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
+                      "decode_ms": float(f[4]), "finish": f[5]}
+         if len(f) >= 9:                                   # the conversation cache's fields (engine 0.1.3+)
+@@ -864,6 +875,8 @@ class StrataEngine:
+             self.last.update(prompt_read=int(f[14]))
+         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
+             self.last.update(offloaded=int(f[15]))
++        self.last.update(measurements)
++        self.info.update(measurements)
+ 
+     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
+         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
