@@ -50,6 +50,13 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         topo.worker_cores.insert(topo.worker_cores.begin(), topo.host_core);
         topo.host_core = last;
     }
+    // --host-core sibling: the host on its core's other hardware thread; the first logical processor stays to the
+    // interrupts and to nothing else (a worker on it would share the host's core)
+    if (skip_first && host_core_setting() == HostCore::Sibling && topo.host_sibling >= 0) {
+        topo.worker_cores.erase(std::remove(topo.worker_cores.begin(), topo.worker_cores.end(), topo.host_sibling),
+                                topo.worker_cores.end());
+        topo.host_core = topo.host_sibling;
+    }
     return topo;
 }
 
@@ -141,6 +148,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
             if (skip_first && !topo.worker_cores.empty()) {
                 topo.host_core = topo.worker_cores.front();
                 topo.worker_cores.erase(topo.worker_cores.begin());
+                if (descs.front().lps.size() > 1) topo.host_sibling = descs.front().lps[1];
             }
             return topo;
         }
@@ -168,6 +176,11 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         if (skip_first && !p_primaries.empty()) {
             topo.host_core = p_primaries.front();
             p_primaries.erase(p_primaries.begin());
+            for (const auto& c : descs)
+                if (c.lps[0] == topo.host_core) {
+                    if (c.lps.size() > 1) topo.host_sibling = c.lps[1];
+                    break;
+                }
         }
 
         for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
@@ -293,6 +306,15 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         topo.p_threads = (int) all_cpus.size();
     }
 
+    // the host core's SMT sibling, an allowed CPU of the same (package, core) (--host-core sibling)
+    auto sibling_of = [&](int cpu) {
+        for (const auto& h : all_cpus)
+            if (h.cpu == cpu && h.pkg >= 0 && h.core >= 0)
+                for (const auto& cl : all_cpus)
+                    if (cl.cpu != cpu && cl.pkg == h.pkg && cl.core == h.core) return cl.cpu;
+        return -1;
+    };
+
     if (affinity == PoolAffinity::All || !topo.is_hybrid) {
         if (topo.is_hybrid)   // #642: the P-cores first (see the Windows branch)
             std::stable_sort(all_cpus.begin(), all_cpus.end(),
@@ -305,6 +327,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         if (skip_first && !topo.worker_cores.empty()) {
             topo.host_core = topo.worker_cores.front();
             topo.worker_cores.erase(topo.worker_cores.begin());
+            topo.host_sibling = sibling_of(topo.host_core);
         }
         return topo;
     }
@@ -326,6 +349,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
     if (skip_first && !p_primaries.empty()) {
         topo.host_core = p_primaries.front();
         p_primaries.erase(p_primaries.begin());
+        topo.host_sibling = sibling_of(topo.host_core);
     }
 
     for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);

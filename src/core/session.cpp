@@ -544,7 +544,8 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12).
+    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12),
+    // or the first core's SMT sibling with --host-core sibling.
     const int host_core = strata::kernels::cpu::planned_host_core();
     if (host_core >= 0) {
         pinned_core = strata::kernels::cpu::pin_current_thread(host_core);
