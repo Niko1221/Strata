@@ -2971,6 +2971,23 @@ class Service:
         the control tokens the template writes are control tokens."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
+        if kwargs.get("enable_thinking") is False and prompt.endswith("<think>"):
+            # A TEMPLATE THAT OPENS THE THINKING BLOCK WHATEVER IT IS TOLD, so thinking off has to close it here.
+            # glm5-next is the one, and every number below comes from the template its pack carries
+            # (glm-packs/*/tokenizer/chat_template.jinja - not the serve/chat_template.jinja the default model
+            # ships): its generation prompt is always `<|assistant|><think>` (line 256), it tests no
+            # `enable_thinking` at all, and an effort it does not know - `none`, and also `medium`/`xhigh` -
+            # becomes `max` (line 2).  So `reasoning_effort: "none"` thought at full length.  The empty block is
+            # that template's own shape for a past turn that did not think (`{{ '<think></think>' }}`, line 152),
+            # so this asks for what the model already writes itself.
+            # The trailing-tag test is what keeps this to that template: a prompt ending in a bare `<think>` with
+            # thinking off IS that generation prompt.  Every other family closes its own block there, so its
+            # prompt does not end on the open tag - the default template's thinking-off tail is the closed block
+            # `<think>\n\n</think>\n\n` (serve/chat_template.jinja:179) - and its render is left exactly as it was.
+            # Appended before `unmark_think_literals` on purpose: the appended tag holds no mark, so it is not one
+            # of the spans that are encoded as ordinary text, and appending at the end cannot move the spans
+            # before it.
+            prompt += "</think>"
         if not changed:
             return self.tok.encode(prompt, parse_special=True)
         prompt, plain = unmark_think_literals(prompt, self.literals)
