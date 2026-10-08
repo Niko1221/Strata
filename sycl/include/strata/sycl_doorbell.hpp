@@ -39,10 +39,30 @@ inline uint32_t sys_load(const volatile uint32_t* p) {
     return sys_atomic_u32(*const_cast<uint32_t*>(p)).load();
 }
 #endif
+// The store side of the handshake (device -> host) needs the same hint. A system-scope atomic store, even followed by
+// a release fence, is served from the GPU's cache on an Arc (xe) and reaches the host only when the kernel ends
+// (measured on an A770: 482 ms into a 482 ms kernel), so a host that polls the ring mid-window never sees it; that is
+// why the decode window had to wait for the whole graph (STRATA_VERIFY_NO_HOST) and every expert had to be
+// device-resident. The uncached L1+L3 write hint reaches memory at once (44 ms, the launch latency).
+// -DSTRATA_DOORBELL_ATOMIC_STORE restores the atomic store.
+#ifndef STRATA_DOORBELL_ATOMIC_STORE
+using doorbell_uncached_write = decltype(sycl::ext::oneapi::experimental::properties(
+    sycl::ext::intel::experimental::write_hint<sycl::ext::intel::experimental::cache_control<
+        sycl::ext::intel::experimental::cache_mode::uncached,
+        sycl::ext::oneapi::experimental::cache_level::L1, sycl::ext::oneapi::experimental::cache_level::L3>>));
+inline void sys_store(volatile uint32_t* p, uint32_t v) {
+    sycl::ext::oneapi::experimental::annotated_ptr<uint32_t, doorbell_uncached_write> u(const_cast<uint32_t*>(p));
+    u[0] = v;
+    // Ordering, not visibility: the value is already in memory. The release fence keeps a later payload store (the
+    // experts' ids the host reads after the ring) after the ring, the same contract the atomic store had.
+    sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
+}
+#else
 inline void sys_store(volatile uint32_t* p, uint32_t v) {
     sys_atomic_u32(*const_cast<uint32_t*>(p)).store(v);
     sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
 }
+#endif
 
 // Every device spin is bounded. An unbounded spin that never sees its flag is not a hang of one process: the
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
