@@ -728,6 +728,27 @@ the display-class registry's 64-bit VRAM size, which is the true VRAM (WMI's `Ad
 `setup --check` names it. The Monitor tab reads the name and VRAM from the same detection; util, temperature and
 power are not read yet.
 
+**The Monitor tab reads this card through the OS's own counters.** xe exposes nothing on Windows - no sysfs, no
+user-mode Level Zero adapter - so the reader (`sycl/serve/xe_telemetry.py`) takes load and VRAM-in-use from the PDH
+counters Windows keeps for every WDDM adapter, `GPU Engine` (per process, per engine, summed per card as Task Manager
+does) and `GPU Adapter Memory` (dedicated bytes). The card is the adapter holding the most dedicated memory and every
+instance is filtered to its LUID, so an iGPU beside it does not add to the numbers. Measured on the B70: 2.9% idle,
+100% while decoding, and 30.01 of 32.00 GiB of dedicated memory in use - the 23.4 GiB of experts, the KV and the
+driver's own buffers.
+
+Two things about that path are worth knowing if it is read again: PDH's wildcard API answers `PDH_INVALID_ARGUMENT` on
+this machine for *every* path, core counters included (`PdhExpandWildCardPathW` and `PdhGetFormattedCounterArrayW`),
+so the instance list comes from `Get-Counter -ListSet` and each instance gets its own counter - sampling is then pure
+PDH, 3.8 ms to collect the 392 instances of the two sets and 0.4 ms to read them, against a PowerShell call per
+sample. And a byte counter has to be asked for as `PDH_FMT_LARGE`: with `PDH_FMT_DOUBLE` PDH fills the union with a
+double, whose bits read as an integer are nonsense (4.4 GB shown as 4.4 billion GB).
+
+Temperature, power and the PCIe link have **no** Windows counter at all - only the driver knows, and there is no
+user-mode adapter to ask - so those three tiles stay empty and the dashboard says so rather than showing a bare dash.
+Linux does fill them from the card's hwmon (`sycl/tools/gpustat.py` for load and VRAM, which xe only accounts
+per-client fdinfo).
+
+
 Measured 2026-10-07 on Windows 10, Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900 / 64 GB, conda-forge
 `dpcpp_win-64` 2026.1.1, Coder IQ1_M (12,288/12,288 experts resident, `--stream-experts`, INT8 KV,
 `--spec 4 --spec-min-p 0.5 --mtp`), greedy. Each row is an A/B of this branch's engine (0.1.40-sycl) against the

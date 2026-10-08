@@ -48,6 +48,25 @@ def install_xe_reader():
     T.gpu_reader = gpu_reader
 
 
+def install_gpu_note():
+    """The Monitor tab's empty GPU tiles should say why.  Windows has no GPU temperature, power or PCIe counter (only
+    the driver knows, and there is no user-mode Level Zero adapter to ask), so those three stay empty while load and
+    VRAM now come from the OS's own counters - and the tile should read like a decision, not a gap.  Telemetry is
+    imported inside server.py's start_telemetry, so patching the class here is what it gets."""
+    if T.Telemetry.__dict__.get("_xe_note"):
+        return
+    orig_init = T.Telemetry.__init__
+
+    def __init__(self, *a, **kw):
+        orig_init(self, *a, **kw)
+        if isinstance(getattr(self, "gpu", None), _XeGpu) and not sys.platform.startswith("linux"):
+            self.static["gpu_note"] = ("load and VRAM are the OS's own GPU counters (GPU Engine, GPU Adapter Memory); "
+                                       "Windows has no GPU temperature, power or PCIe counter, so those stay empty")
+
+    __init__._xe_note = True
+    T.Telemetry.__init__ = __init__
+
+
 def model_switcher(url: str, port, model, mode: str = "") -> dict:
     """The host's model swapper: the models it serves on THIS port, which one holds the card, whether one is loading.
     With `mode`, asks for that one first; this server is then usually the one stopped, so the web app waits for
@@ -288,6 +307,7 @@ def top_logprobs(req: dict):
 
 if __name__ == "__main__":
     install_xe_reader()
+    install_gpu_note()
     install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()
