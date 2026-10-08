@@ -75,6 +75,32 @@ bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n
     return true;
 }
 
+/// `read_batch` through the batch readers: the same bytes as `check_rows` wants, and every `ready(r)` must find rows
+/// [0, r) already final - the prefix the prompt path uploads before the rest has landed.
+bool check_batch(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n_rows, uint32_t rb, const char* what) {
+    std::vector<uint8_t> out(rows.size() * rb, 0xCC), want(rb);
+    auto row_ok = [&](size_t i) {
+        if (rows[i] >= n_rows) std::memset(want.data(), 0, rb);
+        else expected_row(rows[i], rb, want.data());
+        return std::memcmp(want.data(), &out[i * rb], rb) == 0;
+    };
+    std::string err;
+    size_t last = 0, calls = 0;
+    bool prefix_ok = true, rising = true;
+    const bool ok = rd.read_batch(rows.data(), rows.size(), out.data(), err, [&](size_t r) {
+        ++calls;
+        if (r < last) rising = false;
+        for (size_t i = last; i < r; ++i) prefix_ok = prefix_ok && row_ok(i);
+        last = std::max(last, r);
+    });
+    CHECK(ok, "%s: read_batch failed: %s", what, err.c_str());
+    CHECK(rising && prefix_ok, "%s: a ready() prefix was not final (rising %d)", what, (int) rising);
+    CHECK(last == rows.size() && calls > 0, "%s: the last ready() was %zu of %zu", what, last, rows.size());
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (!row_ok(i)) { CHECK(false, "%s: row %u (index %zu) differs", what, rows[i], i); return false; }
+    return true;
+}
+
 /// THE BF16 TABLE, and the claim it rests on.  A bfloat16 is literally the top half of a float32, so widening
 /// one is a shift: exact for every value, normal or not, with no rounding to hide behind.  These patterns are
 /// the ones a lossy path would break on - the subnormals and the NaN/inf encodings a saturating cast to FP8
@@ -272,6 +298,16 @@ int selftest(const std::string& dir, uint32_t rb) {
             std::vector<uint32_t> bulk(20000);
             for (auto& r : bulk) r = rng() % N;
             check_rows(rd, bulk, N, rb, "bulk");
+            // the prompt path's batch readers: straddles, duplicates, edges and a bulk request in one; twice (the
+            // second mostly from the row cache), and with none (issue + collect)
+            for (unsigned readers : {3u, 1u, 0u}) {
+                CHECK(rd.set_batch_readers(readers, err), "set_batch_readers(%u): %s", readers, err.c_str());
+                std::vector<uint32_t> mix(straddle);
+                for (uint32_t r : {5u, 5u, 6u, 7u, 5u, 0u, N - 1, N, 0xFFFFFFFFu, 44u, 45u}) mix.push_back(r);
+                for (int i = 0; i < 30000; ++i) mix.push_back(rng() % N);
+                check_batch(rd, mix, N, rb, "batch");
+                check_batch(rd, mix, N, rb, "batch again");
+            }
             // two tickets in flight at once, collected in reverse order
             std::vector<uint32_t> a(16), b(16);
             for (auto& r : a) r = rng() % N;

@@ -28,6 +28,10 @@ public:
     DirectFile& operator=(const DirectFile&) = delete;
 
     bool open(const std::string& path, std::string& err);
+    /// `inline_submit`: no issuing threads; `submit` reads on the caller's thread (Windows: one overlapped ReadFile,
+    /// the completion through `wait` as usual; POSIX: a blocking pread). For a thread that keeps its own reads in
+    /// flight and reaps them itself (PleReader::read_batch).
+    bool open(const std::string& path, std::string& err, bool inline_submit);
     void close();
     bool is_open() const;
     uint64_t size() const;

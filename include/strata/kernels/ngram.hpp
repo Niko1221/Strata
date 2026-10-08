@@ -161,6 +161,9 @@ struct PleIoOptions {
     /// (see PleReader::set_keepalive).
     double keepalive_ms = 0;
     double keepalive_window_s = 60;
+    /// Direct mode: the prompt path's batch readers (PleReader::set_batch_readers); -1 = STRATA_PLE_READERS, else 8
+    /// (Windows; 0 on POSIX); 0 = off (a prompt's rows then go through the worker, as one ticket)
+    int batch_readers = -1;
 };
 
 /// The PLE table.  Held by pointer-to-impl so this header does not drag `<windows.h>` into every

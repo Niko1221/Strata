@@ -88,6 +88,7 @@ struct DirectFile::Impl {
     std::deque<Pending> queue;          // submitted, not yet issued
     std::condition_variable cv;
     bool stop = false;
+    bool inline_submit = false;         // `submit` calls ReadFile itself (no pool)
     std::vector<std::thread> pool;
 
     Req* take() {
@@ -155,8 +156,11 @@ DirectFile::~DirectFile() {
     delete impl_;
 }
 
-bool DirectFile::open(const std::string& path, std::string& err) {
+bool DirectFile::open(const std::string& path, std::string& err) { return open(path, err, false); }
+
+bool DirectFile::open(const std::string& path, std::string& err, bool inline_submit) {
     close();
+    impl_->inline_submit = inline_submit;
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
     std::wstring wpath((size_t) (wlen > 0 ? wlen : 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
@@ -183,7 +187,7 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     }
     // Completions of reads that finish synchronously are still queued to the port, so every issued read
     // produces exactly one packet; `wait` is the only completion path.
-    const int n = io_threads(4);
+    const int n = inline_submit ? 0 : io_threads(4);
     for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
     return true;
 }
@@ -207,6 +211,10 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
         err = "DirectFile: unaligned request";
         return false;
+    }
+    if (impl_->inline_submit) {
+        impl_->issue(Pending{offset, buffer, length, tag});
+        return true;
     }
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
@@ -271,6 +279,7 @@ struct DirectFile::Impl {
     std::deque<Pending> queue;
     std::deque<Completion> done;
     bool stop = false;
+    bool inline_submit = false;   // `submit` preads itself (no pool)
     std::vector<std::thread> pool;
 
     void worker() {
@@ -303,14 +312,17 @@ struct DirectFile::Impl {
 DirectFile::DirectFile() : impl_(new Impl) {}
 DirectFile::~DirectFile() { close(); delete impl_; }
 
-bool DirectFile::open(const std::string& path, std::string& err) {
+bool DirectFile::open(const std::string& path, std::string& err) { return open(path, err, false); }
+
+bool DirectFile::open(const std::string& path, std::string& err, bool inline_submit) {
     close();
+    impl_->inline_submit = inline_submit;
     impl_->fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
     if (impl_->fd < 0) { err = "DirectFile: cannot open " + path; return false; }
     struct stat st;
     if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
     impl_->size = (uint64_t) st.st_size;
-    const int n = io_threads(16);
+    const int n = inline_submit ? 0 : io_threads(16);
     for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
     return true;
 }
@@ -331,6 +343,13 @@ bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
         err = "DirectFile: unaligned request";
         return false;
+    }
+    if (impl_->inline_submit) {
+        const ssize_t got = pread(impl_->fd, buffer, length, (off_t) offset);
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->done.push_back(Completion{tag, got < 0 ? 0u : (uint32_t) got, got >= 0});
+        impl_->cv_done.notify_all();
+        return true;
     }
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
