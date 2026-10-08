@@ -62,16 +62,30 @@ const char* name_of(int t) {
         case 23: return "IQ4_XS";
         case 29: return "IQ1_M";
         case 42: return "Q2_0";
+        case 8: return "Q8_0";
+        case 30: return "BF16";
         default: return "?";
     }
 }
-int block_values(int t) { return t == 20 ? 32 : t == 42 ? 64 : 256; }
+int block_values(int t) { return t == 20 || t == 8 ? 32 : t == 42 ? 64 : 256; }
 
 // `rows` rows of `n` values of format t: random bytes, then a finite fp16 scale in every block
 std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& rng) {
     const size_t rb = k::iq_row_bytes(t, n), bs = k::iq_row_bytes(t, block_values(t));
     std::vector<uint8_t> w((size_t) rows * rb);
     std::uniform_int_distribution<int> byte(0, 255), ex(2, 8), man(0, 1023), sgn(0, 3);
+    if (t == 30) {
+        // BF16 has no scale word, so the row is nothing but values and random bytes would be an Inf or NaN
+        // exponent about twice per thousand.  Every value is written finite instead, and inside the range the
+        // fp16 scales above span (2^-17 .. 2^-6): the grouped check runs gate/up through swiglu into the down
+        // projection, which squares the magnitudes, and weights near 1.0 there overflow to inf at n_embd 2560.
+        std::uniform_int_distribution<int> bex(110, 120);
+        for (size_t o = 0; o + 1 < w.size(); o += 2) {
+            const uint16_t h = (uint16_t) ((sgn(rng) == 0 ? 0x8000 : 0) | (bex(rng) << 7) | (byte(rng) & 0x7F));
+            std::memcpy(&w[o], &h, 2);
+        }
+        return w;
+    }
     for (auto& b : w) b = (uint8_t) byte(rng);
     for (size_t o = 0; o < w.size(); o += bs) {
         if (t == 29) {
@@ -409,12 +423,15 @@ int main(int argc, char** argv) {
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
     std::mt19937 rng(18);
-    for (int t : {16, 17, 18, 20, 21, 22, 23, 29, 42}) {
+    // 8 and 30 are the MTP draft layer's expert formats (tools/mtp_pack.py): check_mmvq is the only case here with
+    // a double reference, so it is what actually validates vec_dot_bf16_q8_1 - neither has a kSplit, so the
+    // old-vs-new comparison inside check_grouped is vacuous for them and only the layout is under test there.
+    for (int t : {16, 17, 18, 20, 21, 22, 23, 29, 42, 8, 30}) {
         check_mmvq(t, 2560, 67, s, rng);   // the model's n_embd; 67 rows: a partial block of 4 rows
         check_mmvq(t, 1024, 5, s, rng);
     }
-    for (int gu : {16, 17, 18, 21, 22, 23, 29, 42}) {
-        for (int dt : {20, 42}) check_grouped(gu, dt, 2560, 640, s, rng);   // the model's shape
+    for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 8, 30}) {
+        for (int dt : {20, 42, 8, 30}) check_grouped(gu, dt, 2560, 640, s, rng);   // the model's shape
         check_grouped(gu, 23, 1024, 512, s, rng);                           // IQ4_XS down needs n_ff % 256 == 0
     }
     check_q8_1_finite(s, rng);

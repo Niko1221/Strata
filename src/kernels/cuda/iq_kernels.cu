@@ -567,6 +567,19 @@ __device__ __forceinline__ float vec_dot_q8_0_q8_1(const void* __restrict__ vbq,
     return d8_0 * d8_1 * ((float) sumi);
 }
 
+// BF16 weights against a q8_1 activation: no weight scale, only the activation's.  The block carries 32 values
+// as 64 bytes, so the framing is Fmt<8>'s qk=32 / ipb=4 / step=2 unchanged and only the decode differs -
+// `iqs` is the same int32 index, i.e. the same 4*VDR_Q8_0 values of the block on both sides.
+__device__ __forceinline__ float vec_dot_bf16_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                   const int& kbx, const int& iqs) {
+    const uint16_t* bq = (const uint16_t*) vbq + kbx * 32 + iqs * 4;
+    const int8_t* qa = bq8_1->qs + iqs * 4;
+    float sumf = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 4 * VDR_Q8_0; ++i) sumf += __uint_as_float((uint32_t) bq[i] << 16) * (float) qa[i];
+    return sumf * __low2float(bq8_1->ds);
+}
+
 // ---------------------------------------------------------------- the formats
 // qk = values per block, ipb = dot calls per block (qi / vdr), step = the iqs stride between calls.
 template<int TY> struct Fmt;
@@ -604,16 +617,20 @@ template<> struct Fmt<6> { static constexpr int qk = 32, ipb = QI5_0 / VDR_Q5_0,
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q5_0_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0, step = VDR_Q8_0;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q8_0_q8_1(v, y, kbx, iqs); } };
+// BF16 experts (the MTP draft layer at full precision, tools/mtp_pack.py --experts bf16): the same framing as
+// Fmt<8>, qk = 32 being both types' block width.
+template<> struct Fmt<30> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0, step = VDR_Q8_0;
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_bf16_q8_1(v, y, kbx, iqs); } };
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
 #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(30)
 #else
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(30)
 #endif
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8)
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8)
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(30)
+#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(30)
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -2720,7 +2737,7 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 2: return (size_t) (n / 32) * sizeof(block_q4_0);
         case 3: return (size_t) (n / 32) * sizeof(block_q4_1);
         case 8: return (size_t) (n / 32) * sizeof(block_q8_0);
-        case 30: return (size_t) n * 2;   // BF16: the token embedding only (iq_embed_rows, iq_dequant_f32)
+        case 30: return (size_t) n * 2;   // BF16: flat 16-bit values, no block header (the token embedding, and Fmt<30>)
         default: return 0;
     }
 }
@@ -2778,8 +2795,11 @@ void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream)
 }
 
 void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream) {
-    // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
-    if (n_embd % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
+    // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error.
+    // `embed_type_supported` rather than `is_iq` because that is the set dq_dispatch implements - the i-quants plus
+    // BF16, whose `dq_bf16` reads the same flat 256-value block this kernel feeds it.  Nothing that ran before
+    // changes: an i-quant is in both, and a BF16 gate/up used to abort here rather than dequantize.
+    if (n_embd % 256 != 0 || !embed_type_supported(t)) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
     const int64_t per_row = n_embd / 256;
     dequant_gu_kernel<<<dim3((unsigned) (n_ff * per_row), 2), 32, 0, (cudaStream_t) stream>>>(t, gate, up, per_row,
                                                                                            (__half*) dst);
@@ -2788,7 +2808,12 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
 
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
     const int qg = gu_qk(gu_type), qd = d_qk(d_type);
-    return qg > 0 && qd > 0 && is_iq(gu_type) && is_iq(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&
+    // `is_iq` also asks that the prompt path's dequantizer take the type, so BF16 needs `embed_type_supported` -
+    // the same set dq_dispatch implements, and the one iq_dequant_gu_f16 now guards on.  (This is what lets the MTP
+    // draft layer's BF16 experts through; a main-model pack naming 30 for a layer passes here and then dequantizes
+    // through dq_bf16 like any other type, rather than passing here and aborting later.)
+    const auto dq_ok = [](int t) { return embed_type_supported(t); };
+    return qg > 0 && qd > 0 && dq_ok(gu_type) && dq_ok(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&
            n_embd % 256 == 0 && (n_ff * n_embd) % 256 == 0;
 }
 
