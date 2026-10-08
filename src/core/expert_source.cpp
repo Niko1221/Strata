@@ -954,6 +954,7 @@ void FileExpertSource::close() {
     paths_.clear();
     for (void* h : direct_) close_direct(h);
     direct_.clear();
+    close_mirror();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         stage_buf_.clear();
@@ -980,7 +981,8 @@ void FileExpertSource::close() {
     io_pf_jobs_.store(0); io_pf_blobs_.store(0); io_pf_skips_.store(0); io_pf_dropped_.store(0);
     io_pf_used_.store(0); io_pf_unused_.store(0); io_crit_us_.store(0); io_crit_n_.store(0);
 #if defined(_WIN32)
-    if (base_ != nullptr) UnmapViewOfFile((LPCVOID) base_);
+    if (base_ != nullptr && !unmapped_) UnmapViewOfFile((LPCVOID) base_);
+    unmapped_ = false;
     if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
     if (file_ != nullptr) CloseHandle((HANDLE) file_);
     mapping_ = nullptr;
@@ -1005,6 +1007,12 @@ bool ExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     const uint8_t* b = blob(layer, expert);
     if (b == nullptr || dst == nullptr) return false;
     std::memcpy(dst, b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(layer));
+    return true;
+}
+
+bool ExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        if (!copy_blob(layers[i], experts[i], dst[i])) return false;
     return true;
 }
 
@@ -1412,6 +1420,48 @@ uint64_t FileExpertSource::expert_bytes() const {
     return total;
 }
 
+#if defined(_WIN32)
+namespace {
+// Whether two unbuffered, overlapped handles hold the same bytes in 16 blocks of 64 KiB spread over `bytes` (the first
+// and the last included).  A sampled check: it catches a mirror left from an older pack, not a single flipped byte.
+bool same_samples(HANDLE a, HANDLE b, uint64_t bytes) {
+    constexpr uint64_t kBlock = 64 << 10;
+    constexpr int kSamples = 16;
+    if (bytes < kBlock) return false;
+    uint8_t* buf = (uint8_t*) VirtualAlloc(nullptr, 2 * kBlock, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (buf == nullptr) return false;
+    HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool same = ev != nullptr;
+    for (int s = 0; same && s < kSamples; ++s) {
+        const uint64_t last = (bytes - kBlock) / 4096 * 4096;
+        const uint64_t off = last / (kSamples - 1) * (uint64_t) s / 4096 * 4096;
+        for (int f = 0; same && f < 2; ++f) {
+            OVERLAPPED o{};
+            o.Offset = (DWORD) off;
+            o.OffsetHigh = (DWORD) (off >> 32);
+            o.hEvent = ev;
+            DWORD got = 0;
+            const HANDLE h = f == 0 ? a : b;
+            if ((!ReadFile(h, buf + f * kBlock, (DWORD) kBlock, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) ||
+                !GetOverlappedResult(h, &o, &got, TRUE) || got != kBlock)
+                same = false;
+        }
+        if (same) same = std::memcmp(buf, buf + kBlock, (size_t) kBlock) == 0;
+    }
+    if (ev != nullptr) CloseHandle(ev);
+    VirtualFree(buf, 0, MEM_RELEASE);
+    return same;
+}
+}  // namespace
+#endif
+
+void FileExpertSource::close_mirror() {
+#if defined(_WIN32)
+    if (mirror_ != nullptr) CloseHandle((HANDLE) mirror_);
+#endif
+    mirror_ = nullptr;
+}
+
 bool FileExpertSource::open_direct(std::string& why) {
 #if defined(_WIN32)
     for (const std::string& path : paths_) {
@@ -1432,6 +1482,29 @@ bool FileExpertSource::open_direct(std::string& why) {
     if (role_ptr_.empty()) {   // experts.bin: blob() now assembles into the stage buffers, sized for the largest blob
         std::lock_guard<std::mutex> lk(stage_mu_);
         for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
+    }
+    if (const char* mp = std::getenv("STRATA_EXPERTS_MIRROR"); mp != nullptr && *mp != 0 && role_ptr_.empty() &&
+                                                              direct_.size() == 1 && mirror_ == nullptr) {
+        const std::string path = mp;
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        HANDLE m = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
+        LARGE_INTEGER a{}, b{};
+        if (m == INVALID_HANDLE_VALUE) {
+            why += "; the mirror " + path + " cannot be opened (error " +
+                   std::to_string((unsigned long long) GetLastError()) + "): one drive";
+        } else if (!GetFileSizeEx((HANDLE) direct_[0], &a) || !GetFileSizeEx(m, &b) || a.QuadPart != b.QuadPart) {
+            why += "; the mirror " + path + " is not the size of experts.bin: one drive";
+            CloseHandle(m);
+        } else if (!same_samples((HANDLE) direct_[0], m, (uint64_t) a.QuadPart)) {
+            why += "; the mirror " + path + " differs from experts.bin in a sampled block (an older copy?): one drive";
+            CloseHandle(m);
+        } else {
+            mirror_ = m;
+            why += "; each read split over experts.bin and its mirror " + path;
+        }
     }
     return true;
 #elif defined(__linux__)
@@ -1502,9 +1575,30 @@ bool FileExpertSource::recheck_unbuffered(std::string& why) {
     // through the file cache after all: the mapped reads take over (staged() stays true for the GGUF in place)
     for (void* d : direct_) close_direct(d);
     direct_.clear();
+    close_mirror();
     return false;
 #else
     why = "through the file cache (no unbuffered reads on this platform)";
+    return false;
+#endif
+}
+
+bool FileExpertSource::drop_mapping(std::string& why) {
+#if defined(_WIN32)
+    if (direct_.empty()) { why = "the reads are not unbuffered"; return false; }
+    if (!role_ptr_.empty() || !maps_.empty()) { why = "the GGUF in place keeps its maps (token embedding, PLE)"; return false; }
+    if (base_ == nullptr || unmapped_) { why = base_ == nullptr ? "not open" : "already closed"; return unmapped_; }
+    if (!UnmapViewOfFile((LPCVOID) base_)) { why = "UnmapViewOfFile failed"; return false; }
+    unmapped_ = true;
+    if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
+    mapping_ = nullptr;
+    // the cached handle too: only the unbuffered handles (direct_) read the file from here on
+    if (file_ != nullptr) CloseHandle((HANDLE) file_);
+    file_ = nullptr;
+    why = "every expert outside RAM and VRAM is read unbuffered";
+    return true;
+#else
+    why = "not Windows";
     return false;
 #endif
 }
@@ -1518,12 +1612,14 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     constexpr uint64_t kSector = 4096, kGap = 1ull << 20, kMerge = 32ull << 20;
     struct Window { int file; uint64_t a0, size, skip, n, at; uint8_t* dst; size_t req; uint64_t in_req; };
     struct Req { HANDLE h; uint64_t a0, size, pos; };
+    struct Part { size_t req; uint64_t off, size; HANDLE h; };   // a slice of a request read on its own
     // this thread's aligned buffer and events, kept for its next batch
     struct Scratch {
         uint8_t* buf = nullptr;
         size_t cap = 0;
         std::vector<HANDLE> ev;
         std::vector<OVERLAPPED> ov;
+        std::vector<Part> part;
         std::vector<Window> win;
         std::vector<size_t> order;
         std::vector<Req> req;
@@ -1591,22 +1687,44 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         sc.buf = (uint8_t*) VirtualAlloc(nullptr, sc.cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
     }
-    while (sc.ev.size() < sc.req.size()) {
+    // STRATA_DIRECT_SPLIT_KIB: a request larger than that is read as several slices issued together, so a lone expert
+    // (a decode layer's one or two misses) keeps more of the drive's channels busy than one request at queue depth 1
+    static const uint64_t split = [] {
+        const char* v = std::getenv("STRATA_DIRECT_SPLIT_KIB");
+        const long long k = v != nullptr ? std::atoll(v) : 0;
+        return k > 0 ? std::max<uint64_t>(4096, ((uint64_t) k << 10) / 4096 * 4096) : 0ull;   // whole sectors
+    }();
+    // with a mirror (STRATA_EXPERTS_MIRROR) the slices alternate between the two drives, and without a slice size each
+    // request is read as two halves, one from each
+    const HANDLE mirror = (HANDLE) mirror_;
+    sc.part.clear();
+    for (size_t q = 0; q < sc.req.size(); ++q) {
+        const Req& r = sc.req[q];
+        uint64_t slice = split;
+        if (mirror != nullptr && slice == 0) slice = (r.size / 2 + kSector - 1) / kSector * kSector;
+        if (slice == 0 || r.size <= slice) { sc.part.push_back({q, 0, r.size, r.h}); continue; }
+        size_t k = 0;
+        for (uint64_t off = 0; off < r.size; off += slice, ++k)
+            sc.part.push_back({q, off, std::min(slice, r.size - off), mirror != nullptr && (k & 1) ? mirror : r.h});
+    }
+    while (sc.ev.size() < sc.part.size()) {
         HANDLE e = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (e == nullptr) return false;
         sc.ev.push_back(e);
     }
-    sc.ov.assign(sc.req.size(), OVERLAPPED{});
-    // every request in flight before the first wait: the drive sees the whole batch as one queue
+    sc.ov.assign(sc.part.size(), OVERLAPPED{});
+    // every slice in flight before the first wait: the drive sees the whole batch as one queue
     size_t issued = 0;
     bool ok = true;
-    for (size_t q = 0; q < sc.req.size(); ++q) {
-        const Req& r = sc.req[q];
-        OVERLAPPED& o = sc.ov[q];
-        o.Offset = (DWORD) r.a0;
-        o.OffsetHigh = (DWORD) (r.a0 >> 32);
-        o.hEvent = sc.ev[q];
-        if (!ReadFile(r.h, sc.buf + r.pos, (DWORD) r.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+    for (size_t k = 0; k < sc.part.size(); ++k) {
+        const Part& pt = sc.part[k];
+        const Req& r = sc.req[pt.req];
+        OVERLAPPED& o = sc.ov[k];
+        const uint64_t at = r.a0 + pt.off;
+        o.Offset = (DWORD) at;
+        o.OffsetHigh = (DWORD) (at >> 32);
+        o.hEvent = sc.ev[k];
+        if (!ReadFile(pt.h, sc.buf + r.pos + pt.off, (DWORD) pt.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
             ok = false;
             break;
         }
@@ -1614,9 +1732,12 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     }
     std::vector<DWORD>& got = sc.got;
     got.assign(sc.req.size(), 0);
-    for (size_t q = 0; q < issued; ++q)
-        if (!GetOverlappedResult(sc.req[q].h, &sc.ov[q], &got[q], TRUE)) ok = false;
-    if (!ok || issued < sc.req.size()) return false;
+    for (size_t k = 0; k < issued; ++k) {
+        DWORD n = 0;
+        if (!GetOverlappedResult(sc.part[k].h, &sc.ov[k], &n, TRUE)) ok = false;
+        got[sc.part[k].req] += n;
+    }
+    if (!ok || issued < sc.part.size()) return false;
     for (const Window& x : sc.win) {
         // a request may run past the end of the file: only the role's own bytes have to arrive
         if ((uint64_t) got[x.req] < x.in_req + x.skip + x.n) return false;
@@ -1968,8 +2089,41 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     return true;
 }
 
+// pp-opt: the prompt path streams a chunk's experts in file order, so a stager thread's run of jobs is mostly
+// neighbouring blobs of experts.bin.  One read_direct batch merges them into requests of up to 32 MiB (kMerge) where
+// copy_blob made one ~2 MB request each - and NTFS serves the unbuffered reads of a mapped file one at a time, so the
+// request size is what sets the rate (see read_direct).  The blobs the RAM copy holds are copied as before.
+bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (direct_.empty() || n <= 1) return ExpertSource::copy_blobs(layers, experts, dst, n);
+    thread_local std::vector<Fill> fills;
+    fills.clear();
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t l = layers[i], e = experts[i];
+        if (base_ == nullptr || dst[i] == nullptr || l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) return false;
+        const size_t index = (size_t) l * (size_t) n_expert_ + (size_t) e;
+        if (complement_ready_ &&
+            (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) {
+            if (!copy_blob(l, e, dst[i])) return false;
+            continue;
+        }
+        fills.push_back({0, l, e, dst[i]});
+        bytes += layer_blob_bytes_[(size_t) l];
+    }
+    if (fills.empty()) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!read_direct(fills.data(), fills.size()))
+        for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
+            if (!copy_from_files(f.layer, f.e, f.dst)) return false;
+    file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                       std::memory_order_relaxed);
+    file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    return true;
+}
+
 const uint8_t* FileExpertSource::mapped_blob(int64_t layer, int64_t expert) const {
     if (!role_ptr_.empty()) return nullptr;   // the GGUF in place: no contiguous blob in any file
+    if (unmapped_) return nullptr;            // pp-opt: drop_mapping closed the view; read_direct reads them
     if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t i = (size_t) layer;
     if (i >= layer_offsets_.size() || i >= layer_blob_bytes_.size()) return nullptr;

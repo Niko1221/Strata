@@ -362,6 +362,9 @@ struct Stager {
     // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
     // DMAs of the unpinned experts' blobs
     int kRing = 16;
+    // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most kMaxBatch and kRing)
+    static constexpr int kMaxBatch = 32;
+    int batch = 1;
     // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
     // role slices; a pointer to it would not live as long as the queue)
     struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t l = 0, e = 0; };
@@ -425,40 +428,54 @@ struct Stager {
             }
             for (;;) {
                 active.fetch_add(1, std::memory_order_acq_rel);
-                const int j = claim(seen);
+                // pp-opt: a run of up to `batch` consecutive jobs (batch <= kRing, so the earliest unfinished run
+                // never waits for a buffer of its own)
+                int k = 1;
+                const int j = claim(seen, batch, k);
                 if (j < 0) { active.fetch_sub(1, std::memory_order_acq_rel); break; }
-                const int b = j % kRing;
                 // The copies run ahead of the DMAs, so most of these threads spend most of a prompt waiting here: sleep
                 // (atomic wait, and a blocking-sync event below), not a yield spin - 32 spinners took every core
                 // (Linux; see stager_sleep for Windows).
-                if (j >= kRing) {   // job j - kRing's DMA from this buffer is queued
-                    if (stager_sleep())
-                        for (int i; (i = issued.load(std::memory_order_acquire)) <= j - kRing;) issued.wait(i);
-                    else
-                        while (issued.load(std::memory_order_acquire) <= j - kRing) std::this_thread::yield();
+                for (int i = j; i < j + k; ++i) {
+                    if (i >= kRing) {   // job i - kRing's DMA from this buffer is queued
+                        if (stager_sleep())
+                            for (int q; (q = issued.load(std::memory_order_acquire)) <= i - kRing;) issued.wait(q);
+                        else
+                            while (issued.load(std::memory_order_acquire) <= i - kRing) std::this_thread::yield();
+                    }
+                    // and done - for a generation's first kRing jobs that is the previous generation's last DMA from
+                    // the buffer, which nothing else waits for when a chunk ends without a sync (no MTP) or the DMA
+                    // was a ring entry the routing skipped (an event never recorded returns at once)
+                    cudaEventSynchronize(dma_done[i % kRing]);
                 }
-                // and done - for a generation's first kRing jobs that is the previous generation's last DMA from
-                // the buffer, which nothing else waits for when a chunk ends without a sync (no MTP) or the DMA
-                // was a ring entry the routing skipped (an event never recorded returns at once)
-                cudaEventSynchronize(dma_done[b]);
-                const Job& jb = jobs[(size_t) j];
-                if (jb.from == nullptr) std::memcpy(buf[b], jb.src, jb.bytes);
-                else if (!jb.from->copy_blob(jb.l, jb.e, buf[b])) {
-                    std::fprintf(stderr, "prefill: the expert source could not copy expert %d of layer %d\n", jb.e, jb.l);
+                int32_t rl[kMaxBatch], re[kMaxBatch];
+                uint8_t* rd[kMaxBatch];
+                size_t nr = 0;
+                core::ExpertSource* from = nullptr;
+                for (int i = j; i < j + k; ++i) {
+                    const Job& jb = jobs[(size_t) i];
+                    if (jb.from == nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
+                    from = jb.from;
+                    rl[nr] = jb.l; re[nr] = jb.e; rd[nr] = buf[i % kRing]; ++nr;
+                }
+                if (nr > 0 && !from->copy_blobs(rl, re, rd, nr)) {
+                    std::fprintf(stderr, "prefill: the expert source could not copy experts %d.. of layer %d\n", re[0], rl[0]);
                     std::abort();
                 }
-                ready[(size_t) j].store(1, std::memory_order_release);
+                for (int i = j; i < j + k; ++i) ready[(size_t) i].store(1, std::memory_order_release);
                 active.fetch_sub(1, std::memory_order_acq_rel);
             }
         }
     }
-    int claim(uint32_t g) {
+    int claim(uint32_t g, int want, int& k) {
         uint64_t cur = head.load(std::memory_order_acquire);
         for (;;) {
             if ((uint32_t) (cur >> 32) != g) return -1;
             const int n = (int) ((cur >> 16) & 0xffff), j = (int) (cur & 0xffff);
             if (j >= n) return -1;
-            if (head.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_acquire)) return j;
+            k = std::min(want, n - j);
+            if (head.compare_exchange_weak(cur, cur + (uint64_t) k, std::memory_order_acq_rel, std::memory_order_acquire))
+                return j;
         }
     }
     /// A layer's jobs; the previous layer's are finished (finish()).
@@ -935,7 +952,15 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             for (int64_t e = 0; !files && e < g.n_expert; ++e) files = src->transient(l, e);
         const int threads = stv ? std::clamp(std::atoi(stv), 1, 32) : files ? 32 : std::max(2, std::min(4, hw / 4));
         if (files && std::getenv("STRATA_STAGER_RING") == nullptr) m.stager->kRing = 4 * threads;
+        // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request (copy_blobs);
+        // STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before)
+        {
+            const char* bv = std::getenv("STRATA_STAGER_BATCH");
+            const int want = bv ? std::atoi(bv) : files ? 8 : 1;
+            m.stager->batch = std::clamp(want, 1, Stager::kMaxBatch);
+        }
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
+        m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
     m.steps_host.resize(T * strata::kernels::kStepCount);
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
