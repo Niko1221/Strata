@@ -33,11 +33,15 @@
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
 #include <memory>
 #include <vector>
 namespace strata::core {
@@ -517,6 +521,53 @@ namespace {
 int64_t g_kv_resident = 0;
 uint64_t g_kv_host_bytes = 0;
 
+// The KV host copy: pinned and device-mapped. cudaHostAlloc is the default, but under WSL2 the driver caps what
+// cudaHostAlloc(Mapped) may pin at about 1 GiB in all, while cudaHostRegister of ordinary memory is not capped there:
+// the expert arena registers tens of GiB the same way (pinned.cu). So under WSL2, detected as generate.cpp's
+// under_wddm() does (/dev/dxg, the device its GPU goes through to the Windows driver), the copy is anonymous memory
+// registered Portable|Mapped before any page is touched, which also leaves WSL's small cudaHostAlloc budget to the
+// staging buffers. Elsewhere cudaHostAlloc stays first. Either way the other method is the fallback when the first
+// is refused. STRATA_KV_HOST_REGISTER=1/0 forces registering first or cudaHostAlloc first. Like the cudaHostAlloc
+// copy it lives as long as the process.
+uint8_t* kv_host_alloc(uint64_t bytes) {
+    auto host_alloc = [](uint64_t n) -> uint8_t* {
+        uint8_t* h = nullptr;
+        if (cudaHostAlloc((void**) &h, n, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) return h;
+        (void) cudaGetLastError();
+        return nullptr;
+    };
+#ifdef _WIN32
+    return host_alloc(bytes);
+#else
+    static const bool register_first = [] {
+        const char* e = std::getenv("STRATA_KV_HOST_REGISTER");
+        if (e != nullptr && (e[0] == '0' || e[0] == '1')) return e[0] == '1';
+        return std::filesystem::exists("/dev/dxg");
+    }();
+    auto register_anon = [](uint64_t n) -> uint8_t* {
+        void* m = mmap(nullptr, (size_t) n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) return nullptr;
+        if (cudaHostRegister(m, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+            (void) cudaGetLastError();
+            munmap(m, (size_t) n);
+            return nullptr;
+        }
+        static bool said = false;
+        if (!said) {
+            std::fprintf(stderr, "strata: KV streaming: the host copy is pinned with cudaHostRegister\n");
+            said = true;
+        }
+        return (uint8_t*) m;
+    };
+    if (register_first) {
+        if (uint8_t* m = register_anon(bytes)) return m;
+        return host_alloc(bytes);
+    }
+    if (uint8_t* h = host_alloc(bytes)) return h;
+    return register_anon(bytes);
+#endif
+}
+
 // ---- the elastic K/V (--kv-grow): one VMM range per state, each pool array at a chunk boundary in it
 bool g_kv_elastic = false;
 int64_t g_kv_elastic_init = 16384;
@@ -803,12 +854,12 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
-        if (cudaHostAlloc((void**) &h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+        if ((h = kv_host_alloc(bytes)) == nullptr ||
             cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
-            // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
+            // both cudaHostRegister and cudaHostAlloc were refused (kv_host_alloc): usually not enough free RAM
             if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
-                                 "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
-                                 "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
+                                 "(%.2f GiB pinned so far): RAM or the driver refused to pin it - lower the context, "
+                                 "or run without --kv-resident\n", (double) bytes / 1073741824.0,
                                  (double) g_kv_host_bytes / 1073741824.0);
             return 0;
         }
