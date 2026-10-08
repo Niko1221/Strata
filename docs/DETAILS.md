@@ -1494,6 +1494,18 @@ mixer, `ffn3`, the norm and quantize, the router). Events rather than a clock ar
 turned "the CPU pool is the bottleneck" from a guess into 38% pool and 56% card, and it is why the group was worth
 writing at all.
 
+**The A/B and measurement switches, every one of them off unless it is set.** `STRATA_GLM_NO_CLAMP` makes both
+SwiGLU limits read 0, which is the reference's own reading of an absent limit and therefore exactly "no clamp"; it
+is the arm that showed the clamp is what moves the output, since at the model's own limit of 10 nothing binds —
+which is how the clamp's total absence survived a 30/32 ladder match. `STRATA_GLM_NO_GROUP` pins a chunk's `pre` to
+one token instead of a group of eight, and is the arm that proves the group is bit-exact (48 greedy tokens
+identical). On the CPU pool, `STRATA_NO_SLICE_MT` puts the multi-token row kernels back to the per-token dot —
+bit-identical to `--prefill 1` at every chunk size, and 2.3x slower on the pool on this box, which is the
+measurement that says the pool's limit is the row decode and not the read — and `STRATA_SLICE_MT_DOWN` opts in the
+down-rows half of the same kernels (about 4% here; off because the engine's own dispatch deliberately does not name
+IQ4_XS for it). `STRATA_MTP_DUMP_H=<path>` writes the hidden state the draft block is fed, as raw f32, so it can be
+diffed against the oracle's own dump.
+
 ---
 
 ## Experimental speed projection (EXPERIMENTAL, off by default)

@@ -639,8 +639,9 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 if (mode_ == 7) {
                     float* ff[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
-                    // `native_gu_rows_slice` is `native_gu_rows_ptrs` unless STRATA_SLICE_MT is set, in which case
-                    // it may reach the multi-token kernel THROUGH the slices - see the note in native_expert.cpp.
+                    // `native_gu_rows_slice` may reach the multi-token kernel THROUGH the slices, which is what a
+                    // chunk is paying for; `STRATA_NO_SLICE_MT` puts it back to `native_gu_rows_ptrs`.  See the
+                    // note in native_expert.cpp for why the blob was never the point.
                     native_gu_rows_slice(*nfmt_, mjobs_[e].gate, mjobs_[e].up, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
                 } else {
                     const void* hq[MAXT];

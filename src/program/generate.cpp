@@ -2473,13 +2473,14 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
             return 2;
         }
-        // glm5-next asks the opposite questions.  Its routed experts are computed on the CPU on every token and
-        // nothing puts one in VRAM, so a helper cache would have nothing to hold and no stage has a cache for
-        // `auto` to price - both are refused by name rather than silently given devices or an empty profile.
+        // glm5-next asks the opposite questions.  Its helper caches are the first family's: an expert that lands
+        // in VRAM here lands in the tier this stage sizes for itself (`--glm-gpu-experts`, which needs no
+        // profile), so `--expert-cache-remote` and the `auto` profile between them have nothing to hold and
+        // nothing to price - both are refused by name rather than silently given devices or an empty profile.
         if (multi_gpu && o.arch == strata::core::Arch::Glm5Next) {
             if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0) {
-                std::fprintf(stderr, "strata generate: --expert-cache-remote has no meaning for glm5-next: "
-                                     "nothing puts a routed expert in VRAM on this arch\n");
+                std::fprintf(stderr, "strata generate: --expert-cache-remote is the first family's helper cache; "
+                                     "glm5-next's own tier is --glm-gpu-experts N\n");
                 return 2;
             }
             if (split_same) {
@@ -3081,9 +3082,10 @@ int main(int argc, char** argv) {
     // ---- glm5-next's `--layer-split auto`: WHERE THE LAYERS GO, DECIDED HERE AND NOT BY THE SEARCH BELOW.
     //
     // The first family's search (`if (multi_gpu && split_auto)` further down) scores a placement by how much of
-    // the EXPERT PROFILE each card's cache would hold.  glm5-next has no expert cache - its routed experts are
-    // computed on the CPU on every token and never enter VRAM - so there is nothing for that search to score,
-    // and it must not run for this arch at all.
+    // the EXPERT PROFILE each card's cache would hold.  glm5-next has no expert profile: its routed experts are
+    // computed on the CPU unless the run's own tier holds them (`--glm-gpu-experts`), and that tier is sized per
+    // stage against that card's own free memory rather than from a profile - so there is nothing for that search
+    // to score, and it must not run for this arch at all.
     //
     // What a stage's VRAM is spent on here is three things, and all three are known before anything loads:
     //   * its layers' dense weights, in two places.  The canonical arena is `WeightTable::pool_bytes` with the
@@ -3326,11 +3328,12 @@ int main(int argc, char** argv) {
     // --trim-stage-weights (PR #559) is the same switch as STRATA_STAGE_TRIM=1 (PR #639)
     // **FORCED ON FOR GLM5-NEXT, WHICH IS A DIFFERENT ARGUMENT FROM THE FIRST FAMILY'S.**  There the carve buys
     // a stage VRAM for its expert cache and is opt-in because a card holding more experts can run different
-    // ones.  On this arch there is no expert cache and no such trade: a stage's weights ARE the dense half, all
-    // 7,662 MiB of projections for the whole model, and without the carve every stage loads all of it.  That is
-    // 7,662 MiB per card against 8,151 MiB on an RTX 5060 - the split would be impossible on the very cards it
-    // is for, and pointless everywhere else.  Nothing about it can change the output: every stage still runs
-    // its own layers in the same order with the same weights.
+    // ones.  Here it is not a choice: a stage's weights ARE the dense half, all 7,662 MiB of projections for the
+    // whole model, and without the carve every stage loads all of it.  That is 7,662 MiB per card against
+    // 8,151 MiB on an RTX 5060 - the split would be impossible on the very cards it is for, and pointless
+    // everywhere else.  What the carve frees on this arch is what the run's own tier gets, when it asks for one
+    // (`--glm-gpu-experts`, sized after every weight, session and per-token buffer).  Nothing about it can change
+    // the output: every stage still runs its own layers in the same order with the same weights.
     const bool trim_asked = o.trim_stage_weights || (multi_gpu && g.arch == strata::core::Arch::Glm5Next) || [] {
         const char* v = std::getenv("STRATA_STAGE_TRIM");
         return v != nullptr && v[0] != 0 && std::string(v) != "0";
@@ -4986,10 +4989,11 @@ int main(int argc, char** argv) {
         }
         if (o.no_pool) {
             // `--no-pool` would leave `parts` at zero and the combine would run on it: a finite, fluent token
-            // missing every routed expert.  There is no GPU-only floor to measure here - nothing puts an expert
-            // in VRAM on this path - so the flag has nothing to mean.
-            std::fprintf(stderr, "strata generate: --no-pool has no meaning for glm5-next: its routed experts are "
-                                 "computed on the CPU and nothing else computes them.\n");
+            // missing every routed expert.  There is no GPU-only floor to measure here either - without the pool
+            // the card computes only the tier `--glm-gpu-experts` was asked to hold, which is half the experts a
+            // token routes and not a smaller version of the same model - so the flag has nothing to mean.
+            std::fprintf(stderr, "strata generate: --no-pool has no meaning for glm5-next: the CPU pool computes "
+                                 "every routed expert the card's tier does not hold.\n");
             return 2;
         }
         if (o.gpu_stages > 0) {
