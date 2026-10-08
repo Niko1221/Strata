@@ -51,15 +51,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Building $image:$version"
 
-      # The devel base plus five sets of cubins is a lot for one runner; drop what
-      # no CUDA build needs. Insurance, not a fix for an observed failure.
-      - name: Free runner disk
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
-                      /opt/ghc /usr/local/.ghcup /usr/local/share/boost
-          df -h /
-
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
