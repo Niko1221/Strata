@@ -278,6 +278,12 @@ and physical-memory sample. The measured local commit identifiers precede
 publication of the report; the engine source fingerprints in BUILD.json
 identify the compiled source independently of report-only commit changes.
 
+![Baseline and rebased median decode throughput and minimum available physical RAM](context-decode-memory.png)
+
+The throughput panels use the three-run medians below. The RAM panel uses the
+sampled minimum, including startup. The 1069-token prompt is absent at 1K.
+Near-limit requests have no baseline counterpart and are not plotted.
+
 | Context | Engine | Status | Min available GiB | 172-token decode/s | 557-token decode/s | 1069-token decode/s | Near-limit prompt tokens / prompt/s / decode/s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1024 | baseline | passed | 7.32 | 21.1 (14.0–22.4) | 19.6 (19.3–20.5) | — | — |
@@ -301,6 +307,8 @@ identify the compiled source independently of report-only commit changes.
 
 Matched prompt throughput: median (minimum–maximum), three runs per size.
 
+![Baseline and rebased median prompt throughput](context-prompt.png)
+
 | Context | Engine | 172-token prompt/s | 557-token prompt/s | 1069-token prompt/s |
 | --- | --- | --- | --- | --- |
 | 1024 | baseline | 29.2 (13.9–37.8) | 44.5 (39.0–47.3) | — |
@@ -323,6 +331,12 @@ Matched prompt throughput: median (minimum–maximum), three runs per size.
 | 262144 | rebased | 12.5 (9.4–12.7) | 25.0 (22.8–25.9) | 33.8 (31.3–34.2) |
 
 Physical memory and expert cache allocation (samples include startup):
+
+![Baseline and rebased expert cache allocation, swap usage and host disk reads](context-cache-swap-disk.png)
+
+These panels use the reported allocations, maximum swap and disk-read totals;
+they are not medians. Disk totals include startup and other host activity, and
+the rebased cells include extra near-limit and recovery requests.
 
 | Context | Engine | Expert cache GiB / slots | Max swap GiB | Host disk reads GiB |
 | --- | --- | --- | --- | --- |
@@ -360,3 +374,9 @@ Use `--current-only` to test the installed engine alone. Use `--contexts` to
 select capacities. A full near-limit sweep takes several hours on this device.
 The validation servers and telemetry process were stopped after measurement;
 the separate ninfer service remains inactive.
+
+Regenerate the comparison graphs from the rounded table values with matplotlib:
+
+```sh
+python bench/results/2026-10-08-jetson-orin/plot_context_comparison.py
+```
