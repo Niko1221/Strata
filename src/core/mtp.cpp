@@ -632,7 +632,6 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
-        dhead_type_ = shared->dhead_type_;
         dvocab_host_ = shared->dvocab_host_;
         owns_draft_head_ = false;
     }

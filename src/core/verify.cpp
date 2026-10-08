@@ -1735,6 +1735,7 @@ void Verifier::refresh_ar() {
 }
 
 bool Verifier::capture(int T, std::string& err) {
+    if (T < 1 || T > std::min(max_t_, strata::kernels::kVerifyMaxT)) { err = "verify: capture width out of range"; return false; }
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
@@ -3003,7 +3004,7 @@ bool Verifier::capture_all(std::string& err) {
     if (g_ == nullptr) { err = "verify: capture_all before init"; return false; }
     if (remote_opt_ != nullptr) { err = "verify: pipelined windows do not serve --remote-expert-opt"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    for (int T = 1; T <= max_t_; ++T)
+    for (int T = 1; T <= std::min(max_t_, strata::kernels::kVerifyMaxT); ++T)
         if (!capture(T, err)) return false;
     if (!capture_commit(err)) return false;
     if ((ev_done_ == nullptr && cudaEventCreateWithFlags(&ev_done_, cudaEventDisableTiming) != cudaSuccess) ||
@@ -3043,7 +3044,7 @@ void Verifier::pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_
 
 bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2], std::string& err) {
     if (fl_active_) { err = "verify: a window is in flight on this verifier"; return false; }
-    if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    if (T < 1 || T > std::min(max_t_, strata::kernels::kVerifyMaxT)) { err = "verify: window size out of range"; return false; }
     if (pl_ple_rows_.empty()) { err = "verify: pipelined window not prepared (capture_all)"; return false; }
     const Clock::time_point t0 = Clock::now();
     pl_stage(T, tokens, pos0, ple_prev);
@@ -3056,7 +3057,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     const OnDevice on_device(device_);
     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    if (T < 1 || T > std::min(max_t_, strata::kernels::kVerifyMaxT)) { err = "verify: window size out of range"; return false; }
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     if (exec_[T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
