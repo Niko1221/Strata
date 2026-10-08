@@ -83,6 +83,10 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
         // tail".  `glm_chunk_bytes` itself is happy with any T >= 1; the guard is the caller's.
         if (glm_chunk > 1) n += glm_chunk_bytes(g, k, glm_chunk);
         for (int64_t l = layer_lo; l < layer_hi; ++l) n += glm_layer_state_bytes(g, max_cells, l);
+        // The draft block's own state, on the stage that holds the trunk's end.  `layer_hi == g.n_layers`
+        // after the clamp above, so this is "the last stage" and not "the last layer" - on one card the two
+        // are the same, and in a split only the tail owns the block.
+        if (layer_hi == g.n_layers) n += glm_mtp_state_bytes(g, max_cells);
     }
     return align_up(n, SESSION_STATE_ALIGN) + 4096;
 }
@@ -179,6 +183,14 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
         uint8_t* gp = (uint8_t*) s.glm_state_arena;
         for (int64_t l = layer_lo; l < layer_hi; ++l)
             gp += glm_state_init(g, max_cells, l, gp, s.glm_states[l]);
+        // Its own carve and its own memset, rather than a tail on the one above: the layer walk ends on a
+        // KDA layer's 12 KB float state, which is not 16-byte aligned, and the MTP's first member is an MLA
+        // cache of `uint16_t` rows that the vector kernels want aligned.  `take` rounds; nothing else does.
+        if (layer_hi == g.n_layers && glm_mtp_state_bytes(g, max_cells) > 0) {
+            s.glm_mtp_bytes = glm_mtp_state_bytes(g, max_cells);
+            s.glm_mtp_arena = take(s.glm_mtp_bytes);
+            glm_mtp_state_init(g, max_cells, s.glm_mtp_arena, s.glm_mtp);
+        }
     }
 
     s.R = s.block.R;
@@ -221,6 +233,13 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
     // the single carve, which is why the carve is contiguous.
     if (s.glm_state_arena != nullptr)
         cudaMemsetAsync(s.glm_state_arena, 0, (size_t) s.glm_state_bytes, cs);
+    // and the draft block's own MLA cache, for exactly the same reason.  The cache's row counter is the one piece
+    // of its state that is NOT in this carve - `n_written` lives in the struct, because `mla_layer` reads it on
+    // the host to address the rows - so it is reset here beside the memset and not by it.
+    if (s.glm_mtp_arena != nullptr) {
+        cudaMemsetAsync(s.glm_mtp_arena, 0, (size_t) s.glm_mtp_bytes, cs);
+        s.glm_mtp.n_written = 0;
+    }
     s.ple_prev[0] = -1;
     s.ple_prev[1] = -1;
     s.ple_token = -1;

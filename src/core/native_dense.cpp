@@ -21,10 +21,15 @@
 namespace strata::core {
 namespace {
 int g_layer_lb = -1, g_layer_le = -1;   // set_layer_range; -1: every layer
+/// The draft block (`set_draft_block`): the model's OWN block past the trunk, index `n_trunk`, which is packed
+/// only by `tools/iq_pack.py --mtp` and run only by `--mtp`.  Off, it is dropped exactly as it always was.
+bool g_draft = false;
 bool in_range(const std::string& name) {
     if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
     const int l = std::atoi(name.c_str() + 4);
-    return l >= g_layer_lb && l < g_layer_le;
+    // `l == g_layer_le` is the draft block on the stage that holds the trunk's end (`g_layer_le == n_layers`
+    // there, and lower on every earlier stage, so a split still gives the block to exactly one card).
+    return (l >= g_layer_lb && l < g_layer_le) || (g_draft && l == g_layer_le);
 }
 // S23 experiment (STRATA_HC_Q8=1): the hyper-connection projections' Q8_0 bytes for the verify read
 bool hc_q8_requested() {
@@ -104,7 +109,13 @@ uint64_t folded_ne1(const strata::TensorInfo& t) {
 bool eligible(const strata::TensorInfo& tensor, bool include_ple_key, Arch arch, int64_t n_trunk) {
     const auto& name = tensor.name;
     if (name.rfind("blk.", 0) != 0) return false;
-    if (n_trunk >= 0 && std::strtol(name.c_str() + 4, nullptr, 10) >= n_trunk) return false;
+    // **THE DRAFT BLOCK IS THE ONE `blk.<n_trunk>` TENSOR THE ENGINE MAY WANT.**  Without `--mtp` this drop is
+    // what it always was and the pack holds nothing there either.  With it the block is a real layer, and every
+    // one of its quantized tensors is written into `index.txt` as "served from the GGUF" (a row with no bytes),
+    // so dropping it here leaves the `WeightRef` with neither `data` nor `native_data` and `project` refuses it.
+    if (n_trunk >= 0 && std::strtol(name.c_str() + 4, nullptr, 10) >= n_trunk &&
+        !(g_draft && std::strtol(name.c_str() + 4, nullptr, 10) == n_trunk))
+        return false;
     // Match the native PLE kernel: Q2_0, IQ3_XXS, IQ4_XS and Q8_0 (UD-Q4_K_XL). Other keys retain the packed BF16
     // fallback.
     if (name == "blk.1.ple_key.weight")
@@ -115,7 +126,10 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key, Arch arch,
     static const char* glm_suffixes[] = {".attn_q_a.weight", ".attn_q_b.weight", ".attn_kv_a_mqa.weight",
         ".attn_k_b.weight", ".attn_v_b.weight", ".ssm_f_a.weight", ".ssm_f_b.weight", ".ssm_g_a.weight",
         ".ssm_g_b.weight", ".ssm_beta.weight", ".ffn_gate.weight", ".ffn_up.weight", ".ffn_down.weight",
-        ".indexer.attn_q_b.weight", ".indexer.attn_k.weight", ".indexer_compressor_gate.weight"};
+        ".indexer.attn_q_b.weight", ".indexer.attn_k.weight", ".indexer_compressor_gate.weight",
+        // the draft block's own projection.  It is the one quantized tensor of that block whose name does not
+        // appear on a trunk layer, and the packer writes it as "served natively" for exactly this reason.
+        ".nextn.eh_proj.weight"};
     if (arch == Arch::Glm5Next) {
         for (const char* suffix : glm_suffixes) if (name.ends_with(suffix)) return true;
     }
@@ -207,6 +221,7 @@ bool NativeDense::served_bytes_per_layer(const std::vector<std::string>& shards,
 }
 
 void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
+void NativeDense::set_draft_block(bool on) { g_draft = on; }
 bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
                                            std::string& err) {
     const std::string key = "blk.1.ple_key.weight";

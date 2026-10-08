@@ -41,6 +41,12 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
+    /// Whether the model's own block PAST the trunk (glm5-next's `--mtp` draft block, index `n_layers`) is to be
+    /// uploaded too.  Process-wide, read by the next `load`; off by default, which is the behaviour every run had
+    /// before the block was packable.  See `native_dense.cpp`'s `eligible`/`in_range` for why it is needed at all:
+    /// that block's quantized tensors are written into `index.txt` as "served from the GGUF", so nothing else
+    /// gives them bytes.
+    static void set_draft_block(bool on);
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.

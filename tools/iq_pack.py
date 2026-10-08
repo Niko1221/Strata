@@ -293,15 +293,17 @@ def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool):
     return "2", data, len(data), rec
 
 
-def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
+def index_standalone(src, out, model: Model, compat_bf16: bool = False, mtp: bool = False) -> int:
     """Every non-expert tensor of the model: the floats the engine reads from the pack into dense.bin in the form it
     reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF."""
     todo, problems = [], []
-    # A block past the trunk is not packed at all.  glm5-next's MTP block carries a full set of quantized tensors,
-    # and a row for one of them would either be served natively - loaded into VRAM for a block no code runs - or,
-    # if it were left as a shape-only row the engine does not expect, refused by the dense loader.  The engine
-    # excludes the same blocks (native_dense.cpp `family_of`), so the two agree on where the trunk ends.
-    n_layers = trunk_layers(model)
+    # A block past the trunk is not packed by DEFAULT.  glm5-next's MTP block carries a full set of quantized
+    # tensors, and a row for one of them would either be served natively - loaded into VRAM for a block no code
+    # runs - or, if it were left as a shape-only row the engine does not expect, refused by the dense loader.
+    # The engine excludes the same blocks (native_dense.cpp `family_of`), so the two agree on where the trunk
+    # ends.  `--mtp` is the other half of that agreement: the engine only reads `blk.<n_trunk>.*` when the draft
+    # layer was asked for, so a pack that holds the block is only correct for a run that asks for it.
+    n_layers = trunk_layers(model, mtp)
     for name, (g, t, mm, p) in model.where.items():
         if is_expert(t.name) or t.name in NOT_IN_PACK:
             continue
@@ -465,23 +467,27 @@ def index_from_base(a, src, base, out, g, T, mm) -> int:
     return 0
 
 
-def trunk_layers(model: Model) -> int:
+def trunk_layers(model: Model, mtp: bool = False) -> int:
     """How many blocks of the model the engine runs - the trunk.  `block_count` counts the model's LAST block,
-    which on glm5-next is the MTP block (`nextn_predict_layers`) that v1 does not run, so a pack holds the trunk
-    only and every layer index in it stays a BLOCK index.  A file with neither key (every Qwen4Exp one) gets
+    which on glm5-next is the MTP block (`nextn_predict_layers`), so by default a pack holds the trunk only and
+    every layer index in it stays a BLOCK index.  A file with neither key (every Qwen4Exp one) gets
     `block_count - 0`, i.e. the old answer; a file with no block_count at all falls back to the highest layer
-    that HAS experts, which is what this did before either key was read."""
+    that HAS experts, which is what this did before either key was read.
+
+    `mtp=True` is `--mtp`: the pack ALSO carries the blocks past the trunk, so the draft layer can read its
+    weights from the pack like any other layer.  The count stays a BLOCK count - the return value is the first
+    block that is NOT packed - which is why this returns `blocks` and not `blocks + 1`."""
     md = model.files[0].metadata
     arch = md.get("general.architecture", "")
     blocks = int(md.get("%s.block_count" % arch, 0)) if arch else 0
     nextn = int(md.get("%s.nextn_predict_layers" % arch, 0)) if arch else 0
     if blocks > nextn:
-        return blocks - nextn
+        return blocks if mtp else blocks - nextn
     exps = [n for n in model.where if n.startswith("blk.") and n.endswith("_exps.weight")]
     return 1 + max(int(n.split(".")[1]) for n in exps)
 
 
-def expert_layout(model: Model, src: pathlib.Path):
+def expert_layout(model: Model, src: pathlib.Path, mtp: bool = False):
     """The pack's expert table: (layout rows, native_experts.txt text, n_expert, total bytes), or an error string.
     Each role is resolved by name in whichever shard holds it, and its offset is absolute in THAT shard: two
     shards do not start their data section at the same byte, so one role's data_start must not be used for
@@ -493,7 +499,7 @@ def expert_layout(model: Model, src: pathlib.Path):
     md = model.files[0].metadata
     arch = md.get("general.architecture", "")
     lead = int(md.get("%s.leading_dense_block_count" % arch, 0)) if arch else 0
-    n_layers = trunk_layers(model)
+    n_layers = trunk_layers(model, mtp)
     # Router rows = experts kept (pruned models ship < 512).  Read from the first layer that HAS a router: on
     # glm5-next the leading `leading_dense_block_count` blocks run a dense SwiGLU and carry no router at all, so
     # `blk.0.ffn_gate_inp.weight` does not exist and indexing it is a KeyError, not a diagnosis.
@@ -572,6 +578,9 @@ def main() -> int:
                          "(rounds weights; leaves experts and the PLE table unchanged)")
     ap.add_argument("--experts-bin", action="store_true",
                     help="also write experts.bin (the engine otherwise reads the experts from the GGUF itself)")
+    ap.add_argument("--mtp", action="store_true",
+                    help="also pack the blocks past the trunk (glm5-next's next-token-prediction block), which "
+                         "the engine reads only when the draft layer was asked for")
     a = ap.parse_args()
     if a.compat_bf16 and a.base:
         ap.error("--compat-bf16 cannot reuse --base dense weights")
@@ -592,7 +601,7 @@ def main() -> int:
     if len(model.paths) > 1:
         print("model shards: " + ", ".join(p.name for p in model.paths))
     # ---- the expert table first: a model that cannot be packed is refused before any file of the pack changes
-    got = expert_layout(model, src)
+    got = expert_layout(model, src, a.mtp)
     if isinstance(got, str):
         print(got)
         return 1
@@ -634,7 +643,7 @@ def main() -> int:
         (out / "native_experts.txt").unlink(missing_ok=True)
         rc = index_from_base(a, src, base, out, g, {t.name: t for t in g.tensors}, mm)
     else:
-        rc = index_standalone(src, out, model, a.compat_bf16)
+        rc = index_standalone(src, out, model, a.compat_bf16, a.mtp)
     if rc:
         return rc
     if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():

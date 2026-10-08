@@ -25,17 +25,21 @@
 //   * the final collapse before the head is the stream **MEAN**, not their sum.
 //   * KDA's three conv streams have one shared state, and the delta state is per head and updated in place.
 //   * MLA's cache holds the 512-wide latent and K == V; there is no RoPE on any layer.
-//   * the SwiGLU clamp in the GGUF is **inert** in the reference (see `glm_elt.cu`).
+//   * the SwiGLU clamp in the GGUF is **NOT** inert: `swiglu_clamp_exp` is 10.0 on every layer and both
+//     oracles apply it (`ggml_swiglu_clamp`); see `glm_elt.cu`, which used to say the opposite.
 #pragma once
 
+#include "strata/core/glm_experts.hpp"   // GlmPoolFn, for the draft block's expert hook
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
+#include "strata/core/native_head.hpp"   // the draft block's output projection rides the same head
 #include "strata/core/weights.hpp"
 
 #include "strata/kernels/glm.hpp"
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -195,6 +199,16 @@ struct GlmLayerState {
 uint64_t glm_kda_state_floats(const ModelGeometry& g);
 /// Bytes ONE MLA layer's latent cache needs for `max_cells` tokens, zero when the arch has no MLA.
 uint64_t glm_mla_cache_bytes(const ModelGeometry& g, int64_t max_cells);
+/// Bytes ONE MLA layer's WHOLE persistent state (`glm_mla_cache_bytes` rounded up plus the DSA indexer's).
+///
+/// **THE MTP BLOCK IS AN MLA LAYER THAT IS NOT A TRUNK LAYER, AND THE LAYER-NUMBER PREDICATE CANNOT SAY SO.**
+/// `glm_is_kda_layer` is `!(layer % qsa_interval == qsa_interval - 1)`, and the draft block sits at
+/// `n_layers` = 45, which is 1 mod 4 - so the predicate calls a block that carries `attn_q_a.weight` and no
+/// `ssm_*` at all a GDN layer and sizes it at 12 KB instead of 16 MB.  Sizing therefore comes from THIS
+/// function, which asks nothing about the layer, and `glm_state_init`'s MLA branch and the MTP both call it.
+uint64_t glm_mla_state_bytes(const ModelGeometry& g, int64_t max_cells);
+/// Points an MLA layer's state at `base`; returns the bytes it consumed (== `glm_mla_state_bytes`).
+uint64_t glm_mla_state_init(const ModelGeometry& g, int64_t max_cells, void* base, GlmLayerState& st);
 /// True when this layer is one of the KDA (linear) layers rather than an MLA one.
 bool glm_is_kda_layer(const ModelGeometry& g, int64_t layer);
 
@@ -233,6 +247,82 @@ bool glm_block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t 
                      int32_t pos_base, const GlmBuffers& b, const GlmLayerState& st, const MoEBuffers& mb, int64_t k,
                      const BlockBuffers& bb, const float* parts, void* stream, std::string& err,
                      const Doorbell* db);
+
+// ================================ the MTP (draft) block ================================
+
+/// **THE BLOCK PAST THE TRUNK, WHICH IS `blk.45` ON THE SHIPPED 46-BLOCK ARTIFACT.**  `nextn_predict_layers`
+/// is 1 there, so `n_layers` is 45 and this block's own index is 45 - the pack names its tensors
+/// `blk.45.*` like any other block's, and the engine reads them through the same `WeightTable`.
+///
+/// It is an ordinary MLA + MoE block with NO hyper-connections and four extra tensors.  Its arithmetic, from
+/// the reference's `build_glm5next_mtp` (`ik_llama.cpp/src/graphs/build_glm5next.cpp:381-500`):
+///
+///     cur    = eh_proj(cat(enorm(emb(x) * clamp(pos, 0, 1)), hnorm(h)))
+///     inpSA  = cur
+///     cur    = <the trunk's own MLA attention over this block's own cache>
+///     ffn_inp= cur + inpSA
+///     cur    = moe(rms(ffn_norm(ffn_inp))) + shexp(rms(ffn_norm(ffn_inp))) + ffn_inp
+///     out    = rms(shared_head_norm(cur)) -> the model's own output head
+///
+/// The three traps are in the first two lines and in what is NOT there: the position mask zeroes row 0's
+/// embedding BEFORE `enorm` (there is no next token for the first cell); `enorm(emb)` occupies the FIRST half
+/// of the 8192-wide concat, so swapping the halves is a shape-legal wrong answer; and the block has no
+/// `hc_*` tensors, so `hc_read`/`hc_write` must not be called on it even though every trunk layer has them.
+///
+/// `token` is the token whose embedding is folded in, `hidden` the trunk's post-`output_norm` state at the
+/// position the draft is made FROM (the reference's `result_mtp_embd`, i.e. exactly what `glm_head_mix`
+/// leaves in `bb.mixed`), and `pos` the absolute position the block's own cache row is written at.  The
+/// draft logits land in `logits`, which the caller argmaxes - the reference's draft sampler has no RNG.
+struct GlmMtpState {
+    /// The block's OWN MLA state: one fp16 latent row per cell, plus the indexer's arrays.  A second cache,
+    /// not a view of a trunk layer's - the draft block attends over the draft block's own cells.
+    GlmLayerState attn;
+    /// The block's input assembly, `n_embd` floats each.  **THE BLOCK NEEDS SCRATCH OF ITS OWN AND CANNOT
+    /// BORROW `GlmBuffers` FOR ALL OF IT**: `cat` is `2 * n_embd` (8192) and the only buffers that wide are
+    /// `wide_*`, which `mla_layer` and `ffn3` are about to overwrite, and `inp` has to survive the attention
+    /// (`inpSA` is added after it).  Five `n_embd` vectors is 80 KB, which is cheaper than the reasoning.
+    float* emb = nullptr;      ///< n_embd: `enorm(emb(x) * clamp(pos,0,1))`
+    float* hstate = nullptr;   ///< n_embd: `hnorm(h)`
+    float* cat = nullptr;      ///< 2 * n_embd: the concat `eh_proj` reads
+    float* inp = nullptr;      ///< n_embd: `cur` / `inpSA` / `ffn_inp`
+    int64_t max_cells = 0;
+    /// Rows of `attn.mla_cache` this block has written since the sequence started, and so the row the next step
+    /// goes into.  **THE DRAFT BLOCK'S CACHE IS COMPACTED: ONE ROW PER DRAFT STEP, NOT ONE PER POSITION.**  The
+    /// block is fed at the positions its caller picks, so its rows are not its positions and cannot be addressed
+    /// by one - a first draft at position 5 writes row 0 and attends to row 0 alone.  That is the reference's
+    /// semantics too: its draft context is a fresh context, its cells are allocated in write order, and its mask
+    /// (`cells[i].pos <= pos`, `has_seq_id` on an unallocated cell false) leaves every unwritten cell masked
+    /// out.  It is reset with the rest of the block's state at a sequence boundary - `session_zero`.
+    int64_t n_written = 0;
+    /// The host staging the expert pool is called with - the same three copies `session_token` makes, kept
+    /// here so a draft step allocates nothing.
+    std::vector<float> h_x, h_w, h_out;
+    std::vector<int32_t> h_ids;
+};
+
+/// Bytes the MTP block's state needs: its MLA cache and indexer, plus the input assembly.  Zero when the
+/// model declares no block past the trunk (`n_nextn` 0), so an arch without one carves nothing.
+uint64_t glm_mtp_state_bytes(const ModelGeometry& g, int64_t max_cells);
+/// Points `st` at `base` and returns the bytes it consumed (== `glm_mtp_state_bytes`).  The MLA half comes
+/// from `glm_mla_state_init` so the draft block's cache cannot drift from a trunk MLA layer's.
+uint64_t glm_mtp_state_init(const ModelGeometry& g, int64_t max_cells, void* base, GlmMtpState& st);
+
+/// ONE POSITION OF THE DRAFT BLOCK.  Runs the block and leaves the draft logits in `logits` (`n_vocab` f32,
+/// DEVICE).  `hidden` is DEVICE, `n_embd` floats.
+///
+/// The expert hook is `session_token`'s `GlmPoolFn`, called with `layer = g.n_layers` - the draft block is a
+/// block of this model and its experts are routed, read and combined exactly like a trunk MoE layer's, so a
+/// null `pool` on a model whose draft block has experts is refused rather than run.
+///
+/// `head` is the run's `NativeHead` or null, and it is NOT optional politeness: `--native` makes
+/// `output.weight` a non-resident row of the pack (`skip.insert("output.weight")`), served only by this class,
+/// so a draft step that went straight to `lm_head_project` would be handed a `WeightRef` with no planes at all
+/// and refuse.  The trunk's `run_head` branches on exactly this, and the draft block's last projection IS the
+/// trunk's head - the block owns no head of its own, only `nextn.shared_head_norm` in front of it.
+bool glm_mtp_step(const WeightTable& tables, const ModelGeometry& g, const GlmBuffers& b, const MoEBuffers& mb,
+                  const BlockBuffers& bb, GlmMtpState& st, int64_t token, const float* hidden, int64_t pos,
+                  int64_t k, GlmPoolFn pool, void* pool_user, const NativeHead* head, const float* logits,
+                  void* stream, std::string& err);
 
 // ================================ chunked prefill ================================
 

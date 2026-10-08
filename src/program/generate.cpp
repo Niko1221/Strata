@@ -408,6 +408,17 @@ struct Options {
     /// feature above ~2048 cells and not a correctness fix; off is the reference's own default (`cparams.dsa`).
     /// Refused on any other arch, which has its own indexer behind `--native-qsa-indexer`.
     bool dsa = false;
+    /// glm5-next only, and **NOT the first family's `--mtp`** (that one names a separate drafter GGUF): this is
+    /// the DRAFT BLOCK THE MODEL ITSELF CARRIES past its trunk - `blk.45` on the shipped 46-block artifact,
+    /// `nextn_predict_layers` 1, every tensor of it prefixed `nextn.`.  One MLA+MoE block fed the trunk's last
+    /// hidden state, whose argmax is the reference's draft token.  The pack has to carry the block
+    /// (`tools/iq_pack.py --mtp`).  **ON ITS OWN IT DRAFTS TOKENS NOBODY VERIFIES** - this arch still has no
+    /// verify window - so today it exists to be measured against the oracle, which is what `--mtp-probe` does.
+    bool mtp_block = false;
+    /// glm5-next only, and a MEASUREMENT: read the prompt, run the head at its last position, run ONE step of the
+    /// draft block on that hidden state, print `MTP <draft id>` and the target's own argmax, and exit.  Nothing
+    /// is decoded, so it is a direct comparison against the oracle's `mtp_ref` draft and not a throughput number.
+    bool mtp_probe = false;
     bool sync_every_layer = false;
     /// Per-stage CUDA-event timings inside the layer halves.  `--no-capture` only: an event recorded inside a
     /// stream capture is silently dropped, so the captured path cannot carry this.
@@ -788,6 +799,12 @@ void usage() {
                  "  --dsa                glm5-next: attend the 2048 cells the DSA k-pool indexer selects instead\n"
                  "                       of the whole cache.  Identical below ~2048 cells; above, it is the model's\n"
                  "                       own attention\n"
+                 "  --mtp-block          glm5-next: load the model's own draft block (the next-token-prediction\n"
+                 "                       block PAST the trunk, `nextn.*`) and run it.  Needs a pack built with\n"
+                 "                       iq_pack --mtp; on its own it drafts tokens nobody verifies (no verify\n"
+                 "                       window on this arch yet).  Not the first family's --mtp drafter\n"
+                 "  --mtp-probe          MEASURE: read the prompt, run the head, run ONE draft step, print\n"
+                 "                       `MTP <draft id>` against the oracle's, and exit.  Implies --serve\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
                  "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
                  "                       which changes every number downstream - pass it for any real run\n"
@@ -1808,6 +1825,8 @@ int main(int argc, char** argv) {
         else if (a == "--no-capture") o.no_capture = true;
         else if (a == "--no-pool") o.no_pool = true;
         else if (a == "--dsa") o.dsa = true;
+        else if (a == "--mtp-block") o.mtp_block = true;
+        else if (a == "--mtp-probe") o.mtp_probe = true;
         else if (a == "--sync-every-layer") o.sync_every_layer = true;
         else if (a == "--stage-timing") o.stage_timing = true;
         else if (a == "--graph-only") o.graph_only = true;
@@ -2041,6 +2060,14 @@ int main(int argc, char** argv) {
         else (void) cudaGetLastError();
     }
 #endif
+    // `--mtp-probe` is a measurement of the DRAFT BLOCK, and the block is run from the serve loop's prompt path
+    // (that is where the trunk's last hidden state and the head's logits are both live).  Saying so here rather
+    // than making the caller remember two flags.
+    if (o.mtp_probe) o.mtp_block = true;
+    if (o.mtp_probe && !o.serve) {
+        o.serve = true;
+        std::fprintf(stderr, "strata generate: --mtp-probe runs the serve loop's prompt path, so --serve is implied\n");
+    }
     strata::core::set_coupled_draft(o.coupled_draft);
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
@@ -2634,11 +2661,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: glm5-next: stopping at <|endoftext|> 154820, <|user|> 154827 and "
                              "<|observation|> 154829 (--eos-ids replaces them)\n");
     }
+    // **ONE EXTRA LAYER WHEN THE MODEL DECLARES A DRAFT BLOCK**, and it is not conditional on `--mtp`: a pack
+    // built with `tools/iq_pack.py --mtp` carries a row for that block, and a loader handed a row at index
+    // `n_layers` refuses the file as malformed.  Asking for the row unconditionally costs a `NativeFmt` and
+    // one entry in each per-layer table; on a pack WITHOUT it the slot is simply empty (`bytes == 0`), which
+    // is exactly what a dense-lead layer looks like, so the accounting is unchanged for every artifact that
+    // existed before the block was packed.  The layer index stays the BLOCK index, which is the whole point
+    // of the dense-lead zero rows, and which also makes `layer == g.n_layers` addressable by the draft block.
+    //
+    // **EVERYTHING THAT IS HANDED A LAYER COUNT MUST BE HANDED THIS ONE.**  `FileExpertSource::open` refuses a
+    // count that disagrees with the loaded layout, so the expert source below reads it too - and its `blob()`
+    // has to be able to address the draft block, which is the only layer whose index is `g.n_layers`.
+    const int64_t lay_n = g.n_layers + (g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0 ? 1 : 0);
     // Plan v0.3 P6: where the experts live.  A native pack (tools/iq_pack.py: the IQ2_XS / IQ3_XXS files) keeps
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
-        if (!strata::kernels::cpu::expert_layout_load(o.pack, g.n_layers, g.n_expert, g.n_embd, g.n_ff,
+        if (!strata::kernels::cpu::expert_layout_load(o.pack, lay_n, g.n_expert, g.n_embd, g.n_ff,
                                                       g.swiglu_limit_or_off(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -2646,19 +2685,34 @@ int main(int argc, char** argv) {
         // Every layer's formats must have GPU expert kernels and a prompt-path dequantizer, checked here, before
         // anything is allocated: an unsupported down type used to exit from inside the first verify window, and
         // an unsupported dequant type left the prompt path's fp16 buffer unwritten.
-        const auto& lay = strata::kernels::cpu::expert_layout();
-        for (int64_t l = 0; lay.native && l < (int64_t) lay.fmt.size(); ++l) {
-            // A layer with no routed experts at all has nothing to check: glm5-next's first three blocks are a
-            // dense SwiGLU (`leading_dense_block_count`), written into the table with a zero blob so that a
-            // layer index stays a block index.  Its formats are the default -1/-1, which no type check accepts.
-            if (lay.bytes[(size_t) l] == 0) continue;
-            const auto& f = lay.fmt[(size_t) l];
-            if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
-                std::fprintf(stderr, "strata generate: layer %lld's experts are %s/%s (ggml types %d/%d), which this "
-                                     "engine has no GPU kernels for\n", (long long) l,
-                             strata::ggml_type_name((uint32_t) f.gu_type), strata::ggml_type_name((uint32_t) f.d_type),
-                             f.gu_type, f.d_type);
-                return 1;
+        //
+        // **glm5-next IS EXEMPT, AND IT HAS TO BE.**  Everything this loop asks about is GPU work - the kernel
+        // that dequantizes an expert into the prompt path's fp16 buffer, and the kernels that dot it.  On
+        // glm5-next every routed expert is computed on the CPU and there is nowhere else for one to run (see the
+        // `--no-capture` refusal above, and `glm_experts.hpp`), so the CPU side's own gate - `native_fmt`, which
+        // asks ggml-cpu for the type's dot product - is the only one that can be answered, and it already has
+        // been, inside `expert_layout_load`.
+        //
+        // It is not a formality.  MEASURED on the shipped artifact: the draft block's experts are Q3_K gate/up
+        // and Q4_K down (ggml types 11/12 - `/mnt/nvme/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf`, blk.45,
+        // against IQ3_S/Q6_K on the trunk), and neither is in `STRATA_GU_FMTS`/`STRATA_D_FMTS`.  So this loop
+        // refused the entire model over a block whose experts no GPU kernel ever sees.
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            for (int64_t l = 0; lay.native && l < (int64_t) lay.fmt.size(); ++l) {
+                // A layer with no routed experts at all has nothing to check: glm5-next's first three blocks are
+                // a dense SwiGLU (`leading_dense_block_count`), written into the table with a zero blob so that a
+                // layer index stays a block index.  Its formats are the default -1/-1, which no type check takes.
+                if (lay.bytes[(size_t) l] == 0) continue;
+                const auto& f = lay.fmt[(size_t) l];
+                if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                    std::fprintf(stderr,
+                                 "strata generate: layer %lld's experts are %s/%s (ggml types %d/%d), which this "
+                                 "engine has no GPU kernels for\n", (long long) l,
+                                 strata::ggml_type_name((uint32_t) f.gu_type),
+                                 strata::ggml_type_name((uint32_t) f.d_type), f.gu_type, f.d_type);
+                    return 1;
+                }
             }
         }
     }
@@ -2857,11 +2911,21 @@ int main(int argc, char** argv) {
     // to the expert cache with --native).  `--keep-canonical` loads both, as before.
     std::set<std::string> skip;
     if (!o.keep_canonical) {
+        // **THE DRAFT BLOCK'S ROWS ARE IN THE PACK WHETHER OR NOT THIS RUN USES THE BLOCK.**  A pack built with
+        // `tools/iq_pack.py --mtp` writes every quantized `blk.<n_layers>.` tensor as a row that carries a shape
+        // and no bytes at all, and `WeightTable::load` REFUSES such a row (`weights.cpp`: "this pack holds the
+        // tensor only in its GGUF form") unless its name is in this set.  So the set is built with the model's
+        // draft block admitted whenever the model declares one - which is a property of the PACK, not of this
+        // run - and the switch that decides whether the block is uploaded and run, `--mtp-block`, is applied
+        // immediately after, before anything asks `eligible` for its BYTES.  Leaving the block out here costs no
+        // VRAM either way (a name with no row in the index is inert); it refuses an `--mtp` pack outright.
+        strata::core::NativeDense::set_draft_block(g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0);
         if (!o.native_dense_gguf.empty() &&
             !strata::core::NativeDense::served_names(o.native_dense_gguf, o.native_ple_key, skip, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        strata::core::NativeDense::set_draft_block(o.mtp_block);
         if (!o.native_head_gguf.empty()) skip.insert("output.weight");
         // the PLE module validates its canonical key at construction (8 MB); a native pack has none to load
         if (!native_pack) skip.erase("blk.1.ple_key.weight");
@@ -2892,6 +2956,13 @@ int main(int argc, char** argv) {
             if (n.rfind("blk.", 0) != 0 || n.find("ple") != std::string::npos) continue;
             if (keep_routers && n.ends_with(".ffn_gate_inp.weight")) continue;
             const int64_t l = std::atoll(name + 4);
+            // **THE DRAFT BLOCK BELONGS TO THE LAST STAGE AND IS NOT A TRUNK LAYER.**  Its index is `n_layers`,
+            // so `[lb, le)` with `le == g.n_layers` excludes it and every stage would skip its weights - the
+            // block would load nothing and `glm_mtp_step` would fail on a missing `nextn.eh_proj.weight`.  The
+            // guard is `le >= g.n_layers`, which is true only for the stage holding the trunk's end; on the
+            // earlier stages the block is still foreign and still skipped.
+            if (g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0 && l >= g.n_layers && le >= g.n_layers)
+                continue;
             if (l < lb || l >= le) out.insert(n);
         }
         std::fclose(f);
@@ -2925,9 +2996,15 @@ int main(int argc, char** argv) {
                                  "weights are the model file's): pass --layer-split K or name the model file\n");
             return 2;
         }
+        // **THE DRAFT BLOCK IS PRICED AS THE LAST STAGE'S EXTRA LAYER.**  With `--mtp-block` the block is a real
+        // layer this run uploads, and it is the only one whose name is `blk.<g.n_layers>`; a search that stopped
+        // at `g.n_layers` would both miss its weights and (because `served_bytes_per_layer` refuses an eligible
+        // tensor outside every layer) refuse to run at all.  It belongs to whichever stage holds the trunk's end,
+        // which is also the stage `session_bytes` already charges the block's MLA cache to.
+        const bool draft = o.mtp_block && g.n_nextn > 0;
         std::vector<uint64_t> native_l;
         if (!strata::core::NativeDense::served_bytes_per_layer(o.native_dense_gguf, o.native_ple_key,
-                                                               g.n_layers, native_l, err)) {
+                                                               g.n_layers + (draft ? 1 : 0), native_l, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -2937,6 +3014,9 @@ int main(int argc, char** argv) {
         // `pool_bytes` reads it.
         std::vector<uint64_t> canon_l((size_t) g.n_layers, 0);
         uint64_t canon_common = 0;
+        // the draft block's canonical rows (its norms, its router, its indexer's F32 matrices - 5.3 MiB on this
+        // model).  Charged to the last stage alone, which is where `add_foreign` leaves them.
+        uint64_t canon_draft = 0;
         {
             std::FILE* f = std::fopen((o.pack + "/index.txt").c_str(), "rb");
             if (f == nullptr) {
@@ -2965,6 +3045,7 @@ int main(int argc, char** argv) {
                 const uint64_t rounded = (dst_bytes + align - 1) / align * align;
                 if (n.rfind("blk.", 0) != 0 || n.find("ple") != std::string::npos) { canon_common += rounded; continue; }
                 const long l = std::strtol(name + 4, nullptr, 10);
+                if (draft && l == g.n_layers) { canon_draft += rounded; continue; }
                 if (l < 0 || l >= g.n_layers) { canon_common += rounded; continue; }
                 canon_l[(size_t) l] += rounded;
             }
@@ -3000,6 +3081,7 @@ int main(int argc, char** argv) {
                 need += native_l[(size_t) l] + canon_l[(size_t) l];
                 if (strata::core::glm_is_kda_layer(g, l)) need += kda_bytes;
             }
+            if (is_last && draft) need += native_l[(size_t) g.n_layers] + canon_draft;
             return need + (is_last ? head_bytes : 0) +
                    ((uint64_t) g.n_vocab * 4 + (uint64_t) K * g.n_embd * 4 + 4096 * 4);
         };
@@ -3081,7 +3163,7 @@ int main(int argc, char** argv) {
         };
         walk(0);
         if (best.empty()) {
-            uint64_t dense = canon_common;
+            uint64_t dense = canon_common + (draft ? native_l[(size_t) g.n_layers] + canon_draft : 0);
             for (int64_t l = 0; l < g.n_layers; ++l) dense += native_l[(size_t) l] + canon_l[(size_t) l];
             std::fprintf(stderr, "strata generate: layer split auto: no placement fits - the closest leaves a "
                                  "card %lld MiB short. glm5-next's dense weights are %.2f GiB for the whole "
@@ -3204,6 +3286,10 @@ int main(int argc, char** argv) {
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
 
     strata::core::NativeDense native_dense;
+    // `--mtp`: the model's block past the trunk is a layer like any other and its quantized tensors are rows of
+    // `index.txt` with no bytes in them, so the dense loader is the only thing that can give them a home.  Set
+    // before EVERY `load` - this one and each stage's - because it is a process-wide switch read at load time.
+    strata::core::NativeDense::set_draft_block(o.mtp_block);
     if (!o.native_dense_gguf.empty()) {
         if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
@@ -4310,7 +4396,7 @@ int main(int argc, char** argv) {
         src.set_gguf(o.native_preset);
         if (const char* v = std::getenv("STRATA_FETCH_THREADS"); v != nullptr && std::atoi(v) > 0)
             src.set_fetch_threads(std::atoi(v));
-        if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
+        if (!src.open(o.pack, lay_n, g.n_expert, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -4349,7 +4435,7 @@ int main(int argc, char** argv) {
         else if (pin_wddm_cap)
             std::fprintf(stderr, "strata generate: multi-GPU under WDDM: at most 8 GiB of the expert arena is pinned "
                                  "(STRATA_ARENA_PIN_GIB changes it)\n");
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+        if (!arena_src.open(o.pack, lay_n, g.n_expert, /*threads=*/6, err, pin_limit,
                             o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -4429,6 +4515,20 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // --mtp BEFORE the arch branch, for `--dsa`'s reason: it is a refusal about the ARCH first and about the
+    // model second, and a qwen4exp run handed it should be told which of the two is wrong.
+    if (o.mtp_block) {
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            std::fprintf(stderr, "strata generate: --mtp is glm5-next's draft block (the next-token-prediction "
+                                 "block past the trunk); %s has none\n", strata::core::arch_name(g.arch));
+            return 2;
+        }
+        if (g.n_nextn <= 0) {
+            std::fprintf(stderr, "strata generate: --mtp needs a model that declares one: this file's "
+                                 "nextn_predict_layers is 0, so there is no block past the trunk\n");
+            return 2;
+        }
+    }
     if (g.arch == strata::core::Arch::Glm5Next) {
         if (!o.no_capture) {
             o.no_capture = true;
@@ -4485,7 +4585,9 @@ int main(int argc, char** argv) {
                                  "(a native pack normally requires it, glm5-next does not)\n");
             return 2;
         }
-        if (!glm_pool_store.init(srcp, &pool, g.n_layers, g.n_expert, K, err)) {
+        // `lay_n` for the draft block, exactly as `expert_layout_load` and the source were handed it: the pool
+        // refuses a layer index at or past its `n_layers`, and the draft block's index IS `g.n_layers`.
+        if (!glm_pool_store.init(srcp, &pool, lay_n, g.n_expert, K, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -6843,6 +6945,101 @@ int main(int argc, char** argv) {
                 if (!cancelled) {
                     snap_take();
                     snap_pos = n;
+                }
+
+                if (o.mtp_probe) {
+                    // ================================ THE DRAFT BLOCK, MEASURED ================================
+                    //
+                    // One step of the model's own multi-token-prediction block, on exactly the inputs the oracle
+                    // uses, printed against the oracle's draft.  `/home/gopi/glm-scratch/mtp-oracle/mtp_ref.cpp`
+                    // prints `target_next` (the trunk head's argmax at the last prompt position) and then the
+                    // draft, which is `argmax` of the block's OWN head - and both are pure argmax, no sampling,
+                    // so a mismatch is arithmetic and not a seed.
+                    //
+                    // The two inputs, and both are already live here:
+                    //   * `hidden` - the trunk's post-`output_norm` state at position `n - 1`.  That is what
+                    //     `glm_head_mix` just wrote into `ss.block.mixed`, and it is the tensor the reference
+                    //     emits as `result_mtp_embd`.
+                    //   * `token` - the token the trunk just predicted, i.e. `argmax` of the logits below.  The
+                    //     block's embedding input is that token, not the last prompt token.
+                    // `pos = n` because the draft stands FOR the token at position `n`; with a cold cache (which
+                    // is what this is - nothing warmed it) the reference's own drafts are 72 / 11 / 7739 / 50473
+                    // on the four rungs of `run-warm.sh`.
+                    GlmRunner& L = grs.back();
+                    const strata::core::OnDevice onl(L.dev);
+                    void* hcs = split_run ? (void*) L.cs : token_stream;
+                    if (g.n_nextn <= 0) {
+                        std::printf("ERR --mtp-probe: this model declares no block past its trunk\n");
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    if (!glm_run_head()) {
+                        std::printf("ERR lm_head: %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    // The logits are read on the HOST TWICE here (the target's argmax, then the draft's), which is
+                    // a 620 KB copy each - and this is a measurement, not a token path, so the copy is free.
+                    std::vector<float> lg((size_t) n_vocab);
+                    auto argmax_now = [&](int* out) -> bool {
+                        if (cudaMemcpyAsync(lg.data(), L.logits, (size_t) n_vocab * 4, cudaMemcpyDeviceToHost,
+                                            (cudaStream_t) hcs) != cudaSuccess ||
+                            cudaStreamSynchronize((cudaStream_t) hcs) != cudaSuccess) {
+                            std::printf("ERR reading the logits back failed\n");
+                            std::fflush(stdout);
+                            return false;
+                        }
+                        int best = 0;
+                        for (int64_t v = 1; v < n_vocab; ++v)
+                            if (lg[(size_t) v] > lg[(size_t) best]) best = (int) v;
+                        *out = best;
+                        return true;
+                    };
+                    int target_next = -1;
+                    if (!argmax_now(&target_next)) return 1;
+                    const float* h = L.ss->block.mixed;
+                    // STRATA_MTP_DUMP_H=<path>: write the hidden state the draft block is fed, as raw f32, so it
+                    // can be diffed against the oracle's own `mtp-hidden.f32` (`mtp_ref` writes it per prompt
+                    // position; the row that matters is the LAST one).
+                    if (const char* dp = std::getenv("STRATA_MTP_DUMP_H"); dp != nullptr && dp[0] != '\0') {
+                        std::vector<float> hh((size_t) g.n_embd);
+                        std::FILE* hf = std::fopen(dp, "wb");
+                        if (hf != nullptr) {
+                            if (cudaMemcpyAsync(hh.data(), h, (size_t) g.n_embd * 4, cudaMemcpyDeviceToHost,
+                                                (cudaStream_t) hcs) == cudaSuccess &&
+                                cudaStreamSynchronize((cudaStream_t) hcs) == cudaSuccess)
+                                std::fwrite(hh.data(), 4, (size_t) g.n_embd, hf);
+                            std::fclose(hf);
+                        }
+                    }
+                    if (!strata::core::glm_mtp_step(*L.wt, g, L.ss->glm, L.ss->moe, L.ss->block, L.ss->glm_mtp,
+                                                    target_next, h, n, K, glm_pool_fn, glm_pool_user, L.head, L.logits,
+                                                    hcs, err)) {
+                        std::printf("ERR mtp: %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    int draft = -1;
+                    if (!argmax_now(&draft)) return 1;
+                    // THE TOP FIVE AS WELL, because a draft that misses the oracle can miss it two ways and the
+                    // logits tell them apart: a flat, near-tied distribution means the block is nearly a no-op
+                    // (a wrong or missing input), while a confident wrong answer means the arithmetic is wrong.
+                    int top[5] = {-1, -1, -1, -1, -1};
+                    for (int64_t v = 0; v < n_vocab; ++v) {
+                        for (int s = 0; s < 5; ++s) {
+                            if (top[s] < 0 || lg[(size_t) v] > lg[(size_t) top[s]]) {
+                                for (int k2 = 4; k2 > s; --k2) top[k2] = top[k2 - 1];
+                                top[s] = (int) v;
+                                break;
+                            }
+                        }
+                    }
+                    std::printf("MTP target_next %d draft %d\n", target_next, draft);
+                    std::printf("MTP draft-top5");
+                    for (int s = 0; s < 5; ++s) std::printf(" %d:%.4f", top[s], (double) lg[(size_t) top[s]]);
+                    std::printf("\n");
+                    std::fflush(stdout);
+                    return 0;
                 }
 
                 // ---- DECODE.  The head at the LAST PROMPT POSITION predicts the first generated token, exactly

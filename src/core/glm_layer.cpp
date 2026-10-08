@@ -430,15 +430,43 @@ uint64_t glm_mla_cache_bytes(const ModelGeometry& g, int64_t max_cells) {
 
 bool glm_is_kda_layer(const ModelGeometry& g, int64_t layer) { return !is_qsa_layer(g, layer); }
 
-uint64_t glm_layer_state_bytes(const ModelGeometry& g, int64_t max_cells, int64_t layer) {
-    if (glm_is_kda_layer(g, layer)) return glm_kda_state_floats(g) * 4;
-    // The latent cache and the indexer state, in the order `glm_state_init` lays them down.  The cache's size is
-    // aligned UP before the indexer's arrays start: the cache is fp16 and the indexer's are f32, so on a latent
-    // width that is not a multiple of 2 the two would otherwise disagree about where a float may live.
+uint64_t glm_mla_state_bytes(const ModelGeometry& g, int64_t max_cells) {
+    // The latent cache and the indexer state, in the order `glm_mla_state_init` lays them down.  The cache's
+    // size is aligned UP before the indexer's arrays start: the cache is fp16 and the indexer's are f32, so on
+    // a latent width that is not a multiple of 2 the two would otherwise disagree about where a float may live.
     return align16(glm_mla_cache_bytes(g, max_cells)) + glm_dsa_state_bytes(g, max_cells);
 }
 
+uint64_t glm_mla_state_init(const ModelGeometry& g, int64_t max_cells, void* base, GlmLayerState& st) {
+    st.kda_state = nullptr;
+    st.kda_conv = nullptr;
+    st.mla_cache = nullptr;
+    st.idx_partial_k = nullptr;
+    st.idx_partial_g = nullptr;
+    st.idx_pooled = nullptr;
+    st.max_cells = max_cells;
+    st.mla_cache = (uint16_t*) base;
+    const uint64_t cache = align16(glm_mla_cache_bytes(g, max_cells));
+    // The indexer, in the order `glm_dsa_state_bytes` adds it: the pool in progress (key, then gate), then
+    // every completed pool.  All three are zeroed with the rest of the carve and the partial is only ever READ
+    // once all `kpool` of its members have been written, so a stale partial cannot be pooled.
+    if (glm_dsa_state_bytes(g, max_cells) > 0) {
+        uint8_t* p = (uint8_t*) base + cache;
+        const uint64_t partial = (uint64_t) g.idx_key_dim * (uint64_t) g.idx_kpool * 4;
+        st.idx_partial_k = (float*) p;
+        st.idx_partial_g = (float*) (p + align16(partial));
+        st.idx_pooled = (float*) (p + 2 * align16(partial));
+    }
+    return glm_mla_state_bytes(g, max_cells);
+}
+
+uint64_t glm_layer_state_bytes(const ModelGeometry& g, int64_t max_cells, int64_t layer) {
+    if (glm_is_kda_layer(g, layer)) return glm_kda_state_floats(g) * 4;
+    return glm_mla_state_bytes(g, max_cells);
+}
+
 uint64_t glm_state_init(const ModelGeometry& g, int64_t max_cells, int64_t layer, void* base, GlmLayerState& st) {
+    if (!glm_is_kda_layer(g, layer)) return glm_mla_state_init(g, max_cells, base, st);
     st.kda_state = nullptr;
     st.kda_conv = nullptr;
     st.mla_cache = nullptr;
@@ -446,22 +474,6 @@ uint64_t glm_state_init(const ModelGeometry& g, int64_t max_cells, int64_t layer
     st.idx_partial_g = nullptr;
     st.idx_pooled = nullptr;
     st.max_cells = 0;
-    if (!glm_is_kda_layer(g, layer)) {
-        st.mla_cache = (uint16_t*) base;
-        st.max_cells = max_cells;
-        const uint64_t cache = align16(glm_mla_cache_bytes(g, max_cells));
-        // The indexer, in the order `glm_dsa_state_bytes` adds it: the pool in progress (key, then gate), then
-        // every completed pool.  All three are zeroed with the rest of the carve and the partial is only ever READ
-        // once all `kpool` of its members have been written, so a stale partial cannot be pooled.
-        if (glm_dsa_state_bytes(g, max_cells) > 0) {
-            uint8_t* p = (uint8_t*) base + cache;
-            const uint64_t partial = (uint64_t) g.idx_key_dim * (uint64_t) g.idx_kpool * 4;
-            st.idx_partial_k = (float*) p;
-            st.idx_partial_g = (float*) (p + align16(partial));
-            st.idx_pooled = (float*) (p + 2 * align16(partial));
-        }
-        return cache + glm_dsa_state_bytes(g, max_cells);
-    }
     // The delta state first, then the conv history - the order `glm_kda_state_floats` adds them in, and the
     // order `kda_layer` indexes them with.  Two pointers into one carve, so a change here is a change to both.
     const uint64_t delta = (uint64_t) g.n_head * g.kda_head_dim * g.kda_head_dim;
@@ -686,10 +698,23 @@ bool kda_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 ///   7. `attn_output @ head_out` reads 16384 = `n_head * mla_head_dim`, the widest activation in the arch and
 ///      the one `wide_width` exists for.
 ///
-/// `abs_pos` is the ABSOLUTE position of this token, and it is both the cache row to write and the last cell
-/// the query may attend to.  There is no window and no ring here: the cache is indexed by position.
+/// `abs_pos` is the ABSOLUTE position of this token: it is the RoPE position of every query in the chunk, and
+/// for a layer that runs EVERY position of a sequence it is also the cache row and the last row a query may
+/// attend to ("the cache is indexed by position" - there is no window and no ring here).
+///
+/// **`row0`/`vis0` SEPARATE THOSE TWO ROLES FOR THE ONE LAYER THAT DOES NOT RUN EVERY POSITION.**  The MTP block
+/// is fed at the positions its caller picks, so its cache holds a row per DRAFT STEP and not one per position -
+/// the reference's own semantics: its draft context is a fresh context whose cells are allocated in write order,
+/// so cell `i` holds the `i`-th row written, whatever absolute position that row carries (and its mask is
+/// `cells[i].pos <= pos`, which on a fresh cell - `seq_id` unset - is a mask-out, not a zero).  `row0` is the
+/// row token 0 of the chunk goes into and `vis0` the number of rows, counted from row 0, that its query may
+/// attend to; token `t` uses `row0 + t` and `vis0 + t`.  Both default to the dense reading, `abs_pos` and
+/// `abs_pos + 1`, which is what every trunk caller leaves them at.
 bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t abs_pos,
-               const GlmBuffers& b, const GlmLayerState& st, void* stream, std::string& err) {
+               const GlmBuffers& b, const GlmLayerState& st, void* stream, std::string& err,
+               int64_t row0 = -1, int64_t vis0 = -1) {
+    if (row0 < 0) row0 = abs_pos;
+    if (vis0 < 0) vis0 = abs_pos + 1;
     const LayerView v(tables, layer);
     const int64_t n = g.n_embd;
     const int64_t nh = g.n_head;
@@ -778,17 +803,17 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
         return false;
     kernels::rms_norm_weighted(b.kv_cmpr, (const float*) wkv_a_norm->data, b.ntok, kvl, eps, stream);
     if (st.mla_cache == nullptr) { err = "glm5-next: the MLA latent cache was never carved"; return false; }
-    if (abs_pos < 0 || abs_pos + b.ntok > st.max_cells) {
-        err = "glm5-next: MLA positions " + std::to_string((long long) abs_pos) + ".." +
-              std::to_string((long long) (abs_pos + b.ntok - 1)) + " are outside the " +
+    if (row0 < 0 || row0 + b.ntok > st.max_cells) {
+        err = "glm5-next: MLA cache rows " + std::to_string((long long) row0) + ".." +
+              std::to_string((long long) (row0 + b.ntok - 1)) + " are outside the " +
               std::to_string((long long) st.max_cells) + "-row latent cache";
         return false;
     }
     // **ALL `ntok` ROWS GO IN BEFORE ANY QUERY RUNS, AND THAT IS CAUSAL ANYWAY.**  The attention below masks by
-    // `n_kv` - query `t` walks `0 .. abs_pos + t` and never looks at the rows above it - so a row written early
+    // `n_kv` - query `t` walks `0 .. vis0 + t - 1` and never looks at the rows above it - so a row written early
     // is a row no query in this chunk asks for.  Ordering the write inside the token loop instead would cost a
     // second launch per token to hide data that is already hidden.
-    kernels::glm_mla_cache_store_t(b.kv_cmpr, st.mla_cache, abs_pos, kvl, b.ntok, stream);
+    kernels::glm_mla_cache_store_t(b.kv_cmpr, st.mla_cache, row0, kvl, b.ntok, stream);
 
     // ---- 5. the attention itself: every cell up to and including this one, one query, one token.  `T` is 1,
     //      not the sequence length - the cache holds the sequence and the kernel walks it.  A chunk calls it
@@ -800,6 +825,16 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     //      (`cparams.dsa`, off by default there too).  Everything above and below is untouched: the same `qabs`
     //      goes in and the same `kqv` comes out, which is what lets the de-absorption in step 6 be shared.
     const bool dsa = kernels::glm_dsa_enabled();
+    // The indexer addresses the cache by ABSOLUTE POSITION (`glm_dsa_select`'s pools, `n_vis = (pos+1)/kpool`),
+    // which is the same address the dense reading uses and a different one from a compacted row counter.  Only
+    // the MTP block compacts, so only it can hit this - and the reference's own draft graph builds its indexer
+    // off the draft context's cells, which nothing in this engine has.  Refuse rather than select the wrong
+    // cells.
+    if (dsa && row0 != abs_pos) {
+        err = "glm5-next: --dsa addresses the MLA cache by absolute position and the draft block's cache is "
+              "compacted; the two cannot be combined";
+        return false;
+    }
     // Two of the indexer's values are needed by the PER-QUERY loop below and not only by the batch above it: the
     // key width, and `ape` (the pooled members' additive embedding, which `glm_dsa_pool` reads for every pool).
     const int64_t kd = g.idx_key_dim, ih = g.idx_q_heads;
@@ -871,7 +906,7 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     const int tail = g.idx_select_tail != 0 ? 1 : 0;
     for (int64_t t = 0; t < b.ntok; ++t) {
         if (!dsa) {
-            kernels::glm_mla_attn(b.qabs + t * nh * kvl, st.mla_cache, b.kqv + t * nh * kvl, nh, kvl, abs_pos + t + 1,
+            kernels::glm_mla_attn(b.qabs + t * nh * kvl, st.mla_cache, b.kqv + t * nh * kvl, nh, kvl, vis0 + t,
                                   /*T=*/1, abs_pos + t, (float) (1.0 / std::sqrt((double) hd)), stream);
             continue;
         }
@@ -1154,6 +1189,190 @@ bool glm_head_mix(const WeightTable& tables, const ModelGeometry& g, const Block
     if (wn->bytes < (uint64_t) g.n_embd * 4) { err = "output_norm.weight is not f32 of the hidden width"; return false; }
     kernels::rms_norm_weighted(out, (const float*) wn->data, 1, g.n_embd, (float) g.rms_eps, stream);
     return true;
+}
+
+// ================================ the MTP (draft) block ================================
+
+namespace {
+
+/// The number of shards a `cudaMemcpyAsync` of `n` floats is - written once because the draft block does four
+/// of them and a wrong `cudaMemcpyKind` is a silently-free memcpy on unified memory and a crash anywhere else.
+void copy_dev(float* dst, const float* src, int64_t n, void* stream) {
+    cudaMemcpyAsync(dst, src, (size_t) n * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) stream);
+}
+
+}  // namespace
+
+uint64_t glm_mtp_state_bytes(const ModelGeometry& g, int64_t max_cells) {
+    if (g.n_nextn <= 0) return 0;
+    // Three hidden-width vectors (`emb`, `hstate`, `inp`) and one double-width one (`cat`), which is what
+    // `eh_proj`'s two halves are concatenated into.  Nothing here is per-cell: the draft block runs one
+    // position at a time, so the only thing that scales with the context is its own MLA cache.
+    const uint64_t one = align16((uint64_t) g.n_embd * 4);
+    return glm_mla_state_bytes(g, max_cells) + one * 3 + align16((uint64_t) g.n_embd * 8);
+}
+
+uint64_t glm_mtp_state_init(const ModelGeometry& g, int64_t max_cells, void* base, GlmMtpState& st) {
+    st.max_cells = 0;
+    st.emb = nullptr;
+    st.hstate = nullptr;
+    st.cat = nullptr;
+    st.inp = nullptr;
+    if (g.n_nextn <= 0) return 0;
+    uint8_t* p = (uint8_t*) base;
+    p += glm_mla_state_init(g, max_cells, p, st.attn);
+    const uint64_t one = align16((uint64_t) g.n_embd * 4);
+    st.emb = (float*) p;
+    p += one;
+    st.hstate = (float*) p;
+    p += one;
+    st.inp = (float*) p;
+    p += one;
+    st.cat = (float*) p;
+    p += align16((uint64_t) g.n_embd * 8);
+    st.max_cells = max_cells;
+    st.n_written = 0;
+    return glm_mtp_state_bytes(g, max_cells);
+}
+
+bool glm_mtp_step(const WeightTable& tables, const ModelGeometry& g, const GlmBuffers& b, const MoEBuffers& mb,
+                  const BlockBuffers& bb, GlmMtpState& st, int64_t token, const float* hidden, int64_t pos,
+                  int64_t k, GlmPoolFn pool, void* pool_user, const NativeHead* head, const float* logits,
+                  void* stream, std::string& err) {
+    if (g.n_nextn <= 0) {
+        err = "glm5-next: this model declares no block past the trunk (nextn_predict_layers is 0)";
+        return false;
+    }
+    if (st.attn.mla_cache == nullptr || st.emb == nullptr || st.cat == nullptr) {
+        err = "glm5-next: the MTP block's state was never carved";
+        return false;
+    }
+    if (hidden == nullptr) { err = "glm5-next: the MTP block was handed no hidden state"; return false; }
+
+    // **THE DRAFT BLOCK'S OWN INDEX IS `n_layers`, WHICH IS WHERE THE TRUNK STOPS.**  `n_layers` is
+    // `block_count - nextn_predict_layers` (model_arch.cpp), so on the shipped 46-block artifact this is 45 -
+    // the block's real block index, which is what the pack names its tensors after and what keeps every
+    // `expert_layout` row a BLOCK row.  It is emphatically NOT a trunk layer: nothing in the layer loop, the
+    // split search or the state carve may be handed this number.
+    const int64_t layer = g.n_layers;
+    const LayerView v(tables, layer);
+    const int64_t n = g.n_embd;
+    const float eps = (float) g.rms_eps;
+
+    const WeightRef* w_enorm = req(v, "nextn.enorm.weight", err);
+    const WeightRef* w_hnorm = req(v, "nextn.hnorm.weight", err);
+    const WeightRef* w_eh = req(v, "nextn.eh_proj.weight", err);
+    const WeightRef* w_shn = req(v, "nextn.shared_head_norm.weight", err);
+    const WeightRef* w_attn_norm = req(v, "attn_norm.weight", err);
+    const WeightRef* w_ffn_norm = req(v, "ffn_norm.weight", err);
+    if (!w_enorm || !w_hnorm || !w_eh || !w_shn || !w_attn_norm || !w_ffn_norm) return false;
+    if (w_attn_norm->bytes < (uint64_t) n * 4 || w_ffn_norm->bytes < (uint64_t) n * 4 ||
+        w_enorm->bytes < (uint64_t) n * 4 || w_hnorm->bytes < (uint64_t) n * 4 || w_shn->bytes < (uint64_t) n * 4) {
+        err = v.name("nextn.shared_head_norm.weight") + " and the block's other norms are not f32 of the hidden width";
+        return false;
+    }
+
+    // ---- 1. the block's input: `eh_proj(cat(enorm(emb(x) * clamp(pos,0,1)), hnorm(h)))`.
+    //
+    // **THE POSITION MASK IS APPLIED TO THE EMBEDDING AND BEFORE `enorm`, AND IT ZEROES EXACTLY ROW 0.**  The
+    // reference multiplies the gathered embedding by `clamp(pos, 0, 1)`, so the first cell of a sequence
+    // contributes an `enorm(0)` constant and no token at all - there is no next token for it to predict from.
+    // Applying the mask after `enorm` is the same number of characters and a different vector.
+    if (!embed_row(tables, g, token, st.emb, stream, err)) return false;
+    if (pos <= 0) kernels::scale_inplace(st.emb, n, 0.0f, stream);
+    kernels::rms_norm_weighted(st.emb, (const float*) w_enorm->data, 1, n, eps, stream);
+    copy_dev(st.hstate, hidden, n, stream);
+    kernels::rms_norm_weighted(st.hstate, (const float*) w_hnorm->data, 1, n, eps, stream);
+    // `enorm(emb)` OCCUPIES THE FIRST HALF.  `eh_proj` is [8192, 4096], so both halves are the same width and
+    // the swap is shape-legal - it loads, it runs, and it is a different model.
+    copy_dev(st.cat, st.emb, n, stream);
+    copy_dev(st.cat + n, st.hstate, n, stream);
+    quantize_both(st.cat, b.wide_q8k, b.wide_q8_0, 2 * n, stream);
+    kernels::f32_to_bf16_bulk(st.cat, b.wide_bf16, 2 * n, stream);
+    if (!project(*w_eh, v.name("nextn.eh_proj.weight"), st.cat, b.wide_q8_0, b.wide_q8k, b.wide_bf16, st.inp, 2 * n,
+                 n, /*ntok=*/1, stream, err))
+        return false;
+
+    // ---- 2. the attention half.  `inpSA = cur` and the MLA helper applies `attn_norm` itself, so the block's
+    //         own norm goes on HERE and the value it replaces is `st.inp`, which is what the skip adds back.
+    //         The block has NO `hc_*` tensors: there is no mHC read and no mHC write anywhere in it.
+    copy_dev(b.cur, st.inp, n, stream);
+    kernels::rms_norm_weighted(b.cur, (const float*) w_attn_norm->data, 1, n, eps, stream);
+    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n, stream);
+    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n, stream);
+    // The layer index reaches `mla_layer` only through `blk.<layer>.` and the per-block tensor names; every
+    // shape it reads comes from `g`, which is the same geometry the trunk's MLA layers use.
+    //
+    // **`pos` IS THE ROPE POSITION AND `n_written` IS THE CACHE ROW, AND THEY PART COMPANY ON THE FIRST DRAFT.**
+    // The block is not run at every position of the sequence - the trunk is - so its cache holds one row per
+    // step it was called for, and the row a step goes into is the count of the steps before it.  Attending over
+    // `pos + 1` rows instead (the dense reading, which is right for a trunk layer and wrong here) would walk
+    // rows this block never wrote: on a 5-token prompt the first draft would attend over rows 0..5 with 0..4
+    // holding the zero-filled carving, and a zeroed MLA row is not a masked row - K and V are both 0, so its
+    // score is exactly 0 and softmax gives it weight `exp(0) = 1` against the one real row's `exp(s)`.  That is
+    // a 5/6 dilution of the only row that should count.
+    if (!mla_layer(tables, g, layer, pos, b, st.attn, stream, err, st.n_written, st.n_written + 1)) return false;
+    st.n_written++;
+    // **`glm_add_inplace` IS `dst += src`, AND THIS CALL HAD ITS ARGUMENTS THE OTHER WAY ROUND.**  It read
+    // `st.inp = attn(x) + inpSA`, which is what the comment said and what the line did NOT do: written the
+    // other way it made `b.attn_out += st.inp` and left `st.inp` at `inpSA`, so the block's attention result
+    // was thrown away one line later (`moe_combine_parts` overwrites `b.attn_out`) and the FFN was fed the
+    // WRONG vector.  The block then still emits a confident, plausible token - it is an FFN over `inpSA` -
+    // which is why the draft was wrong and not empty.  MEASURED: with the attention's output zeroed by hand
+    // the drafted logits were bit-identical, which is what a dropped term looks like.
+    kernels::glm_add_inplace(st.inp, b.attn_out, n, stream);   // st.inp = inpSA + attn(x) = ffn_inp
+
+    // ---- 3. the FFN half: `moe(rms(ffn_norm(ffn_inp))) + shexp(rms(ffn_norm(ffn_inp))) + ffn_inp`.
+    copy_dev(b.cur, st.inp, n, stream);
+    kernels::rms_norm_weighted(b.cur, (const float*) w_ffn_norm->data, 1, n, eps, stream);
+    quantize_both(b.cur, b.cur_q8k, b.cur_q8_0, n, stream);
+    kernels::f32_to_bf16_bulk(b.cur, b.cur_bf16, n, stream);
+    if (!ffn3(tables, layer, b, "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight", n, g.n_ff,
+              g.swiglu_limit_shexp_or_off(), mb.shared, stream, err))
+        return false;
+    if (!glm_router(tables, g, layer, b, mb, k, stream, err)) return false;
+
+    // ---- the routed experts, on the host, exactly as `session_token` runs a trunk MoE layer's.
+    if (pool == nullptr) {
+        err = "glm5-next: the MTP block's MoE needs the expert pool, and the hook is null";
+        return false;
+    }
+    st.h_x.resize((size_t) n);
+    st.h_ids.resize((size_t) k);
+    st.h_out.resize((size_t) k * (size_t) n);
+    cudaStream_t cs = (cudaStream_t) stream;
+    // The same handoff `session_token` makes between a block's halves: two async copies onto THIS stream, then
+    // a wait.  Only the activation and the ids go over - the router's WEIGHTS stay on the device, because
+    // `moe_combine_parts` is what multiplies by them and the pool's output is deliberately unweighted.
+    if (cudaMemcpyAsync(st.h_x.data(), b.cur, (size_t) n * 4, cudaMemcpyDeviceToHost, cs) != cudaSuccess ||
+        cudaMemcpyAsync(st.h_ids.data(), mb.ids, (size_t) k * 4, cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+        err = "glm5-next: staging the MTP block's expert handoff: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
+    if (cudaStreamSynchronize(cs) != cudaSuccess) {
+        err = "glm5-next: waiting for the MTP block's expert handoff";
+        return false;
+    }
+    if (!pool(pool_user, layer, st.h_x.data(), st.h_ids.data(), /*nt=*/1, k, st.h_out.data(), err)) return false;
+    if (cudaMemcpyAsync(bb.block_out, st.h_out.data(), (size_t) k * (size_t) n * 4, cudaMemcpyHostToDevice,
+                        cs) != cudaSuccess) {
+        err = "glm5-next: staging the MTP block's expert results: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
+    // `moe_combine_parts` writes `sum_j w[j]*parts[j] + shared` - the shared expert AND the routed experts
+    // together, which is why `ffn3` above wrote `mb.shared` and this reads it.  It lands in `b.attn_out`, which
+    // the skip below consumed a moment ago: `parts` and `out` must not be the same buffer.
+    if (!moe_combine_parts(g, layer, k, mb, bb.block_out, b.attn_out, stream, err)) return false;
+
+    // ---- 4. the second skip, the head norm, and the model's own output head.  `ffn_inp` is `st.inp`.
+    kernels::glm_add_inplace(b.attn_out, st.inp, n, stream);
+    copy_dev(bb.mixed, b.attn_out, n, stream);
+    kernels::rms_norm_weighted(bb.mixed, (const float*) w_shn->data, 1, n, eps, stream);
+    // THE HEAD IS THE TRUNK'S OWN, AND SO IS THE BRANCH.  `bb.mixed` is what `glm_head_mix` writes and what
+    // `lm_head_project` reads, so with `--native` - where `output.weight` is a non-resident row served only by
+    // `NativeHead` - the canonical call has no planes to read.  This mirrors `run_head` exactly.
+    if (head != nullptr && head->loaded()) return head->run(bb.mixed, const_cast<float*>(logits), stream, err);
+    return lm_head_project(tables, g, bb, const_cast<float*>(logits), stream, err);
 }
 
 }  // namespace strata::core

@@ -67,6 +67,15 @@ struct SessionState {
     GlmLayerState* glm_states = nullptr;
     void* glm_state_arena = nullptr;
     uint64_t glm_state_bytes = 0;   ///< the whole carve above, so sequence start clears it with one memset
+    /// The MTP draft block's own state (blk.45 on the shipped artifact).  It is NOT a 46th entry in
+    /// `glm_states`: the trunk loop must never reach it, `glm_is_kda_layer(45)` is true on a 4-layer KDA
+    /// interval and would size it at a KDA layer's 12 KB instead of an MLA layer's cache, and it holds the
+    /// per-token staging the expert handoff needs, which no trunk layer has.  Carved only on the stage whose
+    /// `layer_hi` is the model's `n_layers` - the block belongs to whichever card holds the trunk's end - and
+    /// only when the geometry declares a block there (`n_nextn > 0`).
+    GlmMtpState glm_mtp;
+    void* glm_mtp_arena = nullptr;
+    uint64_t glm_mtp_bytes = 0;     ///< the carve above; a sequence start clears it with its own memset
 
     float* R = nullptr;             ///< alias of `block.R`, named for what it means at this level
     int64_t k = 10;                 ///< experts per token
