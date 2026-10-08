@@ -100,6 +100,21 @@ The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
 
+**The draft layer's prompt K/V in batches on a split (opt-in, `STRATA_SPLIT_MTP_BATCH=1`).** With `--mtp` the draft
+layer sits on the last card, and each prompt chunk ends by filling that layer's K/V for the chunk's rows. On one card the
+prompt path does it in batches (`Prefill::draft_kv`, a few large matrix products per chunk); on a split the drafter's own
+pass always did it, one graph launch and four device copies per group of 8 rows (1,024 groups per 8,192-token chunk).
+With the variable set, the last card's prompt path batches it as it does on one card. Restart-only; default off, so the
+default start is unchanged. It needs a `--native` pack (the GGUF-form token table) and a paged or ring (`--kv-resident`)
+draft K/V (`STRATA_MTP_BATCH_RING=0` sends a ring back to the old pass); otherwise it says why once and keeps the old pass:
+`strata serve: draft layer prompt K/V batched on CUDA<d> ...` or `strata serve: STRATA_SPLIT_MTP_BATCH=1 declined, the
+drafter's own pass runs: <reason>`. The draft layer's K/V come out of Q8_1 x Q8_0 MMQ instead of its own mmvq, so the
+drafts, and how many are accepted, can move; the target's tokens are decided by the verify window.
+`tools/split_mtp_batch_parity.py` compares the greedy texts of the two arms. Preliminary, one machine (2x RTX 3080 20 GB,
+UD-Q4_K_XL, `--layer-split 23`, `--batch-mtp`, two slots), few runs per arm, TODO-EVIDENCE (n, the A/A control and the
+parity result): a 24K-token prompt read at 1,751 tok/s without and 1,857 with; 25K-token prompts +5 to 7%, 104K +2%;
+drafts accepted 0.633 without, 0.635 with.
+
 **Each card loads only its own layers' dense weights** (0.1.39, PR #639) with explicit split points (`--layer-split
 27`, not `auto`): every card used to keep a full copy (~3.4 GB for the Coder) though its stage reads only its own
 layers, and the VRAM it frees goes to that card's expert cache (2x MI50 16 GB, Coder: 8,819 -> 10,626 experts in
