@@ -57,6 +57,11 @@ int main(int argc, char** argv) {
             for (int r = 0; r < 3; ++r)
                 if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") t[r] = &ti;
         if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
+        if (t[0]->shape.size() != 3 || t[1]->shape.size() != 3 || t[2]->shape.size() != 3 ||
+            t[0]->shape[2] == 0 || t[1]->shape[2] != t[0]->shape[2] || t[2]->shape[2] != t[0]->shape[2]) {
+            std::fprintf(stderr, "invalid expert tensor dimensions"); return 2;
+        }
+        const size_t n_experts = t[0]->shape[2];
         cpu::NativeFmt f;
         std::string err;
         if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) {
@@ -70,18 +75,23 @@ int main(int argc, char** argv) {
         const size_t drow = dsz / H, drow_full = dsz_full / H;
         std::vector<uint8_t> blobs((size_t) G * f.bytes);
         for (int g = 0; g < G; ++g) {
-            const size_t E = (size_t) ((g * 37 + 5) % 256);
+            const size_t E = (size_t) ((g * 37 + 5) % n_experts);
             uint8_t* b = blobs.data() + (size_t) g * f.bytes;
             std::memcpy(b, gguf.tensor_data(*t[0]) + E * ff.up_off, f.up_off);
             std::memcpy(b + f.up_off, gguf.tensor_data(*t[1]) + E * ff.up_off, f.up_off);
             for (int64_t r = 0; r < H; ++r)
                 std::memcpy(b + f.down_off + r * drow, gguf.tensor_data(*t[2]) + E * dsz_full + r * drow_full, drow);
         }
-        std::mt19937 rng(17 + l);
+        const int seed = std::getenv("STRATA_BENCH_SEED") ? std::atoi(std::getenv("STRATA_BENCH_SEED")) : 17;
+        std::mt19937 rng(seed + l);
         std::normal_distribution<float> nd(0.f, 1.f);
         std::vector<float> x((size_t) NTOK * H);
         for (auto& v : x) v = nd(rng);
-        const int NE = G * T;
+        const bool mixed = std::getenv("STRATA_BENCH_MIXED") != nullptr;
+        const int cap_pad = std::getenv("STRATA_BENCH_PAD") ? std::atoi(std::getenv("STRATA_BENCH_PAD")) : 0;
+        std::vector<int> counts(G);
+        int NE = 0;
+        for (int g = 0; g < G; ++g) { counts[g] = mixed ? 1 + (g * 5) % T : T; NE += counts[g]; }
         std::vector<unsigned long long> ptr(G);
         std::vector<int32_t> start(G + 1), dst(NE), tok(NE);
         const auto L = K::native_expert_layout(f.gu_type, f.d_type, H, FF);
@@ -102,10 +112,10 @@ int main(int argc, char** argv) {
         cudaMalloc((void**) &dtok, (size_t) NE * 4);
         for (int g = 0; g < G; ++g) {
             ptr[g] = (unsigned long long) (dblob + (size_t) g * f.bytes);
-            start[g] = g * T;
-            for (int j = 0; j < T; ++j) {
-                dst[g * T + j] = g * T + j;
-                tok[g * T + j] = (g * 3 + j) % NTOK;
+            start[g] = g ? start[g - 1] + counts[g - 1] : 0;
+            for (int j = 0; j < counts[g]; ++j) {
+                dst[start[g] + j] = start[g] + j;
+                tok[start[g] + j] = (g * 3 + j) % NTOK;
             }
         }
         start[G] = NE;
@@ -119,14 +129,23 @@ int main(int argc, char** argv) {
         K::quantize_q8_1_rows((const float*) dx, NTOK, H, dxq, s);
         auto run = [&](int m, int phase) {
             K::native_expert_set_mode(m, phase);
-            K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G, NE, dxq, dscr, dout, s);
+            K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G + cap_pad, NE, dxq, dscr, dout, s);
         };
         std::vector<float> ref((size_t) NE * H), got((size_t) NE * H);
+        const bool inspect_intermediates = f.gu_type == 42;
+        std::vector<float> ref_gu(inspect_intermediates ? (size_t) 3 * NE * FF : 0), got_gu(ref_gu.size());
+        const size_t fa = ((size_t) NE * FF * 4 + 255) & ~(size_t) 255;
+        const size_t nq = inspect_intermediates ? (size_t) NE * FF / 32 * 36 : 0;
+        std::vector<uint8_t> ref_q(nq), got_q(nq);
         cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
         run(mref, 0);
+        if (inspect_intermediates) cudaMemcpyAsync(ref_gu.data(), dscr, ref_gu.size() * 4, cudaMemcpyDeviceToHost, s);
+        if (inspect_intermediates) cudaMemcpyAsync(ref_q.data(), (uint8_t*) dscr + 3 * fa, nq, cudaMemcpyDeviceToHost, s);
         cudaMemcpyAsync(ref.data(), dout, ref.size() * 4, cudaMemcpyDeviceToHost, s);
         cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
         run(mode, 0);
+        if (inspect_intermediates) cudaMemcpyAsync(got_gu.data(), dscr, got_gu.size() * 4, cudaMemcpyDeviceToHost, s);
+        if (inspect_intermediates) cudaMemcpyAsync(got_q.data(), (uint8_t*) dscr + 3 * fa, nq, cudaMemcpyDeviceToHost, s);
         cudaMemcpyAsync(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost, s);
         if (cudaStreamSynchronize(s) != cudaSuccess) { std::printf("layer %d: CUDA error\n", l); return 1; }
         size_t ndiff = 0;
@@ -136,6 +155,14 @@ int main(int argc, char** argv) {
                 ++ndiff;
                 worst = std::fmax(worst, std::fabs((double) ref[i] - got[i]) / (std::fabs((double) ref[i]) + 1e-6));
             }
+        size_t ngudiff = 0, nqdiff = 0; double gu_max = 0;
+        for (size_t i = 0; i < ref_gu.size(); ++i) if (std::memcmp(&ref_gu[i], &got_gu[i], 4)) {
+            ++ngudiff; gu_max = std::fmax(gu_max, std::fabs((double) ref_gu[i] - got_gu[i]));
+        }
+        for (size_t i = 0; i < nq; ++i) nqdiff += ref_q[i] != got_q[i];
+        if (ngudiff || nqdiff) ++failures;
+        std::printf("intermediates: layer=%d seed=%d gate_up_h_diff=%zu quant_bytes_diff=%zu max_abs=%.9g", l, seed, ngudiff, nqdiff, gu_max);
+        std::puts("");
         auto time = [&](int m, int phase) {
             for (int i = 0; i < 10; ++i) run(m, phase);
             cudaEventRecord(e0, s);

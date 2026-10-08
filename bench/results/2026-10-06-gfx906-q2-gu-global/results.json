@@ -1,0 +1,445 @@
+{
+  "base_commit": "82f46a8c8f475f001ad76d92f58f4a4f8ffb0253",
+  "model": "shefowl/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-Hybrid-GGUF",
+  "model_revision": "55568c1b41d2e381a59a281447fb10935c3c6d0a",
+  "hardware": {
+    "gpu": "2 x gfx906 16 GiB",
+    "cpu": "Xeon E5-2698B v3",
+    "ram_gib": 128,
+    "storage": "Hybrid GGUF and native pack on SATA SSD; PLE locked in RAM during measurement",
+    "post_run_snapshot": {
+      "utc": "2026-10-06T15:21:00Z",
+      "device_link_speed": "16.0 GT/s x16 on each GPU-facing link (sysfs); full upstream PCIe topology not measured",
+      "power_caps_w": [
+        190,
+        190
+      ],
+      "note": "Snapshot after the runs; link and power limits were not logged during ABBA"
+    }
+  },
+  "configuration": {
+    "context_capacity": 204800,
+    "kv": "int8",
+    "kv_resident": 32768,
+    "prefill_chunk": 4096,
+    "ple": "locked RAM",
+    "layer_split": 27,
+    "mtp_max": 4,
+    "suffix_lookup_max": 3,
+    "expert_cache_mib": 25150,
+    "expert_slots": 19078,
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 20,
+    "output_tokens": 1024,
+    "prompt_reuse": false,
+    "clock_locking": false,
+    "vision_in_benchmark": false,
+    "cpu_pool_workers": 15,
+    "calibration": "No calibration during comparison; fixed configuration in both arms"
+  },
+  "runs": [
+    {
+      "tag": "code4k-A1",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 12054.8,
+      "decode_ms": 17586.7,
+      "PP": 339.7816637356074,
+      "TG": 58.22581837411225,
+      "accepted": 748,
+      "offered": 810,
+      "prompt_reused": 0,
+      "prompt_read": 4096,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 7,
+      "output_ids_sha256": "9790d951e72d6c2166a6aaaa75333338a82d14303630dc2690f56993d6a5a64d"
+    },
+    {
+      "tag": "code4k-B1",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 12050.1,
+      "decode_ms": 17311.9,
+      "PP": 339.9141915834723,
+      "TG": 59.15006440656427,
+      "accepted": 748,
+      "offered": 810,
+      "prompt_reused": 0,
+      "prompt_read": 4096,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 13,
+      "output_ids_sha256": "9790d951e72d6c2166a6aaaa75333338a82d14303630dc2690f56993d6a5a64d"
+    },
+    {
+      "tag": "code4k-B2",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 12051.6,
+      "decode_ms": 17421.0,
+      "PP": 339.8718842311394,
+      "TG": 58.77963377532863,
+      "accepted": 748,
+      "offered": 810,
+      "prompt_reused": 0,
+      "prompt_read": 4096,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 13,
+      "output_ids_sha256": "9790d951e72d6c2166a6aaaa75333338a82d14303630dc2690f56993d6a5a64d"
+    },
+    {
+      "tag": "code4k-A2",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 12046.2,
+      "decode_ms": 17659.2,
+      "PP": 340.0242400092975,
+      "TG": 57.98677176769049,
+      "accepted": 748,
+      "offered": 810,
+      "prompt_reused": 0,
+      "prompt_read": 4096,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 7,
+      "output_ids_sha256": "9790d951e72d6c2166a6aaaa75333338a82d14303630dc2690f56993d6a5a64d"
+    },
+    {
+      "tag": "code64k-A1",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112150.4,
+      "decode_ms": 22033.5,
+      "PP": 584.358147630325,
+      "TG": 46.47468627317494,
+      "accepted": 681,
+      "offered": 874,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 7,
+      "output_ids_sha256": "9108320b66a82b8df797740d217cae5e587ef579511554c129539ff4e5969e7e"
+    },
+    {
+      "tag": "code64k-B1",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112184.5,
+      "decode_ms": 21758.3,
+      "PP": 584.1805240474397,
+      "TG": 47.062500287246706,
+      "accepted": 681,
+      "offered": 874,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 13,
+      "output_ids_sha256": "9108320b66a82b8df797740d217cae5e587ef579511554c129539ff4e5969e7e"
+    },
+    {
+      "tag": "code64k-B2",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112145.8,
+      "decode_ms": 21722.1,
+      "PP": 584.3821168514559,
+      "TG": 47.14093020472238,
+      "accepted": 681,
+      "offered": 874,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 13,
+      "output_ids_sha256": "9108320b66a82b8df797740d217cae5e587ef579511554c129539ff4e5969e7e"
+    },
+    {
+      "tag": "code64k-A2",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112149.2,
+      "decode_ms": 22067.6,
+      "PP": 584.3644002810541,
+      "TG": 46.40287117765412,
+      "accepted": 681,
+      "offered": 874,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 12345
+      },
+      "mode": 7,
+      "output_ids_sha256": "9108320b66a82b8df797740d217cae5e587ef579511554c129539ff4e5969e7e"
+    },
+    {
+      "tag": "ru64k-A1",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112175.5,
+      "decode_ms": 32541.5,
+      "PP": 584.2273936822212,
+      "TG": 31.467510717084338,
+      "accepted": 376,
+      "offered": 840,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 54321
+      },
+      "mode": 7,
+      "output_ids_sha256": "7bb2b7e7b1e5ea1389bc0491943920769d11e3bc5454b0b5243e3e2d57d11629"
+    },
+    {
+      "tag": "ru64k-B1",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112182.4,
+      "decode_ms": 32093.3,
+      "PP": 584.1914596228999,
+      "TG": 31.90697123698716,
+      "accepted": 378,
+      "offered": 827,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 54321
+      },
+      "mode": 13,
+      "output_ids_sha256": "1eb622512934953e60df43c6619ce3464e2ad336c2590089fdd5bcb7dd1736fd"
+    },
+    {
+      "tag": "ru64k-B2",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112174.6,
+      "decode_ms": 32186.7,
+      "PP": 584.2320810593485,
+      "TG": 31.814382959421128,
+      "accepted": 378,
+      "offered": 827,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 54321
+      },
+      "mode": 13,
+      "output_ids_sha256": "1eb622512934953e60df43c6619ce3464e2ad336c2590089fdd5bcb7dd1736fd"
+    },
+    {
+      "tag": "ru64k-A2",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 112210.3,
+      "decode_ms": 32538.0,
+      "PP": 584.0462060969447,
+      "TG": 31.47089556825865,
+      "accepted": 385,
+      "offered": 851,
+      "prompt_reused": 0,
+      "prompt_read": 65536,
+      "sampling": {
+        "temperature": 1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "seed": 54321
+      },
+      "mode": 7,
+      "output_ids_sha256": "484fb3783a144ee9cf9c8be50e85afa35be714d794451cb2be0a57d190a7fd1d"
+    }
+  ],
+  "aggregate": {
+    "code4k": {
+      "A_TG": 58.106049214234844,
+      "B_TG": 58.96426730851728,
+      "gain_percent": 1.4769857973276013,
+      "A_PP": 339.90290859300444,
+      "B_PP": 339.8930365907799,
+      "all_output_ids_equal": true,
+      "A_repeat_equal": true,
+      "B_repeat_equal": true,
+      "both_B_faster_than_both_A": true,
+      "equal_output_comparison": true
+    },
+    "code64k": {
+      "A_TG": 46.43875096086039,
+      "B_TG": 47.101682597216225,
+      "gain_percent": 1.4275397650435728,
+      "A_PP": 584.3612739389638,
+      "B_PP": 584.2813030607101,
+      "all_output_ids_equal": true,
+      "A_repeat_equal": true,
+      "B_repeat_equal": true,
+      "both_B_faster_than_both_A": true,
+      "equal_output_comparison": true
+    },
+    "ru64k": {
+      "A_TG": 31.46920305165221,
+      "B_TG": 31.860609831985066,
+      "gain_percent": 1.2437772246421952,
+      "A_PP": 584.1367858393892,
+      "B_PP": 584.2117696350014,
+      "all_output_ids_equal": false,
+      "A_repeat_equal": false,
+      "B_repeat_equal": true,
+      "both_B_faster_than_both_A": true,
+      "equal_output_comparison": false
+    }
+  },
+  "components": {
+    "cases": 280,
+    "all_bitwise_equal": true,
+    "all_speedup_min": 1.0309859154929577,
+    "by_tokens": {
+      "1": {
+        "n": 30,
+        "min": 1.0309859154929577,
+        "median": 1.038057742782152,
+        "max": 1.0495753959146201
+      },
+      "2": {
+        "n": 30,
+        "min": 1.1250000000000002,
+        "median": 1.2034820457018498,
+        "max": 1.2654720118233882
+      },
+      "3": {
+        "n": 30,
+        "min": 1.2623376623376623,
+        "median": 1.3900573613766731,
+        "max": 1.4952
+      },
+      "4": {
+        "n": 30,
+        "min": 1.3441860465116278,
+        "median": 1.4911339340859064,
+        "max": 1.6111186624983007
+      },
+      "5": {
+        "n": 30,
+        "min": 1.2694300518134716,
+        "median": 1.353881739697019,
+        "max": 1.4224473184408066
+      },
+      "6": {
+        "n": 30,
+        "min": 1.3055118110236221,
+        "median": 1.432956983472554,
+        "max": 1.4878429439789713
+      },
+      "7": {
+        "n": 30,
+        "min": 1.3582966226138034,
+        "median": 1.5087288839361934,
+        "max": 1.5720293622878116
+      },
+      "8": {
+        "n": 30,
+        "min": 1.4008264462809918,
+        "median": 1.55352241537054,
+        "max": 1.653514180024661
+      }
+    }
+  },
+  "intermediate_parity": {
+    "intermediate_cases": 282,
+    "intermediate_float_values": 70744320,
+    "intermediate_quant_bytes": 26529120,
+    "intermediate_output_values": 94325760
+  },
+  "fixture": {
+    "prompt_tokens": 65536,
+    "generation_tokens": 1024,
+    "context_capacity": 204800,
+    "vocabulary_size": 248320,
+    "tokenizer_equal_checks": {
+      "tokenizer.ggml.tokens": true,
+      "tokenizer.ggml.merges": true,
+      "tokenizer.ggml.token_type": true,
+      "tokenizer.ggml.pre": true
+    },
+    "prompt_text_sha256": "716ba8c43f7a2c05db1863f759a99d0679c10f770f099f58bf3e4dd0a6436928",
+    "ids_sha256": "d56a66404743159f5a5bfb0710a0ae8ef881346d83425d9a2c224b071c08abbe",
+    "source": "deterministic synthetic Python review fixture,4500 uniquely numbered functions then token-prefix cut with complete chat suffix",
+    "sampling": {
+      "temperature": 1,
+      "top_p": 0.95,
+      "top_k": 20,
+      "seed": 12345
+    },
+    "eos_stop": "disabled with out-of-vocabulary sentinel2147483647",
+    "quality_claim": false
+  },
+  "russian_fixture": {
+    "tokens": 65536,
+    "seed": 54321,
+    "source": "synthetic Russian queue durability review",
+    "ids_sha256": "6083886a598849ba30d88a26ed9170dcbe0c113b413707de3803b960e30ae73d"
+  },
+  "limits": [
+    "Russian baseline repetitions diverge at output index213; candidate repetitions agree. Russian timing is observational, not equal-work evidence.",
+    "No universal parity or quality claim; no fully occupied200K context test.",
+    "CUDA/RDNA and other model geometries not tested.",
+    "Existing gfx906 build compatibility fixes were held constant in both arms; excluded from this patch."
+  ],
+  "software": {
+    "host_os": "Ubuntu 26.04.1 LTS",
+    "host_kernel": "7.0.0-30-generic",
+    "container_os": "Ubuntu 24.04.4 LTS",
+    "hip": "7.14.60850-0000000",
+    "compiler": "AMD clang 23.0.0git, ROCm llvm-project 46fcb339fb61119b337f973c7ca9e710a319fdd0 + patch 440716f8b87be9d8e20ed910e10e5b6d14d57cf6",
+    "driver_package_version": "not recorded",
+    "build": "Release source build, STRATA_HIP_GFX906=ON, CMAKE_HIP_ARCHITECTURES=gfx906, STRATA_PORTABLE=ON"
+  },
+  "artifact_sha256": {
+    "expert-profile.bin": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+    "mtp/dense.bin": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+    "mtp/dense.txt": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd",
+    "mtp/draft_vocab.bin": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91",
+    "mtp/experts.bin": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+  }
+}

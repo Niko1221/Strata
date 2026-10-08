@@ -3095,6 +3095,112 @@ template<int SG> struct DotG<21, SG> { __device__ static __forceinline__ float f
 template<int SG> struct DotG<23, SG> { __device__ static __forceinline__ float f(const void* vbq, const block_q8_1* bq8_1, int kbx, int iqs,
                                                       const uint32_t*) { return vec_dot_iq4_xs_q8_1(vbq, bq8_1, kbx, iqs); } };
 
+// Exact Q2_0 expansion: four unsigned 2-bit codes -> signed bytes {-1,0,1,2}.
+// Each byte is at most 3, so adding 127 causes no carries between bytes.
+__device__ __forceinline__ int q2_four_bytes(unsigned q) {
+    const unsigned c = (q & 3u) | ((q & 12u) << 6) | ((q & 48u) << 12) | ((q & 192u) << 18);
+    return (int) ((c + 0x7f7f7f7fu) ^ 0x80808080u);
+}
+__device__ __forceinline__ float q2_dot_fast(const void* vbq, const block_q8_1* x, int kbx, int iqs) {
+    const block_q2_0* w = (const block_q2_0*) vbq + kbx;
+    const int16_t* qs = (const int16_t*) w->qs + iqs * 4;
+    const block_q8_1* a = x + iqs;
+    int sum = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const unsigned q = (uint16_t) qs[j];
+        sum = ggml_cuda_dp4a(get_int_b4(a->qs, j * 2), q2_four_bytes(q), sum);
+        sum = ggml_cuda_dp4a(get_int_b4(a->qs, j * 2 + 1), q2_four_bytes(q >> 8), sum);
+    }
+    const float d2 = w->d, d8 = __low2float(a->ds);
+    return d2 * d8 * sum;
+}
+// Two-stage bit spreading for down: identical signed bytes, fewer integer operations.
+// Keep gate/up on its already-qualified implementation.
+__device__ __forceinline__ int q2_four_bytes_spread(unsigned q) {
+    unsigned c = (q | (q << 12)) & 0x000f000fu;
+    c = (c | (c << 6)) & 0x03030303u;
+    return (int) ((c + 0x7f7f7f7fu) ^ 0x80808080u);
+}
+__device__ __forceinline__ float q2_dot_spread(const void* vbq, const block_q8_1* x, int kbx, int iqs) {
+    const block_q2_0* w = (const block_q2_0*) vbq + kbx;
+    const int16_t* qs = (const int16_t*) w->qs + iqs * 4;
+    const block_q8_1* a = x + iqs;
+    int sum = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const unsigned q = (uint16_t) qs[j];
+        sum = ggml_cuda_dp4a(get_int_b4(a->qs, j * 2), q2_four_bytes_spread(q), sum);
+        sum = ggml_cuda_dp4a(get_int_b4(a->qs, j * 2 + 1), q2_four_bytes_spread(q >> 8), sum);
+    }
+    const float d2 = w->d, d8 = __low2float(a->ds);
+    return d2 * d8 * sum;
+}
+// Q2_0 token-inner R2 without shared memory. Keep the baseline CTA geometry
+// for singleton groups; reuse each thread's weight rows across up to NT tokens.
+template<int NT, int RB>
+__global__ void __launch_bounds__(256) native_gu_q2_global_kernel(
+    const unsigned long long* __restrict__ grp_ptr, const int32_t* __restrict__ grp_start,
+    const int32_t* __restrict__ n_groups, const int32_t* __restrict__ ent_tok,
+    const block_q8_1* __restrict__ xq, NativeExpertLayout L,
+    float* __restrict__ gate, float* __restrict__ up) {
+    const int g = blockIdx.y;
+    if (g >= *n_groups) return;
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int e0 = grp_start[g], e1 = grp_start[g + 1], xb = L.n_embd / 32;
+    const int nb = L.n_embd / Fmt<42>::qk, nr = 2 * L.n_ff;
+    const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+    auto row = [&](int r) {
+        return blob + (r >= L.n_ff ? L.up_off : 0) +
+               (size_t) (r >= L.n_ff ? r - L.n_ff : r) * L.gu_row;
+    };
+    auto put = [&](int r, int e, float v) {
+        (r >= L.n_ff ? up : gate)[(size_t) e * L.n_ff + (r >= L.n_ff ? r - L.n_ff : r)] = v;
+    };
+    for (int p = 0; p < RB / 16; ++p) {
+        const int r0 = blockIdx.x * RB + p * 16 + warp, r1 = r0 + 8;
+        if (r0 >= nr) return;
+        const uint8_t* w0 = row(r0);
+        const uint8_t* w1 = row(r1 < nr ? r1 : r0);
+        for (int c = e0; c < e1; c += NT) {
+            auto pass = [&](auto count) {
+                constexpr int N = decltype(count)::value;
+                float a[N], b[N];
+                const block_q8_1* x[N];
+#pragma unroll
+                for (int j = 0; j < N; ++j) {
+                    a[j] = b[j] = 0;
+                    x[j] = xq + (size_t) ent_tok[c + j] * xb;
+                }
+                for (int k = lane; k < nb * Fmt<42>::ipb; k += 32) {
+                    const int kb = k / Fmt<42>::ipb, iq = Fmt<42>::step * (k % Fmt<42>::ipb);
+#pragma unroll
+                    for (int j = 0; j < N; ++j) {
+                        const block_q8_1* xx = x[j] + kb * (Fmt<42>::qk / 32);
+                        a[j] += q2_dot_fast(w0, xx, kb, iq);
+                        b[j] += q2_dot_fast(w1, xx, kb, iq);
+                    }
+                }
+#pragma unroll
+                for (int j = 0; j < N; ++j) {
+                    const float aa = warp_sum(a[j]), bb = warp_sum(b[j]);
+                    if (lane == 0) {
+                        put(r0, c + j, aa);
+                        if (r1 < nr) put(r1, c + j, bb);
+                    }
+                }
+            };
+            const int n = min(NT, e1 - c);
+            if (n == 1) pass(std::integral_constant<int, 1>{});
+            else if (n == 2) pass(std::integral_constant<int, 2>{});
+            else if constexpr (NT == 4) {
+                if (n == 3) pass(std::integral_constant<int, 3>{});
+                else pass(std::integral_constant<int, 4>{});
+            }
+        }
+    }
+}
+
 constexpr int LDS_RB = 64;    // gate/up rows per block (4 R2 passes of 16)
 constexpr int LDS_NT = 4;     // entries whose activations sit in LDS at once
 
@@ -3193,7 +3299,7 @@ __global__ void __launch_bounds__(256) native_gu_lds_kernel(const unsigned long 
 
 // ---- 7 (down): the group's q8_1 h rows in LDS, the tokens inside the k loop, the R2 row pairs of mode 2 -
 // the same per-(row, entry) sums in the same order: bitwise the mode-2 output.
-template<int TD>
+template<int TD, bool FAST_Q2 = false>
 __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                               const int32_t* __restrict__ grp_start,
                                                               const int32_t* __restrict__ n_groups,
@@ -3234,8 +3340,8 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
 #pragma unroll
                     for (int j = 0; j < NTC; ++j) {
                         const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
-                        const float a = F::dot(w0, xk, kbx, iqs);
-                        const float b = F::dot(w1, xk, kbx, iqs);
+                        const float a = (FAST_Q2 && TD == 42) ? q2_dot_spread(w0, xk, kbx, iqs) : F::dot(w0, xk, kbx, iqs);
+                        const float b = (FAST_Q2 && TD == 42) ? q2_dot_spread(w1, xk, kbx, iqs) : F::dot(w1, xk, kbx, iqs);
                         s0[j] += a;
                         s1[j] += b;
                     }
@@ -3438,8 +3544,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (g_exp_phase != 2) {
 #endif
 #if defined(STRATA_HIP_GFX906)
-    const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
-    if (lds_gu) {
+    const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8 || em0 == 13 || em0 == 15) && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
+    // Modes 13/15 share the gfx906 Q2_0 gate/up candidate. Mode 15 only adds
+    // fast Q2_0 down unpacking. Qualified geometry: Flash-Next H=2560, FF=640.
+    if ((em0 == 13 || em0 == 15) && L.gu_type == 42 && L.n_embd == 2560 && L.n_ff == 640) {
+        const dim3 gl((unsigned)((2 * L.n_ff + 15) / 16), (unsigned)cap_groups);
+        native_gu_q2_global_kernel<4,16><<<gl,256,0,s>>>(grp_ptr,grp_start,n_groups,ent_tok,X,L,gate,up);
+    } else if (lds_gu) {
         const dim3 gl((unsigned) ((2 * L.n_ff + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
         switch (L.gu_type) {
@@ -3498,10 +3609,11 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if defined(STRATA_HIP_GFX906)
-    if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
+    if ((em0 == 7 || em0 == 8 || em0 == 13 || em0 == 15) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
         if (L.d_type == 20) native_down_lds_kernel<20><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        else if (em0 == 15 && L.n_embd == 2560 && L.n_ff == 640) native_down_lds_kernel<42, true><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
         else native_down_lds_kernel<42><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
         check("native_expert_grouped/down");
         return;
