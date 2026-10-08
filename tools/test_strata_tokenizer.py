@@ -41,6 +41,17 @@ class PieceCache(unittest.TestCase):
         self.assertGreater(len(b._piece_ids), 0)
         self.assertEqual(b.decode(warm), text)
 
+    def test_glm_whole_piece_lookup_cold_warm_and_off(self):
+        tokens = [ST.BYTE_TO_UNICODE[b] for b in range(256)] + ["abc", "123"]
+        t = ST.Tokenizer(tokens, [], pre="glm5")
+        expected = [t.ids["abc"], t.ids["123"]]
+        self.assertEqual(t.encode("abc123"), expected)
+        self.assertEqual(t.encode("abc123"), expected)
+        t._piece_ids.clear()
+        t.PIECE_CACHE_MAX = 0
+        self.assertEqual(t.encode("abc123"), expected)
+        self.assertEqual(t.decode(expected), "abc123")
+
     def test_the_cache_is_bounded(self):
         t = toy()
         t.PIECE_CACHE_MAX = 5

@@ -192,7 +192,35 @@ function render(m) {
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderTiers(m.tiers);
   if (tab === "about") renderAbout(eng, hw, st);
+}
+
+const TIERS = [["ram_fetch", "From RAM"], ["disk", "From SSD"], ["promo", "Promoted to VRAM"]];
+$("tiers").innerHTML = TIERS.map(([key, label]) => `
+  <div class="st-card metric-card"><div class="st-metric">
+    <span class="st-metric__label">${esc(label)}</span><span class="st-metric__value" id="tv-${key}">–</span>
+    <span class="st-metric__sub">experts / token</span>
+    <svg class="st-metric__spark" id="tp-${key}" viewBox="0 0 100 32" preserveAspectRatio="none">
+      <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
+      stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
+  </div></div>`).join("");
+function renderTiers(t) {
+  $("tiers-card").hidden = !t?.now;
+  if (!t?.now) return;
+  const n = t.now;
+  for (const [key] of TIERS) {
+    $(`tv-${key}`).textContent = n[key] == null ? "–" : fmt(n[key], 2);
+    spark(`tp-${key}`, t.history?.[key]);
+  }
+  facts($("tiers-facts"), [
+    ["Decode", n.tok_s == null ? null : `${fmt(n.tok_s, 1)} tok/s · ${fmt(n.ms_tok, 1)} ms/token`],
+    ["VRAM hit", n.vram_hit == null ? null : `${fmt(100 * n.vram_hit, 1)}%`],
+    ["VRAM experts", n.vram_used == null ? null : `${fmt(n.vram_used)} / ${fmt(n.vram_slots)} · ${fmt(n.vram_gb, 1)} GB`],
+    ["RAM experts", n.ram_used == null ? null : `${fmt(n.ram_used)} / ${fmt(n.ram_slots)} · ${fmt(n.ram_gb, 1)} GB`],
+    ["From RAM / SSD", n.ram_fetch == null ? null : `${fmt(n.ram_fetch, 2)} / ${fmt(n.disk, 2)} experts/token`],
+    ["Promoted to VRAM", n.promo == null ? null : `${fmt(n.promo, 2)} experts/token`],
+  ]);
 }
 
 // #596: the conversation cache - the prompt's state the engine keeps between requests (always), and the whole

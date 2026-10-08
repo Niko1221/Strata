@@ -5,6 +5,10 @@ set up Strata on their PC. Strata runs the Qwen3.8-Flash-Next model locally on o
 system RAM, and serves an OpenAI- and Anthropic-compatible API on `http://127.0.0.1:8080`. The human-oriented
 version of everything below is [INSTALL.md](INSTALL.md).
 
+These steps and RAM recommendations are for Qwen. If the user asks for GLM-5.3-Flash, follow
+[GLM.md](GLM.md): Linux/NVIDIA or experimental native Windows/NVIDIA, a source build and explicit permission for
+its model download.
+
 Work through the steps in order. Tell the user what you are doing in plain words; they may not be technical.
 
 ## 0. Ground rules

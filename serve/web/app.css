@@ -88,6 +88,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); }
+#tiers { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 .metric-card { padding: var(--st-s-4) var(--st-s-5); }
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }

@@ -5,6 +5,10 @@ normal PC: one NVIDIA or AMD graphics card plus system RAM, on Windows or Linux.
 (`src/`, `include/`), a Python server with an OpenAI- and Anthropic-compatible API and a web app (`serve/`), and a
 one-click installer (`setup.py`, started by `START-HERE.bat` / `setup.sh`).
 
+The optional GLM-5.3-Flash family, ported from Project Maya, targets native Linux/NVIDIA and experimental
+Windows/NVIDIA, and needs a source build. Follow [docs/GLM.md](docs/GLM.md) for its requirements; do not apply
+the Qwen RAM/model recommendations to GLM.
+
 ## Installing Strata for a user
 
 Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**: check the PC, pick the model by RAM, run setup non-interactively,

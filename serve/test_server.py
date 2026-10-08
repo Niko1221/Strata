@@ -1522,6 +1522,12 @@ class SamplingKeys(unittest.TestCase):
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
 
+    def test_glm_cpu_threads(self):
+        self.assertIn("cpu_threads=20", self.keys(strata_tune={"cpu_threads": 20}))
+        for value in (0, -1, True, 2.5, "20", 1025):
+            self.assertFalse([k for k in self.keys(strata_tune={"cpu_threads": value})
+                              if k.startswith("cpu_threads=")])
+
     def test_checkpoint_key(self):
         self.assertIn("ckpt=0", self.keys(temperature=0, strata_checkpoint=False))
         for absent in ({}, {"strata_checkpoint": True}, {"strata_checkpoint": 0}, {"cache_prompt": False}):
@@ -4869,6 +4875,9 @@ class UntimedReads(unittest.TestCase):
             self.killed = True
             self.release.set()
 
+        def close(self):
+            self.release.set()
+
     def test_vision_encode_read_times_out(self):
         import serve.server as server
         silent = self.Silent()
@@ -4891,7 +4900,8 @@ class UntimedReads(unittest.TestCase):
     def test_vision_ready_read_times_out(self):
         import serve.server as server
         silent = self.Silent()
-        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill, poll=lambda: None)
+        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill, poll=lambda: None,
+                               wait=lambda timeout=None: 0)
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))
