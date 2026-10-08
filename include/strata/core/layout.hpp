@@ -19,6 +19,7 @@
 #include "strata/core/weights.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace strata {
@@ -97,6 +98,28 @@ struct ModelGeometry {
     /// file, refused unless uniform.
     double swiglu_clamp = 0.0;        // 10.0, `swiglu_clamp_exp`: the routed experts
     double swiglu_clamp_shexp = 0.0;  // 10.0, `swiglu_clamp_shexp`: the dense lead + the shared expert
+
+    /// The limit as the KERNELS should see it, which is `limit` - unless `STRATA_GLM_NO_CLAMP` is set, and
+    /// then it is 0, the reference's own "no clamp" guard.
+    ///
+    /// **This is the A/B switch, and it exists because a clamp that never binds is not a tested clamp.**
+    /// `swiglu_clamp_exp` is 10.0 on every layer here, and on an ordinary prompt the routed experts' gates
+    /// rarely reach it - which is exactly how the clamp's absence survived a 30/32 ladder match.  Running the
+    /// same prompt with and without it says whether it binds at all on that input: identical dumps mean the
+    /// run confirmed the rest of the port and said NOTHING about the clamp, and a differ means the two arms
+    /// can be told apart against the oracle.
+    ///
+    /// It is an environment variable rather than a flag because the three sites that source a limit are in
+    /// three different translation units (the GLM layer's two FFNs, and the expert layout's fill), and a flag
+    /// would have to be threaded through the session to reach all three.
+    float swiglu_limit_or_off() const {
+        static const bool off = std::getenv("STRATA_GLM_NO_CLAMP") != nullptr;
+        return off ? 0.0f : (float) swiglu_clamp;
+    }
+    float swiglu_limit_shexp_or_off() const {
+        static const bool off = std::getenv("STRATA_GLM_NO_CLAMP") != nullptr;
+        return off ? 0.0f : (float) swiglu_clamp_shexp;
+    }
     /// `attention.layer_norm_rms_epsilon`: **1e-6 on qwen4exp and 1e-5 on glm5-next**, so a layer file must
     /// read it from here rather than use `gemv::RMS_EPS`, which is the first family's number.  KDA's L2
     /// normalisation reuses it too (there it is a floor on the norm, not a term in the sum).

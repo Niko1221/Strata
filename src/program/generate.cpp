@@ -2629,7 +2629,7 @@ int main(int argc, char** argv) {
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
         if (!strata::kernels::cpu::expert_layout_load(o.pack, g.n_layers, g.n_expert, g.n_embd, g.n_ff,
-                                                      (float) g.swiglu_clamp, err)) {
+                                                      g.swiglu_limit_or_off(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

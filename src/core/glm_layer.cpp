@@ -885,7 +885,7 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
         // DENSE: the whole FFN runs here, straight into `bb.block_out`, which is where `hc_post` reads the
         // sublayer's result from.  A buffer of its own would be one more copy of 16 KB per layer for nothing.
         if (!ffn3(tables, layer, b, "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight", n, g.n_ff_dense,
-                  (float) g.swiglu_clamp_shexp, bb.block_out, stream, err))
+                  g.swiglu_limit_shexp_or_off(), bb.block_out, stream, err))
             return false;
         // ...AND THE RESIDUAL WRITE TOO.  A dense layer has no host pool between the halves, so the block is
         // not actually split and `post` has nothing left to do.
@@ -902,7 +902,7 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
     // the gate that scales qwen4exp's shared expert does not exist here - and `moe_combine_parts` adds
     // `mb.shared` unconditionally, which is exactly this family's rule.
     if (!ffn3(tables, layer, b, "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight", n, g.n_ff,
-              (float) g.swiglu_clamp_shexp, mb.shared, stream, err))
+              g.swiglu_limit_shexp_or_off(), mb.shared, stream, err))
         return false;
     return glm_router(tables, g, layer, b, mb, k, stream, err);
 }
