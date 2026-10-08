@@ -477,8 +477,9 @@ restores the old Q8_0/IQ4_NL kernels. The sliced GR down kernel (GR read 108.6 -
 ~1e-7) flips that near-tie back: its output is the original one. `STRATA_GR_DOWN_SLICED=0` restores the direct kernel.
 
 Kernel level: IQ4_XS 107 -> 323 GB/s at 2 columns (61 -> 212 at 6), Q4_K/Q5_K 1.3-1.6x; the GR read 135 -> 110 us at
-6 tokens (bitwise equal). Switches to the old paths: `STRATA_PLAN_PARALLEL=0`, `STRATA_GR_DOWN_DIRECT=0`,
-`STRATA_MMVQ_WIDE_K=0`. (`iq_parity` reports 10 "missing fixture" failures with and without the change: the oracle
+6 tokens (bitwise equal). Switches to the old paths: `STRATA_GR_DOWN_DIRECT=0`, `STRATA_MMVQ_WIDE_K=0`. The
+parallel plan has no switch any more: since the re-migration to 0.1.40.1 the port takes the CUDA plan (#783), which
+groups the entries in parallel too. (`iq_parity` reports 10 "missing fixture" failures with and without the change: the oracle
 fixtures are not in the port's tree.)
 
 **Two-speed runs, explained (2026-09-30).** Identical greedy runs decode at either ~45 or ~39 tok/s. A per-gather
