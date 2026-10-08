@@ -201,8 +201,8 @@ shell commands above. See [MCP_SERVER.md](MCP_SERVER.md).
 
 ### Selecting the drafter
 
-Setup offers MTP (default), DFlash, or Off (no speculative decoding).
-Use `--setup --yes --drafter none` to skip both draft models and disable suffix/prompt lookup. Use `--drafter dflash --dflash-quant original|q8|q5|q4`
+Setup offers MTP (default), DFlash, or Off (no model drafter; prompt lookup stays on).
+Use `--setup --yes --drafter none` to skip both draft models and keep suffix/prompt lookup enabled. Use `--drafter dflash --dflash-quant original|q8|q5|q4`
 with `--setup --yes` for non-interactive DFlash setup. It fetches the pinned drafter automatically,
 prepares its GGUF and skips MTP. Quantization affects the drafter's matrices; norms retain BF16.
 The resulting server defaults to greedy decoding. Sampling requests use target-only decoding.
