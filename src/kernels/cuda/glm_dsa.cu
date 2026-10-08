@@ -7,9 +7,18 @@
 //             is PER KEY-DIM ELEMENT** - the reference permutes (kpool, key_dim) and normalises over the member
 //             axis - so the loop below is over `m` with `e` fixed, and nothing here touches a second `e`.
 //   score     one thread per (query, pool): a relu'd dot per indexer head, weighted and summed.
-//   select    one thread per query: the router rank formula over the VISIBLE pools, then cell expansion and the
-//             tail, padded with -1.  O(n_vis^2) comparisons; a radix top-k would only pay at prefill lengths,
-//             and it would have to reproduce the same tie order to keep `cells` identical.
+//   select    one thread per query: an MSD radix pass over the VISIBLE pools finds the `top_pools`-th largest
+//             score, and a stable radix sort of the picks it lets through puts them in the descending-score order
+//             the header promises.  O(n_vis) a pass, four passes, then four counting passes over the picks.  While
+//             fewer than `top_pools` pools are visible there is no boundary to find and the walk is skipped - but
+//             the SORT is not, because "all of them are selected" is a statement about the set and not the order.
+//             **THIS WAS O(n_vis^2) - the router rank formula, recomputed pool by pool - and the note here said
+//             a radix top-k "would only pay at prefill lengths".  This model's prefill IS long lengths, and the
+//             cost was measured rather than reasoned about:** at 16k context the caller launches this once per
+//             token with `n_pools` = the pools so far, so ONE THREAD made 4,096^2 = 16.8M comparisons, 512
+//             times a chunk, per MLA layer.  The chunk's `attn` section was 210.0 s of a 210.8 s card time
+//             against 21.3 s for the same chunk on the dense path - a 10x regression whose whole cause was this
+//             loop.  See `glm_dsa_key` for the tie order, which is preserved.
 //   attend    one block per (query token, head): scores over the row's cells, softmax on one thread (n_sel is
 //             ~2051 values), ctx in shared, and the -1 cells EXCLUDED - which is numerically the graph's -inf
 //             additive mask rather than a branch that could drift from it.
@@ -24,6 +33,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -45,6 +55,12 @@ constexpr int DS_THREADS = 256;
 /// The slots one thread owns in `glm_dsa_attn_kernel`, exactly as many as `glm_mla_attn`'s: kv_lora 512 over
 /// 256 threads is two of them, and the launcher refuses a wider latent rather than truncating the copy.
 constexpr int DS_SLOTS = 8;
+/// How many selected pools `glm_dsa_select_kernel` will rank in one thread's local array.  Device code has no
+/// variable-length array, and this file's rule is that a bound is refused rather than truncated (`DS_SLOTS`
+/// above, `glm_dsa_pool`'s pool-width check) - so `top_pools` past this falls back to the rank formula run
+/// over every visible pool, which is what this kernel did before and is correct at any width.  This model's
+/// `idx_top_k / idx_kpool` is 2048/4 = 512, exactly the bound.
+constexpr int DS_MAX_TOP = 512;
 
 void check_launch(const char* what) {
     const cudaError_t e = cudaGetLastError();
@@ -106,6 +122,18 @@ __global__ void glm_dsa_score_kernel(const float* __restrict__ iq, const float* 
     score[(size_t) p + (size_t) n_pools * t] = acc;
 }
 
+/// The order-preserving unsigned image of a float: comparing two of these as integers is comparing the two
+/// floats, so a selection over `unsigned` keys is a selection over scores.  The sign is flipped and the rest
+/// inverted for negatives, which is what makes the negatives sort below the positives.
+__device__ __forceinline__ unsigned glm_dsa_key(float f) {
+    unsigned b = __float_as_uint(f);
+    // -0.0 and +0.0 are `==` as floats but are two different bit patterns, and the picks are ranked by a float
+    // comparison afterwards.  Without this they would be one key here and one tied pair there, so a -0.0 could
+    // be taken over a +0.0 at the boundary that the rank formula would have resolved by index.
+    if ((b & 0x7FFFFFFFu) == 0u) b = 0u;
+    return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+
 __global__ void glm_dsa_select_kernel(const float* __restrict__ score, int n_pools, int kpool, int top_pools,
                                       int select_tail, int n_tokens, int n_sel, const int* __restrict__ pos,
                                       int* __restrict__ cells) {
@@ -117,16 +145,129 @@ __global__ void glm_dsa_select_kernel(const float* __restrict__ score, int n_poo
     int* row = cells + (size_t) n_sel * t;
     for (int s = 0; s < n_sel; ++s) row[s] = -1;
 
-    for (int p = 0; p < n_vis; ++p) {
-        const float v = score[(size_t) p + (size_t) n_pools * t];
-        int rank = 0;
-        for (int q = 0; q < n_vis; ++q) {
-            const float u = score[(size_t) q + (size_t) n_pools * t];
-            rank += u > v ? 1 : 0;
-            rank += (q < p && u == v) ? 1 : 0;   // ties go to the LOWER index, as the router's top-k does
+    if (n_vis > 0) {
+        const float* __restrict__ sc = score + (size_t) n_pools * (size_t) t;
+        if (top_pools <= DS_MAX_TOP) {
+            // ---- the boundary: the `top_pools`-th largest key, by eight bits a pass from the top.
+            //
+            // INVARIANT: every key is either STRICTLY ABOVE the range `prefix .. prefix | undecided` or inside
+            // it, and `above` counts the former.  A pass splits the range into 256 sub-ranges by its next eight
+            // bits and walks them from the highest down, because "how many keys are above this one" is a
+            // cumulative count and that is exactly what the quadratic loop was recomputing 4,096 times.
+            //
+            // After four passes `undecided` is zero, so the range IS one key: `prefix` is the `top_pools`-th
+            // largest, `above` how many beat it, and `top_pools - above` of the keys that equal it are still
+            // needed.
+            //
+            // When every visible pool is selected - the whole of a prompt's first `top_pools` pools, and every
+            // query until the context reaches `top_pools * kpool` cells - there is nothing to cut, so the walk is
+            // skipped entirely.  **THE PICKS STILL HAVE TO BE SORTED, AND THE FIRST VERSION OF THIS FAST PATH
+            // WROTE THEM IN POOL ORDER INSTEAD.**  "All of them are selected" says which cells are in `row` and
+            // nothing about where; the header's DESCENDING SCORE order is a separate promise, the rank formula
+            // kept it here too (every rank is below `top_pools`, so all `n_vis` wrote out, ranked), and the
+            // attention permutes its summation over the row.  Measured: 344 tokens, greedy, `--dsa` against
+            // dense - `A mixture-of-experts (MoE` against `# Mixture-of-Experts Routing in`, the engine's own
+            // below-the-budget invariant broken by a rewrite that was only supposed to make the walk cheaper.
+            unsigned kth = 0u;
+            int need = 0;
+            const bool all_visible = n_vis <= top_pools;
+            if (!all_visible) {
+                unsigned prefix = 0u, undecided = 0xFFFFFFFFu;
+                int above = 0;
+                int hist[256];
+                for (int pass = 0; pass < 4; ++pass) {
+                    const int shift = 24 - 8 * pass;
+                    for (int b = 0; b < 256; ++b) hist[b] = 0;
+                    const unsigned decided = ~undecided;
+                    for (int p = 0; p < n_vis; ++p) {
+                        const unsigned k = glm_dsa_key(__ldg(sc + p));
+                        if ((k & decided) != prefix) continue;
+                        ++hist[(int) ((k >> shift) & 0xFFu)];
+                    }
+                    int acc = 0, chosen = 0;
+                    for (int b = 255; b >= 0; --b) {
+                        // Fewer than `top_pools` keys are above this sub-range's bottom, so the boundary is at
+                        // or below it - take the whole sub-range as "above" and keep looking downward.
+                        if (above + acc + hist[b] < top_pools) { acc += hist[b]; continue; }
+                        chosen = b;
+                        break;
+                    }
+                    above += acc;
+                    prefix |= ((unsigned) chosen) << shift;
+                    undecided &= ~(0xFFu << shift);
+                }
+                kth = prefix;
+                need = top_pools - above;   // >= 1: `above` < top_pools is what stopped the walk
+            }
+
+            // ---- the picks, ordered the way the header promises.  `cells` is in DESCENDING SCORE order, which
+            // `glm_parity`'s `dsa_select` case asserts element by element against the reference and which its
+            // "cells in cell order" rival must fail - above the budget and below it alike.  The walk above hands
+            // the picks back in POOL INDEX order, so they are sorted here - by the same rule the rank formula
+            // encoded, without the rank formula.
+            //
+            // **THE RANK FORMULA WAS O(top_pools^2) A CALL, AND IT SHOWED.**  Counting for each pick how many
+            // picks beat it is 262,144 comparisons at this model's `top_pools` = 512, and the caller makes one
+            // call per token per MLA layer - 5,632 a chunk of 512.  Measured on the 16K run, the card's `pre`
+            // jumped 5.8 s -> 14.7 s per stage-chunk exactly at the 2,048-cell context where the selection
+            // switches from "every visible pool" to this path, and then held ~15.0 s while the walk's own
+            // O(n_vis) passes grew by 0.2 s over the next seven chunks: the comparisons were ~9.3 s of it.
+            //
+            // A stable LSD radix sort is the same ordering for a counting cost.  Sorting `~key` ascending is
+            // `key` descending, and stability is what carries the tie rule: the picks were collected in index
+            // order, so equal keys come out lower index first - exactly the reference's tie-break - with no
+            // comparison between them.  Four passes of eight bits over `top_pools` entries is 4 * 1,024 counting
+            // operations where the formula spent 262,144 comparisons.
+            //
+            // The key and its pool are one 64-bit entry, `~key` high and the index low, and the passes read the
+            // key's four bytes only: leaving the index out of the sort is what makes it stable and not a
+            // secondary sort, and the swap count is even so `src` ends on `ent`.
+            uint64_t ent[DS_MAX_TOP], tmp[DS_MAX_TOP];
+            int npick = 0, taken = 0;
+            for (int p = 0; p < n_vis; ++p) {
+                const unsigned k = glm_dsa_key(__ldg(sc + p));
+                // Ties go to the LOWER index, as the router's top-k does: the equals are taken in index order
+                // until `need` of them are used up, which is the same rule the rank formula encodes.
+                const bool hit = all_visible || (k > kth) || (k == kth && taken < need);
+                if (!hit) continue;
+                ent[npick++] = ((uint64_t) (~k) << 32) | (uint32_t) p;
+                if (!all_visible && k == kth) ++taken;
+            }
+            uint64_t* src = ent;
+            uint64_t* dst = tmp;
+            int cnt[256];
+            for (int pass = 0; pass < 4; ++pass) {
+                const int shift = 32 + 8 * pass;
+                for (int b = 0; b < 256; ++b) cnt[b] = 0;
+                for (int i = 0; i < npick; ++i) ++cnt[(int) ((src[i] >> shift) & 0xFFu)];
+                int acc = 0;
+                for (int b = 0; b < 256; ++b) { const int c = cnt[b]; cnt[b] = acc; acc += c; }
+                for (int i = 0; i < npick; ++i) {
+                    const int b = (int) ((src[i] >> shift) & 0xFFu);
+                    dst[cnt[b]++] = src[i];
+                }
+                uint64_t* sw = src; src = dst; dst = sw;
+            }
+            for (int i = 0; i < npick; ++i) {
+                const int p = (int) (src[i] & 0xFFFFFFFFu);
+                for (int m = 0; m < kpool; ++m) row[i * kpool + m] = p * kpool + m;
+            }
+        } else {
+            // `top_pools` is wider than one thread's array.  The rank formula over every visible pool, which is
+            // this kernel's first form: O(n_vis^2), correct at any width, and it is what a model with a larger
+            // `idx_top_k` keeps getting rather than a truncated selection.
+            for (int p = 0; p < n_vis; ++p) {
+                const float v = __ldg(sc + p);
+                int rank = 0;
+                for (int q = 0; q < n_vis; ++q) {
+                    const float u = __ldg(sc + q);
+                    if (u > v) ++rank;
+                    else if (u == v && q < p) ++rank;
+                }
+                if (rank < top_pools)
+                    for (int m = 0; m < kpool; ++m) row[rank * kpool + m] = p * kpool + m;
+            }
         }
-        if (rank < top_pools)
-            for (int m = 0; m < kpool; ++m) row[rank * kpool + m] = p * kpool + m;
     }
     if (select_tail) {
         // The cells after the last complete pool, in cell order.  At `pos` 0..kpool-1 this is the ONLY content

@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <string>
 #include <utility>
@@ -1215,6 +1216,163 @@ void test_dsa_select_ties(Dev& d) {
     cudaFree(d_score); cudaFree(d_pos); cudaFree(d_cells);
 }
 
+/// The boundary walk at a width the other cases cannot reach.  The indexer fixture shows 4 visible pools against
+/// 2 selections - one bucket, one pass, and `above` 0 or 1 - so it cannot tell a walk that splits a range from
+/// one that never had to.  300 visible pools against 32 selections runs all four passes on real 8-bit splits,
+/// and the scores are drawn from a SMALL SET OF INTEGERS (negatives included, so the sign half of the key is
+/// live) so the 32nd value is shared by several pools: the walk stops with `need` > 1 and the index tie-break
+/// picks which of the equals are in.  A kernel that walked the buckets correctly but wrote the picks in index
+/// order, or broke the tie toward the higher index, is right on the 4-pool fixture and wrong here.
+void test_dsa_select_wide(Dev& d) {
+    const int n_pools = 300, kp = 4, top_pools = 32, n_sel = top_pools * kp + kp - 1;
+    std::vector<float> score((size_t) n_pools);
+    for (int p = 0; p < n_pools; ++p) score[(size_t) p] = (float) ((p * 7) % 33) - 16.0f;
+    const std::vector<int> pos = {n_pools * kp - 1};   // every pool complete, so n_vis is all 300
+    float* d_score = d.put(score);
+    int* d_pos = d.put(pos);
+    int* d_cells = nullptr;
+    check(cudaMalloc(&d_cells, (size_t) n_sel * 4), "dsa wide cells");
+    strata::kernels::glm_dsa_select(d_score, n_pools, kp, top_pools, /*select_tail=*/0, 1, n_sel, d_pos, d_cells,
+                                    nullptr);
+    const std::vector<int32_t> got = d.get(d_cells, (size_t) n_sel);
+    std::vector<int32_t> ref, want;
+    std::string note;
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, /*tie=*/0, /*cell_order=*/0, ref);
+    report("dsa_select at 300 visible pools", ids_same(got, ref, note), note.c_str());
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, 1, 0, want);
+    rival_i("  rival: ties by higher index", got, ref, want);
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, 0, 1, want);
+    rival_i("  rival: cells in cell order, not score order", got, ref, want);
+    // The fixture's whole point is a shared boundary value, so the case says outright that it has one: without
+    // this a change to the score formula could quietly turn the tie-break half of the test into dead weight.
+    int ties = 0;
+    std::vector<float> sorted(score);
+    std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+    for (float s : sorted) if (s == sorted[(size_t) top_pools - 1]) ++ties;
+    report("  the boundary value really is shared", ties > 1);
+    cudaFree(d_score); cudaFree(d_pos); cudaFree(d_cells);
+}
+
+/// The other side of the budget: FEWER visible pools than selections, so the whole set is in.  This case exists
+/// because that case was first written to emit the cells in POOL index order - "all of them are selected" read as
+/// "so the order does not matter" - and the engine's own below-the-budget invariant caught it: at 344 tokens
+/// `--dsa` and dense came apart, `A mixture-of-experts (MoE` against `# Mixture-of-Experts Routing in`.  The
+/// header's descending-score order is a separate promise, the rank formula kept it here too (every rank is below
+/// `top_pools`, so all `n_vis` were written out, ranked), and the attention permutes its summation over the row.
+/// The scores are deliberately unsorted and hold a tie, so both halves of the ordering are live, and the ceiling
+/// below is written out rather than compared: a pool-order emission differs from it on the first cell.
+void test_dsa_select_below_budget(Dev& d) {
+    const int n_pools = 6, kp = 4, top_pools = 32, n_sel = top_pools * kp;
+    const std::vector<float> score = {0.5f, -1.0f, 3.0f, 2.0f, 3.0f, 1.5f};   // pools 2 and 4 tie at 3.0
+    const std::vector<int> pos = {n_pools * kp - 1};                          // 6 visible pools, so all 6 fit
+    float* d_score = d.put(score);
+    int* d_pos = d.put(pos);
+    int* d_cells = nullptr;
+    check(cudaMalloc(&d_cells, (size_t) n_sel * 4), "dsa below cells");
+    strata::kernels::glm_dsa_select(d_score, n_pools, kp, top_pools, /*select_tail=*/0, 1, n_sel, d_pos, d_cells,
+                                    nullptr);
+    const std::vector<int32_t> got = d.get(d_cells, (size_t) n_sel);
+    std::vector<int32_t> ref, want;
+    std::string note;
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, /*tie=*/0, /*cell_order=*/0, ref);
+    report("dsa_select with every visible pool selected", ids_same(got, ref, note), note.c_str());
+    // pool 2 (cells 8..11) then pool 4 (16..19) - the tie by lower index - then pool 3 (12..15) at 2.0.
+    const std::vector<int32_t> head = {8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
+    report("  the row is in descending score order, ties by lower index",
+           got.size() >= head.size() && std::equal(head.begin(), head.end(), got.begin()));
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, 1, 0, want);
+    rival_i("  rival: ties by higher index", got, ref, want);
+    ref_dsa_select(score, n_pools, kp, top_pools, 0, 1, n_sel, pos, 0, 1, want);
+    rival_i("  rival: cells in cell order, not score order", got, ref, want);
+    cudaFree(d_score); cudaFree(d_pos); cudaFree(d_cells);
+}
+
+/// A sweep rather than a fixture.  The rewrite's whole claim is that it is the rank formula with the comparisons
+/// taken out, and a claim like that is checked over a space, not at three points - the first version of it was
+/// exact on every fixture in this file and still changed the engine's output, because the one path no fixture
+/// reached was the one it got wrong.  So: every (pool count, selection width) pair that straddles the budget on
+/// both sides and the ends of the walk, against score vectors drawn to be full of EQUAL VALUES (small integer
+/// scores, and zeros written as both signs) because the boundary, the tie rule and the below-the-budget path are
+/// all decided at equalities.  Each case runs the kernel and the transcription of the rank formula side by side,
+/// element by element, at a `pos` that puts `n_vis` below, at and above `top_pools`, with the tail on and off.
+void test_dsa_select_sweep(Dev& d) {
+    const std::pair<int, int> cases[] = {{1,1},   {3,1},   {4,2},    {5,2},    {8,8},    {9,8},   {16,16},
+                                         {17,16}, {33,32}, {64,32},  {129,128},{300,32}, {512,64},{513,512},
+                                         {600,512}};
+    std::mt19937 rng(0x5EED1234u);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    int bad = 0, checked = 0, below = 0, shared = 0;
+    std::string first;
+    for (const std::pair<int, int>& c : cases) {
+        const int n_pools = c.first, top_pools = c.second, kp = 4;
+        for (int variant = 0; variant < 4; ++variant) {
+            std::vector<float> score((size_t) n_pools);
+            for (int p = 0; p < n_pools; ++p) {
+                switch (variant) {
+                    case 0: score[(size_t) p] = (float) ((p * 7) % 33) - 16.0f; break;   // many ties, both signs
+                    case 1: score[(size_t) p] = (float) (rng() % 5) - 2.0f; break;       // ties, tiny range
+                    case 2: score[(size_t) p] = u(rng); break;                           // distinct, mixed sign
+                    default: score[(size_t) p] = (float) (rng() % 2) * 4.0f - 2.0f; break;
+                }
+                if (p % 37 == 0) score[(size_t) p] = 0.0f * score[(size_t) p];   // a live -0.0 against +0.0
+            }
+            // `n_vis` targets that sit under, at and over the width, plus the whole pool set.
+            std::vector<int> targets = {0, 1, top_pools - 1, top_pools, top_pools + 1, n_pools};
+            for (int target : targets) {
+                if (target < 0 || target > n_pools) continue;
+                for (int tail = 0; tail <= 1; ++tail) {
+                    // The last member of pool `target-1` is the last complete cell; the `+ j` walks the partial
+                    // pool the tail exists for.
+                    for (int j = 0; j < kp; ++j) {
+                        // No pool complete yet: `pos` 0..kp-1 is the tail case, and `n_vis` is 0 throughout.
+                        const int posv = target == 0 ? j : target * kp - 1 + j;
+                        const int n_sel = kp * top_pools + (tail ? kp - 1 : 0);
+                        const std::vector<int> pos = {posv};
+                        float* d_score = d.put(score);
+                        int* d_pos = d.put(pos);
+                        int* d_cells = nullptr;
+                        check(cudaMalloc(&d_cells, (size_t) n_sel * 4), "dsa sweep cells");
+                        strata::kernels::glm_dsa_select(d_score, n_pools, kp, top_pools, tail, 1, n_sel, d_pos,
+                                                        d_cells, nullptr);
+                        const std::vector<int32_t> got = d.get(d_cells, (size_t) n_sel);
+                        std::vector<int32_t> ref;
+                        ref_dsa_select(score, n_pools, kp, top_pools, tail, 1, n_sel, pos, 0, 0, ref);
+                        std::string note;
+                        ++checked;
+                        if (!ids_same(got, ref, note)) {
+                            ++bad;
+                            if (first.empty()) {
+                                char b[160];
+                                std::snprintf(b, sizeof b,
+                                              "first: %d pools, top %d, target %d, j %d, tail %d: %s", n_pools,
+                                              top_pools, target, j, tail, note.c_str());
+                                first = b;
+                            }
+                        }
+                        if (target < top_pools) ++below;
+                        // Is the `top_pools`-th largest value shared?  If not, the tie half of the sweep is idle.
+                        if (top_pools <= n_pools) {
+                            std::vector<float> s2(score);
+                            std::sort(s2.begin(), s2.end(), std::greater<float>());
+                            const float kth = s2[(size_t) top_pools - 1];
+                            int eq = 0;
+                            for (float v : s2) if (v == kth) ++eq;
+                            if (eq > 1) ++shared;
+                        }
+                        cudaFree(d_score); cudaFree(d_pos); cudaFree(d_cells);
+                    }
+                }
+            }
+        }
+    }
+    char note[128];
+    std::snprintf(note, sizeof note, "%s", bad ? first.c_str() : "");
+    report("dsa_select sweep against the rank formula", bad == 0, note);
+    report("  the sweep reaches the below-the-budget path", below > 0);
+    report("  the sweep reaches shared boundary values", shared > 0);
+    std::printf("    (%d fixtures, %d below the budget, %d with a shared boundary)\n", checked, below, shared);
+}
+
 void test_dsa_attn(Dev& d, DsaFix f, int T, int kind) {
     std::mt19937 rng((uint32_t) (0xC2B2AE35u ^ (uint32_t) (f.kv * 31 + f.vhead * 7 + T * 131 + kind)));
     std::uniform_real_distribution<float> u(-1.0f, 1.0f);
@@ -1328,6 +1486,9 @@ int main(int argc, char** argv) {
     test_dsa_indexer(d, f, 4, 1);
     test_dsa_indexer(d, f, 1, 0);
     test_dsa_select_ties(d);
+    test_dsa_select_wide(d);
+    test_dsa_select_below_budget(d);
+    test_dsa_select_sweep(d);
     test_dsa_attn(d, f, 1, 0);
     test_dsa_attn(d, f, 1, 1);   // given `kv_lora` as the nope width, the kernel must match that scale
     test_dsa_attn(d, f, 3, 0);
