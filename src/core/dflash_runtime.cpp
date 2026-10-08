@@ -582,12 +582,11 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             if (n == name) return p;
         return nullptr;
     };
-    // ctx = hidden_norm(fc(taps)); the projections run one row per launch (the bf16 path has no
-    // multi-row variant yet - the prompt batches loop, the cycle needs at most 8)
+    // ctx = hidden_norm(fc(taps)); one batched launch per chunk (the weights were read once per
+    // row before)
     {
         DFlashSection s("fusion.fc_gemv");
-        for (int r = 0; r < rows; ++r)
-            bf16_gemv(tapin_ + (size_t) r * F, wp("fc"), ctx_ + (size_t) r * N, F, N, cs_);
+        bf16_gemv_batch(tapin_, wp("fc"), ctx_, F, N, rows, cs_);
     }
     native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
     if (parity_want(cycle_)) {
@@ -622,11 +621,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         const std::string pre = "layers." + std::to_string(l);
         {
             DFlashSection s("fusion.kv_proj");
-            for (int r = 0; r < rows; ++r) {
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.k_proj").c_str()), kc_ + (size_t) r * KVW, N, KVW, cs_);
-
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
-            }
+            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, rows, cs_);
+            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_);
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
@@ -792,11 +788,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         {
             DFlashSection s("L*.qkv_gemv");
-            for (int r = 0; r < K; ++r) {
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.q_proj").c_str()), q_ + (size_t) r * Q, N, Q, cs_);
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.k_proj").c_str()), kc_ + (size_t) r * KVW, N, KVW, cs_);
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
-            }
+            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_);
+            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_);
+            bf16_gemv_batch(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_);
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
         if (parity_want(cycle_)) {
@@ -933,8 +927,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
         {
             DFlashSection s("L*.o_proj");
-            for (int r = 0; r < K; ++r)
-                bf16_gemv(attn16_ + (size_t) r * Q, wp((pre + ".self_attn.o_proj").c_str()), bo_ + (size_t) r * N, Q, N, cs_);
+            bf16_gemv_batch(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
         }
         if (l == 0 && df_dbg) {
             std::vector<float> hb(4), ab(4);
@@ -957,10 +950,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         {
             DFlashSection s("L*.gate_up_gemv");
-            for (int r = 0; r < K; ++r) {
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".mlp.gate_proj").c_str()), gate_ + (size_t) r * I, N, I, cs_);
-                bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".mlp.up_proj").c_str()), up_ + (size_t) r * I, N, I, cs_);
-            }
+            bf16_gemv_batch(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_);
+            bf16_gemv_batch(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_);
         }
         {
             DFlashSection s("L*.swiglu");
@@ -969,8 +960,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         {
             DFlashSection s("L*.down_gemv");
-            for (int r = 0; r < K; ++r)
-                bf16_gemv(xn16_ + (size_t) r * I, wp((pre + ".mlp.down_proj").c_str()), bo_ + (size_t) r * N, I, N, cs_);
+            bf16_gemv_batch(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
         }
         add_inplace(h_, bo_, K * N, cs_);
         if (parity_want(cycle_)) {
