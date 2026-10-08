@@ -315,3 +315,31 @@ Deployment note from the same session: with the IQ3_S GGUF sitting on an HDD (an
 page cache under pressure from a 59.5 GiB resident set elsewhere), decode pinned at
 13-19 tok/s regardless of context until the files moved back to NVMe. The numbers above
 assume model files on NVMe/SSD or fully RAM-resident.
+
+## Update (2026-10-08): v0.1.40.3 engine + the 0.1.40.2 opt-in switches
+
+Upgraded to the 0.1.40.3 ready-made engine (setup replaced 0.1.40 by itself; the old
+engine stays in `engine-cuda12\.previous`). Re-calibrated on the same XXS install: the
+kept settings did not change (`--pcie-frac 0.33 --spec-min-p 0.70`) but the calibrate
+bench reads **74.7 tok/s (0.1.40: 81.8, -8.7%)**, and the real-load suite moves the
+same way - long-form 64.0-67.7 (0.1.40: 69.4), 4.3K-doc prompt 1,104 (1,175), doc
+decode 73.8 (72.6), short prose unchanged at 59.4, H1 still correct. The 0.1.40.2
+notes report +1.7-3.9% on RTX 3060/5070/P100; on this Volta/DDR3L box the same
+release reads as a small regression. One calibrate run also died mid-sweep ("the
+engine stopped unexpectedly (exit code None)") after the PCIe phase; a clean retry
+completed and wrote the same settings.
+
+The opt-in switches from 0.1.40.2, measured on this box:
+
+| Switch | Measurement | Result |
+|---|---|---|
+| `STRATA_PREFILL_CPU_SHARE=auto` | 587- and 977-token prompts, 10 interleaved runs each, server timings | 1,605 -> 1,345 ms (**-16%**) and 2,076 -> 1,841 ms (**-11%**); H1 with it on still answers n = 8090 |
+| `strata_prefix` pin | 30K-token ops-log document, 8 questions, `tools/research_run.py` | follow-up first token 2.98 -> **0.87 s (3.4x)**, whole run 57.9 -> 20.3 s. Without the field, 0.1.40.3's default checkpoint reuse already holds follow-ups at ~3 s on this box - the 48-149 s re-reads from the release notes do not happen here |
+| `STRATA_SPEC_PROB=1` | long-form decode, temp 0.6, 3 runs per arm | 65.9-67.6 -> **68.8 tok/s (+2-4%)**, drafts accepted 0.77 -> 0.66 |
+| `STRATA_SPEC_COUPLED=1` (+ `STRATA_SPEC_GUMBEL=1`) | same | decode flat (64.5-65.1), drafts accepted 0.77 -> 0.62-0.63 - the opposite direction from the AMD and RTX 3060 reports |
+| `--prefill auto:32768` | 4.3K-doc and 30K-token cold prompt reads | 1,104 -> 1,119 and 1,430 -> 1,419 tok/s - no effect on this host-bound box (the 21-35% setup tip does not transfer) |
+
+Takeaways for a box like this one: `STRATA_PREFILL_CPU_SHARE=auto` is the only switch
+with a clear win here (agent-style short prompts), `STRATA_SPEC_PROB=1` is a small
+real gain for sampled long-form decode, and the coupled/Gumbel drafts and the 32K
+prefill chunks buy nothing on Volta + dual DDR3 sockets.
