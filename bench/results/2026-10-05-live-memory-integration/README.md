@@ -99,7 +99,7 @@ SQLite integrity and all saved session payloads/counts matched the deployment ba
 
 Exact source/artifact identities, phase counts, native clocks, reuse and token-ID
 hashes are in [measurements.json](measurements.json). Machine-local raw receipts,
-logs, harnesses and build provenance remain under
-`C:/github/_maintenance/strata-benchmark-2026-10-05`; no model/profile binary or
+logs, harnesses and build provenance remain in the original contributor's private
+evidence directory; no model/profile binary or
 private conversation is included in this Git record. This documentation update
 adds benchmark evidence to the live-memory contribution; it publishes no model weights.

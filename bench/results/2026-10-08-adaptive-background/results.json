@@ -1,0 +1,782 @@
+{
+  "schema": 1,
+  "date": "2026-10-08",
+  "base_version": "0.1.40.3",
+  "native_binary_sha256": "b17c3ef7a55ff1b00e217fb5a5251a23583734b2ce6e2d57d1423012215d83aa",
+  "python_source_sha256": {
+    "serve/server.py": "f714e58627696099ecda6969307c066fee597a6b28412d218805045a98ea0e45",
+    "serve/request_parking.py": "9b2d798d6e1672c2d1f82a05b62231d2a680f7fccf73dbf5bd143ece94c93b52",
+    "serve/memory_policy.py": "7c1e1e962ab3fc90e604fe7f16e7a55301fea7c9d471c1dac7c404ba2f439788",
+    "serve/coadaptive.py": "7c9b1efe06ba122b8f2f92264bdc529326dc806dcdb590b98eb203ad9cda0dd5"
+  },
+  "fairness": {
+    "runs": [
+      {
+        "arm": "0-off",
+        "overlap_s": 43.532846450805664,
+        "foreground_s": 45.5211763,
+        "model_s": 114.26756119999845,
+        "tokens": 1742,
+        "prompt_ms": 2505.2,
+        "decode_ms": 111758.5,
+        "decode_tok_s": 15.587181288224162,
+        "min_ram_gib_sampled": 10.82958984375,
+        "min_cuda_free_mib_fresh": 326,
+        "min_budget_free_mib_fresh": 326,
+        "min_logged_cuda_free_mib": 342,
+        "max_native_age_s": 2.620544910430908,
+        "samples": 157,
+        "fresh_capacity_samples": 118,
+        "unique_fresh_capacity_samples": 107,
+        "overlap_samples": 43,
+        "overlap_complete_cpu_samples": 43,
+        "overlap_positive_delay_samples": 0,
+        "positive_delay_samples": 0,
+        "delay_values_ms": [
+          0
+        ],
+        "control_errors": [],
+        "all_resident_mib": [
+          32767
+        ],
+        "all_gpu_cache_mib": [
+          672
+        ],
+        "all_memory_pending_id": [
+          0
+        ],
+        "validation_cases": 104,
+        "validation_passed": true,
+        "native_finish": "stop",
+        "status": "passed",
+        "foreground_checksums": [
+          "3744625861745519391",
+          "16859745537545591394",
+          "4353311286953497501",
+          "10677481769044986453",
+          "17431862492682699658",
+          "8884389143069897952",
+          "12144082037534341945",
+          "10362284767374973308"
+        ],
+        "completion_plus_validation_s": 115.29001529999732,
+        "joint_jobs_makespan_s": 116.25606107711792
+      },
+      {
+        "arm": "1-on",
+        "overlap_s": 43.84543180465698,
+        "foreground_s": 45.8436381,
+        "model_s": 64.59391409999807,
+        "tokens": 785,
+        "prompt_ms": 2488.6,
+        "decode_ms": 62102.5,
+        "decode_tok_s": 12.6403928988366,
+        "min_ram_gib_sampled": 10.989036560058594,
+        "min_cuda_free_mib_fresh": 326,
+        "min_budget_free_mib_fresh": 326,
+        "min_logged_cuda_free_mib": 342,
+        "max_native_age_s": 1.8934555053710938,
+        "samples": 109,
+        "fresh_capacity_samples": 70,
+        "unique_fresh_capacity_samples": 62,
+        "overlap_samples": 43,
+        "overlap_complete_cpu_samples": 43,
+        "overlap_positive_delay_samples": 43,
+        "positive_delay_samples": 45,
+        "delay_values_ms": [
+          0,
+          2,
+          3,
+          8,
+          9,
+          10
+        ],
+        "control_errors": [],
+        "all_resident_mib": [
+          32767
+        ],
+        "all_gpu_cache_mib": [
+          672
+        ],
+        "all_memory_pending_id": [
+          0
+        ],
+        "validation_cases": 104,
+        "validation_passed": true,
+        "native_finish": "stop",
+        "status": "passed",
+        "foreground_checksums": [
+          "3744625861745519391",
+          "16859745537545591394",
+          "4353311286953497501",
+          "10677481769044986453",
+          "17431862492682699658",
+          "8884389143069897952",
+          "12144082037534341945",
+          "10362284767374973308"
+        ],
+        "completion_plus_validation_s": 65.646377699999,
+        "joint_jobs_makespan_s": 66.59218740463257
+      },
+      {
+        "arm": "2-on",
+        "overlap_s": 43.78777027130127,
+        "foreground_s": 45.7854032,
+        "model_s": 66.6038473999979,
+        "tokens": 873,
+        "prompt_ms": 2498.1,
+        "decode_ms": 64103.7,
+        "decode_tok_s": 13.618558679140206,
+        "min_ram_gib_sampled": 11.010566711425781,
+        "min_cuda_free_mib_fresh": 324,
+        "min_budget_free_mib_fresh": 324,
+        "min_logged_cuda_free_mib": 342,
+        "max_native_age_s": 1.8587899208068848,
+        "samples": 109,
+        "fresh_capacity_samples": 71,
+        "unique_fresh_capacity_samples": 63,
+        "overlap_samples": 43,
+        "overlap_complete_cpu_samples": 43,
+        "overlap_positive_delay_samples": 43,
+        "positive_delay_samples": 45,
+        "delay_values_ms": [
+          0,
+          1,
+          2,
+          8,
+          9,
+          10,
+          11,
+          14
+        ],
+        "control_errors": [],
+        "all_resident_mib": [
+          32767
+        ],
+        "all_gpu_cache_mib": [
+          672
+        ],
+        "all_memory_pending_id": [
+          0
+        ],
+        "validation_cases": 104,
+        "validation_passed": true,
+        "native_finish": "stop",
+        "status": "passed",
+        "foreground_checksums": [
+          "3744625861745519391",
+          "16859745537545591394",
+          "4353311286953497501",
+          "10677481769044986453",
+          "17431862492682699658",
+          "8884389143069897952",
+          "12144082037534341945",
+          "10362284767374973308"
+        ],
+        "completion_plus_validation_s": 67.55376459999752,
+        "joint_jobs_makespan_s": 68.60172653198242
+      },
+      {
+        "arm": "3-off",
+        "overlap_s": 43.002397775650024,
+        "foreground_s": 44.9883638,
+        "model_s": 126.76181260000158,
+        "tokens": 1927,
+        "prompt_ms": 3063.8,
+        "decode_ms": 123694.4,
+        "decode_tok_s": 15.578716578923542,
+        "min_ram_gib_sampled": 10.658004760742188,
+        "min_cuda_free_mib_fresh": 326,
+        "min_budget_free_mib_fresh": 326,
+        "min_logged_cuda_free_mib": 342,
+        "max_native_age_s": 2.4834630489349365,
+        "samples": 169,
+        "fresh_capacity_samples": 130,
+        "unique_fresh_capacity_samples": 120,
+        "overlap_samples": 42,
+        "overlap_complete_cpu_samples": 42,
+        "overlap_positive_delay_samples": 0,
+        "positive_delay_samples": 0,
+        "delay_values_ms": [
+          0
+        ],
+        "control_errors": [],
+        "all_resident_mib": [
+          32767
+        ],
+        "all_gpu_cache_mib": [
+          672
+        ],
+        "all_memory_pending_id": [
+          0
+        ],
+        "validation_cases": 104,
+        "validation_passed": true,
+        "native_finish": "stop",
+        "status": "passed",
+        "foreground_checksums": [
+          "3744625861745519391",
+          "16859745537545591394",
+          "4353311286953497501",
+          "10677481769044986453",
+          "17431862492682699658",
+          "8884389143069897952",
+          "12144082037534341945",
+          "10362284767374973308"
+        ],
+        "completion_plus_validation_s": 127.76552040000024,
+        "joint_jobs_makespan_s": 128.7486138343811
+      }
+    ],
+    "medians": {
+      "off": {
+        "foreground_s": 45.254770050000005,
+        "llm_s": 120.51468690000002,
+        "llm_plus_validation_s": 121.52776784999878,
+        "joint_jobs_makespan_s": 122.50233745574951
+      },
+      "on": {
+        "foreground_s": 45.81452065,
+        "llm_s": 65.59888074999799,
+        "llm_plus_validation_s": 66.60007114999826,
+        "joint_jobs_makespan_s": 67.5969569683075
+      }
+    },
+    "limits": "Two runs per arm. Output counts differ. No causal speedup and no foreground improvement demonstrated; controller decisions recorded, not each native sleep."
+  },
+  "prior_fairness_failed_gate": {
+    "all_passed": false,
+    "runs": [
+      {
+        "index": 0,
+        "mode": "off",
+        "status": "passed",
+        "output_tokens": 1821,
+        "finish": "stop",
+        "acceptance": {
+          "passed": true,
+          "test_exit": 0,
+          "cases": 104,
+          "check_s": 1.0299473000013677
+        },
+        "positive_delay_samples": 0,
+        "external_cpu_samples": 1
+      },
+      {
+        "index": 1,
+        "mode": "on",
+        "status": "task_failed",
+        "output_tokens": 4096,
+        "finish": "length",
+        "acceptance": {
+          "passed": false,
+          "reason": "no final answer",
+          "check_s": 0
+        },
+        "positive_delay_samples": 1,
+        "external_cpu_samples": 1
+      },
+      {
+        "index": 2,
+        "mode": "on",
+        "status": "passed",
+        "output_tokens": 984,
+        "finish": "stop",
+        "acceptance": {
+          "passed": true,
+          "test_exit": 0,
+          "cases": 104,
+          "check_s": 1.2996391000015137
+        },
+        "positive_delay_samples": 1,
+        "external_cpu_samples": 1
+      },
+      {
+        "index": 3,
+        "mode": "off",
+        "status": "passed",
+        "output_tokens": 878,
+        "finish": "stop",
+        "acceptance": {
+          "passed": true,
+          "test_exit": 0,
+          "cases": 104,
+          "check_s": 1.0979881999992358
+        },
+        "positive_delay_samples": 0,
+        "external_cpu_samples": 0
+      }
+    ],
+    "limits": "Original bounded per-process sampler frequently incomplete under load; no valid pacing comparison. One output-limit failure retained."
+  },
+  "parking": {
+    "cases": [
+      {
+        "mode": "baseline",
+        "status": "passed",
+        "synthetic_pressure": false,
+        "request_settings": {
+          "max_new": 12288,
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "reasoning_effort": "high",
+            "reasoning_budget_tokens": 8192
+          }
+        },
+        "request_wall_seconds": 64.7813880443573,
+        "completion_finish": "stop",
+        "acceptance": {
+          "passed": true,
+          "test_exit": 0,
+          "cases": 104,
+          "check_s": 1.0192956000028062
+        },
+        "unicode_marker_count": 1,
+        "resource_minima": {
+          "samples": 62,
+          "ram_available_gib": 10.779857635498047,
+          "global_gpu_free_mib": 1093.28515625,
+          "native_gpu_free_mib": 326,
+          "native_budget_free_mib": 326
+        },
+        "accepted_output_tokens": 1094
+      },
+      {
+        "mode": "resume",
+        "status": "passed",
+        "synthetic_pressure": true,
+        "request_settings": {
+          "max_new": 12288,
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "reasoning_effort": "high",
+            "reasoning_budget_tokens": 8192
+          }
+        },
+        "request_wall_seconds": 116.09813404083252,
+        "completion_finish": "stop",
+        "acceptance": {
+          "passed": true,
+          "test_exit": 0,
+          "cases": 104,
+          "check_s": 0.9305830000012065
+        },
+        "unicode_marker_count": 1,
+        "resource_minima": {
+          "samples": 110,
+          "ram_available_gib": 10.591331481933594,
+          "global_gpu_free_mib": 1093.28515625,
+          "native_gpu_free_mib": 326,
+          "native_budget_free_mib": 326
+        },
+        "ram_available_gain_gib": 37.34751510620117,
+        "global_gpu_free_gain_mib": 6802.71484375,
+        "suspended_pings": 1,
+        "old_process_exited": true,
+        "exact_continuation_verified": true,
+        "other_generation_segments": 0,
+        "accepted_output_tokens": 740,
+        "pressure_trigger_to_unloaded_s": 5.715277671813965
+      },
+      {
+        "mode": "cancel",
+        "status": "passed",
+        "synthetic_pressure": true,
+        "request_settings": {
+          "max_new": 12288,
+          "sampling": {
+            "temperature": 0,
+            "seed": 42,
+            "reasoning_effort": "high",
+            "reasoning_budget_tokens": 8192
+          }
+        },
+        "request_wall_seconds": 28.861051321029663,
+        "completion_finish": "cancel",
+        "resource_minima": {
+          "samples": 27,
+          "ram_available_gib": 10.96240234375,
+          "global_gpu_free_mib": 1111.28515625,
+          "native_gpu_free_mib": 344,
+          "native_budget_free_mib": 344
+        },
+        "ram_available_gain_gib": 37.4423828125,
+        "global_gpu_free_gain_mib": 6836.71484375,
+        "suspended_pings": 2,
+        "old_process_exited": true,
+        "accepted_output_tokens": 49,
+        "pressure_trigger_to_unloaded_s": 4.980092287063599,
+        "cancel_to_done_s": 0.03716921806335449
+      }
+    ],
+    "pressure": "Synthetic guard decision and hold; actual memory values, real STOP/drain/journal/unload/reload. No physical exhaustion induced.",
+    "limits": "Different generated lengths, no isolated overhead estimate; exact input-prefix/seed/budget, not bit-identical future output."
+  },
+  "http_smoke": {
+    "status": "passed",
+    "vision": {
+      "passed": true,
+      "seconds": 12.971887588500977,
+      "answer": "Red square",
+      "ordinary_vision_route": true,
+      "image_request_parking_supported": false,
+      "fixture_sha256": "15d4018d795740107372a9e53d16ebc9f01faff97633f32e36b5abb0ebc00973"
+    },
+    "tool_cycle": {
+      "passed": true,
+      "seconds": 13.566239833831787,
+      "tool_result": 42,
+      "final_answer": "42"
+    },
+    "min_available_ram_gib": 9.464885711669922,
+    "min_native_free_mib": 340
+  },
+  "tests": {
+    "native": {
+      "passed": 5,
+      "failed": 0,
+      "targets": [
+        "live_memory_test",
+        "background_control_test",
+        "request_stop_test",
+        "pool_background_test",
+        "platform_memory_test"
+      ]
+    },
+    "python": {
+      "total": 851,
+      "passed": 844,
+      "skipped": 7,
+      "failed": 0,
+      "seconds": 226.481
+    }
+  },
+  "windows_process_probe": {
+    "snapshots": [
+      {
+        "seconds": 0.0070429999996122206,
+        "count": 315,
+        "bytes": 563312
+      },
+      {
+        "seconds": 0.006905899999765097,
+        "count": 315,
+        "bytes": 563312
+      },
+      {
+        "seconds": 0.006703200000629295,
+        "count": 315,
+        "bytes": 563312
+      },
+      {
+        "seconds": 0.0062523999986296985,
+        "count": 315,
+        "bytes": 563392
+      },
+      {
+        "seconds": 0.006679500000245753,
+        "count": 315,
+        "bytes": 563392
+      },
+      {
+        "seconds": 0.006778299999496085,
+        "count": 315,
+        "bytes": 563472
+      },
+      {
+        "seconds": 0.0059416999993118225,
+        "count": 315,
+        "bytes": 563552
+      },
+      {
+        "seconds": 0.006527300000016112,
+        "count": 315,
+        "bytes": 563552
+      },
+      {
+        "seconds": 0.005635199999233009,
+        "count": 315,
+        "bytes": 563632
+      },
+      {
+        "seconds": 0.005965599999399274,
+        "count": 315,
+        "bytes": 563552
+      }
+    ],
+    "visible_psutil_pids": 315,
+    "median_seconds": 0.006603400000130932,
+    "self_comparison": {
+      "pid_match": true,
+      "ppid_match": true,
+      "creation_abs_seconds": 7.152557373046875e-07,
+      "user_delta_seconds": 0.015625,
+      "kernel_delta_seconds": 0.0,
+      "rss_delta_bytes": 8192
+    }
+  },
+  "windows_workload_probe": [
+    {
+      "seconds": 0.013210199998866301,
+      "source": "windows_bulk",
+      "result": {
+        "complete": false,
+        "cpu_percent": 0.0,
+        "rss_bytes": 8897875968
+      }
+    },
+    {
+      "seconds": 0.006840300000476418,
+      "source": "windows_bulk",
+      "result": {
+        "complete": true,
+        "cpu_percent": 12.400793650773597,
+        "rss_bytes": 8897757184
+      }
+    },
+    {
+      "seconds": 0.00806689999808441,
+      "source": "windows_bulk",
+      "result": {
+        "complete": true,
+        "cpu_percent": 24.630541871935314,
+        "rss_bytes": 8996716544
+      }
+    },
+    {
+      "seconds": 0.006705499999952735,
+      "source": "windows_bulk",
+      "result": {
+        "complete": true,
+        "cpu_percent": 21.19140625,
+        "rss_bytes": 9019723776
+      }
+    }
+  ],
+  "pending_not_included": [],
+  "near64k_live_pressure": {
+    "status": "passed",
+    "same_pid": true,
+    "real_touched_ram_mib": 2048,
+    "preferred_ram_target_gib": 10.737052917480469,
+    "target_note": "Fixed elevated target selected before allocation to exercise relief safely; no physical exhaustion induced.",
+    "pressure_start_progress": [
+      256,
+      60270
+    ],
+    "relief": {
+      "seconds": 7.15599999999904,
+      "held": {
+        "held_mib": 2048.0,
+        "available_gib": 9.00577163696289
+      },
+      "initial_resident_mib": 32767,
+      "resident_at_pressure_mib": 32767,
+      "resident_after_mib": 30404,
+      "progress": [
+        768,
+        60270
+      ],
+      "before_prompt_end": true,
+      "same_pid": true
+    },
+    "queries": [
+      {
+        "name": "long_cold",
+        "passed": true,
+        "wall_s": 839.0349824999976,
+        "prompt_tokens": 60270,
+        "prompt_sha256": "5ec64b0c7e58d274b0b652888cea66fcff15608b1d4f30a611ad4f1ff35a8399",
+        "output_tokens": 140,
+        "timings": {
+          "generated": 140,
+          "prompt_tokens": 60270,
+          "prompt_ms": 829525.2,
+          "decode_ms": 9495.8,
+          "finish": "stop",
+          "drafts_accepted": 97,
+          "drafts_offered": 114,
+          "reused": 0,
+          "hits": 12193,
+          "lookups": 59849,
+          "ram_blobs": 40291,
+          "file_blobs": 8569,
+          "file_mb": 16017.8,
+          "prompt_read": 60270,
+          "offloaded": 15511
+        }
+      },
+      {
+        "name": "long_reused",
+        "passed": true,
+        "wall_s": 10.940087699997093,
+        "prompt_tokens": 60270,
+        "prompt_sha256": "5ec64b0c7e58d274b0b652888cea66fcff15608b1d4f30a611ad4f1ff35a8399",
+        "output_tokens": 140,
+        "timings": {
+          "generated": 140,
+          "prompt_tokens": 60270,
+          "prompt_ms": 585.9,
+          "decode_ms": 10338.3,
+          "finish": "stop",
+          "drafts_accepted": 97,
+          "drafts_offered": 108,
+          "reused": 60265,
+          "hits": 11633,
+          "lookups": 57490,
+          "ram_blobs": 39773,
+          "file_blobs": 8095,
+          "file_mb": 15101.0,
+          "prompt_read": 5,
+          "offloaded": 14990
+        }
+      },
+      {
+        "name": "new_conversation",
+        "passed": true,
+        "wall_s": 5.738509099999646,
+        "prompt_tokens": 49,
+        "prompt_sha256": "89b71700a6942bed80ecbcb16a18ce1670be512e88c21fcacf4211e0b06242b5",
+        "output_tokens": 78,
+        "timings": {
+          "generated": 78,
+          "prompt_tokens": 49,
+          "prompt_ms": 2499.5,
+          "decode_ms": 3237.1,
+          "finish": "stop",
+          "drafts_accepted": 51,
+          "drafts_offered": 74,
+          "reused": 0,
+          "hits": 8068,
+          "lookups": 37141,
+          "ram_blobs": 29659,
+          "file_blobs": 1195,
+          "file_mb": 1398.7,
+          "prompt_read": 49,
+          "offloaded": 11339
+        }
+      }
+    ],
+    "recovered_resident_mib": 32707,
+    "minima": {
+      "samples": 982,
+      "available_ram_gib": 8.805320739746094,
+      "fresh_native_free_mib": 294,
+      "fresh_native_budget_free_mib": 294,
+      "independent_cuda_observer_free_mib": 7068.0
+    },
+    "logged_control_pauses": [
+      {
+        "tokens": 768,
+        "milliseconds": 3022.5,
+        "next_chunk": 256
+      },
+      {
+        "tokens": 4608,
+        "milliseconds": 100.4,
+        "next_chunk": 256
+      }
+    ],
+    "limits": "Responsiveness/correctness under bounded pressure; not a matched before/after speed comparison. Previous 663.17s cold run had no mid-prompt relief and different resident behavior."
+  },
+  "hermes_compiler_continuation": {
+    "status": "passed",
+    "prior_status": "failed",
+    "prior_agent_wall_seconds": 311.2187271118164,
+    "prior_api_calls": 8,
+    "agent_exit": 0,
+    "agent_wall_seconds": 203.18276834487915,
+    "api_calls": 3,
+    "call_target_met": true,
+    "combined_api_calls": 11,
+    "combined_agent_wall_seconds": 514.4014954566956,
+    "resumed_message_count": 21,
+    "session_extended": true,
+    "failure_feedback_seen": true,
+    "success_feedback_seen": true,
+    "immutable_project_unchanged": true,
+    "candidate_changed": false,
+    "initial_compile_failed": false,
+    "final_visible_build_passed": true,
+    "four_job_compiler_observed": true,
+    "independent_acceptance": {
+      "passed": true,
+      "test_exit": 0,
+      "cases": 104,
+      "check_s": 1.229941499997949
+    },
+    "original_evidence_unchanged": true,
+    "prior_build_results_unchanged": true,
+    "production_config_unchanged": true,
+    "min_ram_gib": 8.351741790771484,
+    "min_native_vram_mib": 276,
+    "min_native_budget_headroom_mib": 276,
+    "scope": "Actual same-session Hermes continuation after a six-turn-limit failure. No fresh uninterrupted success or matched speedup claim.",
+    "clock_scope": "Combined sum of the two recorded active agent intervals, not intervening time or all model-loading time.",
+    "builds": [
+      {
+        "status": "passed",
+        "jobs": 4,
+        "flags": [
+          "-std=c++20",
+          "-O2",
+          "-g0",
+          "-march=znver4",
+          "-Wall",
+          "-Wextra"
+        ],
+        "compiler_version": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0",
+        "compile_s": 1.8772422000001825,
+        "wall_s": 2.1021423999991384,
+        "link_exit": 0,
+        "test_exit": 0,
+        "test_stdout": "PASS 2096 deterministic cases\n",
+        "peak_compile_commands": 4,
+        "server_idle_samples": 3,
+        "server_loaded_samples": 3,
+        "tool_samples": 3,
+        "engine_cpu_seconds_while_compiling": 0.03125
+      }
+    ],
+    "prior_failed_attempt": {
+      "status": "failed",
+      "agent_exit": 1,
+      "agent_wall_seconds": 311.2187271118164,
+      "api_calls": 8,
+      "call_target_met": false,
+      "initial_compile_failed": true,
+      "final_visible_build_passed": false,
+      "four_job_compiler_observed": true,
+      "independent_acceptance": {
+        "passed": true,
+        "test_exit": 0,
+        "cases": 104,
+        "check_s": 0.9381433000016841
+      },
+      "builds": [
+        {
+          "status": "failed",
+          "jobs": 4,
+          "compile_s": 1.451740399999835
+        },
+        {
+          "status": "test_failed",
+          "jobs": 4,
+          "compile_s": 1.8849015999985568,
+          "link_exit": 0,
+          "test_exit": 1,
+          "test_stdout": ""
+        }
+      ]
+    },
+    "limits": [
+      "Continuation retained the same existing candidate without a new code edit; repaired candidate had already passed independent checks before the original attempt hit its turn limit.",
+      "Continuation had to obtain an actual agent-visible passing build and final answer.",
+      "No injected pressure and no matched nonadaptive Hermes arm; low engine CPU while awaiting a sequential tool is not a demonstrated optimization benefit.",
+      "API call counts include all recorded service requests; do not equate them with Hermes turns.",
+      "Effective turn cap increased from6 to12 in the disposable-home configuration; production settings unchanged. This is a test-budget change, not a Strata speed fix."
+    ]
+  }
+}

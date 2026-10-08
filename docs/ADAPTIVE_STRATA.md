@@ -12,10 +12,76 @@ should choose among supported CPU and GPU execution paths, RAM and VRAM residenc
 model files according to measured completion cost. Returning resources to Strata after another workload
 finishes is part of the objective.
 
-This branch currently provides live expert-cache resizing and experimental single-GPU routing from matched
-measurements. Uncalibrated routing keeps the configured split.
+This branch currently provides live expert-cache resizing, cooperative background waits and pacing, an
+opt-in text-request parking path, and experimental single-GPU routing from matched measurements.
+Uncalibrated routing keeps the configured split. These are separate controls with separate validation
+boundaries; enabling one does not establish that every resource can be relocated or released.
 It does not provide general tensor relocation, live CPU-worker resizing, multi-GPU balancing, SSD selection,
 storage-aware routing or an online tensor cost model. Some allocations still have a fixed GPU minimum.
+
+## Current background and request-continuation boundaries
+
+The background-control work extends the earlier acceptance campaign recorded below. That campaign's
+timings and test counts describe its named revisions, not the newer cooperative-prefill or request-parking
+changes. Report new measurements against the exact tested source and binary; do not combine historical
+counts into a claim that the current revision passed them all.
+
+The native engine can yield at completed decode windows and cooperative prompt-chunk boundaries. Active
+file readers and borrowed cache views must be drained before a cache is resized. During a background wait,
+expert workers use their sleeping path, control heartbeats continue, and cancellation remains available.
+The control lease is bounded: loss of the Python controller cannot permanently retain an old pause command.
+This is cooperative scheduling, not arbitrary CUDA-kernel preemption, and the response time includes reaching
+the next safe boundary. A lower CPU percentage alone is not evidence of a faster foreground application.
+
+When both supported caches have reached their reclaimable floors, a separate, explicitly enabled
+`coadaptive.request_parking` policy can suspend one active **text-only** request:
+
+1. Sustained fresh hard-pressure observations request a native STOP at a committed boundary. The existing
+   request owner drains all accepted output through the matching DONE acknowledgement; an error or an
+   ambiguous end never authorizes replay.
+2. A private journal records the exact native token prefix plus accepted output IDs, the effective sampling
+   seed and the remaining output budget. The server retains the HTTP stream, output parser, tool-call IDs
+   and FIFO ownership. It does not resend already delivered text or execute a tool action.
+3. Only after the journal is committed does the owner unload the native/vision processes. This releases
+   their process-owned execution allocations as well as their caches; memory held by the driver or other
+   applications is outside that ownership.
+4. The same request waits with heartbeats and cancellation for fresh physical-RAM, commit and GPU capacity
+   sufficient for a full reload, including margins and a stable recovery interval. It then reloads and
+   reprocesses the exact saved prefix before emitting only new output. Recognized pre-READY allocation
+   failures have a bounded backoff/retry path after verified cleanup. Generation errors are not retried.
+
+The journal is not a KV/recurrent-state snapshot. Reprocessing the prefix is intentional and can be costly;
+preserving token IDs and a seed does not prove bit-identical subsequent generation after reload. Current
+parking support is one running server and one active response, not crash recovery, reconnect/resume, parallel
+serving or image-request migration. Image requests retain their ordinary vision handling and do not enter
+this parking path. A configured vision encoder alone does not make a text request an image request.
+
+Parking is disabled by default and requires a compatible live coadaptive/native-control configuration and
+an explicit absolute journal directory. Windows journals require persistent filesystem ACLs and a protected
+current-user/SYSTEM DACL. Disk-write or identity-validation failure cannot authorize destructive unloading.
+Cancellation waits for lifecycle ownership to settle before releasing the request queue; it does not leave
+an unowned reload thread running. The initial and post-STOP measured footprints are combined conservatively,
+but sampled capacity still cannot exclude a new allocation racing the reload.
+
+**Between requests, full engine unloading is not implemented by this controller.** Live MEMORY control can
+return reclaimable RAM/VRAM cache space while an agent waits for a compiler or other tool, but fixed execution
+allocations remain resident. A new idle-unload policy would need coordinated HTTP admission and vision
+preparation; it must not be inferred from the active-request parking feature. Model weights evicted from
+RAM are read again from their existing model files; this does not require writing another model copy to SSD.
+Strata already has a separate timed idle-unload/autoload mechanism. The missing integration here is
+automatic pressure-triggered idle unloading plus guarded admission before the next request's load and
+vision preparation; this branch does not replace that existing timer or claim to have added it.
+
+There remains a finite working-set floor whenever inference is actually running. If no supported execution
+shape fits, the safe options are waiting or parking, not treating nominal RAM, VRAM and SSD sizes as one
+interchangeable pool. An application can allocate faster than a sampled controller responds; disk errors,
+device loss, kernel faults, insufficient reload capacity and client/proxy timeouts remain possible. This
+prototype makes no unconditional "never OOM," "never stop," immediate adaptation or speed guarantee.
+Acceptance must establish correct task completion, bounded resource release and foreground progress for
+the tested workload, including the time spent waiting, unloading, loading and reprocessing the prompt.
+
+See [implementation provenance](ADAPTIVE_PROVENANCE.md) for actual inherited code, design inspiration and
+API references. The broader research survey below is not a list of imported implementations.
 
 ## Existing Strata work and attribution
 
@@ -32,13 +98,33 @@ Other related work must be considered before an upstream submission:
   commit pressure. Its code is not part of the current implementation; both changes need a common policy owner.
 - [PR #1461](https://github.com/Niko1221/Strata/pull/1461): peer-tier cooperation and changing roles across
   two GPUs. Relevant to a future multi-GPU design, not validated on this laptop.
+- [PR #1471](https://github.com/Niko1221/Strata/pull/1471): offload idle session state through CUDA VMM while
+  keeping model weights loaded. It does not park an active HTTP request or release the entire engine.
+- [PR #1480](https://github.com/Niko1221/Strata/pull/1480), stacked on
+  [#1271](https://github.com/Niko1221/Strata/pull/1271) and
+  [#1269](https://github.com/Niko1221/Strata/pull/1269): disk conversation caches and streaming session
+  restore. These preserve reusable model state; the current request journal instead reprocesses exact token
+  history after unloading. Integrating a proven streaming snapshot could reduce that cost later, but none
+  of these patches is imported here.
+
+These related feature PRs (#1117, #1324, #1461, #1471, #1480 and its underlying spill/restore work)
+were still open when rechecked on 2026-10-08; the latest public release was v0.1.40.3. Searches for open
+elasticity, pressure and background-control proposals did not identify an equivalent active-request
+journal/unload/reload controller. This is a scoped duplication check, not a claim that the broader idea
+is novel. Recheck heads and maintainer feedback before publication. PR #1324's author explicitly distinguishes
+gradual pressure response from a guarantee, and the PR #1117 author offers to separate its arena from policy.
 
 Changes made during this port include draining newer asynchronous file readers before changing resident
 storage, considering available Windows commit as well as physical RAM, updating server test fixtures for
 current slot state, and using application-neutral workload signals. These are port fixes, not techniques
 copied from the external research below.
 
-## External work worth using
+## External work evaluated
+
+This is a research survey, not a list of imported implementations. The current routing gate uses
+principle-level inspiration from ATSInfer and StarPU; the other projects below were evaluated as related
+work. [Implementation provenance](ADAPTIVE_PROVENANCE.md) identifies actual code reuse, design influence
+and API references separately, including the substantial Strata PR #726 port.
 
 ### ATSInfer: measured placement under changing load
 
@@ -113,7 +199,8 @@ compatibility with this RTX 4070 Laptop. No interposition or driver changes were
   users report the same application-sharing problem. Replies mostly describe caps, unloading or routing to
   another device. These anecdotes establish demand, not correctness or speed of an adaptive solution.
 
-No external code from these projects has been incorporated. Sources are design references. Review licensing
+No external code from the projects in this research survey has been incorporated. Only the ATSInfer and
+StarPU principles identified above currently inform the routing implementation. Review licensing
 and preserve attribution if code is used later. No complete drop-in implementation matching the proposed
 Windows Strata system was verified; this is not a claim that none exists.
 
@@ -226,6 +313,146 @@ Change the latter mode to `live` only for an isolated validation. Leave `routing
 there is trustworthy calibration for that exact runtime. The RAM cap and startup reserve still belong
 in the native arguments. Shadow mode is the default because direction tests do not prove faster tasks.
 
+## Current cooperative-control and parking validation (2026-10-08)
+
+The current Python suite ran **851 tests: 844 passed and seven skipped**. The native build and five focused
+native control/memory tests passed. These counts concern the current working-source campaign, separately
+from the older campaign below. The real parking run used native binary SHA-256
+`b17c3ef7a55ff1b00e217fb5a5251a23583734b2ce6e2d57d1423012215d83aa` and server source SHA-256
+`f714e58627696099ecda6969307c066fee597a6b28412d218805045a98ea0e45`.
+
+On Windows with a Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB and 64 GiB installed RAM, three real-engine
+service-level streaming cases passed: uninterrupted control, park/resume, and cancellation while parked.
+The model was IQ3_S with 65,536 configured context; this was a short text prompt, not a filled-64K parking
+test. Sampling was greedy with seed 42, high reasoning, an 8,192-token reasoning allowance and a
+12,288-token total output limit.
+
+The parking trigger was an **injected sustained critical-pressure decision**. The harness did not consume
+the machine's remaining memory or invent free-capacity readings. Process unloading, observed RAM/VRAM
+release, capacity admission, reload and continuation were real. A deliberate roughly 20-second hold kept
+the request suspended so heartbeat and cancellation behavior could be checked. This validates the lifecycle
+under a controlled trigger; it does not establish response time to an actual foreground allocation burst.
+
+| Case | Outcome | Request elapsed | Observed system RAM made available | Observed global GPU free-memory increase |
+| --- | --- | ---: | ---: | ---: |
+| Uninterrupted control | Natural completion; generated C++ passed 104 independent cases | 64.781 s | Not unloaded | Not unloaded |
+| Park, unload and resume | Natural completion; generated C++ passed 104 independent cases | 116.098 s | 37.348 GiB | 6,802.715 MiB |
+| Cancel while parked | Cancelled without reloading | 28.861 s including the hold | 37.442 GiB | 6,836.715 MiB |
+
+Request times exclude the subsequent independent compile/test check (about one second for each completed
+answer). The resumed request took longer, including deliberate suspension, model reload and prefix processing;
+this experiment demonstrates resource release and correct continuation, not a speed improvement.
+The control generated 1,094 tokens and the resumed case 740; their difference in elapsed time is therefore
+not an isolated measurement of suspension overhead, and their future continuations were not bit-identical.
+The release figures are differences in system/global readings around the verified process exit, not an exact
+accounting of every driver allocation. Native allocator and DXGI budget headroom were checked separately.
+
+The continuation check compared exact accepted token IDs, effective seed and remaining budget across the
+park boundary, and verified a new native process after the old one exited. A requested Unicode marker appeared
+once in each completed answer. Heartbeats remained available during suspension. The cancellation acknowledgement
+arrived **0.037 seconds** after cancellation was requested, with no reload. This is one controlled measurement,
+not a worst-case cancellation bound during every startup or I/O operation.
+
+Sampled native/DXGI GPU headroom stayed at least **326 MiB** in control/resume and **344 MiB** in the
+cancellation case. Sampled available RAM stayed at least **10.59 GiB** across these cases. Samples cannot
+exclude a brief unobserved allocation peak. Image-input parking, exact future-output equivalence after a
+reload, client reconnect and real uncontrolled memory exhaustion were not tested by this campaign.
+
+### Background pacing with real CPU contention
+
+A separate off/on/on/off comparison used the same 94-token prompt, high reasoning and a 4,096-token
+output limit. The foreground load was a fixed eight-worker C++ workload totaling 16 billion iterations,
+not a compiler invoked by Hermes. Model inference and the foreground job overlapped for 43.00-43.85 seconds
+in every arm. Expert RAM stayed at 32,767 MiB and GPU expert cache at 672 MiB; this tests pacing with fixed
+caches, not every part of the adaptive memory policy.
+
+| Arm | Foreground elapsed | Model request elapsed | Generated tokens | Decode tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| Off, first | 45.52 s | 114.27 s | 1,742 | 15.59 |
+| On, first | 45.84 s | 64.59 s | 785 | 12.64 |
+| On, second | 45.79 s | 66.60 s | 873 | 13.62 |
+| Off, second | 44.99 s | 126.76 s | 1,927 | 15.58 |
+
+All four generated C++ answers reached natural completion, compiled and passed 104 deterministic cases.
+All eight foreground result checksums matched across all four arms. External CPU readings were complete
+throughout the sampled overlap. The on arms requested positive delays, reaching 10 and 14 ms; off arms
+requested none. These are observed controller commands, not measured counts or durations of native sleeps.
+
+Median foreground time was **45.25 seconds off versus 45.81 seconds on**, so this trial shows no foreground
+speed gain. The on arms produced roughly half as many tokens and had **lower** decode throughput. Their
+shorter model request times therefore cannot be attributed to a throughput optimization. With two samples
+per arm and varying generated answers, this is bounded correctness and control evidence, not a causal
+completion-time improvement. Sampled available RAM remained at least **10.658 GiB**; fresh native CUDA and
+DXGI budget headroom each remained at least **324 MiB**. These are separate measurements whose minima happened
+to match, and still do not exclude brief unsampled peaks.
+
+### Current HTTP vision and tool acceptance
+
+The normal HTTP interface passed an image request and a function-call/result continuation with request
+parking enabled. The image followed the ordinary vision path and explicitly reported parking unsupported
+for that request; it was not unloaded or migrated. The image request took 12.972 seconds. The complete
+two-request tool cycle took 13.566 seconds and returned the computed result correctly. Its continuation
+reused 435 of 453 input tokens, reading 18 new tokens. These checks establish compatible ordinary handling,
+not image parking or a speed comparison. Sampled available RAM stayed at least **9.465 GiB** and native
+GPU headroom at least **340 MiB**.
+
+### Actual Hermes compiler-feedback acceptance: first attempt incomplete
+
+A visible, isolated Hermes CLI session was asked to read an existing C++ function, run its failing build,
+repair the function, then compile and test again. The four-job compiler ran and its real failure diagnostics
+reached Hermes. Hermes repaired the code but reached its six-turn ceiling before completing the required
+final build and verification. The attempt took **311.219 seconds**, made **eight recorded API calls**, and
+ended unsuccessfully. It did not receive a successful build result in its own conversation.
+
+An independent check of the resulting function compiled and passed all **104 cases**; immutable test/build
+fixtures remained unchanged. That proves the repaired candidate passed this test, but does not convert the
+agent's incomplete workflow into a successful end-to-end run. Sampled available RAM stayed at least
+**7.856 GiB** and native GPU headroom at least **278 MiB**, above the 250 MiB guard. The production Hermes
+configuration hash was unchanged. This was one bounded attempt with no matched nonadaptive Hermes control,
+so neither faster agent completion nor a general autonomy claim is supported.
+
+The **same Hermes session subsequently completed** after its disposable profile's turn limit was raised
+from six to twelve. The full prior transcript and repaired candidate were retained; the continuation did
+not supply replacement code. Hermes ran the four-job compiler, received its successful result of **2,096
+deterministic cases**, and completed normally. An independent check again passed all **104 cases**. The
+continuation took **203.183 seconds** and made three recorded API calls. Including the unsuccessful first
+attempt, the combined agent time was **514.401 seconds** and eleven recorded API calls; intervening setup
+and idle time are not included in that sum.
+
+The continuation's sampled minimum available RAM was **8.352 GiB**; native CUDA and DXGI budget headroom each
+reached **276 MiB**. Original evidence, prior build results, immutable project fixtures and the production
+Hermes configuration remained unchanged. This is bounded success after an explicit same-session resume,
+not an uninterrupted autonomous success or a matched demonstration of faster completion. It also does not
+establish a foreground compiler speed gain: these ordinary short compiler jobs did not impose controlled
+memory pressure.
+
+### Near-64K prompt with real RAM pressure
+
+A separate current-build test processed a **60,270-token prompt** in the configured 65,536-token context.
+Unlike the synthetic parking trigger above, this test allocated and held **2 GiB of real competing RAM**
+during prompt processing. The resident expert arena shrank from 32,767 to 30,404 MiB in **7.156 seconds**,
+while prompt processing was still at 768 of 60,270 tokens. The native process stayed alive throughout.
+This exercises cooperative prefill relief, not full process parking.
+
+| Request | Request elapsed | Prompt processing | Reused / newly read input tokens | Generated tokens | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Cold long prompt under RAM pressure | 839.035 s | 829.5252 s | 0 / 60,270 | 140 | All four requested keys correct |
+| Repeated long prompt with pressure still held | 10.940 s | 0.5859 s | 60,265 / 5 | 140 | All four requested keys correct |
+| Different conversation after recovery | 5.739 s | 2.4995 s | 0 / 49 | 78 | Correct answer |
+
+The cold and repeated request times exclude the initial 40.039-second model load. The repeated request
+demonstrates preserved prompt reuse across live memory changes; it is not a cold-prefill speed comparison.
+After the competing allocation was released, the resident arena recovered to 32,707 MiB, within 64 MiB of
+its initial size. The different-conversation check then completed correctly in the same process.
+
+Across 982 telemetry samples, available system RAM reached a minimum of **8.805 GiB**. Of these samples,
+943 contained native capacity information no more than five seconds old, representing 351 distinct native
+updates. Fresh native CUDA and DXGI budget headroom each reached a minimum of **294 MiB**, above the requested
+250 MiB guard. Sampling still cannot exclude shorter unobserved peaks. This test supports long-prompt
+correctness, relief during prefill and cache reuse; it does not show unrestricted memory safety, a response
+bound for arbitrary competing applications, or a speed gain against older tests with different memory
+behavior.
+
 ## Initial local validation of the port
 
 Machine: Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB, 64 GiB installed DDR5; Windows; IQ3_S; 65,536 configured
@@ -310,7 +537,7 @@ continuation. It advertised 65,536 context and vision enabled, with high reasoni
 native free VRAM stayed at least 342 MiB and available RAM at least 11.56 GiB. This is API acceptance,
 not a completed Hermes project. All test processes were stopped afterward; production was not modified.
 
-## Completed acceptance campaign (2026-10-08)
+## Earlier completed acceptance campaign (2026-10-08)
 
 Decision: retain this as an isolated prototype. Do not promote it to the daily launcher or submit the
 whole branch as a finished adaptive scheduler. The tests demonstrate useful memory-control behavior,
@@ -332,7 +559,7 @@ reserve, 320 MiB running free-VRAM target and fixed PCIe fraction 0.37. Routing 
 no alternate placement passed the routing gate. Tests ran sequentially on a separate service port.
 These are not comparisons against the daily launcher with a different resident budget.
 
-Final server corrections in commit `6f99216`:
+Final server corrections for the earlier campaign:
 
 - Send an absolute running free-VRAM target to native `MEMORY`; do not compound a fitting reserve with
   each observed shortfall. A renewed shortfall can require action even when the target is unchanged.
@@ -428,7 +655,12 @@ admission checks with extra room for lazy buffers; the minimum observed across t
 agent/API validations was 294 MiB. All test processes were stopped afterwards. Production Strata source,
 settings and launchers were not modified.
 
-### Remaining release gates
+### Release gates recorded at that campaign's revision
+
+The first item below describes the earlier prefill implementation. Cooperative prompt-chunk relief and
+active-request parking were implemented afterward; their present boundaries are described near the top of
+this document. Implementation alone does not close the real-model correctness and latency validation gate.
+The historical campaign and its failed attempts remain evidence for their tested revision.
 
 1. Live cache changes currently wait for prompt processing to finish, because borrowed cache views remain
    in use. The approximately eleven-minute cold read demonstrates how long relief may be deferred. Safe,
