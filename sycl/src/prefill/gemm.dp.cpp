@@ -697,13 +697,16 @@ uint8_t* gemm_stage(size_t need, sycl::queue& q) {
     static thread_local uint8_t* p = nullptr;
     static thread_local size_t cap = 0;
     if (need > cap) {
-        if (p != nullptr) sycl::free(p, q);
+        if (p != nullptr) {
+            q.wait();   // the queue is in-order but asynchronous: a previous staged GEMM may still read p
+            sycl::free(p, q);
+        }
         p = (uint8_t*) sycl::malloc_device(need, q);
         cap = p != nullptr ? need : 0;
     }
     return p;
 }
-inline bool staged_gemm(void* handle, const uint16_t* W, int lda, const uint16_t* X, int ldb,
+inline bool staged_gemm(sycl::queue& q, void* handle, const uint16_t* W, int lda, const uint16_t* X, int ldb,
                         dpct::library_data_t dt, int64_t N, int64_t T, int64_t K, float alpha, float beta,
                         float* Y, int64_t ldy) {
     static const bool no_stage = std::getenv("STRATA_SYCL_GEMM_NO_STAGE") != nullptr;   // tests' negative control
@@ -714,9 +717,13 @@ inline bool staged_gemm(void* handle, const uint16_t* W, int lda, const uint16_t
     const bool far_w = strata::device_offset_end(W, w_bytes) > k4G;
     const bool far_x = strata::device_offset_end(X, x_bytes) > k4G;
     if (no_stage || (!far_w && !far_x)) return false;
-    sycl::queue& q = dpct::get_in_order_queue();
     uint8_t* s = gemm_stage(w_bytes + x_bytes, q);
-    if (s == nullptr) return false;   // no room to stage: fall back to the direct GEMM rather than drop the operand
+    if (s == nullptr) {
+        std::fprintf(stderr, "strata: WARNING: a GEMM operand lies past 4 GiB and the %zu MiB staging buffer could not be "
+                             "allocated; the GEMM runs directly and may be wrong on this card\n",
+                     (w_bytes + x_bytes) >> 20);
+        return false;
+    }
     uint8_t* sw = s;
     uint8_t* sx = s + w_bytes;
     if (far_w) q.memcpy(sw, W, w_bytes);
@@ -804,7 +811,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     }
 #endif
 #endif
-    if (staged_gemm(handle_, W, (int) K, X, (int) (ldx ? ldx : K), dpct::library_data_t::real_bfloat16, N, T, K,
+    if (staged_gemm(*strata::q_of(stream_), handle_, W, (int) K, X, (int) (ldx ? ldx : K), dpct::library_data_t::real_bfloat16, N, T, K,
                     alpha, beta, Y, ldy))
         return;
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
@@ -845,7 +852,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
-    if (staged_gemm(handle_, W, (int) K, X, (int) K, dpct::library_data_t::real_half, N, T, K, alpha, beta, Y, ldy))
+    if (staged_gemm(*strata::q_of(stream_), handle_, W, (int) K, X, (int) K, dpct::library_data_t::real_half, N, T, K, alpha, beta, Y, ldy))
         return;
     ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,

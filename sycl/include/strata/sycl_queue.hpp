@@ -188,6 +188,13 @@ inline void device_alloc_register(const void* p, size_t bytes) {
     std::lock_guard<std::mutex> lk(device_alloc_mutex());
     device_alloc_map()[p] = bytes;
 }
+// Drop a base when its allocation is freed, so a later allocation that reuses the address is not mis-attributed by
+// device_offset_end.
+inline void device_alloc_unregister(const void* p) {
+    if (p == nullptr) return;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    device_alloc_map().erase(p);
+}
 // How far into its device allocation the byte range [p, p + bytes) ends; 0 when p is not in one we know.  oneMKL's GEMM
 // reads the last, partial tile of an operand from the wrong place when it lies more than 4 GiB in (Arc A770, oneMKL
 // 2026.1), so the GEMM stages any operand this reports > 4 GiB for.  An operand in an allocation we did not register

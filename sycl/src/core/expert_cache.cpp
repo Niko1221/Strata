@@ -459,6 +459,7 @@ void ExpertCache::release_segmented() {
     seg_size_.clear();
     mapped_segs_ = 0;
     reserved_ = 0;
+    strata::device_alloc_unregister(base_);
     base_ = nullptr;
 }
 
@@ -748,8 +749,10 @@ void ExpertCache::close() {
         release_segmented();
     } else if (vmm_) {
         vmm_.reset();   // unmaps and frees every chunk it still holds
+        strata::device_alloc_unregister(base_);
         base_ = nullptr;
     } else if (base_ != nullptr) {
+        strata::device_alloc_unregister(base_);
         sycl::free(base_, dpct::get_in_order_queue());
         base_ = nullptr;
     }
