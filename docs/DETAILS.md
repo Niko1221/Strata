@@ -1070,7 +1070,9 @@ which of the two sets the card recommends - thinking: `temperature=1.0, top_p=0.
 presence_penalty=0.0, repetition_penalty=1.0`, direct answers: `temperature=0.7, top_p=0.80, top_k=20, min_p=0.0,
 presence_penalty=1.5, repetition_penalty=1.0` (#1129). A setup run again for an install that predates #1129 adds the
 block; numbers written by hand stay as they are, and a start that picks a preset keeps the file it replaced as
-`strata-<model>.json.bak`, the way a setup run does. A `sampling` that is not a set of numbers at all - a name, a
+`strata-<model>.json.bak`, the way a setup run does. The Intel path keeps that choice: `sycl/setup_intel.py` rewrites
+the config for its container paths, and the block setup wrote for this run wins over the earlier config's;
+`--thinking` / `--instruct` on an Intel start is saved there before its run script starts the server. A `sampling`
 list, a bare value - stops the start with a message naming it instead of a traceback; a setup run replaces such a
 block and says what it replaced. A start names what it uses: setup's `Settings (...)` line and the
 server's `sampling defaults from the config: ...` line list the numbers and say which preset the block holds, or that

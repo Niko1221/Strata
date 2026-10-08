@@ -132,7 +132,8 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     A reserve the user asked for (--vram-reserve-mib) is kept.  An i915 card (Alchemist, the A-series) cannot do that:
     a single pinned host allocation above a few GB fails there, so the mirror cannot hold what the card does not, and
     the config loads the experts into a RAM arena instead (no --stream-experts, --ple-io ram, and the device-built
-    verify plan's NO_HOST switch off - docs/INTEL.md, "Arc A750")."""
+    verify plan's NO_HOST switch off - docs/INTEL.md, "Arc A750").  A "sampling" block setup wrote for
+    this run (#1129) wins over the block the earlier config held; a block the new config does not have is carried."""
     args = list(cfg["args"])
     for f in ("--resident-experts", "--mmap-experts"):  # setup's low-RAM mode is the CUDA engine's
         drop(args, f)
@@ -178,8 +179,24 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
         out["env"] = env
-    out.update(keep)
+    kept = dict(keep)
+    if kept.get("sampling") is not None and out.get("sampling") is not None and kept["sampling"] != out["sampling"]:
+        kept.pop("sampling")            # #1129: setup has just chosen this run's block (--thinking / --instruct, or the
+                                        # thinking default, or the user's hand-written numbers read back from the file);
+                                        # the block read from the earlier config must not be put back over it
+    out.update(kept)
     return out
+
+
+def save_sampling_at_start(cfg_path: Path, cfg: dict, keep: dict) -> bool:
+    """#1129: --thinking / --instruct on a start of an installed Intel model.  setup.py's start() writes the named
+    preset into the run config and then starts the server; this wrapper starts the model through its own run script,
+    so the write has to happen here, before that start - the script hands the config to sycl/serve/server_intel.py,
+    which reads the block when the server comes up.  setup's own words say which numbers are now in use and keep the
+    file it replaced as strata-<model>.json.bak.  False when nothing changed: no flag on this start, or the block
+    already holds exactly those numbers."""
+    mode = (keep or {}).get("sampling_mode")
+    return bool(mode) and S.save_sampling_choice(cfg_path, cfg, mode)
 
 
 def install(argv) -> None:
@@ -190,7 +207,7 @@ def install(argv) -> None:
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main"):
+                 "write_run_script", "start", "say", "main", "save_sampling_choice"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
 
@@ -264,6 +281,9 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
+        # #1129: --thinking / --instruct names the sampling every client that sends none gets; the execv below never
+        # returns, so the run config has to hold that block before the model starts.
+        save_sampling_at_start(Path(cfg_path), cfg, k.get("keep") or {})
         script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
         S.say(f"\nstarting {script.name} ...")
         os.execv("/bin/sh", ["/bin/sh", str(script)])

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,6 +19,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
+from serve import runconfig  # noqa: E402
 
 
 def run(argv, win):
@@ -174,6 +177,75 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.small_card(24.0, "i915"))
         self.assertTrue(m.small_card(10.0, "xe"))
         self.assertFalse(m.small_card(32.0, "xe"))
+
+
+def module():
+    """sycl/setup_intel.py as a module (sycl/ is not a package)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("setup_intel", ROOT / "sycl" / "setup_intel.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class IntelSampling(unittest.TestCase):
+    """#1129 on the Intel Arc path: the sampling block setup chose for this run survives sycl/setup_intel.py's rewrite
+    of the run config, and --thinking / --instruct at the start of an installed Intel model reaches the file the run
+    script hands to sycl/serve/server_intel.py. No GPU, no network."""
+
+    @staticmethod
+    def cfg(sampling=None):
+        cfg = {"exe": "x", "cwd": "y", "args": ["--max-context", "32768", "--kv", "int8"]}
+        if sampling is not None:
+            cfg["sampling"] = sampling
+        return cfg
+
+    def test_the_block_setup_wrote_survives_the_rewrite(self):
+        m = module()
+        out = m.to_sycl(self.cfg(runconfig.SAMPLING_PRESETS["instruct"]), m.ROOT / "build-sycl-aot" / "strata", 64.0,
+                        {"sampling": runconfig.SAMPLING_PRESETS["thinking"], "model_switcher": "rpc"}, 32.0, "xe")
+        self.assertEqual(out["sampling"], runconfig.SAMPLING_PRESETS["instruct"],
+                         "the block read from the earlier config was put back over the one this run chose")
+        self.assertEqual(out["model_switcher"], "rpc")               # the other hand-set keys are untouched
+
+    def test_an_earlier_block_is_still_carried_when_this_config_has_none(self):
+        m = module()
+        out = m.to_sycl(self.cfg(), m.ROOT / "build-sycl-aot" / "strata", 64.0,
+                        {"sampling": {"temperature": 0.0}}, 32.0, "xe")
+        self.assertEqual(out["sampling"], {"temperature": 0.0}, "a config written before #1129 lost its numbers")
+
+    def test_a_start_saves_the_preset_the_flag_names(self):
+        m = module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "strata-iq3_s.json"
+            cfg = {"exe": "x", "backend": "sycl", "model_switcher": "rpc",
+                   "sampling": runconfig.SAMPLING_PRESETS["thinking"]}
+            path.write_text(json.dumps(cfg), encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                changed = m.save_sampling_at_start(path, cfg, {"sampling_mode": "instruct"})
+            self.assertTrue(changed)
+            wrote = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(wrote["sampling"], runconfig.SAMPLING_PRESETS["instruct"])
+            self.assertEqual(wrote["model_switcher"], "rpc")         # the Intel model menu's key survives the write
+            self.assertIn("sampling instruct", out.getvalue())
+            bak = Path(td) / "strata-iq3_s.json.bak"
+            self.assertEqual(json.loads(bak.read_text(encoding="utf-8"))["sampling"],
+                             runconfig.SAMPLING_PRESETS["thinking"], "the numbers it replaced were not kept")
+
+    def test_a_start_that_names_nothing_writes_nothing(self):
+        m = module()
+        for keep in ({}, {"sampling_mode": None}, {"sampling_mode": "thinking"}):
+            with self.subTest(keep=keep), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "strata-iq3_s.json"
+                cfg = {"exe": "x", "backend": "sycl", "sampling": runconfig.SAMPLING_PRESETS["thinking"]}
+                path.write_text(json.dumps(cfg), encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertFalse(m.save_sampling_at_start(path, cfg, keep))
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), cfg)
+                self.assertFalse((Path(td) / "strata-iq3_s.json.bak").exists(),
+                                 "a start that changes no numbers should keep no copy")
+
 
 
 if __name__ == "__main__":
