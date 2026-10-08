@@ -112,8 +112,9 @@ rejected at startup.
 
 ## One-click setup and server
 
-Run `./setup.sh --setup` (Windows: `START-HERE.bat --setup`) and select MTP or
-DFlash in the numbered menu. DFlash then offers original BF16, Q8_0, Q5_0 and
+Run `./setup.sh --setup` (Windows: `START-HERE.bat --setup`) and select MTP, DFlash or Off
+in the numbered menu. Off skips both draft models and disables suffix/prompt lookup.
+The same choice is available as `./setup.sh --setup --yes --drafter none`. DFlash then offers original BF16, Q8_0, Q5_0 and
 Q4_0. The choice applies to the drafter's matrices. Norm vectors keep their
 original BF16 bits; the target's weights, embedding and output head stay as selected.
 
