@@ -25,6 +25,17 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
 void dflash_rope_neox_apply(const float* x, float* out, int rows, int head_dim, double theta,
                             const int* positions, void* stream);
 
+/// The DFlash drafter's per-head rope positions, built on the DEVICE (no pinned staging, no H2D
+/// copy, no sync): `pos[i] = pos0 + i / n_head` for rows*n_head entries - every head of row r at
+/// pos0 + r, the [row][head] layout the runtime's rope calls read.
+void dflash_build_positions(int32_t* pos, int rows, int n_head, int64_t pos0, void* stream);
+/// The append step records `steps[r*4] = {cell, cell+1, (cell+1)/page_size, cell+1}` for the
+/// rows' cells pos0..pos0+rows-1, on the device.
+void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream);
+/// The attention step records: every row reads [0, end) - `steps[r*4] = {end-1, end,
+/// end/page_size, end}`, on the device.
+void dflash_build_attn_steps(int32_t* steps, int rows, int64_t end, int page_size, void* stream);
+
 /// (#783 PR-f, stuchapin909) native_qsa_rms_norm_weighted + native_rope_apply in one launch, bit-identical to the pair
 /// (rope_parity check 6): x rows are `in_stride` apart (2 * head_dim reads a q row out of a q|gate row), out rows are
 /// head_dim apart, x may equal out when in_stride == head_dim. head_dim 128 or 256 and n_rot 64 only.

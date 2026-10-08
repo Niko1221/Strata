@@ -254,6 +254,64 @@ void dflash_rope_neox_apply(const float* x, float* out, int rows, int head_dim, 
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 
+// ---- DFlash position/step builders (docs/DFLASH.md): the per-head rope positions and the
+// per-row append/attention step records, generated on the DEVICE so no pinned host staging and
+// no H2D copy sits between the drafter's kernels (the staging's copies were why fusion_rows
+// synced after every layer).  The layouts are the runtime's: positions [row][head] with every
+// head of a row at pos0 + row; steps [row][kStepCount] as qsa.hpp's StepRecord documents.
+__global__ void dflash_build_positions_kernel(int32_t* __restrict__ pos, int rows, int n_head,
+                                              int pos0) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * n_head) return;
+    pos[i] = (int32_t) pos0 + (int32_t) (i / n_head);
+}
+
+__global__ void dflash_build_steps_kernel(int32_t* __restrict__ steps, int rows, int pos0, int page_size) {
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rows) return;
+    // {cell, cell + 1, (cell + 1) / page_size, cell + 1}: kStepPos, the end, the block, the width
+    const int32_t cell = (int32_t) pos0 + r;
+    steps[(size_t) r * 4 + 0] = cell;
+    steps[(size_t) r * 4 + 1] = cell + 1;
+    steps[(size_t) r * 4 + 2] = (cell + 1) / page_size;
+    steps[(size_t) r * 4 + 3] = cell + 1;
+}
+
+__global__ void dflash_build_attn_steps_kernel(int32_t* __restrict__ steps, int rows, int end, int page_size) {
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rows) return;
+    // the attention's own record: every row reads [0, end) - the same four ints per row
+    steps[(size_t) r * 4 + 0] = (int32_t) end - 1;
+    steps[(size_t) r * 4 + 1] = (int32_t) end;
+    steps[(size_t) r * 4 + 2] = (int32_t) end / page_size;
+    steps[(size_t) r * 4 + 3] = (int32_t) end;
+}
+
+void dflash_build_positions(int32_t* pos, int rows, int n_head, int64_t pos0, void* stream) {
+    if (!pos || rows < 1 || rows > 65535 || n_head < 1 || pos0 < 0) return;
+    const int64_t n = (int64_t) rows * n_head;
+    dflash_build_positions_kernel<<<(unsigned) ((n + 255) / 256), 256, 0,
+                                    static_cast<cudaStream_t>(stream)>>>(pos, rows, n_head, (int) pos0);
+    const auto e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
+}
+
+void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream) {
+    if (!steps || rows < 1 || rows > 65535 || pos0 < 0 || page_size < 1) return;
+    dflash_build_steps_kernel<<<(unsigned) ((rows + 255) / 256), 256, 0,
+                                static_cast<cudaStream_t>(stream)>>>(steps, rows, (int) pos0, page_size);
+    const auto e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
+}
+
+void dflash_build_attn_steps(int32_t* steps, int rows, int64_t end, int page_size, void* stream) {
+    if (!steps || rows < 1 || rows > 65535 || end < 1 || page_size < 1) return;
+    dflash_build_attn_steps_kernel<<<(unsigned) ((rows + 255) / 256), 256, 0,
+                                     static_cast<cudaStream_t>(stream)>>>(steps, rows, (int) end, page_size);
+    const auto e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
+}
+
 void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma, float* out,
                               int rows, int head_dim, int n_rot, float epsilon,
                               const RopeScaling& scaling, const int* positions, void* stream) {
