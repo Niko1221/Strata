@@ -575,6 +575,18 @@ own. Not with a layer split, the helper caches, `--peer-device` or the resident 
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
 the shrink. Without the flag nothing changes (the same answers as without it).
 
+**Which experts your requests route to (opt-in, `"routing_counts"`):** with `"routing_counts": "routing-counts.json"`
+in `strata-<model>.json`, the engine counts how often each (layer, expert) pair is routed (the same ids
+`--dump-routing` writes, every layer of every window, without writing anything per token) and saves the counts as
+JSON every minute between requests (`"routing_counts_every": N` minutes) and on exit, through a temporary file
+renamed over the last one. `GET /metrics` then adds an `experts` section to the JSON: per layer, the experts seen, the
+share of the 32 most routed experts, the routing's entropy in bits (log2 512 = 9 when spread evenly) and the top
+experts. In the Prometheus text format, it adds `strata:expert_routed_total`, the per-layer gauges
+`strata:expert_seen`, `strata:expert_top32_share` and `strata:expert_entropy_bits` (label `layer`), and
+`strata:expert_routed_by_expert_total` for each layer's 8 most routed experts (labels `layer`, `expert`). That is
+about 530 series, not one per pair (24,576 on a 48 x 512 model). The counts start at zero with the engine, and the
+first file appears at the first request a minute after the start. Without the key nothing is counted or written.
+
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
 With `"expert_profile_save": "expert-profile-learned.bin"` in `strata-<model>.json` the engine saves that as a
