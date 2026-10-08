@@ -1376,16 +1376,22 @@ test images.
 
 ## Short prompts: let the CPU share the experts (opt-in, `STRATA_PREFILL_CPU_SHARE`)
 
-A prompt chunk below 1,024 tokens (an agent's tool result, a test's output, a short follow-up) streams every routed
-expert that is not in VRAM over PCIe, while the CPU pool that decodes sits idle and the RAM arena already holds those
-experts. `STRATA_PREFILL_CPU_SHARE=auto` hands the pool the experts few of the chunk's tokens route to, measures per
-layer how long each side takes and gives the CPU the share at which both end together (`STRATA_PREFILL_CPU_SHARE=0.4`
-fixes a share). It is off unless you set it, and then the output is byte-identical to the build without it.
+A prompt chunk of a few thousand tokens (an agent's tool result, a test's output, a short follow-up) streams every routed
+expert that is not in VRAM over PCIe, while the CPU pool that decodes sits idle and RAM already holds those experts.
+`STRATA_PREFILL_CPU_SHARE=auto` hands the pool the experts few of the chunk's tokens route to, measures per layer how
+long each side takes and gives the CPU the share at which both end together (`STRATA_PREFILL_CPU_SHARE=0.4` fixes a
+share). It is off unless you set it, and then the output is byte-identical to the build without it.
+
+With it on, chunks below 3,072 tokens are staged after their routing (only those can hand the CPU a share) instead of
+streaming every expert from 1,024 tokens on; `STRATA_PREFILL_CPU_SHARE_MAX=1024` keeps the old limit. The CPU takes
+experts it reads from RAM as they are: the arena, the page-locked copy of the resident RAM mode, or the mapped
+`experts.bin`'s pages in the file cache (`--mmap-experts`), not only page-locked ones. Serve without `--batch`; on a
+layer split every stage has the pool and one stage at a time takes it for a chunk.
 
 When on, the CPU's rows are computed in the CPU's own activation format, so the output changes in the last bits (first
 token KL against off: mean 0.006, max 0.026 nats over 22 prompts; about half of the 32-token greedy answers on 500 and
-1,000-token prompts are identical, the rest part at a near tie after about 23 tokens). Prompts of 2K tokens and longer
-read the same either way (their chunks are above the limit). Serve without `--batch`, one GPU.
+1,000-token prompts are identical, the rest part at a near tie after about 23 tokens). Chunks of 3,072 tokens and more
+read the same either way.
 
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
@@ -1394,6 +1400,18 @@ Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 15
 | RTX 5070, Ryzen 5 7600, Q2_0 | 1,376 / 1,019 (-26%) | 1,788 / 1,392 (-22%) | unchanged |
 | RTX 3060, Core Ultra 7 265, IQ3_XXS | 1,620 / 1,159 (-28%) | 2,196 / 1,770 (-19%) | unchanged |
 | Tesla P100, Xeon E5-2690 v4, IQ3_XXS | 4,805 / 3,126 (-35%) | 6,821 / 5,085 (-25%) | unchanged |
+
+Up to 3,072 tokens and with mapped experts, fresh prompts read after an 8K prewarm, medians of 5 interleaved rounds
+(off / auto, ms; Ryzen 9 5900XT, 96 GB DDR4-3200, Windows 11, `--mmap-experts`, q4_0 KV; before this the share took no
+expert here: none was page-locked):
+
+| machine | 512 tokens | 1,000 tokens | 2,000 tokens | 3,000 tokens |
+|---|---|---|---|---|
+| RTX 5070 Ti (PCIe 3.0 x8), Swift 1.5 IQ3_XXS (huihui-ai's build) | 3,322 / 1,706 (-49%) | 3,990 / 2,357 (-41%) | 5,413 / 3,354 (-38%) | 5,525 / 4,309 (-22%) |
+| RTX 3060 + RTX 5070 Ti (layers 0-11 / 12-47, both PCIe 3.0 x8), IQ3_S | 3,452 / 2,037 (-41%) | 4,506 / 2,680 (-41%) | 6,376 / 3,869 (-39%) | 6,733 / 5,138 (-24%) |
+
+A coding agent's recorded conversation on the two cards (a 100K-token start, then 8 turns of 1-5K tokens of code, 128
+tokens written a turn, the same tokens read by both): 137.4 s off, 130.6 s auto (reading 121.1 -> 114.3 s).
 
 ---
 
