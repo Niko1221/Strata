@@ -52,6 +52,7 @@ bool ck(cudaError_t e, const char* what, std::string& err) {
 PeerExperts::~PeerExperts() { close(); }
 
 void PeerExperts::close() {
+    link_ = nullptr;   // the link itself belongs to the engine
     if (device_ < 0) return;
     {
         On on(device_);
@@ -186,6 +187,10 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
 
 bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
                          const int32_t* kind, std::string& err, float* out) {
+    if (link_ != nullptr) {
+        launched_direct_ = false;
+        return link_->request(layer, x, ids, n_tok, k, kind, err);
+    }
     static const bool direct_env = [] { const char* v = std::getenv("STRATA_PEER_DIRECT"); return v == nullptr || std::atoi(v) != 0; }();
     const bool direct = direct_env && out != nullptr;
     launched_direct_ = false;
@@ -254,6 +259,12 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
 }
 
 bool PeerExperts::finish(float* out, std::string& err) {
+    if (link_ != nullptr) {
+        const double w0 = link_->ms_wait;
+        const bool ok = link_->wait(out, err);
+        ms_wait += link_->ms_wait - w0;
+        return ok;
+    }
     if (launched_rows_ == 0) return true;
     const auto t0 = std::chrono::steady_clock::now();
     {
@@ -273,7 +284,7 @@ bool PeerExperts::finish(float* out, std::string& err) {
 }
 
 bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, std::string& err) {
-    if (!pending_.empty() || max_swaps <= 0) return true;
+    if (link_ != nullptr || !pending_.empty() || max_swaps <= 0) return true;
     const auto& lay = strata::kernels::cpu::expert_layout();
     struct Swap { float gain; int32_t layer, in, out; };
     std::vector<Swap> swaps;

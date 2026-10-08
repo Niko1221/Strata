@@ -112,6 +112,8 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamEndCapture hipStreamEndCapture
 #define cudaStreamIsCapturing hipStreamIsCapturing

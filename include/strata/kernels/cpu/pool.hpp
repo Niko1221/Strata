@@ -158,6 +158,11 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    /// Elastic multi-engine (two engine processes on one CPU): hold the LAST `n` workers out of every batch - they
+    /// sleep (still counted as parked) until released, so another engine's workers can have their cores.  0 releases
+    /// all.  Call between batches (the serve loop does it between verify windows / requests).  Returns the number held.
+    int set_hold(int n);
+    int held() const { return held_; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
@@ -274,6 +279,10 @@ private:
     alignas(64) std::atomic<uint32_t> sleepers_{0};
     std::mutex sleep_mu_;
     std::condition_variable sleep_cv_;
+    std::unique_ptr<std::atomic<bool>[]> hold_;      ///< set_hold: worker i sits the batches out
+    int held_ = 0;
+    std::mutex hold_mu_;
+    std::condition_variable hold_cv_;
     std::chrono::microseconds spin_before_sleep_{kSpinBeforeSleep};
     std::vector<std::thread> threads_;
     std::vector<ExpertScratch> scratch_;   // one per worker: no allocation, no false sharing of the hot data

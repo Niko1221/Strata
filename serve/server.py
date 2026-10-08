@@ -5717,8 +5717,17 @@ def main() -> int:
             effort_end = effort_end_args(cfg, exe, tok)  # #458
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
-        engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
-                              env=env, lazy=lazy)
+        if cfg.get("elastic"):                          # opt-in: the elastic peer pair (serve/elastic.py)
+            from serve import elastic as _elastic
+
+            def _exe_of(c):
+                return c["exe"] if os.path.isabs(c["exe"]) else os.path.abspath(os.path.join(c.get("cwd") or ".",
+                                                                                             c["exe"]))
+            engine = _elastic.build(cfg, StrataEngine, lambda c: engine_args(c) + (effort_end or []), child_env,
+                                    _exe_of, silence)
+        else:
+            engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
+                                  env=env, lazy=lazy)
         engine.silence_s = silence                      # an attribute of its own: restart() keeps it
         warn_tight_ram(engine.info.get("arena_mib"))
         note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
