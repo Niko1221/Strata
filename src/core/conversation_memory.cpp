@@ -6,6 +6,10 @@
 #include <sstream>
 #include <string>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -45,6 +49,12 @@ std::optional<uint64_t> conversation_available_memory() {
     return conversation_mem_available(meminfo);
 #else
     return {};
+#endif
+}
+
+void conversation_release_freed_memory() {
+#if defined(__GLIBC__)
+    malloc_trim(0);
 #endif
 }
 

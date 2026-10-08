@@ -1,9 +1,15 @@
 #include "strata/core/conversation_memory.hpp"
 
+#include "strata/core/conversation_buffer.hpp"
+
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <fstream>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -49,6 +55,29 @@ int main() {
                                    std::numeric_limits<uint64_t>::max(), 0), "maximal exact bound");
     check(!conversation_memory_admit(std::numeric_limits<uint64_t>::max(),
                                     std::numeric_limits<uint64_t>::max(), 1), "maximal sum overflow rejected");
+#if defined(__GLIBC__)
+    {   // glibc keeps freed 16 MiB segments in its heap once its mmap threshold has risen; releasing hands them back
+        auto rss_mib = [] {
+            std::ifstream status("/proc/self/status");
+            for (std::string line; std::getline(status, line);)
+                if (line.rfind("VmRSS:", 0) == 0) return std::stod(line.substr(6)) / 1024.0;
+            return -1.0;
+        };
+        std::deque<strata::core::ConversationBuffer> parked;
+        std::vector<std::vector<char>> small_allocations;
+        for (int round = 0; round < 12; ++round) {   // park a new snapshot, drop the oldest, as a long-running server does
+            strata::core::ConversationBuffer snapshot;
+            snapshot.resize(64u << 20, 1);
+            parked.push_back(std::move(snapshot));
+            small_allocations.emplace_back(4096 + round * 37, 'x');
+            if (parked.size() > 3) parked.pop_front();
+        }
+        const double before = rss_mib();
+        parked.pop_front();
+        conversation_release_freed_memory();
+        check(rss_mib() <= before - 48.0, "a dropped 64 MiB snapshot is back with the kernel after the release");
+    }
+#endif
     // Test the real provider without assuming any particular amount of free RAM.
     const auto available = conversation_available_memory();
     check(!available || conversation_memory_admit(available, 0, 0), "provider returns bytes or unknown");
