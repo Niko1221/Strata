@@ -213,6 +213,15 @@ void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act,
 template <int TY>
 void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                 float* const* ff, int r0, int r1) {
+    // The specializations hold at most eight accumulators. A combined expert
+    // window may contain sixteen rows; process every row without widening ISA
+    // kernels or changing the arithmetic of existing <=8-row calls.
+    if (nt > 8) {
+        for (int first = 0; first < nt; first += 8)
+            gu_rows_nt<TY>(nt - first < 8 ? nt - first : 8, blob, gu_row, up_off, n,
+                           act + first, ff + first, r0, r1);
+        return;
+    }
     switch (nt) {
         case 1: gu_rows<TY, 1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 2: gu_rows<TY, 2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;

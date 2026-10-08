@@ -1,0 +1,21 @@
+{
+  "cross_build_exact": true,
+  "solo_tokens": 512,
+  "batch_tokens": 512,
+  "lifecycle_cases_per_build": 8,
+  "layout_cases": 9840,
+  "state_commit_cases": 100,
+  "native_expert_failures": 0,
+  "controls": {
+    "QFUSE": 0,
+    "STRATA_IQ_MT_MIN": 1,
+    "STRATA_NO_IQ512": 1,
+    "STRATA_NO_IQ256": 1,
+    "STRATA_NO_IQ4NL": 1,
+    "adapt_every": 1000000,
+    "pcie_frac": 0,
+    "expert_cache_requested": 6000,
+    "prefill_borrow": false
+  },
+  "scope": "Bounded controlled greedy token equality; not normal adaptive output identity"
+}

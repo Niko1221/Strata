@@ -22,6 +22,8 @@
 #pragma once
 
 #include <cstdio>
+#include <array>
+#include "strata/core/batch_segments.hpp"
 
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
@@ -155,14 +157,20 @@ public:
     // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
     bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
     int n_slots() const { return (int) slots_.size(); }
+    // Set once before any graph capture. Native single-stage speculative batches
+    // can share one expert dispatch while keeping dense tiles within eight rows.
+    void set_batch_expert_merge(bool enabled) { batch_expert_merge_ = enabled; }
+    bool batch_experts_merged() const { return last_batch_ && batch_expert_merged_; }
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err);
     /// The same over the S slots `rows` (row t is slot rows[t], any distinct slots in any order): the slots not
     /// listed are not touched, so an idle slot keeps its state (a finished conversation it may continue later).
     bool run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user,
-                       int32_t* out, std::string& err);
-    /// Keep every row of the last batch window.
+                       int32_t* out, std::string& err, bool segmented = false);
+    /// Experimental single-stage causal segments, at most max_t total rows.
+    /// Repeated slot IDs must be contiguous, with consecutive absolute positions.
+    bool commit_segment_prefixes(const int* keep, std::string& err);
     bool commit_slots(std::string& err);
     /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
     /// one entry per slot (indexed by slot ID), each in 1..that slot's group length.
@@ -276,16 +284,17 @@ private:
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
-    int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
+    int brow_[kBatchMaxRows] = {};          ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
     std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
     std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU)
     uint64_t bm_tick_ = 0;
     size_t batch_graph_limit_ = 0;         ///< 0: keep every captured batch graph (0.1.39); N: LRU-evict beyond N layouts
-    int last_rows_[8] = {};                ///< the slots of the last batch window's rows
+    int last_rows_[kBatchMaxRows] = {};                ///< the slots of the last batch window's rows
     std::vector<int> bkey(const int* rows, int S, int hbase) const {   // #871: the doorbell variant has its own graphs
         std::vector<int> k = batch_key(rows, S, hbase);
         k.push_back(ar_off_ ? 1 : 0);
+        k.push_back(batch_expert_merged_ ? 1 : 0);
         return k;
     }
     static std::vector<int> batch_key(const int* rows, int S, int hbase) {
@@ -295,18 +304,21 @@ private:
         for (int t = 0; t < S; ++t) k.push_back(rows[t]);
         return k;
     }
+    int batch_boundary_ = 0;
+    bool batch_expert_merge_ = false;
+    bool batch_expert_merged_ = false;
     // batch_launch / batch_poll
     bool b_running_ = false;
     int64_t b_k_ = 0, b_steps_ = 0;
     std::chrono::steady_clock::time_point b_last_;
-    int32_t b_out_[8] = {};
+    int32_t b_out_[kBatchMaxRows] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
     float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
     void* arena_b_ = nullptr;
-    int64_t last_pos_b_[8] = {};
+    int64_t last_pos_b_[kBatchMaxRows] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
     /// Free the graph pair of the least recently used batch layout other than `keep` (`evicted`: there was one).
     bool evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err);
@@ -328,7 +340,8 @@ private:
     int32_t pl_prev_[2] = {-1, -1};
     std::vector<uint32_t> pl_ple_rows_;   ///< the window's PLE rows (T x PLE_N_HEADS), gathered when layer 0 is served
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
-    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
+    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err,
+                     bool segmented = false);
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
@@ -376,6 +389,16 @@ private:
     size_t trace_n_ = 0;
     static constexpr int kProfPer = 33;              // stamps per layer (32 left the hc-read second
                                       // half's up-stamp at slot 32 = the next layer's slot 0: D8)
+    void collect_dense_profile();
+    unsigned long long *dense_prof_h_ = nullptr, *dense_prof_m_ = nullptr;
+    double dense_pre_ns_ = 0, dense_post_ns_ = 0;
+    int64_t dense_windows_ = 0;
+    bool dense_parallel_ = false; // immutable after init; graph cache is per verifier
+    cudaStream_t dense_cs_ = nullptr;
+    cudaEvent_t dense_fork_ = nullptr, dense_join_ = nullptr;
+    uint8_t* dense_ple_ = nullptr;
+    float* dense_ple_values_ = nullptr;
+    size_t xq_stride_ = 0;
     bool prof_on_ = false;
     unsigned long long* prof_ = nullptr;              // device: n_layers * kProfPer + 4 stamps
     std::vector<unsigned long long> prof_h_;
@@ -392,7 +415,7 @@ private:
     float* ple_val_ = nullptr;
     int last_t_ = 0;
     int64_t last_pos0_ = 0;
-    int32_t last_tokens_[8] = {};
+    int32_t last_tokens_[kBatchMaxRows] = {};
     int64_t n_vocab_ = 0;
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
@@ -444,6 +467,7 @@ private:
     float *ple_ = nullptr, *emb_ = nullptr, *R_ = nullptr, *mixed_ = nullptr, *bo_ = nullptr;
     float *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *xn_ = nullptr;
     uint8_t* xq_ = nullptr;                                   // T columns of q8_1
+    size_t xil_stride_ = 0;
     uint8_t* xil_ = nullptr;                                  // fork F4: the interleaved copy of xq_'s 2-4 columns
     uint8_t* sh_xq_ = nullptr;                                // T columns of q8_1 for shared expert branch
     float *qkv_L_ = nullptr, *h_L_ = nullptr, *gate_L_ = nullptr, *beta_L_ = nullptr;   // per GDN layer

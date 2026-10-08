@@ -1,0 +1,354 @@
+{
+  "baseline": "6674a0065f",
+  "candidate": "ae084bc",
+  "medians": {
+    "essay": {
+      "baseline": {
+        "decode_tps": 154.75770614375747,
+        "whole_run_tps": 149.56072351421187,
+        "gap_p95_ms": 47.0000000022992,
+        "ttft_p95_s": 0.31300000000192085
+      },
+      "candidate": {
+        "decode_tps": 203.09893494162299,
+        "whole_run_tps": 190.4957433412768,
+        "gap_p95_ms": 47.0000000022992,
+        "ttft_p95_s": 0.34399999999732245
+      },
+      "ratios": {
+        "decode_tps": 1.3123671835311412,
+        "whole_run_tps": 1.2737016702327943
+      }
+    },
+    "agentic": {
+      "baseline": {
+        "decode_tps": 162.52861111598475,
+        "whole_run_tps": 136.2845637067881,
+        "gap_p95_ms": 61.99999999807915,
+        "ttft_p95_s": 0.8910000000032596
+      },
+      "candidate": {
+        "decode_tps": 336.04541154216736,
+        "whole_run_tps": 233.4745909896234,
+        "gap_p95_ms": 47.0000000022992,
+        "ttft_p95_s": 0.8129999999982829
+      },
+      "ratios": {
+        "decode_tps": 2.067607722940279,
+        "whole_run_tps": 1.7131403927148825
+      }
+    }
+  },
+  "runs": [
+    {
+      "name": "essay-p1-baseline",
+      "arm": "baseline",
+      "workload": "essay",
+      "pair": 1,
+      "seed": 123,
+      "decode_tps": 151.67206591331777,
+      "whole_run_tps": 147.0061747018214,
+      "output_tokens": 7309,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "7c6ac74ae885c29ba4a6f816b17cc6929d98fc823877626430daaa18a69dd7da",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.3120000000017171,
+      "gap_over_250ms_request_seconds": 2.2660000000068976,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 39.20300000000134,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 1297 windows, avg 5.63 rows, 37.32 ms/window = run 34.91 (CUDA0 GPU-reach wait 21.40 + CPU experts 11.93) + commit 1.06 + emit 1.35; per layer-window: CPU experts 8.65, VRAM hits 47.62, PCIe 7.83; 147.9 rows/s over 49377 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "essay-p1-candidate",
+      "arm": "candidate",
+      "workload": "essay",
+      "pair": 1,
+      "seed": 123,
+      "decode_tps": 203.09893494162299,
+      "whole_run_tps": 190.4957433412768,
+      "output_tokens": 6959,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "deb1b8d54e27f5b80bce581d72c010cdeba8d3e6299e81e7c0b568996dec7682",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.34399999999732245,
+      "gap_over_250ms_request_seconds": 2.374999999996362,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 31.17199999999866,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 991 windows, avg 14.80 rows, 35.51 ms/window = run 32.82 (CUDA0 GPU-reach wait 23.54 + CPU experts 5.88) + commit 1.21 + emit 0.06 + draft 1.41; per layer-window: CPU experts 4.85, VRAM hits 143.46, PCIe 0.11; 405.4 rows/s over 36184 ms of wall time (admissions included)",
+        "strata batch output: 6955 emitted tokens, 7.02 per window, 192.2 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    },
+    {
+      "name": "essay-p2-candidate",
+      "arm": "candidate",
+      "workload": "essay",
+      "pair": 2,
+      "seed": 456,
+      "decode_tps": 202.1865682237779,
+      "whole_run_tps": 186.6112965542684,
+      "output_tokens": 7100,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "e2eb4e97f89f44b99b511a681cfbae984b0e264fb179bf6f5bc15e26d9a268f1",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.3600000000005821,
+      "gap_over_250ms_request_seconds": 2.452999999994063,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 28.17199999999866,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 1078 windows, avg 13.86 rows, 34.04 ms/window = run 31.48 (CUDA0 GPU-reach wait 22.69 + CPU experts 5.46) + commit 1.14 + emit 0.06 + draft 1.37; per layer-window: CPU experts 4.46, VRAM hits 134.37, PCIe 0.10; 396.3 rows/s over 37696 ms of wall time (admissions included)",
+        "strata batch output: 7096 emitted tokens, 6.58 per window, 188.2 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    },
+    {
+      "name": "essay-p2-baseline",
+      "arm": "baseline",
+      "workload": "essay",
+      "pair": 2,
+      "seed": 456,
+      "decode_tps": 154.75770614375747,
+      "whole_run_tps": 149.70854271356785,
+      "output_tokens": 7448,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "aa665d36933dc4b95b7bbca475f95aa31e4176c2f760caf35c9f7a642d574c89",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.31300000000192085,
+      "gap_over_250ms_request_seconds": 2.2340000000003783,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 42.53099999999904,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 1287 windows, avg 5.78 rows, 37.66 ms/window = run 35.23 (CUDA0 GPU-reach wait 21.75 + CPU experts 11.96) + commit 1.08 + emit 1.35; per layer-window: CPU experts 8.76, VRAM hits 48.33, PCIe 7.93; 150.7 rows/s over 49408 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "essay-p3-baseline",
+      "arm": "baseline",
+      "workload": "essay",
+      "pair": 3,
+      "seed": 789,
+      "decode_tps": 154.9537282194708,
+      "whole_run_tps": 149.56072351421187,
+      "output_tokens": 7235,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "d37942fb7f0a01f2c7945360957a0e2833ee02bf1ec7fe1bcfba50017c855b7a",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.3290000000015425,
+      "gap_over_250ms_request_seconds": 2.235000000000582,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 39.65700000000288,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 1247 windows, avg 5.80 rows, 37.76 ms/window = run 35.32 (CUDA0 GPU-reach wait 21.82 + CPU experts 12.02) + commit 1.08 + emit 1.35; per layer-window: CPU experts 8.77, VRAM hits 48.44, PCIe 7.97; 150.6 rows/s over 48030 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "essay-p3-candidate",
+      "arm": "candidate",
+      "workload": "essay",
+      "pair": 3,
+      "seed": 789,
+      "decode_tps": 203.92719498130006,
+      "whole_run_tps": 195.01180867354046,
+      "output_tokens": 7514,
+      "structure_passes": null,
+      "turn_caps": 0,
+      "report_sha256": "f2730eeefebcdcacd5fb1ed232f2842b56121a303b6d40711121349a102b1227",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.3279999999977008,
+      "gap_over_250ms_request_seconds": 3.576999999990221,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 35.54699999999866,
+      "max_prompt_tokens": 69,
+      "engine_timings": [
+        "strata batch: 1016 windows, avg 15.45 rows, 36.63 ms/window = run 33.85 (CUDA0 GPU-reach wait 23.98 + CPU experts 6.08) + commit 1.28 + emit 0.06 + draft 1.45; per layer-window: CPU experts 4.98, VRAM hits 149.70, PCIe 0.10; 411.1 rows/s over 38186 ms of wall time (admissions included)",
+        "strata batch output: 7510 emitted tokens, 7.39 per window, 196.7 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    },
+    {
+      "name": "agentic-p1-baseline",
+      "arm": "baseline",
+      "workload": "agentic",
+      "pair": 1,
+      "seed": 123,
+      "decode_tps": 164.20171249447944,
+      "whole_run_tps": 132.4993288590604,
+      "output_tokens": 12339,
+      "structure_passes": 4,
+      "turn_caps": 3,
+      "report_sha256": "2eebd236791730c6ff3195841c2ef8904ad82f0694d1d389cdfff9586aec3106",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.8440000000009604,
+      "gap_over_250ms_request_seconds": 23.71899999998277,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 47.53299999999945,
+      "max_prompt_tokens": 5364,
+      "engine_timings": [
+        "strata batch: 2357 windows, avg 5.21 rows, 34.87 ms/window = run 32.99 (CUDA0 GPU-reach wait 18.88 + CPU experts 13.81) + commit 0.83 + emit 1.04; per layer-window: CPU experts 9.90, VRAM hits 31.90, PCIe 9.02; 134.6 rows/s over 91193 ms of wall time (admissions included)",
+        "strata batch: 7 windows, avg 2.00 rows, 13.54 ms/window = run 12.87 (CUDA0 GPU-reach wait 9.01 + CPU experts 3.41) + commit 0.30 + emit 0.36; per layer-window: CPU experts 2.58, VRAM hits 15.11, PCIe 1.86; 147.7 rows/s over 95 ms of wall time (admissions included)",
+        "strata batch: 13 windows, avg 1.92 rows, 13.44 ms/window = run 12.74 (CUDA0 GPU-reach wait 9.14 + CPU experts 3.14) + commit 0.34 + emit 0.36; per layer-window: CPU experts 2.42, VRAM hits 15.46, PCIe 1.68; 143.1 rows/s over 175 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "agentic-p1-candidate",
+      "arm": "candidate",
+      "workload": "agentic",
+      "pair": 1,
+      "seed": 123,
+      "decode_tps": 330.9505573993645,
+      "whole_run_tps": 233.4745909896234,
+      "output_tokens": 13443,
+      "structure_passes": 4,
+      "turn_caps": 4,
+      "report_sha256": "bf978b240e3aad1716f129523beaf9823fcd59bdffa9a56629ab180fce06e41a",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.8899999999994179,
+      "gap_over_250ms_request_seconds": 28.285999999992782,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 23.502000000000407,
+      "max_prompt_tokens": 6843,
+      "engine_timings": [
+        "strata batch: 1128 windows, avg 12.97 rows, 40.12 ms/window = run 37.25 (CUDA0 GPU-reach wait 22.45 + CPU experts 13.41) + commit 1.23 + emit 0.09 + draft 1.54; per layer-window: CPU experts 12.59, VRAM hits 118.10, PCIe 0.25; 259.7 rows/s over 56330 ms of wall time (admissions included)",
+        "strata batch output: 13405 emitted tokens, 11.88 per window, 238.0 tokens/s including admissions (verification rows include rejected drafts and padding)",
+        "strata batch: 4 windows, avg 4.00 rows, 18.84 ms/window = run 17.61 (CUDA0 GPU-reach wait 10.68 + CPU experts 5.62) + commit 0.42 + emit 0.03 + draft 0.79; per layer-window: CPU experts 5.39, VRAM hits 33.62, PCIe 0.00; 211.9 rows/s over 75 ms of wall time (admissions included)",
+        "strata batch output: 14 emitted tokens, 3.50 per window, 185.4 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    },
+    {
+      "name": "agentic-p2-candidate",
+      "arm": "candidate",
+      "workload": "agentic",
+      "pair": 2,
+      "seed": 456,
+      "decode_tps": 336.04541154216736,
+      "whole_run_tps": 225.64087522730637,
+      "output_tokens": 7693,
+      "structure_passes": 4,
+      "turn_caps": 3,
+      "report_sha256": "34590d68c2788dd82c527dcb4505a381e0f3ec802ee5c9ddd317c7b34e269130",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.8129999999982829,
+      "gap_over_250ms_request_seconds": 23.73800000000483,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 21.13999999999578,
+      "max_prompt_tokens": 3080,
+      "engine_timings": [
+        "strata batch: 573 windows, avg 14.99 rows, 41.45 ms/window = run 38.34 (CUDA0 GPU-reach wait 23.97 + CPU experts 13.66) + commit 1.42 + emit 0.10 + draft 1.60; per layer-window: CPU experts 12.53, VRAM hits 142.05, PCIe 0.44; 258.6 rows/s over 33204 ms of wall time (admissions included)",
+        "strata batch output: 7670 emitted tokens, 13.39 per window, 231.0 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    },
+    {
+      "name": "agentic-p2-baseline",
+      "arm": "baseline",
+      "workload": "agentic",
+      "pair": 2,
+      "seed": 456,
+      "decode_tps": 160.37273173125547,
+      "whole_run_tps": 136.2845637067881,
+      "output_tokens": 14180,
+      "structure_passes": 4,
+      "turn_caps": 4,
+      "report_sha256": "73225604356c850e15eec900792dce906f447796039b1e2ac47ec5a5e45da16e",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 62.000000001717126,
+      "ttft_p95_s": 0.8910000000032596,
+      "gap_over_250ms_request_seconds": 30.56300000000556,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 69.32599999999366,
+      "max_prompt_tokens": 4734,
+      "engine_timings": [
+        "strata batch: 2230 windows, avg 6.35 rows, 41.53 ms/window = run 39.24 (CUDA0 GPU-reach wait 21.83 + CPU experts 17.04) + commit 1.01 + emit 1.28; per layer-window: CPU experts 12.24, VRAM hits 39.00, PCIe 10.69; 137.2 rows/s over 103215 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "agentic-p3-baseline",
+      "arm": "baseline",
+      "workload": "agentic",
+      "pair": 3,
+      "seed": 789,
+      "decode_tps": 162.52861111598475,
+      "whole_run_tps": 136.56816247111558,
+      "output_tokens": 12353,
+      "structure_passes": 4,
+      "turn_caps": 2,
+      "report_sha256": "6fa2055f7e343b214bcdc5220209fea8731913a10b57b1ba64c1f26a8ae516c9",
+      "binary_sha256": "979b3c71b263f7ce1f52cccd269a5ce685988d77c2804d9fc5bdce0d7ac66fe0",
+      "actual_experts": 11568,
+      "gap_p95_ms": 61.99999999807915,
+      "ttft_p95_s": 0.9059999999990396,
+      "gap_over_250ms_request_seconds": 25.844999999997526,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 57.2329999999929,
+      "max_prompt_tokens": 5507,
+      "engine_timings": [
+        "strata batch: 1949 windows, avg 6.33 rows, 41.03 ms/window = run 38.75 (CUDA0 GPU-reach wait 21.61 + CPU experts 16.71) + commit 1.01 + emit 1.27; per layer-window: CPU experts 12.00, VRAM hits 37.89, PCIe 10.68; 137.7 rows/s over 89571 ms of wall time (admissions included)"
+      ]
+    },
+    {
+      "name": "agentic-p3-candidate",
+      "arm": "candidate",
+      "workload": "agentic",
+      "pair": 3,
+      "seed": 789,
+      "decode_tps": 344.2712110223334,
+      "whole_run_tps": 243.38187606861155,
+      "output_tokens": 8256,
+      "structure_passes": 4,
+      "turn_caps": 2,
+      "report_sha256": "193d6114ea585f7553c8e3a1bba7d561502c5d07d6988d21c16fcdae13aab789",
+      "binary_sha256": "e22288b7b1f6ee09105e7ca90dfa4330bfae007c734c7079e916045314a9e1b8",
+      "actual_experts": 11568,
+      "gap_p95_ms": 47.0000000022992,
+      "ttft_p95_s": 0.75,
+      "gap_over_250ms_request_seconds": 18.127000000018597,
+      "reserve_shrink": false,
+      "cache_retry": false,
+      "stable_seconds": 22.0640000000094,
+      "max_prompt_tokens": 2851,
+      "engine_timings": [
+        "strata batch: 603 windows, avg 14.98 rows, 41.85 ms/window = run 38.71 (CUDA0 GPU-reach wait 23.94 + CPU experts 13.93) + commit 1.42 + emit 0.11 + draft 1.61; per layer-window: CPU experts 12.91, VRAM hits 140.36, PCIe 0.42; 274.6 rows/s over 32896 ms of wall time (admissions included)",
+        "strata batch output: 8236 emitted tokens, 13.66 per window, 250.4 tokens/s including admissions (verification rows include rejected drafts and padding)"
+      ]
+    }
+  ]
+}

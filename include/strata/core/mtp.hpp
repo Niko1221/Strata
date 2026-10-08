@@ -76,6 +76,8 @@ public:
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err,
               const MtpDrafter* shared = nullptr);
 
+    bool stage_window(const float* rows, int count, std::string& err);
+
     /// Prompt cells [cell0, cell0 + n): residual rows `R_rows` (device, hc*n_embd each) and `next_tokens` (host,
     /// the token at position cell+1).  Runs in batches of up to max_t rows.  `sync` false: returns without waiting
     /// for the drafter's stream (the caller orders on it: `stream()`).
@@ -91,6 +93,20 @@ public:
     /// accepted row) for T-1 drafts at cells p+a+1 ...  `drafts` gets T-1 tokens.
     bool draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
+
+    struct DraftRound {
+        MtpDrafter* drafter;
+        int count;
+        const int32_t* tokens;
+        int64_t position;
+        int accepted; // last accepted target row index
+        int32_t* drafts;
+        float* probabilities;
+        float min_probability;
+    };
+    /// Launch each independent slot's next draft step before waiting for any.
+    /// Captures finish before launches; all streams finish before return, even on failure.
+    static bool draft_batch(const std::vector<DraftRound>& rounds, std::string& err);
 
     /// The first round: one cell (`cell`) from `R_row` (device) and `token` -> T-1 drafts.
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
@@ -189,6 +205,7 @@ private:
     const WeightTable* wt_ = nullptr;
     const NativeHead* head_ = nullptr;
     const float* window_R_ = nullptr;
+    float* private_R_ = nullptr;
     int max_t_ = 0;
     int device_ = -1;   ///< the device `load` ran on: the public calls switch to it (layer split)
     int max_drafts_ = 1 << 30;
