@@ -627,8 +627,6 @@ __device__ __forceinline__ void gdn_cp_wait_prev() {   // every group but the ne
 #endif
 }
 constexpr int GDN_TB = 8;   // tokens per staged block
-constexpr int VPK = HV / HK;   // Flash-Next's value heads per key head (the chunked recurrence; the templated kernels
-                               // take their own HV / HK)
 template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                const float* __restrict__ gate,
@@ -759,7 +757,7 @@ bool gdn_keyhead_ok() {
 //   S = exp(gamma_last) S0 + sum_t exp(gamma_last - gamma_t) k_t D_t^T,
 // the same state and outputs as the token-by-token kernels up to FP32 rounding (another order of the sums).
 // gdn_chunk_prep_kernel builds T, P = exp(gamma_t - gamma_i) q_t.k_i (i <= t) and gamma for every chunk of a
-// super-block at once (a block per chunk and key head: its three value heads share k and q); gdn_chunk_scan_kernel then
+// super-block at once (a block per chunk and key head: its value heads share k and q); gdn_chunk_scan_kernel then
 // walks the super-block's chunks per (value head, 16 columns): the state slice in registers, the products as small
 // register-tiled matmuls from shared memory.  Every exponent is <= 0 (gates are negative), so nothing overflows.
 // STRATA_GDN_CHUNKED=1 takes prompt chunks of this many tokens and more: on an RTX 5090 the two launches cost more
@@ -773,13 +771,18 @@ constexpr int GKP = S + 4;         // the scan's padded q / k rows (8 rows of a 
 constexpr int GTP = GCH + 1;       // padded T / P rows
 static_assert(GCH == 32, "gdn_chunk_prep_kernel: a lane per token of the chunk");
 constexpr size_t kChunkPrepSmem = sizeof(float) * (2 * GCH * (S + 1) + 2 * GCH * GTP);   // A over k / q
-static_assert(VPK * GCH * GTP <= 2 * GCH * (S + 1), "gdn_chunk_prep_kernel: A fits where k and q were");
-constexpr size_t kChunkScanSmem = sizeof(float) * (3 * GCH * GKP + VPK * (S * GDV + 3 * GCH * GDV));
+// Three value heads per key head for Flash-Next; two for Qwen3.6.  Scratch and launch sizes follow the instance.
+template <int HV = 48>
+constexpr size_t kChunkScanSmem = sizeof(float) * (3 * GCH * GKP + (HV / HK) * (S * GDV + 3 * GCH * GDV));
 
+template <int HV = 48, int C = 10240>
 __global__ void __launch_bounds__(256) gdn_chunk_prep_kernel(const float* __restrict__ h, const float* __restrict__ gate,
                                                              const float* __restrict__ beta, float* __restrict__ tm,
                                                              float* __restrict__ pm, float* __restrict__ gm, int64_t t0,
                                                              int64_t T) {
+    constexpr int VPK = HV / HK;
+    static_assert(HV % HK == 0 && VPK * GCH * GTP <= 2 * GCH * (S + 1),
+                  "gdn_chunk_prep_kernel: A fits where k and q were");
     extern __shared__ __align__(16) float gsm[];
     float* sk = gsm;                       // [GCH][S + 1]
     float* sq = sk + GCH * (S + 1);        // [GCH][S + 1]
@@ -870,16 +873,18 @@ __device__ __forceinline__ void gdn_cp_wait_all() {
     asm volatile("cp.async.wait_all;\n" ::);
 #endif
 }
-// A block per (key head, 16 value columns): 128 threads for each of the key head's three value heads, which share the
-// staged k and q rows.  128 blocks, one an SM, in one wave (each walks every chunk: a second wave would double the
-// time).  A thread owns one token's row of the products (4 columns) and holds that token's T and P rows in registers,
+// A block per (key head, 16 value columns): 128 threads for each value head, sharing the staged k and q rows.
+// 128 blocks, one an SM, in one wave (each walks every chunk: a second wave would double the time).
+// A thread owns one token's row of the products (4 columns) and holds that token's T and P rows in registers,
 // loaded at the chunk's start so they land during the first product; the next chunk's k (a second buffer), q (after
 // this chunk's last read of q), v, gamma and beta load while this chunk computes.  Three barriers a chunk.
-__global__ void __launch_bounds__(128 * VPK) gdn_chunk_scan_kernel(float* __restrict__ state, const float* __restrict__ h,
+template <int HV = 48, int C = 10240>
+__global__ void __launch_bounds__(128 * (HV / HK)) gdn_chunk_scan_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                    const float* __restrict__ beta, const float* __restrict__ tm,
                                                                    const float* __restrict__ pm, const float* __restrict__ gm,
                                                                    float* __restrict__ oc_out, int64_t t0, int nch, int64_t T) {
     extern __shared__ __align__(16) float gsm[];
+    constexpr int VPK = HV / HK;
     constexpr int NT = 128 * VPK, HEAD = S * GDV + 3 * GCH * GDV;   // threads; a head's shared floats
     float* kbuf = gsm;                     // [2][GCH][GKP]  k, double-buffered
     float* sq = kbuf + 2 * GCH * GKP;      // [GCH][GKP]
@@ -1035,10 +1040,11 @@ __global__ void __launch_bounds__(128 * VPK) gdn_chunk_scan_kernel(float* __rest
         for (int y = 0; y < 4; ++y) state[(size_t) (4 * rq + xx) * rs + (size_t) vh * S + c0 + vv + y] = s[xx][y];
 }
 
-// The scratch, one a device: allocated on first use at its largest (GSB / GCH chunks of T, P and gamma: 25.6 MB) and
-// kept (a device runs its prompt on one stream).  A stream-ordered allocation and free per call, even from a pool that
-// keeps its memory, cost host time the GPU waited for (a 2K prompt's recurrence took 78 ms against 34 ms for
-// gdn_rec_kh_kernel).
+// The scratch, one per geometry and device: allocated on first use at its largest (GSB / GCH chunks of T, P and
+// gamma: 25.6 MB for 48 heads, 17.0 MB for 32) and kept (a device runs its prompt on one stream).  A stream-ordered
+// allocation and free per call, even from a pool that keeps its memory, cost host time the GPU waited for
+// (a 2K prompt's recurrence took 78 ms against 34 ms for gdn_rec_kh_kernel).
+template <int HV = 48>
 float* gdn_chunk_scratch() {
     static float* bufs[64] = {};
     int dev = 0;
@@ -1054,15 +1060,17 @@ float* gdn_chunk_scratch() {
 }
 
 // The whole recurrence of T tokens in super-blocks of GSB: a prep and a scan launch each, the scratch (T, P and gamma
-// of a super-block's chunks: up to GSB / GCH x 48 heads x (2 x 32 x 32 + 32) floats, 25.6 MB) from gdn_chunk_scratch.
+// of a super-block's chunks: up to GSB / GCH x HV heads x (2 x 32 x 32 + 32) floats) from gdn_chunk_scratch.
 // y: the [T][HV][S] output.  An error return means nothing was launched (the caller takes another kernel): the scratch
 // could not be had, or the card has fewer than 128 SMs (a second wave of the scan would double it) or too little
 // shared memory for it (Turing).
+template <int HV = 48, int C = 10240>
 cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
                             cudaStream_t s) {
+    constexpr int VPK = HV / HK;
+    static_assert((HV == 48 && C == 10240) || (HV == 32 && C == 8192), "gdn_rec_chunked: unsupported geometry");
     if (T <= 0) return cudaSuccess;
-    {   // sm_80+ (cp.async), the scan's 128 blocks one an SM in one wave, and its 93.7 KB of shared memory (else:
-        // another kernel)
+    {   // sm_80+ (cp.async), the scan's 128 blocks one an SM in one wave; shared memory follows the geometry
         int dev = 0, major = 0, sms = 0, smem = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
@@ -1075,28 +1083,36 @@ cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, con
         // several waves and is expected to be slower than the default kernel; the architecture and shared-memory
         // tests stay)
         static const bool any_sms = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) >= 2; }();
-        if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HK * (S / GDV)) || (size_t) strata::smem_optin_of(smem) < kChunkScanSmem)
+        if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HK * (S / GDV)) || (size_t) strata::smem_optin_of(smem) < kChunkScanSmem<HV>)
             return cudaErrorNotSupported;
     }
-    float* scratch = gdn_chunk_scratch();
+    float* scratch = gdn_chunk_scratch<HV>();
     if (scratch == nullptr) return cudaErrorMemoryAllocation;
     const int nb = (int) ((std::min<int64_t>(GSB, T) + GCH - 1) / GCH);
     const size_t tsz = (size_t) nb * HV * GCH * GCH;
     float *tm = scratch, *pm = tm + tsz, *gm = pm + tsz;
-    {   // once a device
+    {   // once per geometry and device
         static bool attrs[64] = {};
         int dev = 0;
         cudaGetDevice(&dev);
         if (dev >= 0 && dev < 64 && !attrs[dev]) {
-            cudaFuncSetAttribute(gdn_chunk_prep_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kChunkPrepSmem);
-            cudaFuncSetAttribute(gdn_chunk_scan_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kChunkScanSmem);
+            cudaFuncSetAttribute(gdn_chunk_prep_kernel<HV, C>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kChunkPrepSmem);
+            cudaFuncSetAttribute(gdn_chunk_scan_kernel<HV, C>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kChunkScanSmem<HV>);
             attrs[dev] = true;
         }
     }
     for (int64_t t0 = 0; t0 < T; t0 += GSB) {
         const int nch = (int) ((std::min<int64_t>(GSB, T - t0) + GCH - 1) / GCH);
-        gdn_chunk_prep_kernel<<<dim3((unsigned) nch, HK), 256, kChunkPrepSmem, s>>>(h, gate, beta, tm, pm, gm, t0, T);
-        gdn_chunk_scan_kernel<<<dim3(HK, S / GDV), 128 * VPK, kChunkScanSmem, s>>>(state, h, beta, tm, pm, gm, y, t0, nch, T);
+        gdn_chunk_prep_kernel<HV, C><<<dim3((unsigned) nch, HK), 256, kChunkPrepSmem, s>>>(h, gate, beta, tm, pm, gm, t0, T);
+        gdn_chunk_scan_kernel<HV, C><<<dim3(HK, S / GDV), 128 * VPK, kChunkScanSmem<HV>, s>>>(state, h, beta, tm, pm, gm, y, t0, nch, T);
+    }
+    if constexpr (HV == 32 && C == 8192) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            std::fprintf(stderr, "prefill GDN: chunked recurrence on (32 value heads, 8192 channels, %zu bytes scan shared memory)\n",
+                         kChunkScanSmem<HV>);
+        }
     }
     return cudaSuccess;   // launch errors surface at the caller's check; an error above means nothing ran
 }
@@ -2036,8 +2052,9 @@ void gdn_recurrence_variant_t(int variant, float* state, const float* h, const f
         // STRATA_GDN_CHUNKED=1 (opt-in): the recurrence in chunks for prompt chunks of kGdnChunkedMin+ tokens (other
         // bits; a shorter chunk, a card it does not fit or a failed scratch allocation takes the kernels below)
         static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
-        // (Flash-Next's 48 value heads only: the chunked kernels have no instance for Qwen3.6's 32)
-        if (chunked && HV == 48 && C == 10240 && T >= kGdnChunkedMin && gdn_rec_chunked(state, h, gate, beta, y, T, (cudaStream_t) stream) == cudaSuccess) {
+        // Keep Flash-Next's instance; Qwen3.6 uses 32 value heads, 8192 conv channels and the SiLU output norm below.
+        if (chunked && ((HV == 48 && C == 10240) || (HV == 32 && C == 8192 && SILU)) && T >= kGdnChunkedMin &&
+            gdn_rec_chunked<HV, C>(state, h, gate, beta, y, T, (cudaStream_t) stream) == cudaSuccess) {
         } else if (pipe && gdn_keyhead_ok<HV, C>())   // the value heads of a key head in one thread (same bits)
             gdn_rec_kh_kernel<HV, C><<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
