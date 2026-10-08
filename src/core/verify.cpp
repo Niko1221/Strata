@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
+#include "strata/core/token_mask.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -2059,6 +2060,39 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {   // m_out_ is the mapped h_out_: synced, it is readable
             err = "verify: the head sampling failed";
             return false;
+        }
+    } // <- head sampling ends here
+    if (tmask_ != nullptr && head_logits_ != nullptr && n_vocab_ > 0) {   // serve's token mask: row 0 (T = 1)
+        tmask_row_.resize((size_t) n_vocab_);
+        const size_t bytes = (size_t) n_vocab_ * sizeof(float);
+        if (cudaMemcpyAsync(tmask_row_.data(), head_logits_, bytes, cudaMemcpyDeviceToHost, cs_) != cudaSuccess ||
+            cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "verify: reading the head logits for the token mask failed";
+            return false;
+        }
+        if (mask_apply_row(tmask_row_.data(), n_vocab_, tmask_, tmask_words_) == 0) {
+            err = "verify: the token mask allows no token";
+            return false;
+        }
+        SamplerParams msp = sampling_;
+        msp.counter = (uint64_t) pos0;
+        if (cudaMemcpyAsync(head_logits_, tmask_row_.data(), bytes, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
+            err = "verify: writing the masked head logits failed";
+            return false;
+        }
+        sample_tokens(head_logits_, 1, (int) n_vocab_, hist_d_, hist_len_, msp, m_out_, cs_);
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "verify: the masked head sampling failed";
+            return false;
+        }
+        {   // the sampler's inverse-CDF can fall past the allowed tokens on rounding: never emit a masked one
+        volatile int32_t* o = (volatile int32_t*) h_out_;
+        if (!mask_allows(tmask_, tmask_words_, o[0])) {
+            const int32_t best = mask_argmax(tmask_row_.data(), n_vocab_, tmask_, tmask_words_);
+            static bool said = false;
+            if (!said) { said = true; std::fprintf(stderr, "strata serve: token mask: the sampler picked %d outside the mask; took %d (the best allowed)\n", (int) o[0], (int) best); }
+            o[0] = best;
+        }
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];

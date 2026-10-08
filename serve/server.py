@@ -61,6 +61,7 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
+from serve import constrain  # noqa: E402   (constrained decoding: token masks, optional llguidance)
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 
@@ -259,6 +260,10 @@ class MockEngine:
         if len(self.scripts) > 1:
             self.script = self.scripts[min(self.turns, len(self.scripts) - 1)]
             self.turns += 1
+        c = (sampling or {}).get(constrain.KEY) if getattr(self, "supports_mask", False) else None
+        if c is not None:                                   # tests: MockEngine.supports_mask = True
+            yield from c.mock_replay(self.script, max_new, cancel, self.delay)
+            return
         for t in self.script[:max_new]:
             if cancel.is_set():
                 return
@@ -896,6 +901,17 @@ class StrataEngine:
             if time.time() > deadline:
                 raise EngineDied("the engine did not answer the VRAM command")
 
+    @property
+    def supports_mask(self) -> bool:
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots."""
+        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) == "1" and not getattr(self, "batch", 0)
+    def _mask_reply(self, c):
+        line = "MF" if c is None else c.reply()
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
@@ -1434,6 +1450,9 @@ class StrataEngine:
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        if c is not None:
+            head += " mask=1"                               # the engine asks MQ before every window
         try:
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
@@ -1471,11 +1490,17 @@ class StrataEngine:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
+                if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
+                    self._mask_reply(c)
+                    continue
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
                         return
-                    yield int(line[2:])
+                    t = int(line[2:])
+                    if c is not None:
+                        c.feed(t)
+                    yield t
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -1522,6 +1547,9 @@ class StrataEngine:
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
+                    if line is not None and line.startswith("MQ"):   # stopped: it still waits for an answer
+                        self._mask_reply(None)
+                        continue
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
@@ -2450,6 +2478,32 @@ class Service:
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
 
+    def _with_constraint(self, sampling, tools, thinking):
+        """A JSON response format on an engine that takes token masks: the request's sampling with a fresh
+        serve/constrain.Constraint for this pass (the schema, and with tools also a tool call).  Anything else -
+        no format, an older engine, llguidance missing, a schema llguidance cannot compile - leaves it as it was:
+        the prompt directive and the validation after the turn."""
+        fmt = constrain.format_of(sampling) if isinstance(sampling, dict) else None
+        if fmt is None:
+            return sampling
+        if not getattr(self.engine, "supports_mask", False):
+            constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
+                                "token_mask=1 in its INFO line is needed); JSON is validated after the turn")
+            return sampling
+        if not constrain.available():
+            constrain.note_once("constrained decoding off: python -m pip install llguidance to turn it on; JSON is "
+                                "validated after the turn")
+            return sampling
+        try:
+            vocab = self.__dict__.get("_llg_vocab")
+            if vocab is None:
+                vocab = self.__dict__.setdefault("_llg_vocab", constrain.Vocab(self.tok, self.stop_ids))
+            c = constrain.Constraint(vocab, constrain.grammar(fmt, bool(tools), vocab), armed=not thinking)
+        except Exception as e:                           # noqa: BLE001 - an unsupported schema keyword, a vocab problem
+            constrain.note_once(f"constrained decoding off for a request: {str(e).splitlines()[0][:200]}")
+            return sampling
+        constrain.note_once("constrained decoding on: JSON answers are masked token by token (llguidance)")
+        return {**sampling, constrain.KEY: c}
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
 
@@ -2912,7 +2966,8 @@ class Service:
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+                                  "constrained_decoding": bool(getattr(self.engine, "supports_mask", False) and constrain.available()),
+                                  "stream_buffered": True},
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -3276,6 +3331,7 @@ class Service:
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
+                    sampling = self._with_constraint(sampling, tools, thinking)   # serve/constrain.py (or unchanged)
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
@@ -3407,6 +3463,8 @@ class Service:
                                     for ev in evs:
                                         yield "event", ev
                                 prompt = prompt + seg + extra
+                                if (sampling or {}).get(constrain.KEY) is not None:
+                                    sampling[constrain.KEY].observe(extra)
                                 finish = "length"
                                 continue
                         if not (wrap or opens) or cancel.is_set():
@@ -3440,6 +3498,8 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                        if (sampling or {}).get(constrain.KEY) is not None:
+                            sampling[constrain.KEY].observe(extra)       # the wrap-up ends in </think>: the answer is constrained
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:

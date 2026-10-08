@@ -109,6 +109,17 @@ public:
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
     void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
+    /// serve's constrained decoding (token_mask.hpp): the next run() sets every head logit of row 0 outside the
+    /// mask to kMaskedLogit and samples row 0 again with the request's sampling.  The engine sets it for a T = 1
+    /// window and clears it after (null).  `words` must stay alive until then.
+    void set_token_mask(const uint32_t* words, int64_t n_words) {
+        tmask_ = words;
+        tmask_words_ = n_words;
+        if (next_) next_->set_token_mask(words, n_words);
+    }
+    const uint32_t* tmask_ = nullptr;
+    int64_t tmask_words_ = 0;
+    std::vector<float> tmask_row_;
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
