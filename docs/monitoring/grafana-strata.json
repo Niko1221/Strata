@@ -1028,6 +1028,419 @@
      "mode": "multi"
     }
    }
+  },
+  {
+   "id": 21,
+   "type": "row",
+   "title": "Experts (\"routing_counts\" in the config; empty without it)",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 65
+   },
+   "panels": []
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Most routed experts, routings per second (top 10 of all layers)",
+   "description": "strata:expert_routed_by_expert_total: each layer's 8 most routed experts since the start; one line per (layer, expert). The counts are saved once a minute, so the lines move in steps.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 0,
+    "y": 66
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+     },
+     "expr": "topk(10, sum by (layer, expert) (rate(strata:expert_routed_by_expert_total{model_name=~\"$model\",instance=~\"$instance\"}[5m])))",
+     "legendFormat": "L{{layer}} E{{expert}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "custom": {
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Expert routings per second, all layers",
+   "description": "strata:expert_routed_total: k experts per layer per token, so about tokens/s x layers x k.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 66
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+     },
+     "expr": "sum by (instance) (rate(strata:expert_routed_total{model_name=~\"$model\",instance=~\"$instance\"}[5m]))",
+     "legendFormat": "{{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "custom": {
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 24,
+   "type": "barchart",
+   "title": "Share of the 32 most routed experts, per layer",
+   "description": "strata:expert_top32_share: 32/512 = 6% when the routing is spread evenly; higher = a few experts do most of the work.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 74
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+     },
+     "expr": "max by (layer) (strata:expert_top32_share{model_name=~\"$model\",instance=~\"$instance\"})",
+     "instant": true,
+     "format": "table",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "min": 0,
+     "max": 1,
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "options": {
+    "xField": "layer",
+    "orientation": "vertical",
+    "barWidth": 0.9,
+    "showValue": "never",
+    "xTickLabelSpacing": 100,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "layer",
+        "Value"
+       ]
+      }
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "number"
+       }
+      ],
+      "fields": {}
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "layer"
+       }
+      ]
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "string"
+       }
+      ],
+      "fields": {}
+     }
+    }
+   ]
+  },
+  {
+   "id": 25,
+   "type": "barchart",
+   "title": "Routing entropy per layer (bits)",
+   "description": "strata:expert_entropy_bits: log2 of the expert count (9 for 512) when spread evenly.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 74
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+     },
+     "expr": "max by (layer) (strata:expert_entropy_bits{model_name=~\"$model\",instance=~\"$instance\"})",
+     "instant": true,
+     "format": "table",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "min": 0,
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "xField": "layer",
+    "orientation": "vertical",
+    "barWidth": 0.9,
+    "showValue": "never",
+    "xTickLabelSpacing": 100,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "layer",
+        "Value"
+       ]
+      }
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "number"
+       }
+      ],
+      "fields": {}
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "layer"
+       }
+      ]
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "string"
+       }
+      ],
+      "fields": {}
+     }
+    }
+   ]
+  },
+  {
+   "id": 26,
+   "type": "barchart",
+   "title": "Distinct experts routed per layer",
+   "description": "strata:expert_seen: experts routed at least once since the engine started.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS_PROMETHEUS}"
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 74
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS_PROMETHEUS}"
+     },
+     "expr": "max by (layer) (strata:expert_seen{model_name=~\"$model\",instance=~\"$instance\"})",
+     "instant": true,
+     "format": "table",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "min": 0,
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "xField": "layer",
+    "orientation": "vertical",
+    "barWidth": 0.9,
+    "showValue": "never",
+    "xTickLabelSpacing": 100,
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "layer",
+        "Value"
+       ]
+      }
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "number"
+       }
+      ],
+      "fields": {}
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "layer"
+       }
+      ]
+     }
+    },
+    {
+     "id": "convertFieldType",
+     "options": {
+      "conversions": [
+       {
+        "targetField": "layer",
+        "destinationType": "string"
+       }
+      ],
+      "fields": {}
+     }
+    }
+   ]
   }
  ]
 }
