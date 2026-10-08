@@ -3,6 +3,10 @@
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <cuda.h>
 #include <cuda_runtime.h>
+#if defined(__HIPCC__)
+#include <dlfcn.h>
+#include <string>
+#endif
 
 #include <mutex>
 
@@ -25,6 +29,20 @@ struct Api {
 template <class F> bool resolve(const char* name, F& f) {
     cudaDriverEntryPointQueryResult q{};
     void* p = nullptr;
+#if defined(__HIPCC__)
+    // campaign3: HIP exports the same VMM entry points under hip- names; the cu- lookup always fails there,
+    // which silently disabled --kv-grow (and the VMM expert cache) on every AMD build.  The signatures match.
+    {
+        std::string hip_name = std::string("hip") + (name + 2);   // cuMemCreate -> hipMemCreate
+        p = dlsym(RTLD_DEFAULT, hip_name.c_str());
+        if (p == nullptr) {
+            (void) cudaGetLastError();
+            return false;
+        }
+        f = (F) p;
+        return true;
+    }
+#endif
 #if CUDART_VERSION >= 12050
     const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
 #else   // the versioned query arrived in CUDA 12.5
