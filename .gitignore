@@ -25,6 +25,9 @@ __pycache__/
 *.occ1
 td.log
 
+# the local development ledger of an agent session (task notes, not project source)
+.agent/
+
 # created by setup.py on the user's machine
 /.venv/
 /build/
