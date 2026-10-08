@@ -37,6 +37,24 @@ int main() {
         }
         CHECK(resumed > 400);   // periodic probes discover useful drafting again
     }
+    {
+        DFlashPolicy p(7);
+        int wide = 0;
+        for (int i = 0; i < 2048; ++i) {
+            int k = p.choose();
+            if (i >= 1536) wide += k == 5;
+            p.observe(k, k == 5 ? 6 : 1, 10);
+        }
+        CHECK(wide > 400);   // deferred probes must still discover better wide forwards
+        p.reset();
+        int plain = 0;
+        for (int i = 0; i < 512; ++i) {
+            int k = p.choose();
+            plain += k == 0;
+            p.observe(k, 1, k == 0 ? 10 : 40);
+        }
+        CHECK(plain > 400);   // a new prompt must not inherit stale acceptance/costs
+    }
     std::printf("dflash_policy_test: %s\n", fails ? "FAILED" : "ok");
     return fails ? 1 : 0;
 }

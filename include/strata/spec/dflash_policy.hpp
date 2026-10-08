@@ -12,19 +12,29 @@ namespace strata::spec {
 // skips proposing. Periodic probes allow drafting to resume as the text changes.
 class DFlashPolicy {
 public:
-    explicit DFlashPolicy(int max_k) : max_k_(std::clamp(max_k, 0, 7)) {}
+    explicit DFlashPolicy(int max_k) : max_k_(std::clamp(max_k, 0, 7)) { reset(); }
+
+    // Costs and acceptance belong to this request; graph capture happens once
+    // per width in the verifier, so retain only its warm state across requests.
+    void reset() {
+        n_.fill(0); tokens_.fill(0); ms_.fill(0);
+        best_ = rounds_ = 0;
+        probe_ = max_k_ >= 4 ? 4 : 0;
+    }
 
     int choose() {
-        static constexpr int order[] = {2, 3, 1, 0, 4, 5, 6, 7};
+        // Start with small windows; wide non-causal forwards are still measured
+        // by periodic probes, without charging every short reply for a full sweep.
+        static constexpr int order[] = {2, 3, 1, 0};
         for (int k : order)
             if (k <= max_k_ && n_[k] < 2) return k;
-        if (rounds_ % 32 == 0) {
+        if (rounds_ % 16 == 0) {
             const int probe = probe_++ % (max_k_ + 1);
             return probe;
         }
         int best = best_;
         for (int k = 0; k <= max_k_; ++k)
-            if (tokens_[k] / ms_[k] > 1.04 * tokens_[best] / ms_[best]) best = k;
+            if (n_[k] > 0 && tokens_[k] / ms_[k] > 1.04 * tokens_[best] / ms_[best]) best = k;
         best_ = best;
         return best;
     }

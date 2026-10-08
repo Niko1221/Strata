@@ -79,7 +79,7 @@ def to_bf16(a: np.ndarray) -> np.ndarray:
     u = np.ascontiguousarray(a, dtype="<f4").reshape(-1).view("<u4")
     nan = (u & np.uint32(0x7FFFFFFF)) > np.uint32(0x7F800000)
     r = (u + np.uint32(0x7FFF) + ((u >> np.uint32(16)) & np.uint32(1))) >> np.uint32(16)
-    r[nan] = (u[nan] >> np.uint32(16)) | np.uint32(0xC000)   # keep NaN a NaN
+    r[nan] = (u[nan] >> np.uint32(16)) | np.uint32(0x40)   # preserve sign/payload and quiet NaNs, like the engine
     return r.astype("<u2")
 
 

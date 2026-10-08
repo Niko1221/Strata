@@ -169,6 +169,7 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
         return false;
     }
     path_ = path;
+    geom_ = {};   // successful reopens parse fresh defaults and a fresh tap list
     const GgufFile& f = *file_;
 
     if (const MetaValue* arch = f.get("general.architecture")) {

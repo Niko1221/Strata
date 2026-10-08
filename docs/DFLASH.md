@@ -149,10 +149,14 @@ rolling window: requests beyond it are refused.
 The server measures real forwards at different block lengths and chooses the
 length with the best observed committed tokens per millisecond. It can pause
 proposals while maintaining context, and periodically probes to resume drafting.
+It warms up lengths 0–3 first and probes wider forwards every 16 measured rounds;
+new requests reset cost/acceptance estimates but keep the verifier's graph warm state.
 `--dflash-block K` selects a fixed length for reproducible comparisons; the CLI
 also keeps its fixed-length behavior. Sampled requests still use target-only
-decoding. The server and CLI capture the same layer boundaries, and the prompt
-feature stride follows the current buffer layout after each relayout.
+decoding and do not compute or grow the draft context during prefill. A greedy
+request exceeding an explicit draft capacity is rejected before changing state;
+sampled requests use the target's capacity. The server and CLI capture the same
+layer boundaries, and the prompt feature stride follows the current buffer layout after each relayout.
 
 This branch's CUDA and Linux HIP engines are built from source for DFlash;
 released engines may lack its server and quantization support. Windows HIP needs
@@ -274,3 +278,7 @@ at a requested absolute input position, before any benchmark follow override.
 These diagnostics are disabled by default. Parity captures also contain full
 head logits, quantized activations and argmax IDs; check these with
 `tools/dflash_head_parity.py --head HEAD.gguf --dir PARITY_DIRECTORY`.
+
+The [2026-10-09 review](../bench/results/2026-10-09-dflash-review/REPORT.md) records
+follow-up correctness fixes, repeated performance measurements on the same target,
+and the remaining generation bottleneck.

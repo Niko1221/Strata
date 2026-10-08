@@ -79,6 +79,13 @@ void swiglu_inplace(float* gate, const float* up, int64_t n, void* stream);
 void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst, int64_t dst_stride,
                          int n, int rows, void* stream);
 
+/// Pack tap-major [tap][stride] into row-major [row][tap][hidden] BF16 in one launch.
+/// The caller validates source plane bounds; stride is measured in elements.
+void dflash_gather_taps(const uint16_t* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream);
+void dflash_gather_taps(const float* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream);
+
 /// `build_norm`: `y[r][c] = x[r][c] / sqrt(MEAN_c(x[r]^2) + eps) * w[c]`, over the LAST axis.
 ///
 /// QSA's norm, used on `attn_q` (24x256), `attn_k` (2x256) and `indexer.q_proj` (4x128). `w` may be null.

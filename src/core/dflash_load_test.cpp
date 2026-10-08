@@ -162,6 +162,23 @@ int main() {
                   a.tensor("norm") && a.tensor("layers.1.self_attn.q_proj"),
               "hf-family file resolves the same canonical names");
     }
+    {   // successful reopen must replace metadata, not append taps or inherit optional fields
+        DFlashArtifact a;
+        std::string e;
+        const auto first = dir / "reopen-first.gguf", second = dir / "reopen-second.gguf";
+        fixture::write(first, meta(), tensors_llama());
+        auto kv = meta();
+        kv.erase(std::remove_if(kv.begin(), kv.end(), [](const fixture::Kv& k) {
+            return k.key == "dflash.mask_token_id";
+        }), kv.end());
+        fixture::write(second, kv, tensors_llama());
+        check(a.open(first.string(), e) && a.open(first.string(), e), "same artifact reopens successfully");
+        check(a.open(second.string(), e) && a.geom().mask_token_id == -1 &&
+              a.geom().target_layers == std::vector<int32_t>{0, 1}, "reopen uses fresh optional metadata and taps");
+        const auto bytes = a.weight_bytes();
+        check(!a.open((dir / "missing.gguf").string(), e) && a.path() == second.string() &&
+              a.weight_bytes() == bytes && a.geom().mask_token_id == -1, "failed reopen preserves last successful state");
+    }
     {   // wrong architecture
         auto kv = meta();
         kv[0] = fixture::str("general.architecture", "qwen3");
