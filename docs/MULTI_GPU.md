@@ -1,4 +1,4 @@
-# Strata on two or three GPUs (layer split)
+# Strata on two or more GPUs (layer split)
 
 One model can run across several NVIDIA cards in one PC. The layers are split into contiguous ranges, one per GPU:
 the first card runs layers 0 to K-1, the next card runs K onward, and so on; the last card also runs the output head
@@ -210,7 +210,10 @@ copied from earlier context (`--suffix-draft`) are guessed past as well, which i
 most. `--pipeline-windows 1` overlaps only the short prompt reads that go through the verify windows
 (`--short-read`).
 
-Two cards, exactly two stages, `--serve`. In the config:
+Two or more cards, `--serve`. With three or more stages every stage but the last is a front stage: the guessed
+window follows the verified one through them one card behind (each front stage keeps its own pair of recurrent-state
+copies and puts its state back on a wrong guess), and only the last stage waits for the verdict. `--pipeline-windows 1`
+and the asynchronous tier stay two-stage. In the config:
 
 ```
 "args": [ ..., "--pipeline-windows", "2" ],
@@ -218,7 +221,8 @@ Two cards, exactly two stages, `--serve`. In the config:
 ```
 
 - **Cost**: a second verify window on each card, 160 MiB more kept out of each card's expert cache, plus two copies
-  of the first card's recurrent state (about 3 MiB per GDN layer it runs) on the first card with `2`.
+  of the first card's recurrent state (about 3 MiB per GDN layer it runs) on the first card with `2` (on every front
+  card with three or more stages; only the first card's room is kept out of its cache, the others allocate theirs after).
 - **Same text**: the last card only ever runs windows that are verified, and every window row computes what it
   would in any other window, so the tokens are the serial loop's. With `STRATA_IQ_MT_MIN=1 --pcie-frac 0
   --adapt-every 0` the greedy output is identical bit for bit to the serial loop's with the same expert caches. The pipeline keeps
@@ -226,8 +230,8 @@ Two cards, exactly two stages, `--serve`. In the config:
   rounds them differently, and a near-tie can flip (a serial run given the same caches through `--vram-reserve-mib`
   matches it exactly).
 - **Off, with one line in the log saying why**, with `--batch` slots, `--peer-device`, the helper caches
-  (`--expert-cache-device1..3`, which `--remote-expert-opt` builds on), a split into three or more stages or onto one GPU
-  (`--split-device 0`), or no draft layer. A request with repetition penalties (`penalty_last_n`) or coupled
+  (`--expert-cache-device1..3`, which `--remote-expert-opt` builds on), a split onto one GPU (`--split-device 0`), or no
+  draft layer; on three or more stages also `--pipeline-windows 1` and `--adapt-async 1`. A request with repetition penalties (`penalty_last_n`) or coupled
   draft sampling decodes serially.
 - **With the resident RAM mode's asynchronous swaps** (`--adapt-async 1`, [DETAILS.md](DETAILS.md)) a round's steps
   advance between the verified windows. Each card's copies are queued by the decode loop itself while that card has
@@ -239,8 +243,16 @@ Two cards, exactly two stages, `--serve`. In the config:
   63.0 -> 71.1, Italian prose 41.6 -> 46.3, a copy-heavy edit (a 5 KB file back with a rename) 90.5 -> 117.9; mean
   72.4 -> 84.0 (+16%). It pays when the windows are GPU-bound: with the experts read through the OS file cache
   (`--mmap-experts` on that 32 GB PC) the file reads dominate and it measured no faster.
+- **Measured on four stages** (Flash-Next GSQ-RCO IQ3_S, 262K context, int8 KV, layer split 12,24,36 on 4x RX 7900 XT,
+  every expert in VRAM; greedy, reasoning off, 256 tokens, repository-text prompts): decode 59.4 -> 67.6 tok/s at 4K
+  (median of 3) and 51.8 -> 65.6 at 32K. A guessed window that holds costs ~15 ms against ~43 ms for a fresh one; about
+  a third of the guesses held. The greedy text was identical to the serial loop's on all four prompts (`STRATA_IQ_MT_MIN=1
+  --pcie-frac 0 --adapt-every 0`), and with every guess forced wrong (`STRATA_PIPELINE_FORCE_MISS=1`).
+- **HIP**: the draft layer's per-row `gr_read` used the last stage's session scratch (`ss.block.gr`), which that stage's
+  verifier also uses; a chain launched at a verdict and the next window's last stage then ran on the card at once and
+  the window's head read a clobbered mix (wrong tokens after a guess that held). The draft layer now has its own scratch.
 
-The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE and the like) are read only with
+The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE, SPEC_DEPTH and the like) are read only with
 `STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows` and `--adapt-async 1` combine: the engine turns the asynchronous tier
 off beside `--pipeline-windows 2` only when `STRATA_PIPELINE_ADAPT_ASYNC=0` is set. What switches either one off is
 printed once at start ("is off: ..."). `--remote-expert-opt` does something only with a helper cache
