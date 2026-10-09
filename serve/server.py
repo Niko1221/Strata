@@ -230,6 +230,22 @@ def _timeout_env(name: str, default: float) -> float | None:
     return None if v <= 0 else v
 
 
+# #1317 part 2: the quick watchdog for a FROZEN engine.  engine_silence_s (above) is generous on purpose: a slow PC reads a
+# prompt chunk for minutes without a line.  But an engine that prints nothing for ENGINE_STALL_S and also uses no CPU time and
+# moves no bytes of I/O in that time is not slow, it is idle or frozen (a deadlock in a CUDA call, a driver stall, a lost
+# step), and waiting longer cannot help: it is ended, and the next request starts it again.  An engine that is silent but
+# still working is never ended by this, only reported once (the recommendation: engine_silence_s, or this variable).
+# STRATA_ENGINE_STALL_S overrides it (0 = off).  Needs psutil (setup installs it); without it nothing is ended.
+ENGINE_STALL_S = _timeout_env("STRATA_ENGINE_STALL_S", 90.0)
+STALL_CPU_EPS_S = 0.5       # CPU seconds the engine may use in the whole stall window and still count as frozen
+STALL_IO_EPS_B = 1 << 20    # bytes read or written in that window
+
+
+def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
+    """#1317: True when two (cpu seconds, io bytes) samples of the engine show no work between them."""
+    return (now[0] - base[0]) <= STALL_CPU_EPS_S and (now[1] - base[1]) <= STALL_IO_EPS_B
+
+
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
@@ -562,6 +578,7 @@ class StrataEngine:
     """
     silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
     silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
+    gpu_busy = None                      # #1317: () -> bool, "the GPU is working" (the telemetry's reading); a GPU at work is not frozen
     last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
 
@@ -690,13 +707,21 @@ class StrataEngine:
         if asked and self.batch != asked:
             print(f"[strata] parallel requests: {asked} asked, the engine runs {self.batch or 'one at a time'} "
                   "(its log says why)", flush=True)
-        groups = int(args[args.index("--batch-groups") + 1]) if "--batch-groups" in args else 1
+        _bg = args[args.index("--batch-groups") + 1] if "--batch-groups" in args else "default"
+        # no `--batch-groups` (the default on a layer split) or `auto`: the engine picks the groups and says so
+        # (INFO batch_groups=G); a number is the group count asked for (1 = off)
+        groups = int(self.info.get("batch_groups") or 1) if _bg in ("auto", "default") else int(_bg)
         groups = groups if self.batch and groups > 0 and self.batch % groups == 0 else 1
         gs = self.batch // groups if self.batch else 0
         # slots in the order that spreads requests over the pipeline's groups first: 0, gs, 2gs, .., 1, gs+1, ..
         self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
         self.slot_group = [b // gs if gs else 0 for b in range(self.batch)]   # each slot's pipeline group
         self.slot_groups = groups
+        # pipelined groups (the engine says how many it runs: INFO batch_groups; older engines: the args).  A pipelined
+        # group's window spans its slots up to its last busy one, and the engine keeps no pipelined slot as a
+        # conversation cache - see pick_slot
+        groups_run = int(self.info.get("batch_groups") or groups)
+        self.slot_gs = gs if groups > 1 and groups_run > 1 else 0
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
@@ -1231,16 +1256,29 @@ class StrataEngine:
                 while True:
                     if slot is None:
                         # a free slot (they free themselves at BDONE, which needs no control lines): the one that holds
-                        # the start of this prompt (its conversation's last turn), else the one used longest ago
-                        with self.slot_cv:
-                            while True:
+                        # the start of this prompt (its conversation's last turn), else the one used longest ago.
+                        # With none free the control lines are given back while waiting: a slot can be held by a read
+                        # that gave way (BYIELD) and needs them to go on, so waiting with them is a deadlock - long,
+                        # long, short at 0.25 s steps under parallel: 2 (ENGINE_REVIEW finding 1, reproduced in 0.1.41).
+                        while True:
+                            with self.slot_cv:
                                 slot = self.pick_slot(prompt)
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     break
-                                self.slot_cv.wait(timeout=10.0)
-                                if cancel.is_set():
+                            if holding:
+                                self.ctl.release()
+                                holding = False
+                            with self.slot_cv:
+                                if self.pick_slot(prompt) is None:
+                                    self.slot_cv.wait(timeout=1.0)
+                            if cancel.is_set():
+                                return
+                            if not holding:
+                                ok = yield from self._take_control(cancel, len(prompt))
+                                if not ok:
                                     return
+                                holding, born = True, self.gen
                     if self._yielded is not None:           # it gave way: the others waiting then go first
                         self.slot_held[slot] = list(prompt[:self._yielded[1]])
                         self._yielded = None
@@ -1390,6 +1428,16 @@ class StrataEngine:
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
+        gs = getattr(self, "slot_gs", 0)
+        if gs:
+            # pipelined groups: the engine keeps no pipelined slot as a conversation cache, so nothing is worth keeping
+            # free for a next turn.  A group's window spans its slots up to its last busy one, so first fill a hole
+            # below a busy slot of the same group (it costs no extra row), then follow the spreading order
+            # (reported on #793: least-recently-used picks left leading holes, [_ B], that cost a whole row each)
+            def fills_hole(b):
+                g0 = b - b % gs
+                return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
+            return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
         def held_prefix(b):
             h = self.slot_held[b]
             return len(h) if h and len(h) < len(prompt) and prompt[:len(h)] == h else 0
@@ -1446,6 +1494,8 @@ class StrataEngine:
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
         heard, read_to = time.monotonic(), 0
         beat = heard
+        stall_s = ENGINE_STALL_S or 0.0
+        stall_state: dict = {}
         try:
             while True:
                 wait = 10.0
@@ -1460,6 +1510,12 @@ class StrataEngine:
                 except queue.Empty:
                     if cancel.is_set():
                         return
+                    if stall_s > 0:
+                        try:
+                            self._stall_check(heard, stall_state, stall_s)
+                        except EngineSilent:
+                            done = True                   # as above: nothing is listening
+                            raise
                     if allow > 0 and time.monotonic() - heard >= allow:
                         continue                          # enforce the expired deadline before another heartbeat
                     if time.monotonic() - beat >= 10.0:
@@ -1471,6 +1527,8 @@ class StrataEngine:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
+                if stall_state:
+                    stall_state.clear()
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
@@ -1529,6 +1587,43 @@ class StrataEngine:
                         break
                     if not self.can_stop:
                         heard = time.monotonic()
+
+    def _activity(self) -> tuple[float, int] | None:
+        """#1317: (CPU seconds, I/O bytes) the engine process has used so far, or None when they cannot be read."""
+        try:
+            import psutil
+            pr = psutil.Process(self.proc.pid)
+            t = pr.cpu_times()
+            io = pr.io_counters()
+            return (t.user + t.system, io.read_bytes + io.write_bytes)
+        except Exception:  # noqa: BLE001 - psutil missing, the process gone, no permission: no reading
+            return None
+
+    def _stall_check(self, heard: float, state: dict, stall_s: float) -> None:
+        """#1317: called while the engine is silent.  Takes a baseline soon after the last line, and at stall_s of silence
+        compares: no CPU and no I/O in all that time -> the engine is ended (EngineSilent); work going on -> one warning."""
+        age = time.monotonic() - heard
+        if state.get("base") is None:
+            state["base"] = self._activity()
+            return
+        if age < state.get("next", stall_s) or state["base"] is None:
+            return
+        now = self._activity()
+        try:
+            gpu_working = bool(self.gpu_busy()) if self.gpu_busy is not None else False
+        except Exception:  # noqa: BLE001 - a telemetry hiccup must not decide anything
+            gpu_working = False
+        if now is not None and not gpu_working and engine_frozen(state["base"], now):
+            raise self._silent(f"the engine said nothing for {age:.0f} s and used no CPU or disk in that time (frozen; "
+                               "STRATA_ENGINE_STALL_S sets this, 0 = off)")
+        if now is not None:   # working: look again after another window from here, and say so once
+            state["base"], state["next"] = now, age + stall_s
+            if not state.get("warned"):
+                state["warned"] = True
+                print(f"[strata] the engine has said nothing for {age:.0f} s but is still working; it is not ended (the "
+                      "limit is engine_silence_s). If it is stuck, \"engine_silence_s\" can be set lower.", flush=True)
+        else:
+            state["next"] = float("inf")   # no reading (psutil missing): nothing to decide on
 
     def _silent(self, what: str) -> EngineSilent:
         """#481: end an engine that lost step with the server (its main thread waits for a command the server never
@@ -1695,6 +1790,31 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
+def vision_start_error(line: str, log=None) -> str:
+    """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
+    compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
+    cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
+    tail is searched too (the CUDA error is printed there)."""
+    text = line.strip()
+    tail = ""
+    try:
+        name = getattr(log, "name", None)
+        if name:
+            with open(name, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 16384))
+                tail = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        pass
+    if "busy or unavailable" in (text + tail).lower():
+        return ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
+                "is/are busy or unavailable\"). This is usually the compute mode Exclusive_Process: only one process "
+                "may use the card, and the engine already holds it. Check with: nvidia-smi --query-gpu=compute_mode "
+                "--format=csv; set it back with: sudo nvidia-smi -c DEFAULT (or run the encoder on another card). "
+                "First line from the encoder: " + (text or "(none)"))
+    return "the vision encoder did not start: " + text
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -1760,7 +1880,7 @@ class Vision:
                 proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise RuntimeError("the vision encoder did not start: " + line.strip())
+            raise RuntimeError(vision_start_error(line, self.spawn[1]))
         self.stopped = False
 
     def _readline(self, timeout: float, what: str) -> str:
@@ -2047,6 +2167,18 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
+    # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
+    # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
+    # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
+    # (only when the config has no reserve of its own).
+    if isinstance(cfg.get("vision"), dict) and "--vision" not in args:
+        args.append("--vision")
+        note = "added --vision"
+        if cfg["vision"].get("gpu") and "--vram-reserve-mib" not in args:
+            args += ["--vram-reserve-mib", "700"]
+            note += " and --vram-reserve-mib 700"
+        print(f'[strata] the config has a "vision" section but no --vision in its args: {note} (run setup again with '
+              "--vision to write them)", flush=True)
     if layer_split_of(cfg) and "--layer-split" not in args:
         args += ["--layer-split", layer_split_value(cfg)]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
@@ -2138,7 +2270,83 @@ def hip_visible(cfg: dict) -> list[int]:
             return [int(str(ordinal).strip())]
         except ValueError:
             pass
-    return gpu_list(cfg)
+    return ordered_gpus(cfg)
+
+
+def gpu_speed_scores(indices: list[int]) -> dict[int, float] | None:
+    """Multiprocessors x max clock for each NVIDIA card, numbered as nvidia-smi numbers them (the CUDA driver API,
+    which every driver ships: no toolkit needed); None when it cannot say for every one of them."""
+    code = (
+        "import ctypes,sys,os\n"
+        "os.environ['CUDA_DEVICE_ORDER']='PCI_BUS_ID'\n"
+        "lib=ctypes.CDLL('nvcuda.dll' if os.name=='nt' else 'libcuda.so.1')\n"
+        "assert lib.cuInit(0)==0\n"
+        "n=ctypes.c_int()\n"
+        "assert lib.cuDeviceGetCount(ctypes.byref(n))==0\n"
+        "for i in range(n.value):\n"
+        "    d=ctypes.c_int()\n"
+        "    assert lib.cuDeviceGet(ctypes.byref(d),i)==0\n"
+        "    sm=ctypes.c_int(); mhz=ctypes.c_int()\n"
+        "    lib.cuDeviceGetAttribute(ctypes.byref(sm),16,d)\n"
+        "    lib.cuDeviceGetAttribute(ctypes.byref(mhz),13,d)\n"
+        "    print(i,sm.value,mhz.value)\n")
+    try:
+        env = dict(os.environ)
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        env.pop("CUDA_VISIBLE_DEVICES", None)
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, env=env)
+        got = {}
+        for line in r.stdout.splitlines():
+            i, sm, khz = (int(x) for x in line.split())
+            got[i] = float(sm) * float(khz)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return got if all(i in got and got[i] > 0 for i in indices) else None
+
+
+def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topology/nodes") -> dict[int, float] | None:
+    """AMD on Linux: SIMDs x max engine clock of each card, from the KFD topology (the order setup and the engine use
+    for "gpu" there: the GPU nodes in node order).  None when the files are not there (Windows, no ROCm driver)."""
+    try:
+        nodes = sorted((int(n) for n in os.listdir(root) if n.isdigit()))
+    except OSError:
+        return None
+    cards = []
+    for n in nodes:
+        try:
+            props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+            simd, clk = int(props.get("simd_count", 0)), int(props.get("max_engine_clk_fcompute", 0))
+        except (OSError, ValueError):
+            continue
+        if simd > 0:
+            cards.append(float(simd) * float(clk or 1))
+    got = dict(enumerate(cards))
+    return got if all(i in got for i in indices) else None
+
+
+def ordered_gpus(cfg: dict, scores=None) -> list[int]:
+    """#1352: the cards of a layer split in the order the engine stages them.  With "layer_split": "auto" (the
+    default) the faster card goes LAST - the last stage runs the head, the draft layer and the verify, and a prompt
+    chunk waits on it (the reporter's 4070 Ti SUPER + 5060 Ti: a 6K prompt took 50 s one way round and 15 s the
+    other); "faster" is multiprocessors x max clock.  Equal cards keep the config's order (the sort is stable), and
+    so does anything we cannot measure.  "gpu_order": "as_given" keeps the config's order whatever the cards.  A
+    manual "layer_split" ("24") also keeps it: the user placed the layers.  scores: {index: score} (tests); None asks
+    the driver."""
+    gl = gpu_list(cfg)
+    if len(gl) < 2 or cfg.get("gpu_order") == "as_given":
+        return gl
+    args = cfg.get("args") or []
+    if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
+        return gl
+    hip = cfg.get("backend") == "hip"
+    sc = scores if scores is not None else (hip_speed_scores(gl) if hip else gpu_speed_scores(gl))
+    if not sc or any(i not in sc for i in gl):
+        return gl
+    out = sorted(gl, key=lambda i: sc[i])
+    if out != gl:
+        print(f"[strata] layer split: card order {','.join(map(str, out))} (the faster card last; "
+              f'"gpu_order": "as_given" keeps {",".join(map(str, gl))}, #1352)', flush=True)
+    return out
 
 
 def child_env(cfg: dict) -> dict:
@@ -2149,7 +2357,7 @@ def child_env(cfg: dict) -> dict:
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
-        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in gpu_list(cfg))
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
@@ -2774,6 +2982,10 @@ class Service:
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
+            if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
+                # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
+                # slow card keeps the GPU at work while the host thread sleeps)
+                self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -3967,6 +4179,17 @@ def anthropic_collect(events) -> dict:
 CHUNKED_BODY_MAX = 256 << 20                # #893: the most a Transfer-Encoding: chunked body may hold (read into memory)
 
 
+def body_limit() -> int:
+    """The most a request body may hold, in bytes (read into memory): 256 MiB, which is a million-token conversation
+    with room to spare; STRATA_MAX_BODY_MIB changes it (0 or an unreadable value: the default).  A larger one is
+    answered 413 before it is read (a Content-Length of 10 TB used to be read until the client gave up)."""
+    try:
+        mib = int(os.environ.get("STRATA_MAX_BODY_MIB", "0"))
+    except ValueError:
+        mib = 0
+    return mib << 20 if mib > 0 else CHUNKED_BODY_MAX
+
+
 class BadBody(Exception):
     """A request body that cannot be read (a malformed or oversized chunked body): the status and the sentence."""
 
@@ -3988,8 +4211,13 @@ def make_handler(svc: Service):
             pass
 
         def handle_one_request(self):
+            self.answer_started = False
             super().handle_one_request()
             self._drain_body()
+
+        def send_response(self, code, message=None):
+            self.answer_started = True                 # a malformed-request answer can only replace one not yet begun
+            super().send_response(code, message)
 
         def _chunked(self) -> bool:
             """#893: a body sent as Transfer-Encoding: chunked (a relay or proxy that does not buffer it).  By RFC 9112
@@ -4039,9 +4267,20 @@ def make_handler(svc: Service):
 
         def _body(self) -> bytes:
             self.body_read = True
+            limit = body_limit()
             if self._chunked():
-                return self._read_chunked(CHUNKED_BODY_MAX)
-            return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                return self._read_chunked(limit)
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                raise BadBody(400, "invalid Content-Length") from None
+            if length < 0:
+                raise BadBody(400, "invalid Content-Length")
+            if length > limit:
+                self.close_connection = True               # the body is not read: the connection ends with the answer
+                raise BadBody(413, f"the request body is larger than {limit >> 20} MiB "
+                                   "(STRATA_MAX_BODY_MIB raises the limit)")
+            return self.rfile.read(length)
 
         def _drain_body(self):
             """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
@@ -4055,7 +4294,7 @@ def make_handler(svc: Service):
                 return
             if self._chunked():
                 try:
-                    self._read_chunked(CHUNKED_BODY_MAX, keep=False, deadline=time.monotonic() + self.DRAIN_SECONDS)
+                    self._read_chunked(body_limit(), keep=False, deadline=time.monotonic() + self.DRAIN_SECONDS)
                 except (BadBody, OSError):
                     self.close_connection = True
                 return
@@ -4467,6 +4706,17 @@ def make_handler(svc: Service):
                                           "message": str(e)}})
             except (GpuBusy, EngineStarting) as e:
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+            except (TypeError, KeyError, AttributeError, IndexError, UnicodeError) as e:
+                # a body that is JSON but the wrong shape ("messages": 5, a content part that is a number): a 400 that
+                # says so, with the traceback in the log, instead of a dropped connection - unless the answer began
+                if getattr(self, "answer_started", False):
+                    raise
+                import traceback
+                print(f"[strata] 400 malformed request ({type(e).__name__}: {e}):\n" + traceback.format_exc(),
+                      flush=True)
+                body = {"error": {"type": "invalid_request_error",
+                                  "message": f"the request is malformed ({type(e).__name__}: {e})"}}
+                self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
             except EngineDied as e:                          # before the answer started (not streamed)
                 self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
             except EngineStuck as e:                         # an unload or restart that could not end the engine
@@ -4964,10 +5214,22 @@ class Server(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets a second server bind a port that is already serving, and requests then land on
     # either one (a forgotten second start of run-<model>.bat).  Without it the second start fails loudly instead.
     allow_reuse_address = os.name != "nt"
+    # socketserver listens with a backlog of 5: a burst of 30-40 clients at once got "connection reset by peer" on the
+    # first ones (measured on 4 x R9700, also with one request at a time); the requests wait in the server, not the kernel
+    # (STRATA_HTTP_BACKLOG overrides it)
+    request_queue_size = max(5, int(os.environ.get("STRATA_HTTP_BACKLOG") or 256))
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
             super().handle_error(request, client_address)
+
+    def server_close(self):
+        # the hardware sampler serve() started for this server stops with it (test isolation: every Service a test
+        # started used to leave its sampler running, 21 of them after test_responses, which slowed test_parallel's timing)
+        tel = getattr(getattr(self, "svc", None), "telemetry", None)
+        if tel is not None and hasattr(tel, "close"):
+            tel.close()
+        super().server_close()
 
 
 def warn_tight_ram(arena_mib) -> None:
@@ -5148,27 +5410,47 @@ def host_allowed(host, names, any_host=False) -> bool:
                            or _name_in(name, names))
 
 
-def api_key_of(value) -> str:
+def key_list(value) -> list[str]:
+    """#1344: the keys a server accepts.  --api-key / STRATA_API_KEY / "api_key" take llama.cpp's form, several keys
+    separated by commas ("k1,k2"; spaces around each are dropped), or a list in the config ("api_key": ["k1", "k2"],
+    the way to give a key that contains a comma).  A list is taken as it is."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(k) for k in value if str(k)]
+    return [k.strip() for k in str(value).split(",") if k.strip()]
+
+
+def api_key_of(value):
     """The key as a client can send it (#725).  An HTTP header loses the spaces and line ends around its value, so a
     key kept with them (a config file or an environment file with CRLF line ends, a quoted " key ") matched no
     request: every client got 401 with the right key.  A value that is only such characters raises ValueError, it
-    never means "no key" (#213)."""
+    never means "no key" (#213).  #1344: a config list of keys returns the list (each key stripped, none empty); a
+    string stays a string (its commas separate keys, see key_list)."""
+    if isinstance(value, (list, tuple)):
+        keys = [str(k).strip() for k in value]
+        if not keys or any(not k for k in keys):
+            raise ValueError("an API key was given but it is empty")
+        return keys
     key = "" if value is None else str(value)
-    if key and not key.strip():
+    if key and not key_list(key):
         raise ValueError("an API key was given but it is empty")
     return key.strip()
 
 
-def key_matches(given: str, key: str) -> bool:
+def key_matches(given: str, key) -> bool:
     """given: a header's value as http.server read it, each byte one character.  A key with characters outside ASCII
     arrives as UTF-8 from most clients and as Latin-1 from some; the right key passes in both forms (#725: the
-    bytes were re-encoded before, so a UTF-8 key never matched).  Constant-time (#213)."""
+    bytes were re-encoded before, so a UTF-8 key never matched).  Constant-time (#213).  #1344: `key` may name several
+    keys (see key_list); the given one must match any, and every key is compared whatever the outcome."""
     raw = given.encode("latin-1", "replace")
-    ok = hmac.compare_digest(raw, key.encode())
-    try:
-        ok |= hmac.compare_digest(raw, key.encode("latin-1"))
-    except UnicodeEncodeError:
-        pass
+    ok = False
+    for k in key_list(key):
+        ok |= hmac.compare_digest(raw, k.encode())
+        try:
+            ok |= hmac.compare_digest(raw, k.encode("latin-1"))
+        except UnicodeEncodeError:
+            pass
     return ok
 
 
@@ -5196,6 +5478,7 @@ def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
     httpd = Server((host, port), make_handler(svc))
+    httpd.svc = svc
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 
@@ -5346,7 +5629,8 @@ def main() -> int:
                     help="clamp max_tokens to the remaining context instead of rejecting the request "
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
-                    help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
+                    help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY. "
+                         "Several keys: separate them with commas (key1,key2), as llama.cpp does")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")

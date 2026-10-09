@@ -1,7 +1,10 @@
 // src/kernels/mmvq_il_parity.cpp - native_mmvq_il (2-4 columns from the interleaved q8_1 copy, fork F4) against
 // native_mmvq's multi-column kernels, bitwise, for every rows-a-warp choice; --bench times both per call.
 //
-//     build/mmvq_il_parity [--bench]
+//     build/mmvq_il_parity [--bench [--emit-table]]
+//
+// --emit-table (with --bench) prints the rows-a-warp table this card measured, in the source form of kIlRows in
+// native_mmvq.cu: per cell the rows count (1/2/4) that takes at least 3% off native_mmvq's time, else 0.
 //
 // The same Q8_1 bytes feed both paths (quantize_q8_1_rows, then native_q8_1_interleave). Weights are random bytes with
 // the block scales rewritten as normal fp16 values, so every output is finite (a NaN would compare equal whatever
@@ -24,6 +27,8 @@
 namespace {
 using namespace strata::kernels;
 
+struct Cell { int type, T, n_out; double ref; double il[5]; };
+std::vector<Cell> g_cells;
 struct Case {
     const char* name;
     int type, n_in, n_out, block_elems, block_bytes, scale_at[2];
@@ -157,6 +162,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             cudaEventElapsedTime(&ms, e0, e1);
             best_ref = 1000.0 * ms / reps;
             (void) table_r;
+            g_cells.push_back({c.type, T, c.n_out, best_ref, {0, best_il[1], best_il[2], 0, best_il[4]}});
             std::printf("BENCH %-26s T=%d  multi %.1f us | il rows1 %.1f rows2 %.1f rows4 %.1f us\n", c.name, T, best_ref,
                         best_il[1], best_il[2], best_il[4]);
         }
@@ -165,14 +171,77 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
     for (void* p : dw) cudaFree(p);
     return bad;
 }
+
+// the table as kIlRows prints it: per (type, ncols, n_out class) the fastest rows count if >= 3% under native_mmvq, else 0.
+// A cell with several measured shapes takes the worst (smallest) gain of the best choice, as the shipped table does for
+// two cards; a class with no measured shape prints the value of its neighbour below it (or 0).
+void emit_table() {
+    const int types[] = {23, 12, 13, 14};
+    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K"};
+    std::printf("// measured on this card by mmvq_il_parity --bench --emit-table\n");
+    for (int ti = 0; ti < 4; ++ti) {
+        std::printf("    {%d, {", types[ti]);
+        for (int nc = 2; nc <= 4; ++nc) {
+            int prev = 0;
+            std::printf("{");
+            for (int cls = 0; cls < 5; ++cls) {
+                int pick = -1;
+                for (const Cell& c : g_cells) {
+                    if (c.type != types[ti] || c.T != nc) continue;
+                    const int cc = c.n_out < 2048 ? 0 : c.n_out < 4096 ? 1 : c.n_out < 8192 ? 2 : c.n_out < 12288 ? 3 : 4;
+                    if (cc != cls) continue;
+                    int best = 0;
+                    double bt = c.ref * 0.97;
+                    for (int r : {1, 2, 4})
+                        if (c.il[r] > 0 && c.il[r] < bt) { bt = c.il[r]; best = r; }
+                    pick = pick < 0 ? best : (pick == best ? pick : 0);   // shapes disagree: native_mmvq
+                }
+                if (pick < 0) pick = prev;
+                prev = pick;
+                std::printf("%d%s", pick, cls < 4 ? ", " : "");
+            }
+            std::printf("}%s", nc < 4 ? ", " : "");
+        }
+        std::printf("}},   // %s\n", names[ti]);
+    }
+}
+
+// the per-architecture lookup, no GPU needed for its answers
+int check_tables() {
+    int bad = 0;
+    for (int type : {23, 12, 13, 14})
+        for (int nc = 2; nc <= 4; ++nc)
+            for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {
+                const int a = native_mmvq_il_rows_for(86, type, nc, n_out);
+                // sm_89 has no table of its own: it must answer exactly what the measured Ampere table says
+                if (native_mmvq_il_rows_for(89, type, nc, n_out) != a || native_mmvq_il_rows_for(120, type, nc, n_out) != a) {
+                    ++bad;
+                    std::printf("FAIL table: sm_89/sm_120 differ from sm_86 at type %d ncols %d n_out %d\n", type, nc, n_out);
+                }
+                if (a != 0 && a != 1 && a != 2 && a != 4) { ++bad; std::printf("FAIL table: rows %d\n", a); }
+            }
+    // Volta has its own table (PR 1401): Q6_K at 2 columns, 2560 rows -> 1 row a warp; the Ampere table says 0 there
+    if (native_mmvq_il_rows_for(70, 14, 2, 2560) != 1 || native_mmvq_il_rows_for(86, 14, 2, 2560) != 0) {
+        ++bad;
+        std::printf("FAIL table: the sm_70 table is not the V100's\n");
+    }
+    if (native_mmvq_il_rows_for(89, 99, 2, 2560) != 0 || native_mmvq_il_rows_for(89, 12, 5, 2560) != 0) {
+        ++bad;
+        std::printf("FAIL table: an unknown type or ncols must be 0\n");
+    }
+    return bad;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
+    const bool emit = bench && argc > 2 && std::string(argv[2]) == "--emit-table";
     cudaStream_t s;
     cudaStreamCreate(&s);
     int bad = 0;
+    bad += check_tables();
     for (const Case& c : CASES) bad += run_case(c, bench, s);
+    if (emit) emit_table();
     std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 2-4, rows 1/2/4 and the table, bitwise)");
     return bad ? 1 : 0;
 }
