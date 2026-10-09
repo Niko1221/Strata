@@ -2760,6 +2760,8 @@ class Service:
         self.status_lock = threading.Lock()
         self.video_preparing = 0
         self.video_progress = {}
+        self.video_prep = None                          # the preparation slots, sized from the engine on first use
+        self.video_prep_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
@@ -3457,11 +3459,30 @@ class Service:
             budget.check()
             return bundle, limits
 
+    def _prep_slots(self):
+        """How many clips may be prepared at once: one, or the engine's batch slots when requests run in parallel.
+        Codec work stays outside the inference FIFO (a minutes-long decode must not idle the GPU), so without this
+        every clip that arrived prepared itself at the same time instead of queueing like a request does."""
+        with self.video_prep_lock:
+            if self.video_prep is None:
+                self.video_prep = threading.Semaphore(max(1, int(getattr(self.engine, "batch", 0) or 0)))
+            return self.video_prep
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         has_video = any(k == "video" for k, _ in media_of(messages))
         if not has_video:
             return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel,
                                       has_video=False, progress=None)
+        slots = self._prep_slots()
+        with self.status_lock:
+            self.status["queued"] += 1          # waiting for a slot reads as queued, as waiting for the model does
+        try:
+            while not slots.acquire(timeout=0.05):
+                if cancel is not None and cancel.is_set():
+                    raise VideoCancelled("video request cancelled")
+        finally:
+            with self.status_lock:
+                self.status["queued"] -= 1
         request_id = object()
         with self.status_lock:
             self.video_preparing += 1
@@ -3472,6 +3493,7 @@ class Service:
             return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel,
                                       has_video=True, progress=progress)
         finally:
+            slots.release()
             with self.status_lock:
                 self.video_preparing -= 1
                 self.video_progress.pop(request_id, None)

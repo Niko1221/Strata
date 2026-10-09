@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -187,6 +188,102 @@ class BodyCap(unittest.TestCase):
         status,error=self.post(json.dumps({"messages":messages,"max_tokens":10}))
         self.assertEqual(status,400)
         self.assertIn("video is disabled",error["error"]["message"])
+
+
+class PreparationSlots(unittest.TestCase):
+    """Codec work runs outside the inference FIFO, so the preparation slots are what keep clips queueing like
+    requests: one at a time, or the engine's batch slots when requests run in parallel."""
+
+    class Staged(Exception):
+        """Ends a prepare as soon as staging has been observed."""
+
+    def setUp(self):
+        VideoPreparation.setUp(self)
+
+    def _stage_twice(self, batch, gate=None):
+        """Run two clips through prepare with staging instrumented; return (peak inside staging,
+        times both were inside together, the errors each thread saw)."""
+        import serve.server as server
+        self.engine.batch = batch
+        original = server.stage_video
+        live, peak, met, errors = [0], [0], [0], []
+        lock = threading.Lock()
+
+        def stage(*args, **kwargs):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            try:
+                if gate is not None:
+                    gate.wait()
+                    with lock:
+                        met[0] += 1
+                raise PreparationSlots.Staged()
+            finally:
+                with lock:
+                    live[0] -= 1
+
+        server.stage_video = stage
+        self.addCleanup(setattr, server, "stage_video", original)
+        threads = []
+        for _ in range(2):
+            def run():
+                try:
+                    self.svc.prepare(video_message(str(self.source)), None, {}, 10)
+                except BaseException as e:
+                    errors.append(e)
+            threads.append(threading.Thread(target=run))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertFalse([t for t in threads if t.is_alive()], "a preparation never finished")
+        return peak[0], met[0], errors
+
+    def test_clips_prepare_one_at_a_time_without_batch(self):
+        peak, _, errors = self._stage_twice(0)
+        self.assertEqual(peak, 1, "both clips were in staging at once with no batch slots")
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(isinstance(e, PreparationSlots.Staged) for e in errors), errors)
+
+    def test_batch_slots_prepare_that_many_clips_together(self):
+        gate = threading.Barrier(2, timeout=10)
+        peak, met, errors = self._stage_twice(2, gate)
+        self.assertEqual(met, 2, f"the clips never staged together (peak {peak})")
+        self.assertEqual(peak, 2)
+        self.assertTrue(all(isinstance(e, PreparationSlots.Staged) for e in errors), errors)
+
+    def test_a_clip_waiting_for_its_slot_reports_queued(self):
+        import serve.server as server
+        self.engine.batch = 0
+        original = server.stage_video
+        first, seen = threading.Event(), []
+
+        def stage(*args, **kwargs):
+            if not first.is_set():
+                first.set()
+                for _ in range(100):                      # the other clip should be queued behind this one
+                    live = self.svc.metrics()["live"]
+                    if live["queued"]:
+                        seen.append((live["state"], live["queued"]))
+                        break
+                    time.sleep(0.02)
+            raise PreparationSlots.Staged()
+
+        server.stage_video = stage
+        self.addCleanup(setattr, server, "stage_video", original)
+
+        def run():
+            try:
+                self.svc.prepare(video_message(str(self.source)), None, {}, 10)
+            except PreparationSlots.Staged:
+                pass
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(seen, [("preparing_video", 1)], "a waiting clip was not reported as queued")
 
 
 if __name__ == "__main__":
