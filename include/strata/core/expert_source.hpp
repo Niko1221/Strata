@@ -591,6 +591,16 @@ public:
     /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
     /// read_direct (mapped_blob answers nullptr).  Returns whether the view was closed; `why` says why not.
     bool drop_mapping(std::string& why);
+    /// Windows, experts.bin, a file tier that reads through the file cache (--resident-experts): the startup reads -
+    /// the GPU cache's fill from the profile and the RAM copy (pin_cache_complement) - go unbuffered (read_direct)
+    /// with the view closed meanwhile.  Through the mapping they put the file's pages in the working set beside the
+    /// RAM copy, and on a PC short of RAM that pages other memory out.  The bytes and their places are the same.
+    /// end_startup_unbuffered maps the view again and closes the unbuffered handles and the stage buffers, as before
+    /// the startup.  STRATA_STARTUP_UNBUFFERED=0: the mapped copy (A/B).  False (and `why`) when it does not apply.
+    bool begin_startup_unbuffered(std::string& why);
+    /// False when the view could not be mapped again: then the file tier stays unbuffered, `why` says so.
+    bool end_startup_unbuffered(std::string& why);
+    bool startup_unbuffered() const { return startup_ub_; }
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -677,6 +687,8 @@ private:
     /// Windows, io_submit on Linux) into this thread's aligned buffer, then copied into place.  False when a read fails.
     bool read_direct(const Fill* fills, size_t n) const;
     bool open_direct(std::string& why);
+    /// Windows: experts.bin mapped again as `open` maps it (begin/end_startup_unbuffered).
+    bool map_view(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
@@ -793,6 +805,8 @@ private:
     int fd_ = -1;
 #endif
     bool unmapped_ = false;   ///< pp-opt: drop_mapping closed the view (base_ stays as the "opened" mark only)
+    bool startup_ub_ = false;                 ///< begin_startup_unbuffered: until end_startup_unbuffered
+    uint64_t startup_blob_bytes_ = 0, startup_us_ = 0;   ///< the staged reads' counters at its begin (put back at the end)
 };
 
 // ================================ THE RESIDENT ARENA (R2.1) ================================

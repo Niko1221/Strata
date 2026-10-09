@@ -4174,6 +4174,19 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: the file tier reads through the file cache (STRATA_UNBUFFERED_LOAD=%s "
                                  "ignored: without --resident-budget-gib the file cache holds the experts)\n", env);
         }
+#if defined(_WIN32)
+        // the GPU cache's fill and the RAM copy read unbuffered even so: through the mapping their pages sat in the
+        // working set beside the copy (end_startup_unbuffered below, once the copy is built).  Windows, experts.bin
+        if (o.resident_cpu_experts && !src.unbuffered()) {
+            std::string why;
+            if (src.begin_startup_unbuffered(why))
+                std::fprintf(stderr, "strata generate: the GPU cache's fill and the RAM copy read unbuffered (%s)\n",
+                             why.c_str());
+            else if (why.find("STRATA_STARTUP_UNBUFFERED") == std::string::npos)
+                std::fprintf(stderr, "strata generate: the GPU cache's fill and the RAM copy read through the mapping "
+                                     "(%s)\n", why.c_str());
+        }
+#endif
         // Linux I/O path (opt in): whole-blob preads instead of page faults, and the predicted experts of the next
         // layers read ahead on I/O threads while the current layer computes (see FileExpertSource::set_io_prefetch)
         if (const char* v = std::getenv("STRATA_IO_PREFETCH"); v != nullptr && std::atoi(v) != 0) {
@@ -4701,6 +4714,39 @@ int main(int argc, char** argv) {
                              "slot 0 verified\n",
                      (long long) prefilled, (long long) (per_layer ? xcache.slots() : want), fill_s,
                      fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0);
+        if (std::getenv("STRATA_VERIFY_COMPLEMENT") != nullptr) {
+            // tests: the filled slots' checksum (each slot's blob read back and hashed, then the hashes in slot order)
+            std::vector<std::pair<int32_t, int64_t>> sl;   // (slot, blob bytes)
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    if (const int32_t s = xcache.slot_of(l, e); s >= 0)
+                        sl.emplace_back(s, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
+            std::sort(sl.begin(), sl.end());
+            std::vector<uint64_t> sh(sl.size(), 0);
+            std::atomic<size_t> next_slot{0};
+            std::atomic<bool> copy_ok{true};
+            auto hash_work = [&] {
+                std::vector<uint8_t> hb;
+                for (size_t i; (i = next_slot.fetch_add(1)) < sl.size();) {
+                    hb.resize((size_t) sl[i].second);
+                    if (cudaMemcpy(hb.data(), xcache.device_slot(sl[i].first), hb.size(), cudaMemcpyDeviceToHost) !=
+                        cudaSuccess) copy_ok = false;
+                    sh[i] = strata::core::fnv1a64(hb.data(), (uint64_t) hb.size());
+                }
+            };
+            std::vector<std::thread> hth;
+            for (int t = 1; t < 8; ++t) hth.emplace_back(hash_work);
+            hash_work();
+            for (auto& t : hth) t.join();
+            uint64_t h = strata::core::fnv1a64(nullptr, 0);
+            for (size_t i = 0; i < sl.size(); ++i) {   // field by field: a pair's padding is not part of it
+                const int64_t v[2] = {(int64_t) sl[i].first, sl[i].second};
+                h = strata::core::fnv1a64((const uint8_t*) v, sizeof v, h);
+                h = strata::core::fnv1a64((const uint8_t*) &sh[i], sizeof sh[i], h);
+            }
+            std::fprintf(stderr, "strata generate: expert cache checksum %016llx (%zu slots%s)\n", (unsigned long long) h,
+                         sl.size(), copy_ok ? "" : ", A READ-BACK FAILED");
+        }
     }
 
     for (auto& stp : stages) {
@@ -6122,6 +6168,17 @@ int main(int argc, char** argv) {
             else
                 err = whole_err + "; " + err;
         }
+        // the startup reads are done: the view of experts.bin back, the file tier as chosen above
+        bool startup_kept = false;
+        if (src.startup_unbuffered()) {
+            std::string why;
+            const auto end_t0 = std::chrono::steady_clock::now();
+            startup_kept = !src.end_startup_unbuffered(why);
+            if (startup_kept) std::fprintf(stderr, "strata generate: WARNING: %s\n", why.c_str());
+            else
+                std::fprintf(stderr, "strata generate: the startup reads are done: experts.bin mapped again (%.0f ms)\n",
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - end_t0).count());
+        }
         // #669 / #765: a big chunk lends many cache slots to the prompt path, and each lent slot's expert is read back
         // from the SSD whenever the RAM could not keep its copy (31 GB: auto:32768 read prompts ~3x slower than auto).
         // Said, never capped: --prefill is the user's, and with the RAM for them it is the faster one (+21-35%).
@@ -6174,7 +6231,7 @@ int main(int argc, char** argv) {
         // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows and Linux: the
         // unbuffered reads exist there
 #if defined(_WIN32) || defined(__linux__)
-        if (o.mmap_experts && o.resident_budget > 0) {
+        if (o.mmap_experts && o.resident_budget > 0 && !startup_kept) {
             std::string why;
             const bool was = src.unbuffered();
             const bool ub = src.recheck_unbuffered(why);
