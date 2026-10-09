@@ -5,6 +5,7 @@
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/exl3.hpp"
 #include "strata/kernels/gdn.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -52,7 +53,8 @@ uint64_t q8k_bytes(int64_t n) { return (uint64_t) (n / Q8K_ELEMS_PER_BLOCK) * Q8
 /// `s_gemv_q8k` takes the canonical-form attributes; a `WeightRef` carries them, and a tensor that is NOT
 /// quantized has none.  Returns false and names the tensor rather than building a form out of zeroes - which
 /// would decode every code as `0 + bias` and produce a perfectly finite wrong answer.
-bool sform_of(const WeightRef& r, strata::kernels::SForm& f, const std::string& name, std::string& err) {    if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? strata::kernels::Codebook::Iq4Nl : strata::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
+bool sform_of(const WeightRef& r, strata::kernels::SForm& f, const std::string& name, std::string& err) {    if (r.exl3) { f = strata::kernels::SForm{}; return true; }   // EXL3 carries no canonical S-form
+    if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? strata::kernels::Codebook::Iq4Nl : strata::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
 // carried, not derived - see the note on `SForm::act_kind`
 return true;}
 /// The three canonical planes of a quantized tensor, located INSIDE the loaded region.
@@ -82,6 +84,7 @@ struct Planes {    const uint8_t* codes = nullptr;    const float* scales = null
 ///< null when the form has none
 };
 bool plane_ptrs(const WeightRef& r, const std::string& name, Planes& out, std::string& err) {
+    if (r.exl3) { out = Planes{}; return true; }   // EXL3 planes are the fused trellis, not canonical
 // S2, S4 AND S8 ALL SPLIT THE SAME WAY.  The plane LOCATION does not depend on the code width - the three
 // sizes come from the index and are checked against the tensor below - so the guard is here to catch a
 // tensor that is not quantized at all, not to pick a decoder.  WHICH KERNEL reads the planes is the
@@ -141,6 +144,15 @@ void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weight
 /// picks.  Producing only the one it thinks it needs is how the assumption gets baked in again.
 bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::SForm& f, const uint8_t* x80, const uint8_t* xq8k,                    float* y, int64_t n_in, int64_t n_out, const std::string& name, void* stream,                    std::string& err, const float* x_f32 = nullptr, bool x_q8_1_ready = false) {
     using namespace strata::kernels;
+    if (w.exl3) {
+        const auto* m = (const Exl3Mat*) w.exl3;
+        if (!x_f32 || !stream || n_in != m->ki * 16 || n_out != m->nj * 16) {
+            err = name + ": EXL3 projection requires the FP32 activation, a stream and matching shape";
+            return false;
+        }
+        exl3_gemv_f32(x_f32, m->suh, m->svh, m->trellis, m->ki, m->nj, m->bits, m->cb, y, stream);
+        return true;
+    }
     if (w.native_data) {
         if (!x_f32 || !w.native_q8_1 || !stream || n_in != w.ne0 || n_out != w.ne1) {
             err = name + ": native projection requires matching FP32 input and session scratch";

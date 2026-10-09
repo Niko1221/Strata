@@ -307,6 +307,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # kernels link `strata_artifact` for the scalar dequantizers, because using the VALIDATED scalar path as the
   # reference is the whole point - a kernel checked against another copy of itself proves nothing.
   add_library(strata_kernels STATIC src/kernels/cuda/dequant_s2.cu src/kernels/cuda/s2_gemv.cu
+                          src/kernels/cuda/exl3.cu
+                          src/kernels/cuda/exl3_experts.cu
                           src/kernels/cuda/s_gemv.cu
                           src/kernels/cuda/s2_gemv_quads.cu
                           src/kernels/cuda/s2_gemv_fast.cu
@@ -353,6 +355,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  # ngram.cpp decodes EXL3 n-gram rows with the shared CPU codebook/row decoder (strata_kernels_cpu).
+  target_link_libraries(strata_kernels PRIVATE strata_kernels_cpu)
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)
@@ -1079,7 +1083,7 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
+            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/exl3.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
@@ -1122,6 +1126,84 @@ endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
+
+# EXL3 safetensors reader + real-model reconstruction check (docs/EXL3.md).  Reports a checksum to
+# compare against tools/exl3/check_real.py on the actual model.
+add_executable(strata-safetensors src/artifact/safetensors_exl3_check.cpp)
+target_include_directories(strata-safetensors PRIVATE include)
+target_link_libraries(strata-safetensors PRIVATE strata_kernels_cpu)
+
+# Multi-shard EXL3 model accessor + real-model reconstruction check (docs/EXL3.md).
+add_executable(strata-exl3-model src/artifact/exl3_model_check.cpp)
+target_include_directories(strata-exl3-model PRIVATE include)
+target_link_libraries(strata-exl3-model PRIVATE strata_kernels_cpu)
+
+# GPU EXL3 GEMV on real expert weights vs the CPU reference (needs the downloaded model).
+if(STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA)
+  add_executable(strata-exl3-gpu src/kernels/exl3_gpu_model_check.cpp)
+  target_include_directories(strata-exl3-gpu PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(strata-exl3-gpu PRIVATE strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  add_executable(strata-exl3-moe src/kernels/exl3_moe_layer_check.cpp)
+  target_include_directories(strata-exl3-moe PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(strata-exl3-moe PRIVATE strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+endif()
+
+# EXL3 decode (docs/EXL3.md): the scalar CPU kernel against the numpy format specification in
+# tools/exl3 (codebook.py, reconstruct.py).  CPU-only, no model, no GPU.  The fixture is generated from
+# the specification, so a mismatch is always the port's fault.
+if(STRATA_BUILD_TESTS)
+  add_executable(exl3_parity src/kernels/exl3_parity.cpp)
+  target_include_directories(exl3_parity PRIVATE include)
+  target_link_libraries(exl3_parity PRIVATE strata_kernels_cpu)
+  set(_exl3_python "")
+  foreach(_cand ITEMS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python" /usr/bin/python3 python3)
+    if(NOT _cand STREQUAL "")
+      execute_process(COMMAND ${_cand} -c "import numpy" OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE _probe)
+      if(_probe EQUAL 0)
+        set(_exl3_python "${_cand}")
+        break()
+      endif()
+    endif()
+  endforeach()
+  if(NOT _exl3_python STREQUAL "")
+    # One fixture per integer bitrate: every released EXL3 branch uses integer K only
+    # (2.05: K=2/4, 3.05: 3/5, 4.05: 4/6, 5.05: 5/6/7, 6.05: 6/8).
+    foreach(_k RANGE 1 8)
+      add_test(NAME exl3_parity_fixtures_k${_k}
+               COMMAND ${_exl3_python} ${CMAKE_CURRENT_SOURCE_DIR}/tools/exl3/emit_fixture.py
+                       --bits ${_k} --out ${CMAKE_CURRENT_BINARY_DIR}/exl3_fixture_k${_k})
+      set_tests_properties(exl3_parity_fixtures_k${_k} PROPERTIES FIXTURES_SETUP exl3_fixture_data_k${_k})
+      add_test(NAME exl3_parity_k${_k} COMMAND exl3_parity ${CMAKE_CURRENT_BINARY_DIR}/exl3_fixture_k${_k})
+      set_tests_properties(exl3_parity_k${_k} PROPERTIES FIXTURES_REQUIRED exl3_fixture_data_k${_k})
+    endforeach()
+  else()
+    message(STATUS "STRATA tests: no python3 with numpy found - exl3_parity is not registered")
+  endif()
+endif()
+
+# EXL3 GPU reconstruct against the CPU reference (synthetic, no model).
+if(STRATA_BUILD_TESTS AND (STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA))
+  add_executable(exl3_gpu_parity src/kernels/exl3_gpu_parity.cpp)
+  target_include_directories(exl3_gpu_parity PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(exl3_gpu_parity PRIVATE strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  add_test(NAME exl3_gpu_parity COMMAND exl3_gpu_parity)
+  add_executable(exl3_gemv_parity src/kernels/exl3_gemv_parity.cpp)
+  target_include_directories(exl3_gemv_parity PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(exl3_gemv_parity PRIVATE strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  add_test(NAME exl3_gemv_parity COMMAND exl3_gemv_parity)
+  # PleTable::open_exl3 (the EXL3 n-gram table) against the numpy codec.
+  add_executable(ple_exl3_parity src/kernels/ple_exl3_parity.cpp)
+  target_include_directories(ple_exl3_parity PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(ple_exl3_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  if(NOT _exl3_python STREQUAL "")
+    add_test(NAME ple_exl3_fixtures
+             COMMAND ${_exl3_python} ${CMAKE_CURRENT_SOURCE_DIR}/tools/exl3/emit_ngram_table.py
+                     --out ${CMAKE_CURRENT_BINARY_DIR}/ngram_fixture)
+    set_tests_properties(ple_exl3_fixtures PROPERTIES FIXTURES_SETUP ngram_fixture_data)
+    add_test(NAME ple_exl3_parity COMMAND ple_exl3_parity ${CMAKE_CURRENT_BINARY_DIR}/ngram_fixture)
+    set_tests_properties(ple_exl3_parity PROPERTIES FIXTURES_REQUIRED ngram_fixture_data)
+  endif()
+endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #

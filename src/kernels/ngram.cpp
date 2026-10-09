@@ -3,7 +3,9 @@
 // See include/strata/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
 #include "strata/kernels/ngram.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/artifact/safetensors.hpp"
 #include "strata/artifact/dequant.hpp"
+#include "strata/kernels/cpu/exl3.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/memory.hpp"
@@ -14,10 +16,15 @@
 #include <cstring>
 #include <limits>
 #if !defined(_WIN32)
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 #include <algorithm>
 #include <atomic>
+#include <fstream>
+#include <map>
 #include <thread>
 #include <vector>
 #include <stdexcept>
@@ -221,7 +228,28 @@ struct PleTable::Impl {
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     float scale = 1.0f;               // the FP8 table's one scale
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
-    void decode(const uint8_t* row, float* out160) const { fmt->dequant(row, scale, out160); }
+    // EXL3 n-gram table (`exl3_ngram_trellis`): rows are `1 + 160*K/16` uint16 ring words (word 0 = fp16
+    // scale), decoded with the mul1 codebook plus a per-head bias (docs/EXL3.md).
+    bool exl3 = false;
+    int ng_K = 0;
+    uint32_t ng_dim = PLE_HEAD_DIM;
+    std::vector<uint16_t> mul1_lut;
+    std::vector<float> head_bias;          // [n_heads * ng_dim]
+    std::vector<int64_t> head_offsets;     // [n_heads], the running sums of the head vocab sizes
+    const uint8_t* map_base = nullptr;     // EXL3 Mmap mode only
+    size_t map_size = 0;
+    void decode(const uint8_t* row, uint32_t row_index, float* out160) const {
+        if (exl3) {
+            int head = 0;
+            for (size_t h = 1; h < head_offsets.size(); ++h)
+                if ((int64_t) row_index >= head_offsets[h]) head = (int) h;
+            const float* bias = head_bias.empty() ? nullptr : head_bias.data() + (size_t) head * ng_dim;
+            strata::kernels::cpu::exl3_ngram_decode_row((const uint16_t*) row, ng_K, mul1_lut.data(),
+                                                        (int) ng_dim, bias, out160);
+        } else {
+            fmt->dequant(row, scale, out160);
+        }
+    }
 };
 
 PleTable::PleTable() : impl_(new Impl) {}
@@ -388,6 +416,117 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     return true;
 }
 
+bool PleTable::open_exl3(const std::string& path, std::string& err, const PleIoOptions& io) {
+    close();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { err = "cannot open " + path; return false; }
+    uint64_t hn = 0;
+    in.read(reinterpret_cast<char*>(&hn), 8);
+    if (!in || hn == 0 || hn > (256ull << 20)) { err = "EXL3 ngram: bad safetensors header length"; return false; }
+    std::string hdr(hn, '\0');
+    in.read(hdr.data(), (std::streamsize) hn);
+    if (!in) { err = "EXL3 ngram: short header"; return false; }
+    std::map<std::string, StTensor> tensors;
+    try {
+        tensors = strata::safetensors_detail::HeaderParser(hdr.data(), hdr.data() + hn).parse();
+    } catch (const std::exception& e) {
+        err = e.what();
+        return false;
+    }
+    const uint64_t data_start = 8 + hn;
+
+    std::string prefix;
+    for (const auto& kv : tensors)
+        if (kv.first.size() > 10 && kv.first.compare(kv.first.size() - 10, 10, ".head_bias") == 0)
+            prefix = kv.first.substr(0, kv.first.size() - 10);
+    if (prefix.empty()) { err = "EXL3 ngram: no .head_bias tensor"; return false; }
+
+    std::vector<const StTensor*> shards;
+    for (const auto& kv : tensors)
+        if (kv.first.rfind(prefix + ".shard_", 0) == 0 && kv.first.size() > 8 &&
+            kv.first.compare(kv.first.size() - 8, 8, ".trellis") == 0)
+            shards.push_back(&kv.second);
+    if (shards.empty()) { err = "EXL3 ngram: no shard_N.trellis tensors"; return false; }
+    if (shards[0]->shape.size() != 2) { err = "EXL3 ngram: bad ring shape"; return false; }
+    const int words = (int) shards[0]->shape[1];
+
+    uint64_t minb = UINT64_MAX, maxe = 0, total_rows = 0;
+    for (const StTensor* s : shards) {
+        if (s->shape.size() != 2 || (int) s->shape[1] != words) { err = "EXL3 ngram: rings differ in width"; return false; }
+        minb = std::min(minb, s->begin);
+        maxe = std::max(maxe, s->end);
+        total_rows += (uint64_t) s->shape[0];
+    }
+    const uint64_t row_bytes = (uint64_t) words * 2;
+    if (maxe - minb != total_rows * row_bytes) { err = "EXL3 ngram: ring shards are not contiguous"; return false; }
+    if ((words - 1) * 16 % PLE_HEAD_DIM != 0) { err = "EXL3 ngram: unsupported ring width"; return false; }
+    const int K = (words - 1) * 16 / PLE_HEAD_DIM;
+    if (K < 1 || K > 8) { err = "EXL3 ngram: ring bitrate out of range"; return false; }
+
+    auto read_tensor = [&](const std::string& name, void* dst, size_t nbytes) -> bool {
+        auto it = tensors.find(name);
+        if (it == tensors.end() || it->second.nbytes() < nbytes) return false;
+        in.clear();
+        in.seekg((std::streamoff) (data_start + it->second.begin));
+        in.read(reinterpret_cast<char*>(dst), (std::streamsize) nbytes);
+        return (bool) in;
+    };
+    const StTensor* hb = tensors.count(prefix + ".head_bias") ? &tensors[prefix + ".head_bias"] : nullptr;
+    if (!hb || hb->shape.size() != 2) { err = "EXL3 ngram: missing head_bias"; return false; }
+    const int n_heads = (int) hb->shape[0];
+    const uint32_t dim = (uint32_t) hb->shape[1];
+    if ((int) dim != PLE_HEAD_DIM || n_heads != PLE_N_HEADS) { err = "EXL3 ngram: unexpected head geometry"; return false; }
+    std::vector<uint16_t> hb_bits((size_t) n_heads * dim);
+    std::vector<int64_t> ho_vals(n_heads);
+    if (!read_tensor(prefix + ".head_bias", hb_bits.data(), hb_bits.size() * 2) ||
+        !read_tensor(prefix + ".head_offsets", ho_vals.data(), ho_vals.size() * 8)) {
+        err = "EXL3 ngram: cannot read head metadata";
+        return false;
+    }
+    impl_->head_bias.resize(hb_bits.size());
+    for (size_t i = 0; i < hb_bits.size(); ++i) impl_->head_bias[i] = f32_from_f16(hb_bits[i]);
+    impl_->head_offsets = std::move(ho_vals);
+    impl_->mul1_lut.resize(1u << 16);
+    strata::kernels::cpu::exl3_codebook_lut(strata::kernels::cpu::Exl3Codebook::Mul1, impl_->mul1_lut.data());
+
+    impl_->exl3 = true;
+    impl_->ng_K = K;
+    impl_->ng_dim = dim;
+    impl_->rb = (uint32_t) row_bytes;
+    impl_->n_rows = total_rows;
+
+    if (io.mode == PleIo::Direct) {
+        const uint64_t table_offset = data_start + minb;
+        in.close();
+        if (!impl_->reader.open(path, table_offset, total_rows, io.max_inflight, io.cache_rows, err, io.io_thread,
+                                impl_->rb)) {
+            close();
+            return false;
+        }
+        impl_->reader.set_keepalive(io.keepalive_ms, io.keepalive_window_s);
+    } else {
+#if !defined(_WIN32)
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) { err = "EXL3 ngram: cannot open for mmap"; close(); return false; }
+        struct stat sb;
+        if (::fstat(fd, &sb) != 0) { ::close(fd); err = "EXL3 ngram: fstat failed"; close(); return false; }
+        void* m = ::mmap(nullptr, (size_t) sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        ::close(fd);
+        if (m == MAP_FAILED) { err = "EXL3 ngram: mmap failed"; close(); return false; }
+        impl_->map_base = (const uint8_t*) m;
+        impl_->map_size = (size_t) sb.st_size;
+        impl_->data = impl_->map_base + data_start + minb;
+        in.close();
+#else
+        err = "EXL3 ngram: Mmap mode is POSIX only; use Direct";
+        close();
+        return false;
+#endif
+    }
+    impl_->mode = io.mode;
+    return true;
+}
+
 void PleTable::wait_prefetches() {
     if (impl_->n_prefetch == 0) return;
     std::string dummy;
@@ -429,16 +568,28 @@ void PleTable::close() {
     delete impl_->file;
     impl_->file = nullptr;
     impl_->data = nullptr;
+#if !defined(_WIN32)
+    if (impl_->map_base != nullptr) {
+        ::munmap((void*) impl_->map_base, impl_->map_size);
+        impl_->map_base = nullptr;
+        impl_->map_size = 0;
+    }
+#endif
     impl_->n_rows = 0;
     impl_->rb = PLE_ROW_BYTES;
     impl_->fmt = &ple_format_info(PleFormat::IQ4_NL);
     impl_->scale = 1.0f;
     impl_->bytes_read = 0;
+    impl_->exl3 = false;
+    impl_->ng_K = 0;
+    impl_->head_bias.clear();
+    impl_->head_offsets.clear();
+    impl_->mul1_lut.clear();
 }
 
 bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
 bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fmt->name; }
+const char* PleTable::format() const { return impl_->exl3 ? "EXL3" : impl_->fmt->name; }
 PleIo PleTable::mode() const { return impl_->mode; }
 uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
@@ -452,7 +603,7 @@ void PleTable::read_row(uint32_t row, float* out160) const {
             std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
             return;
         }
-        impl_->decode(raw, out160);
+        impl_->decode(raw, row, out160);
         impl_->bytes_read += impl_->rb;
         return;
     }
@@ -460,7 +611,7 @@ void PleTable::read_row(uint32_t row, float* out160) const {
         std::memset(out160, 0, (size_t) PLE_HEAD_DIM * sizeof(float));
         return;
     }
-    impl_->decode(impl_->data + (size_t) row * impl_->rb, out160);
+    impl_->decode(impl_->data + (size_t) row * impl_->rb, row, out160);
     impl_->bytes_read += impl_->rb;
 }
 
@@ -496,7 +647,7 @@ bool PleTable::collect(float* out2560, std::string& err) {
     if (impl_->mode == PleIo::Direct) {
         if (!impl_->reader.collect(impl_->ticket, err)) return false;
         for (int h = 0; h < PLE_N_HEADS; ++h)
-            impl_->decode(impl_->raw + (size_t) h * impl_->rb, out2560 + (size_t) h * PLE_HEAD_DIM);
+            impl_->decode(impl_->raw + (size_t) h * impl_->rb, impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
         impl_->bytes_read += (uint64_t) PLE_N_HEADS * impl_->rb;
         return true;
     }
@@ -528,7 +679,7 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
                 impl_->n_prefetch = 0;
                 for (size_t t = 0; t < n_tokens; ++t) {
                     for (int h = 0; h < PLE_N_HEADS; ++h) {
-                        impl_->decode(impl_->prefetch_raw[t] + (size_t) h * impl_->rb,
+                        impl_->decode(impl_->prefetch_raw[t] + (size_t) h * impl_->rb, impl_->prefetch_keys[t][h],
                                       out + (t * PLE_N_HEADS + (size_t) h) * PLE_HEAD_DIM);
                     }
                 }
@@ -540,7 +691,7 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         std::vector<uint8_t> raw(n * impl_->rb);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
         if (!impl_->reader.collect(ticket, err)) return false;
-        for (size_t i = 0; i < n; ++i) impl_->decode(raw.data() + i * impl_->rb, out + i * PLE_HEAD_DIM);
+        for (size_t i = 0; i < n; ++i) impl_->decode(raw.data() + i * impl_->rb, rows[i], out + i * PLE_HEAD_DIM);
         impl_->bytes_read += (uint64_t) n * impl_->rb;
         return true;
     }

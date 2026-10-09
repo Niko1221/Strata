@@ -93,6 +93,10 @@ struct WeightRef {
     /// S23 experiment (STRATA_HC_Q8=1): a hyper-connection projection's Q8_0 bytes as the GGUF stores them, owned by
     /// NativeDense, for the verify window's read (every other path keeps the pack's BF16 `data`)
     const void* hc_q8 = nullptr;
+    /// Optional EXL3 dense linear (docs/EXL3.md): a device-side `strata::kernels::Exl3Mat` (trellis/suh/svh),
+    /// owned by the EXL3 loader.  Null for every pack/native tensor; when set, `gemv_quantized` runs
+    /// `exl3_gemv_f32` instead of the canonical/native paths.
+    const void* exl3 = nullptr;
     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
     bool resident = true;
