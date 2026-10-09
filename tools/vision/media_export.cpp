@@ -146,7 +146,9 @@ bool supports_video_profile(const std::string& projector, const llama_model* mod
            gguf_find_tensor(gg.get(), "v.patch_embd.weight.1") >= 0;
 }
 
-MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t width, const VideoExportLimits& limits) {
+MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t width,
+                         const VideoExportLimits& limits,
+                         const std::function<void(uint64_t, uint64_t)>& on_group) {
     need(std::filesystem::is_regular_file(packet), "RGB frame spool must be a regular owned file");
     std::ifstream in(packet, std::ios::binary);
     need(bool(in), "cannot open the RGB frame spool");
@@ -191,6 +193,7 @@ MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t 
         } else b = a; // last frame repeated, NEVER dropped, for an odd temporal group
         previous = last;
         append_group(bundle, ctx, uint32_t(w), uint32_t(h), a, b, (first + last) / 2, limits);
+        if (on_group) on_group(i / 2 + 1, groups);
     }
     need(in.peek() == std::char_traits<char>::eof() && in.eof() && !in.bad(), "trailing RGB spool bytes or read error");
     program::validate_qwen4_media(bundle, video_media_limits(width, limits));

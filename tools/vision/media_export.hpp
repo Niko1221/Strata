@@ -2,6 +2,7 @@
 
 #include "strata/program/media_embeddings.hpp"
 #include <cstdint>
+#include <functional>
 #include <string>
 
 struct mtmd_context;
@@ -21,7 +22,8 @@ struct VideoExportLimits {
 
 bool supports_video_profile(const std::string& projector, const llama_model* model, int width);
 program::MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t width,
-                                  const VideoExportLimits& limits);
+                                  const VideoExportLimits& limits,
+                                  const std::function<void(uint64_t, uint64_t)>& on_group = {});
 void publish_media(const std::string& output, const program::MediaBundle& bundle, const VideoExportLimits& limits);
 void warm_video(mtmd_context* ctx, uint32_t width, const VideoExportLimits& limits);
 

@@ -244,7 +244,14 @@ int main(int argc, char** argv) {
                 if (!video_ready) throw strata::program::MediaError("video is not enabled for this encoder");
                 if (!parse_enc("ENC " + line.substr(5), img, out))
                     throw strata::program::MediaError("expected: ENCV <RGB frame spool> <output>");
-                const auto bundle = strata::vision::export_video(ctx, img, uint32_t(n_embd), video_limits);
+                const auto progress = [](uint64_t done, uint64_t total) {
+                    const uint64_t step = std::max<uint64_t>(1, (total + 99) / 100);
+                    if (done % step == 0 || done == total) {
+                        std::printf("VPROG %llu %llu\n", (unsigned long long) done, (unsigned long long) total);
+                        std::fflush(stdout);
+                    }
+                };
+                const auto bundle = strata::vision::export_video(ctx, img, uint32_t(n_embd), video_limits, progress);
                 strata::vision::publish_media(out, bundle, video_limits);
                 size_t rows = 0;
                 for (const auto& span : bundle.spans) rows += span.positions.size();
