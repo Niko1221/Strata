@@ -228,6 +228,8 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: self.t / "llama.cpp"),
             mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
+            mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: eng),
+            mock.patch.object(setup, "hip_card", lambda e, gpu, listed: gpu),
             mock.patch.object(setup, "build_engine_hip", lambda *a, **k: eng),
             mock.patch.object(setup, "build_engine", fake_build),
             mock.patch.object(setup, "pip_cuda_libs", lambda *a, **k: None),
@@ -286,7 +288,7 @@ class Install(Base):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.cfg_path.name, "strata-qwen36-ud-iq3_s.json")
         self.assertEqual(self.downloads, [BASE + F_IQ3])
-        self.assertTrue(arg(cfg, "--native").endswith("models/qwen36-UD-IQ3_S/" + F_IQ3))
+        self.assertEqual(Path(arg(cfg, "--native")), self.t / "data" / "models" / "qwen36-UD-IQ3_S" / F_IQ3)
         self.assertEqual(arg(cfg, "--mtp"), arg(cfg, "--native"))
         self.assertEqual(cfg["model_name"], "qwen3.6-35b-a3b-ud-iq3_s")
         self.assertNotIn("--ple-gguf", cfg["args"])
