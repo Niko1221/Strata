@@ -94,15 +94,23 @@ Differences you will notice on `xe`:
     **Not yet reported to Intel.** The zeros become NaNs a few operations later, which is how it first appeared (the model emitted token 0 forever).
     Work-around in Strata: lay the expert cache out in reverse so the buffers handed to the GEMM start in the first 4 GiB.
 19. **A decode with the asynchronous commit hangs after 100 to 600 windows.** The default of `set_commit_async` (the commit graph is launched,
-    an event is recorded after it, and the host later waits on that event) stopped for good in every configuration tried: adaptive swaps off,
-    host plan, another reserve, the Level Zero v1 adapter (`SYCL_UR_USE_LEVEL_ZERO_V2=0`), the shared-expert fork off (`STRATA_SH_STREAM=0`). The process
+    an event is recorded after it and replaced every round, and the host later waits on it) stopped for good in every configuration tried: adaptive swaps off,
+    host plan, another reserve, the shared-expert fork off (`STRATA_SH_STREAM=0`), `UR_L0_DISABLE_EVENTS_CACHING=1`. The process
     sleeps with every thread idle, the card stays at full clock, and the kernel log is silent (no xe reset or timeout); the process cannot be
     killed until the pod is deleted. In the xe debugfs (`/sys/kernel/debug/dri/<pci>/gt0/hw_engines`, `.../gt0/stats`) the compute engine
     `ccs0` shows `RING_HEAD` different from `RING_TAIL`, an `ACTHD` that does not change between samples and `IPEHR` 0x0e00d003 (an
     `MI_SEMAPHORE_WAIT`), while the copy engine `bcs0` is idle; `gtidle/idle_residency_ms` does not advance. So the compute stream is parked
-    in a semaphore wait that nothing signals. Waiting for the commit graph (`STRATA_COMMIT_SYNC=1`, now the default of the SYCL port;
-    `STRATA_COMMIT_ASYNC=1` selects the asynchronous one) or running without graphs (`STRATA_VERIFY_EAGER=1`) completed the same 3,000-token decode every
-    time; the cost is about 10% on a 128-token decode. The root cause is not found; the cross-queue event is the suspect (item 5 is the same kind of wait).
+    in a semaphore wait that nothing signals.
+    **Cause, narrowed:** the default adapter on this stack is Level Zero **v1** (`sycl::platform` name "...Level-Zero", no "V2"; `SYCL_UR_USE_LEVEL_ZERO_V2=0` changes
+    nothing). A standalone program (in-order queues with profiling, as dpct creates them: replay a 2,000-node graph, wait on the host, replay a
+    100-node graph, record a barrier event with `ext_oneapi_submit_barrier()` and drop it, run a kernel on a second queue) hangs within about 100 rounds on v1; it finishes 6,000 rounds with
+    `SYCL_UR_USE_LEVEL_ZERO_V2=1`, with `UR_L0_USE_DRIVER_INORDER_LISTS=1`, or with out-of-order queues, and it hangs with `UR_L0_DISABLE_EVENTS_CACHING=1`.
+    Recording no event at all also finishes. A hang of the same kind is reported in intel/llvm#18424 (A770, v1 adapter, discarded events). The mechanism inside the adapter or driver is not known.
+    **Work-arounds, in the engine** (3,000-token decode on an 8,191-token prompt, then on a 19,999-token prompt, identical tokens to the synchronous build for the first):
+    the synchronous commit (`STRATA_COMMIT_SYNC=1`, now the default of the SYCL port; `STRATA_COMMIT_ASYNC=1` selects the asynchronous one) finished every run;
+    the asynchronous commit finished with `UR_L0_USE_DRIVER_INORDER_LISTS=1` (four runs, two prompt sizes) and with `SYCL_UR_USE_LEVEL_ZERO_V2=1` (one run).
+    The synchronous commit is not slower on a 128-token decode (19.1 against 18.4 tok/s on a short prompt, 15.6 against 14.7 on an 8k prompt, against the asynchronous commit with the in-order-list variable).
+    The two modes do not always produce the same tokens: on one short prompt the synchronous run diverged at token 25 from every asynchronous run, which agreed with each other; draft acceptance differs (88 of 110, 94 of 102).
 
 ## Platform limits worth knowing
 

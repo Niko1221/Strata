@@ -2394,7 +2394,8 @@ namespace { bool g_commit_async = false; }
 // decode on the A770 stopped for good after 100 to 600 windows: the compute engine sat in a semaphore wait that nothing
 // signalled, the card busy at full clock, the copy engine idle, the kernel log silent, the process unkillable until the
 // pod was deleted. The synchronous commit finished both 3,000-token runs (the asynchronous one hung every time), and
-// costs about 10% on a short decode. STRATA_COMMIT_ASYNC=1 turns the asynchronous commit back on.
+// was not slower on a 128-token decode (19.1 against 18.4 tok/s). STRATA_COMMIT_ASYNC=1 turns the asynchronous commit back on;
+// with UR_L0_USE_DRIVER_INORDER_LISTS=1 (or SYCL_UR_USE_LEVEL_ZERO_V2=1) it finished the same decodes (docs/INTEL_A770_ISSUES.md, item 19).
 void Verifier::set_commit_async(bool on) {
     g_commit_async = on && std::getenv("STRATA_COMMIT_ASYNC") != nullptr && std::getenv("STRATA_COMMIT_SYNC") == nullptr;
 }
