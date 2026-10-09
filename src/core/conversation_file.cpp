@@ -688,7 +688,8 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
-    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64((s.cvec ? 1 : 0) | (s.rope_migration[0] ? 2 : 0));
+    if (s.rope_migration[0]) for (auto value : s.rope_migration) o.u64(value);
     put_checkpoint(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);
@@ -772,8 +773,13 @@ bool get_payload(In& in, SavedConversation& s) {
     if (in.limits.layer_range &&
         (in.limits.layer_range->first != s.layer_lo || in.limits.layer_range->second != s.layer_hi))
         return in.fail("saved with another layer range than this runtime's");
-    if (cvec > 1) return in.fail("invalid cvec flag");
-    s.cvec = cvec == 1;
+    if (cvec > 3) return in.fail("invalid cvec/migration flag");
+    s.cvec = (cvec & 1) != 0;
+    if (cvec & 2) {
+        for (auto& value : s.rope_migration) if (!in.u64(value)) return false;
+        if (s.rope_migration[0] != 1 || !s.rope_migration[1] || !s.rope_migration[2] || !s.rope_migration[3])
+            return in.fail("invalid approximate RoPE migration provenance");
+    }
     if (!get_checkpoint(in, s.live)) return false;
     uint64_t n = 0;
     // a checkpoint is at least 8 counts + used = 72 bytes; a K/V layer at least 7 + 5 = 96
@@ -803,10 +809,10 @@ bool has_stage_parts(const SavedConversation& s) {
 
 // header v1, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
 // header_hash:u64 (session_hash64 of bytes 0..55, seed 0)
-void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload) {
+void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload, bool migrated) {
     std::memset(h, 0, kHeader);
     std::memcpy(h, kMagic, 8);
-    const uint32_t version = kVersion, size = kHeader;
+    const uint32_t version = migrated ? 2 : kVersion, size = kHeader;
     std::memcpy(h + 8, &version, 4);
     std::memcpy(h + 12, &size, 4);
     std::memcpy(h + 16, &id.model, 8);
@@ -941,7 +947,7 @@ std::vector<SessionModelFile> session_model_inputs(const SessionInputs& in) {
 }
 
 bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error,
-                               const std::function<void()>& beat) {
+                               const std::function<void()>& beat, bool full) {
     SessionIdentityBuilder h(0x5354524154414d44ull);
     std::vector<uint8_t> buf(1u << 20);
     // a file in several roles is read once; its sample enters the fingerprint under every role
@@ -961,6 +967,15 @@ bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint6
             } else {
                 SessionIdentityBuilder one(0x46494c4553414d50ull);   // "FILESAMP"
                 one.u64("size", size);
+                if (full) {
+                    // Experimental migration needs every weight byte, not the usual sample.
+                    for (uint64_t at = 0; at < size;) {
+                        const size_t n = (size_t) std::min<uint64_t>(buf.size(), size-at);
+                        if (!f.read_at(at, buf.data(), n)) { error = "full model fingerprint read failed"; return false; }
+                        one.bytes("block", buf.data(), n); at += n;
+                        if (beat && at % (uint64_t(256)<<20) == 0) beat();
+                    }
+                } else {
                 const uint64_t head = std::min<uint64_t>(size, buf.size());
                 if (!f.read_at(0, buf.data(), (size_t) head)) {
                     error = "session fingerprint: reading " + file.path + ": " + f.error();
@@ -974,6 +989,7 @@ bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint6
                         return false;
                     }
                     one.bytes("tail", buf.data(), (size_t) tail);
+                }
                 }
                 d = {true, one.digest()};
             }
@@ -1006,7 +1022,7 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
     for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
     cp = sat_add(cp, 8);
-    uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
+    uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8 + 4 * 8;             // geometry, layer range, cvec
     n = sat_add(n, cp);                                            // live
     n = sat_add(n, sat_add(8, sat_mul(l.max_checkpoints, cp)));    // checkpoints
     n = sat_add(n, 8);
@@ -1069,7 +1085,7 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     f.write_fault = injected(fault, "write");
     f.flush_fault = injected(fault, "file_flush");
     uint8_t h[kHeader];
-    header_bytes(h, id, payload);
+    header_bytes(h, id, payload, image.rope_migration[0] != 0);
     bool ok = f.write(h, kHeader);
     SessionHasher hash(0);
     Out out;
@@ -1204,7 +1220,7 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
     if (hh != session_hash64(h, 56, 0)) { error = "session file: header checksum mismatch"; return false; }
-    if (version != kVersion) { error = "session file: unsupported version " + std::to_string(version); return false; }
+    if (version != kVersion && version != 2) { error = "session file: unsupported version " + std::to_string(version); return false; }
     if (hsize != kHeader || r0 || r1) { error = "session file: invalid header fields"; return false; }
     if (model != id.model) { error = "session file: saved with another model (model fingerprint differs)"; return false; }
     if (config != id.config) { error = "session file: saved with another engine configuration (config fingerprint differs)"; return false; }
@@ -1224,6 +1240,10 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     SavedConversation parsed;
     In in{&f, SessionHasher(0), payload, error, limits};
     if (!get_payload(in, parsed)) { st.error = in.kind; return false; }
+    if ((version == 2) != bool(parsed.rope_migration[0]) ||
+        (parsed.rope_migration[0] && parsed.rope_migration[2] != id.config)) {
+        error = "session file: migration provenance/version/config mismatch"; return false;
+    }
     if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
     uint8_t t[kTrailer];
     if (!f.read(t, kTrailer)) { st.error = f.kind(); error = "session file: trailer read error: " + f.error(); return false; }

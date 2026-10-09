@@ -22,6 +22,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/rope_cache_migration.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
@@ -355,6 +356,7 @@ struct Options {
     double yarn_attn_factor = 1.0;      ///< --yarn-attn-factor F
     double yarn_beta_fast = 32.0;       ///< --yarn-beta-fast F
     double yarn_beta_slow = 1.0;        ///< --yarn-beta-slow F
+    bool experimental_rope_yarn4_cache = false;
     bool native_rope = false;         // pinned text-only CUDA rotary arithmetic
     bool native_ple_postops = false;  // pinned PLE postprojection arithmetic
     bool native_router = false;       // pinned fused 512-expert top-10 router
@@ -711,6 +713,9 @@ void usage() {
                  "                       K in the cache is post-RoPE, so one run one scaling\n"
                  "  --rope-scale F       the extension factor for linear/yarn (default: the model file's\n"
                  "                       factor, else 1 = off)\n"
+                 "  --experimental-rope-yarn4-cache  opt in to approximate ordinary -> YaRN 4x\n"
+                 "                       session migration (FP16, single GPU, no batch/vision,\n"
+                 "                       --conversation-cache-mib 0; full model fingerprint)\n"
                  "  --rope-freq-base N   the raw ggml knobs: the frequency base (0 = the model's 1e7) and\n"
                  "  --rope-freq-scale F  the angle shrink (0 = 1/--rope-scale)\n"
                  "  --yarn-orig-ctx N    the trained context the correction targets (0 = 262144)\n"
@@ -1650,6 +1655,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--max-new") o.max_new = std::atoll(next("--max-new"));
         else if (a == "--max-context") o.max_context = std::atoll(next("--max-context"));
+        else if (a == "--experimental-rope-yarn4-cache") o.experimental_rope_yarn4_cache = true;
         else if (a == "--rope-scaling") o.rope_scaling = next("--rope-scaling");
         else if (a == "--rope-scale") o.rope_scale = std::atof(next("--rope-scale"));
         else if (a == "--rope-freq-base") o.rope_freq_base = std::atof(next("--rope-freq-base"));
@@ -2267,6 +2273,16 @@ int main(int argc, char** argv) {
     if (o.max_new <= 0 || o.max_context <= 0 || o.max_new > o.max_context ||
         o.tokens.size() > (size_t) (o.max_context - o.max_new)) {
         std::fprintf(stderr, "strata generate: positive --max-new and --max-context must fit the prompt and generation\n");
+        return 2;
+    }
+    if (o.experimental_rope_yarn4_cache && (o.kv != "fp16" || o.batch > 0 ||
+        o.gpu_stages || o.peer_device >= 1 || o.vision || o.conversation_cache_mib != 0)) {
+        std::fprintf(stderr, "experimental RoPE migration requires fp16, one GPU, batch/vision off, conversation-cache-mib 0\n");
+        return 2;
+    }
+    if (o.experimental_rope_yarn4_cache &&
+        (!std::getenv("STRATA_ROPE_TABLE") || std::string(std::getenv("STRATA_ROPE_TABLE")) != "1")) {
+        std::fprintf(stderr, "experimental RoPE migration requires STRATA_ROPE_TABLE=1 on source and target; analytic fast-math caches are unsupported\n");
         return 2;
     }
     // THE ROPE KNOBS (rope_scaling.hpp).  Anything invalid dies here, at second zero, rather than becoming a
@@ -6972,6 +6988,8 @@ int main(int argc, char** argv) {
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
         // K/V format and the arithmetic switches.  Sampling, seeds, draft tuning and the expert tier are not in it.
         std::optional<uint64_t> model_fp, config_fp;
+        strata::core::SessionConfig resolved_session_config;
+        std::array<uint64_t,4> live_rope_migration{};
         auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e,
                                     const std::function<void()>& next_file) -> bool {
             if (!model_fp) {
@@ -7001,7 +7019,7 @@ int main(int argc, char** argv) {
                 uint64_t fp = 0;
                 // each file is one blocking read of at most 2 MiB (head and tail): announced before it starts
                 if (next_file) next_file();
-                if (!strata::core::session_model_fingerprint(files, fp, e, next_file))
+                if (!strata::core::session_model_fingerprint(files, fp, e, next_file, o.experimental_rope_yarn4_cache))
                     return false;
                 model_fp = fp;
             }
@@ -7035,6 +7053,10 @@ int main(int argc, char** argv) {
                     {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
                     {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
                     {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
+                // The converter inverts the table coefficients, not the analytic fast-math path.
+                // Add only in opt-in mode so ordinary session fingerprints remain unchanged.
+                if (o.experimental_rope_yarn4_cache) c.switches.emplace_back("migration_rope_table", 1);
+                resolved_session_config = c;
                 config_fp = strata::core::session_config_fingerprint(c);
             }
             id.model = *model_fp;
@@ -8705,9 +8727,16 @@ int main(int argc, char** argv) {
             // (fingerprint file, state capture, file flush, rename + folder flush, validation, device transfer):
             // that step is allowed <seconds> (session_phase_limit_s) by the watchdog and by the server, no more.
             // (A verifier commit that fails before the command still answers ERR and exits, as for a request.)
-            if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
+            if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0 || line.rfind("MIGRATE_YARN4 ", 0) == 0) {
                 const bool save = line[0] == 'S';
-                const std::string path = line.substr(save ? 5 : 8);
+                const bool migrate = line.rfind("MIGRATE_YARN4 ", 0) == 0;
+                int64_t source_context = 0;
+                std::string path = line.substr(save ? 5 : 8);
+                if (migrate) {
+                    std::istringstream fields(line.substr(14));
+                    fields >> source_context;
+                    std::getline(fields >> std::ws, path);
+                }
                 const auto t0 = Clock::now();
                 auto ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); };
                 auto refuse = [&](const std::string& why, strata::core::SessionError kind = strata::core::SessionError::invalid,
@@ -8758,6 +8787,61 @@ int main(int argc, char** argv) {
                     refuse(std::string("session identity: ") + e.what(), strata::core::SessionError::io);
                     continue;
                 }
+                if (migrate) {
+                    if (!o.experimental_rope_yarn4_cache || source_context <= 0 || source_context > o.max_context ||
+                        rope_cfg.type != strata::kernels::RopeScalingType::YaRN || rope_cfg.factor != 4) {
+                        refuse("migration requires experimental opt-in, source context and a target YaRN 4x engine"); continue;
+                    }
+                    try {
+                        auto source_rope = strata::kernels::RopeScaling{};
+                        source_rope.freq_base = rope_cfg.freq_base;
+                        auto source_config = resolved_session_config;
+                        source_config.max_context = source_context;
+                        source_config.rope = {(int64_t) source_rope.type, source_rope.freq_base, source_rope.factor,
+                            source_rope.freq_scale(), source_rope.orig_ctx, source_rope.ext_factor,
+                            source_rope.attn_factor, source_rope.beta_fast, source_rope.beta_slow};
+                        strata::core::RopeCacheProfile source_profile{source_config, source_rope, id.model, true};
+                        strata::core::RopeCacheProfile target_profile{resolved_session_config, rope_cfg, id.model, true};
+                        strata::core::SessionFileIdentity source_id{id.model, strata::core::session_config_fingerprint(source_config)};
+                        strata::core::SavedConversation converted;
+                        size_t bytes = 0;
+                        strata::core::SessionReadLimits limits;
+                        limits.max_tokens = source_context;
+                        limits.max_checkpoints = (uint64_t) std::max(o.prompt_cache, 1);
+                        limits.max_kv_layers = (uint64_t) g.n_qsa_layers() + (use_mtp ? 1 : 0);
+                        limits.admit = [&](uint64_t need, std::string& why) {
+                            // Full saved state plus staged K/indexer buffers, no second GPU cache.
+                            const auto available = strata::core::conversation_available_memory();
+                            if (need <= UINT64_MAX/2 && strata::core::conversation_memory_admit(available, need*2, uint64_t(4)<<30)) return true;
+                            why = "migration needs RAM for the source plus changed keys and a 4 GiB reserve"; return false;
+                        };
+                        const std::string destination = path + ".yarn4";
+                        if (std::filesystem::exists(destination)) { refuse("migration destination already exists"); continue; }
+                        blocking("migration", uint64_t(source_context)*32768);
+                        const double identity_done = ms();
+                        strata::core::SessionStatus migration_status;
+                        if (!strata::core::session_file_read(path, source_id, converted, bytes, err, limits, &migration_status)) {
+                            refuse(err, migration_status.error); continue;
+                        }
+                        const double read_done = ms();
+                        if (!strata::core::migrate_rope_cache_to_yarn4(converted, source_profile, target_profile, err)) { refuse(err); continue; }
+                        const double conversion_done = ms();
+                        strata::core::SessionWriteOptions options;
+                        options.min_free_bytes = (uint64_t)o.session_min_free_mib<<20;
+                        if (!strata::core::session_file_write(destination, converted, id, bytes, err, options, &migration_status)) {
+                            refuse(err, migration_status.error, migration_status.published); continue;
+                        }
+                        std::fprintf(stderr, "rope migration timing: identity_ms=%.3f read_ms=%.3f convert_ms=%.3f write_ms=%.3f tokens=%zu\n",
+                            identity_done, read_done-identity_done, conversion_done-read_done, ms()-conversion_done, converted.live.ids.size());
+                        // Original session is retained for rollback. The ordinary validated restore below
+                        // applies the staged result to graphs built with the target configuration.
+                        path = destination;
+                    } catch (const std::bad_alloc&) {
+                        refuse("not enough RAM for migration", strata::core::SessionError::memory); continue;
+                    } catch (const std::exception& e) {
+                        refuse(std::string("migration: ") + e.what(), strata::core::SessionError::io); continue;
+                    }
+                }
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
@@ -8782,7 +8866,7 @@ int main(int argc, char** argv) {
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + (use_mtp ? 1 : 0);
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         auto admit = [&](uint64_t need, std::string& why) {
@@ -8807,11 +8891,12 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
+                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, use_mtp ? &mtp.kv_state() : nullptr,
                                                                          err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
+                        meta.rope_migration = live_rope_migration;
                         capture_ms = ms();
                         strata::core::SessionWriteOptions wo;
                         wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
@@ -8852,7 +8937,7 @@ int main(int argc, char** argv) {
                             return false;
                         };
                         if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                limits, ss, g, use_mtp ? &mtp.kv_state() : nullptr, (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -8866,10 +8951,13 @@ int main(int argc, char** argv) {
                         refuse("not enough RAM to read the session", strata::core::SessionError::memory);
                         continue;
                     }
+                    if (image.rope_migration[0] && (!o.experimental_rope_yarn4_cache || image.rope_migration[2] != id.config)) {
+                        refuse("approximate migrated history requires matching experimental target engine"); continue;
+                    }
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate(image, ss, g, use_mtp ? &mtp.kv_state() : nullptr, err)) {
                         refuse(err);
                         continue;
                     }
@@ -8882,7 +8970,7 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore(image, ss, g, use_mtp ? &mtp.kv_state() : nullptr, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
@@ -8893,6 +8981,7 @@ int main(int argc, char** argv) {
                         std::fflush(stdout);
                         return 1;
                     }
+                    live_rope_migration = image.rope_migration;
                     live = std::move(image.live.ids);
                     live_imgs = std::move(image.live.imgs);
                     checks = std::move(image.checkpoints);
@@ -8902,7 +8991,10 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: session restored %zu tokens, %zu checkpoints, %zu bytes from %s "
                                  "in %.1f ms (read+check %.1f ms)\n", live.size(), checks.size(), bytes, path.c_str(),
                                  ms(), read_ms);
-                    std::printf("RESTORED %zu %zu %.1f\n", live.size(), bytes, ms());
+                    if (live_rope_migration[0])
+                        std::printf("RESTORED %zu %zu %.1f migrated\n", live.size(), bytes, ms());
+                    else
+                        std::printf("RESTORED %zu %zu %.1f\n", live.size(), bytes, ms());
                 }
                 std::fflush(stdout);
                 continue;
@@ -9322,6 +9414,7 @@ int main(int argc, char** argv) {
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             if (resume == 0) {
+                live_rope_migration = {};
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 for (auto& st : stages) {

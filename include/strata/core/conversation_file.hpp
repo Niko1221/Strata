@@ -96,7 +96,7 @@ struct SessionModelFile {
 // edit in the middle of a file that keeps its size is NOT detected: model files must not change while sessions saved
 // with them are kept.  `beat` (optional) is called after each distinct file is read.
 bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error,
-                               const std::function<void()>& beat = {});
+                               const std::function<void()>& beat = {}, bool full = false);
 
 // What the engine loaded, as its loaders resolved it (generate.cpp fills it).  `experts`: (role, file) of the expert
 // source - the pack's experts.bin, or every expert tensor read from a GGUF in place, per layer and role, as

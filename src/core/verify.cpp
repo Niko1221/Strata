@@ -2213,6 +2213,27 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
         err = "window_logprobs: the head logits copy failed";
         return false;
     }
+    // Private experiment diagnostic: raw full-vocabulary teacher-forced rows.
+    // Explicit environment opt-in, bounded by the caller's chosen start position.
+    static std::FILE* migration_logits = [] {
+        const char* path = std::getenv("STRATA_MIGRATION_LOGITS");
+        return path ? std::fopen(path, "ab") : nullptr;
+    }();
+    static const int64_t migration_from = [] {
+        const char* p = std::getenv("STRATA_MIGRATION_LOGITS_FROM");
+        return p ? std::atoll(p) : INT64_MAX;
+    }();
+    if (migration_logits) for (int t=0;t<T;++t) if (pos0+t >= migration_from) {
+        const int64_t position = pos0+t;
+        const int32_t count = (int32_t)n_vocab_;
+        if (std::fwrite(&position,8,1,migration_logits)!=1 ||
+            std::fwrite(targets+t,4,1,migration_logits)!=1 ||
+            std::fwrite(&count,4,1,migration_logits)!=1 ||
+            std::fwrite(h.data()+(size_t)t*n_vocab_,4,n_vocab_,migration_logits)!=(size_t)n_vocab_) {
+            err="migration logits write failed"; return false;
+        }
+        std::fflush(migration_logits);
+    }
     for (int t = 0; t < T; ++t) {
         const float* row = h.data() + (size_t) t * (size_t) n_vocab_;
         const int32_t tgt = targets[t];

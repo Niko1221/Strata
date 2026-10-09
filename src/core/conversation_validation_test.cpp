@@ -106,6 +106,18 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     if (!zero_qsa) { image.kv.push_back(first.image(g, true)); image.kv.push_back(last.image(g, true)); }
     image.kv.push_back(draft.image(g, false));
     check(conversation_snapshot_validate(image, ss, g, draft.st, error), "complete image validates without CUDA");
+    SessionReadLimits disk_limits;
+    check(conversation_session_read_limits(disk_limits, ss, g, nullptr, 96, 4, error),
+          "MTP-off disk read limits accept no draft state");
+    check(disk_limits.max_kv_layers == (uint64_t) g.n_qsa_layers() &&
+          disk_limits.max_kv_bytes.size() == (size_t) g.n_qsa_layers(),
+          "MTP-off disk limits contain only model QSA layers");
+    auto without_draft = image;
+    without_draft.kv.pop_back();
+    check(conversation_snapshot_validate(without_draft, ss, g, nullptr, error),
+          "MTP-off image validates with matching disk layer count");
+    check(!conversation_snapshot_validate(image, ss, g, nullptr, error),
+          "draft-bearing image cannot silently restore into MTP-off layout");
     size_t estimate = 0;
     check(conversation_snapshot_bytes({image.live.ids,image.live.imgs,image.checkpoints,true},ss,g,draft.st,estimate,error),
           "capture estimate works without CUDA");

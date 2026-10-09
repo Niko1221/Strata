@@ -158,6 +158,43 @@ class Slots(unittest.TestCase):
         self.assertEqual(s, 200, b)
         self.assertEqual((b["id_slot"], b["filename"], b["n_restored"], b["n_read"]), (0, "b.bin", 62993, 1234))
         self.assertAlmostEqual(b["timings"]["restore_ms"], 560.2)
+        self.assertNotIn("approximate_migrated_history", b)
+
+    def test_migration_uses_explicit_source_context_and_preserves_provenance(self):
+        Path(self.dir.name, "ordinary.bin").write_bytes(b"source unchanged")
+        self.engine.script = ["RESTORED 4095 1234 17.5 migrated\n"]
+        s, b = self.post("/slots/0?action=migrate_yarn4",
+                         {"filename": "ordinary.bin", "source_context": 8192})
+        self.assertEqual(s, 200, b)
+        self.assertEqual(self.engine.proc.sent,
+                         [f"MIGRATE_YARN4 8192 {Path(self.dir.name, 'ordinary.bin')}\n"])
+        self.assertEqual(b["filename"], "ordinary.bin.yarn4")
+        self.assertTrue(b["approximate_migrated_history"])
+        self.assertEqual(b["n_restored"], 4095)
+        self.assertEqual(Path(self.dir.name, "ordinary.bin").read_bytes(), b"source unchanged")
+
+    def test_migration_rejects_missing_or_invalid_source_context_before_engine(self):
+        for bad in (None, True, "8192", 8192.0, 0, -1, 1048577):
+            s, b = self.post("/slots/0?action=migrate_yarn4",
+                             {"filename": "ordinary.bin", "source_context": bad})
+            self.assertEqual(s, 400, (bad, b))
+        self.assertEqual(self.engine.proc.sent, [])
+
+    def test_restore_keeps_migrated_marker(self):
+        Path(self.dir.name, "converted.bin").write_bytes(b"converted")
+        self.engine.script = ["RESTORED 4095 1234 7.5 migrated\n"]
+        s, b = self.post("/slots/0?action=restore", {"filename": "converted.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertTrue(b["approximate_migrated_history"])
+
+    def test_migration_refusal_does_not_report_success(self):
+        Path(self.dir.name, "refused.bin").write_bytes(b"source unchanged")
+        self.engine.script = ["SERR invalid 0 ordinary source required; duplicate migration\n"]
+        s, b = self.post("/slots/0?action=migrate_yarn4",
+                         {"filename": "refused.bin", "source_context": 8192})
+        self.assertEqual(s, 400, b)
+        self.assertIn("duplicate", b["error"]["message"])
+        self.assertNotIn("n_restored", b)
 
     def test_refused_file_is_an_error_not_a_success(self):
         self.post("/slots/0?action=save", {"filename": "c.bin"})
