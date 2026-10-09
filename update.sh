@@ -37,6 +37,8 @@ main() {
           echo "Moved to the new history. Your old commits are kept in the branch $bk."
           echo "Untracked files (models, settings, the engine) were not touched."
         else
+          # the backup branch made a moment ago would make the by-hand `git branch pre-cleanup-backup` below fail
+          git branch -D "$bk" >/dev/null 2>&1
           echo "Could not move to the new history (the reason is above): nothing was updated. By hand:"
           echo "  git branch pre-cleanup-backup"
           echo "  git checkout -B main origin/main"

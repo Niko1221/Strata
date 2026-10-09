@@ -1,6 +1,6 @@
 # Continuous integration
 
-`.github/workflows/ci.yml` runs on pushes to `main` and the live-memory contribution branch, pull requests to
+`.github/workflows/ci.yml` runs on pushes to `main` and `codex/adaptive-background-draft`, pull requests to
 `main` (including Drafts), and manual dispatch. It uses GitHub-hosted Ubuntu 24.04 and Windows 2022 runners
 with read-only repository permission and no deployment step.
 

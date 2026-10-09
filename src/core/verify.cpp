@@ -64,6 +64,40 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
 inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
+// STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
+struct RouteResidentCfg;
+RouteResidentCfg& route_resident_cfg();
+struct RouteResidentCfg {
+    float margin = 0.0f;
+    int lo = 6, hi = 9;
+    unsigned long long* d_stats = nullptr;
+    unsigned long long* stats() {
+        if (d_stats == nullptr && margin > 0.0f) {
+            cudaMalloc((void**) &d_stats, 8 * sizeof(unsigned long long));
+            cudaMemset(d_stats, 0, 8 * sizeof(unsigned long long));
+            std::atexit([] {
+                unsigned long long h[8] = {};
+                RouteResidentCfg& c = route_resident_cfg();
+                cudaDeviceSynchronize();
+                cudaMemcpy(h, c.d_stats, sizeof(h), cudaMemcpyDeviceToHost);
+                std::fprintf(stderr, "route-resident: margin=%g ranks=%d-%d windows T>8 (prompt reads): tail_nonres=%llu swaps=%llu (%.1f%%) nonres_entries before=%llu after=%llu\n",
+                             c.margin, c.lo, c.hi, h[0], h[1], h[0] ? 100.0 * h[1] / h[0] : 0.0, h[2], h[3]);
+                std::fprintf(stderr, "route-resident: margin=%g ranks=%d-%d windows T<=8 (decode): tail_nonres=%llu swaps=%llu (%.1f%%) nonres_entries before=%llu after=%llu\n",
+                             c.margin, c.lo, c.hi, h[4], h[5], h[4] ? 100.0 * h[5] / h[4] : 0.0, h[6], h[7]);
+            });
+        }
+        return d_stats;
+    }
+};
+RouteResidentCfg& route_resident_cfg() {
+    static RouteResidentCfg c = [] {
+        RouteResidentCfg r;
+        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT")) r.margin = (float) std::atof(v);
+        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT_RANKS")) std::sscanf(v, "%d-%d", &r.lo, &r.hi);
+        return r;
+    }();
+    return c;
+}
 inline bool g_lfuse_gate() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_GATE"); return v == nullptr || v[0] != '0'; }(); return on; }
 inline bool g_lfuse_pair() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_PAIR"); return v == nullptr || v[0] != '0'; }(); return on; }
 inline bool g_qdedup() { static const bool on = [] { const char* v = std::getenv("STRATA_VERIFY_QDEDUP"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
@@ -378,6 +412,7 @@ Verifier::~Verifier() {
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
     g_diag_verifier.store(this);
+    (void) route_resident_cfg().stats();   // STRATA_ROUTE_RESIDENT: the counters are allocated outside graph capture
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
         Verifier* none = nullptr;
@@ -1281,6 +1316,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             MoEBuffers mb = ss.moe;
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
+        }
+        if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
+            // STRATA_ROUTE_RESIDENT: after the router, before the plan/doorbell read ids_/w_ (opt-in, changes the output)
+            try {
+                native_route_resident(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, hits_.d_res + l * g.n_expert, n,
+                                      route_resident_cfg().margin, route_resident_cfg().lo, route_resident_cfg().hi,
+                                      route_resident_cfg().stats() + (n <= 8 ? 4 : 0), cs);
+            } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,

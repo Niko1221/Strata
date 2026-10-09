@@ -179,10 +179,18 @@ public:
     /// The CPU expert pool (decode's, idle while a prompt is read). With STRATA_PREFILL_CPU_SHARE set, a chunk below
     /// stream_all_min() tokens - an agent's tool output - hands it the non-resident experts routed by at most MAXT of
     /// its tokens, fewest first, up to a share of the experts it would stream (`auto`: measured, where both sides end
-    /// together). The CPU reads them from RAM while the rest come over PCIe; their rows go to Dm's tail, as a peer's
-    /// do. Not bit-identical to the GPU's rows (the CPU's own activation format). Unset (default) or null: every
-    /// expert on the GPU. Only for a pool no other thread runs meanwhile (no batch slots). Set before `init`.
+    /// together). The CPU reads them from RAM (the arena, the page-locked copy, or the mapped experts.bin's pages)
+    /// while the rest come over PCIe; their rows go to Dm's tail, as a peer's do. Not bit-identical to the GPU's rows
+    /// (the CPU's own activation format). Unset (default) or null: every expert on the GPU. Only for a pool no other
+    /// thread runs meanwhile (no batch slots); on a layer split every stage may have it - one stage at a time takes it
+    /// for a chunk. Set before `init`.
     void set_cpu_pool(kernels::cpu::ExpertPool* pool);
+    /// With STRATA_PREFILL_CPU_SHARE set and `applies` (a pool will be set): the chunks staged after their routing - the
+    /// only ones the share applies to - go up to STRATA_PREFILL_CPU_SHARE_MAX tokens (default 3072) instead of 1024.
+    /// Before any `bytes_needed` (the ring and the small-chunk buffers follow the limit); `init` also sets it.
+    /// `by_default`: this path is one the share was measured on (CUDA, one GPU, no batch slots), so with the variable unset
+    /// the share is on for chunks below 1024 tokens (STRATA_PREFILL_CPU_SHARE=0 turns it off).
+    static void arm_cpu_share(bool applies, bool by_default = false);
 
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,

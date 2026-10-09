@@ -29,17 +29,13 @@ endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
-# The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The B-series keeps 20,000 reads; any
-# other build - the A-series JIT build - waits up to 2,000,000, which the host's per-layer CPU expert work needs there.
-set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "bound of the device's spins on host flags, in reads (empty: 20000 for a bmg AOT build, else 2000000)")
-if(NOT STRATA_SYCL_SPIN_MAX)
-  if(STRATA_SYCL_AOT MATCHES "^bmg")
-    set(STRATA_SYCL_SPIN_MAX 20000)
-  else()
-    set(STRATA_SYCL_SPIN_MAX 2000000)
-  endif()
+# The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
+# time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
+# bound for every device in this build.
+set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "fixed bound of the device's spins on host flags, in reads (empty: chosen per device at run time)")
+if(STRATA_SYCL_SPIN_MAX)
+  add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)
 endif()
-add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)
 set(_sycl_flags -fsycl)
 if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)
@@ -281,6 +277,8 @@ if(STRATA_SYCL_PARITY)
   add_executable(kv_hybrid_parity ${_src})
   target_include_directories(kv_hybrid_parity PRIVATE ${STRATA_ROOT}/src/kernels)
   target_link_libraries(kv_hybrid_parity PRIVATE strata_kernels)
+  add_executable(dequant_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dequant_bench.cpp)   # prompt-path expert dequant timing + output hash
+  target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq

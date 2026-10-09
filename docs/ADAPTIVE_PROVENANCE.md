@@ -1,7 +1,7 @@
 # Adaptive Strata: implementation provenance
 
 This document identifies sources actually used by this branch, as audited on
-2026-10-08. It distinguishes inherited or adapted code, design inspiration, and
+2026-10-09. It distinguishes inherited or adapted code, design inspiration, and
 API/ABI references. A citation does not transfer a source's performance claims
 to this implementation. Validation must use this branch's own test evidence.
 
@@ -11,7 +11,8 @@ to this implementation. Validation must use this branch's own test evidence.
 | --- | --- | --- |
 | [medking82's Strata PR #726](https://github.com/Niko1221/Strata/pull/726), source snapshot [`15a59d4785f492b4df3fb78862373a5383696450`](https://github.com/medking82/Strata/commit/15a59d4785f492b4df3fb78862373a5383696450) | **Adapted code:** live RAM blocks, GPU VMM expert-cache resize, `MEMORY` protocol and acknowledgements, guarded prefill loans, memory policy, resource presets, their UI and tests. This source snapshot was ported onto the v0.1.40.3 base identified below; subsequent commits modify that port. The public source snapshot is the attribution reference, independently of the port's commit identity. | Original author **medking82** is retained on the port commit. This is substantial reused Strata code, not a newly invented allocator. Retain the repository's [MIT license and notices](../LICENSE). PR closure without merge is not represented as technical rejection. |
 | [Strata v0.1.40.3 base, `d5ea7133741e67743c0e886bb426c0ce8d69cf6c`](https://github.com/Niko1221/Strata/commit/d5ea7133741e67743c0e886bb426c0ce8d69cf6c) | **Existing project code extended:** the native generation loop, prefill execution, expert source/cache, asynchronous readers, worker pool, server FIFO, output parser, detokenizer, lifecycle and sampling. | Credit Niko1221 and Strata contributors; retain the existing MIT license. Fixes to this port's integration are not attributed to unrelated research. |
-| [Strata v0.1.40.4, `6674a0065fb96bacde33e3eb10f91a1df86f95f2`](https://github.com/Niko1221/Strata/commit/6674a0065fb96bacde33e3eb10f91a1df86f95f2), including [`fbb3624`](https://github.com/Niko1221/Strata/commit/fbb3624) | **Upstream update merged:** Pascal decode retains restrict-qualified pointers and disables the newer PDL prefetch below `sm_70`, plus engine/version metadata. This is the current branch's upstream base; the original port and earlier measurements retain their v0.1.40.3 identities. | Credit the upstream Strata contributors and retain MIT notices. This architecture-specific update is not presented as a measured RTX 4070 Laptop speed gain. |
+| [Strata v0.1.40.4, `6674a0065fb96bacde33e3eb10f91a1df86f95f2`](https://github.com/Niko1221/Strata/commit/6674a0065fb96bacde33e3eb10f91a1df86f95f2), including [`fbb3624`](https://github.com/Niko1221/Strata/commit/fbb3624) | **Earlier upstream update merged:** Pascal decode retains restrict-qualified pointers and disables the newer PDL prefetch below `sm_70`, plus engine/version metadata. Earlier measurements retain their original identities. | Credit the upstream Strata contributors and retain MIT notices. This architecture-specific update is not presented as a measured RTX 4070 Laptop speed gain. |
+| [Strata v0.1.41, `fb58e0dbc8399662c0e47c76578c6e878b14f6cf`](https://github.com/Niko1221/Strata/commit/fb58e0dbc8399662c0e47c76578c6e878b14f6cf) | **Current upstream update merged:** Windows batched file-tier reads, short NVIDIA prefill CPU share, tokenizer cache and server/vision/watchdog fixes are inherited. Adaptive ownership is retained across the merge. | Credit upstream contributors and retain MIT notices. New merge regression tests and rejecting unsupported Foresight/live-memory combinations are integration fixes, not imported research. |
 
 Specific existing mechanisms reused:
 
@@ -42,12 +43,24 @@ Specific existing mechanisms reused:
 | Liu, Ye, Li and Li, [ATSInfer, *Automated Tensor Scheduling for Hybrid CPU-GPU LLM Inference on Consumer Devices*, arXiv:2607.10183v2, sections 4.3–4.4](https://arxiv.org/html/2607.10183v2) | **Design inspiration:** `serve/routing_costs.py` compares measured CPU/GPU choices and exposed transfer/completion cost under changing load. The citation is also beside that implementation. | No ATSInfer source, tensor-placement algorithm, learned estimator, benchmark or claimed speedup is incorporated. This branch only selects among already-supported Strata request-level routing choices using qualified matched samples. |
 | [StarPU performance models and data-aware task scheduling](https://starpu.gitlabpages.inria.fr/features.html) | **Design inspiration:** the same optional routing-cost gate considers expected completion cost and data movement rather than utilization alone. | No StarPU runtime, scheduler source, task graph, out-of-core subsystem or dependency was imported. Its source license is not being used to license this original routing gate. |
 | [miskahm's Strata PR #1093](https://github.com/Niko1221/Strata/pull/1093) | **Reporting idea used:** omit stale process-allocation counters from public metrics after the engine has unloaded, so old expert/arena/VRAM figures are not reported as current usage. This branch filters the published INFO view while retaining internal capabilities and identity needed for guarded reload. | The monitor split button, idle slider, frontend code and other unrelated changes are not copied. The implementation is original integration of the specific stale-counter observation, with a source comment beside it. |
+| [MARS, arXiv:2604.26963v2](https://arxiv.org/abs/2604.26963v2) and [MARS preview/OpenHands integration](https://github.com/Afterglow231/MARS_preview) | **Design inspiration:** the supervisor resource-lease path shares upcoming tool needs with inference control and separates resource admission from execution. It adds advance notice to reactive pressure monitoring. | No source, full MARS scheduling algorithm, continuation-priority policy, KV-retention algorithm or published speedup is imported. The preview targets a different runtime and datacenter GPUs; it is not a Windows validation result. |
+| [vLLM sleep/wake](https://docs.vllm.ai/en/latest/features/sleep_mode/) | **Actuator prior art:** an explicit release/return boundary around known external work. This branch uses Strata's existing unload/FIFO/guarded-reload lifecycle for that boundary. | No vLLM allocator, CPU weight-copy implementation, scheduler or wake-up-time claim is copied. Full unload has a reload/prefill cost here. |
 
 ATSInfer and StarPU are the two research/system principles explicitly used in
 the implemented routing gate; PR #1093 is separately credited for the reporting
 idea actually used. The fresh-sample requirements, thresholds, hysteresis, lease
 bounds, pressure admission and bounded retry policy are original choices in this
-branch; they are not presented as implementations of ATSInfer or StarPU.
+branch; they are not presented as implementations of ATSInfer or StarPU. The
+supervisor protocol separately uses the MARS information-sharing principle and
+explicit engine release/return boundary described above.
+
+The standalone Hermes plugin uses Hermes's existing plugin registry, profile
+secrets, tool dispatch and parent/child weak-reference lineage. The companion
+Hermes change adds a generic post-approval terminal execution boundary and a
+trusted request-local identity view. No Strata-specific dependency is added to
+Hermes core. The supervisor grants configured classes; the runtime broker owns
+all engine controls. Worker identity is runtime information, not a model-supplied
+owner string. This remains cooperative coordination, not a same-user sandbox.
 
 ## API and ABI references used by original integration code
 
