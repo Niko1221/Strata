@@ -147,3 +147,17 @@ revision identities and results.
 Private prompts, user paths, session databases and control credentials are not
 included in this public packet. Source hashes and test counts describe their
 specific revisions rather than combining results from different snapshots.
+
+## Cross-platform CI follow-up
+
+The [first public CI run](https://github.com/midhatn/Strata/actions/runs/37877811304)
+passed both native CPU jobs but found three test-fixture portability/scheduling
+issues: an implicit Windows commit-sensor assumption on Linux, an EOF emitted by
+a fake process still described as waiting for READY, and Windows DOS short-name
+versus resolved temporary-directory spelling. These were corrected in tests;
+the measured server, lease module and native binary did not change.
+
+The affected modules passed 65 tests locally (64 passed, 1 platform skip), and
+the corrected cancellation case passed 100 consecutive repetitions. A separate
+optional-commit-sensor regression was added, raising the full suite to 946 tests.
+These targeted results do not substitute for the new cross-platform CI run.

@@ -9,10 +9,10 @@ from serve.resource_lease import ToolLeases, LeaseError
 GIB, MIB = 2**30, 2**20
 
 
-def capacity(now=100, ram=40, gpu=7000, commit=40):
+def capacity(now=100, ram=40, gpu=7000, commit=40, commit_required=True):
     return {"sampled_at": now, "ram_total": 64 * GIB, "ram_used": (64 - ram) * GIB,
             "gpu_mem_total": 8192 * MIB, "gpu_mem_used": (8192 - gpu) * MIB,
-            "ram_commit_available": commit * GIB}
+            "ram_commit_available": commit * GIB, "ram_commit_required": commit_required}
 
 
 def acquire_request(**changes):
@@ -115,6 +115,18 @@ class LeaseTests(unittest.TestCase):
         status = self.act(row, "status")
         self.assertNotIn("lease_token", status)
         self.assertFalse(status["availability_is_reservation"])
+
+    def test_optional_commit_sensor_does_not_block_otherwise_ready_lease(self):
+        row = self.acquire()
+        owned = self.lease.begin_unload()
+        self.lease.unloaded(owned, 101)
+        for reading in (capacity(102, commit=0, commit_required=False),
+                        {k: v for k, v in capacity(102, commit_required=False).items()
+                         if k != "ram_commit_available"}):
+            with self.subTest(reading=reading):
+                self.lease.observe_ready(reading, 102, unloaded=True, ram_floor=3,
+                                         gpu_floor=320, commit_floor=3)
+                self.assertEqual(self.act(row, "status")["state"], "ready")
 
 
 if __name__ == "__main__":

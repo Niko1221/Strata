@@ -6,7 +6,8 @@ not change model weights, quantization, context length, reasoning or tool approv
 
 This plugin is installed separately from Hermes. It requires the proposed generic
 `authorized_tool_execution` middleware, trusted tool-lineage context and
-`register_private_env_keys` plugin API; older
+`register_private_env_keys` plugin API in
+[Hermes PR #135418](https://github.com/NousResearch/hermes-agent/pull/135418); older
 Hermes versions must refuse to load it rather than simulate the boundary with a
 pre-tool hook. Strata requires the resource-lease implementation in adaptive
 [PR #1493](https://github.com/Niko1221/Strata/pull/1493), not just an official release.

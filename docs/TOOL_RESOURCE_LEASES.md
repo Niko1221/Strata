@@ -41,7 +41,7 @@ coordinates trusted cooperating clients rather than sandboxing hostile code.
 
 The [standalone Hermes integration](../integrations/hermes-resource-feedback/README.md)
 routes authorized supervisor and worker tool work through one supervisor broker.
-It requires its companion generic Hermes execution middleware. Strata itself
+It requires the companion [generic Hermes execution middleware, PR #135418](https://github.com/NousResearch/hermes-agent/pull/135418). Strata itself
 has no Hermes dependency, and other supervisors can implement the same protocol.
 
 ## HTTP protocol

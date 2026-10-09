@@ -122,7 +122,8 @@ class ParkingProtocolTests(unittest.TestCase):
         proc.kill.side_effect = lambda: setattr(proc.poll, "return_value", 1)
         def pump(process, out):
             cancel.set()
-            out.put(None)
+            # The process is still waiting for READY, so stdout has not reached EOF.
+            # Let the cancellable wait observe withdrawal before killing it.
         with mock.patch("serve.server.popen", return_value=proc), mock.patch("serve.server.contain"), \
                 mock.patch.object(StrataEngine, "_ready_pump", side_effect=pump):
             with self.assertRaises(RequestParkCancelled):

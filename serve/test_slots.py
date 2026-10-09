@@ -197,7 +197,10 @@ class Slots(unittest.TestCase):
             cwd = os.getcwd()
             try:
                 os.chdir(base)
-                self.assertEqual(slot_save_dir("rel"), os.path.join(os.path.realpath(base), "rel"))
+                relative = slot_save_dir("rel")
+                self.assertTrue(os.path.isabs(relative))
+                # Windows getcwd() can retain a DOS 8.3 spelling of TEMP.
+                self.assertEqual(os.path.realpath(relative), os.path.join(os.path.realpath(base), "rel"))
             finally:
                 os.chdir(cwd)
             for bad in ("", "  ", None, 3, "a\nb"):
