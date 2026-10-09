@@ -19,6 +19,7 @@
 #include "strata/core/session.hpp"
 #include "strata/core/vmm.hpp"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -103,7 +104,7 @@ private:
 };
 
 /// The drafter owns its weights, its own K/V pools and the block forward; it never owns target
-/// verifier state.  Eager (no captured graphs) for the first correct implementation; docs/DFLASH.md
+/// verifier state. Query graphs reuse compatible attention layouts; docs/DFLASH.md
 /// holds the semantics.  The embedding and the LM head are the TARGET's, bound here, never copied.
 class DFlashDrafter {
 public:
@@ -145,7 +146,7 @@ public:
                 int64_t mask_override, std::string& err, bool elastic_kv = false);
     /// Binds the target's LM head.  The query rows' embeddings are gathered per cycle from the
     /// target's table - nothing is cached here.
-    bool bind(const WeightTable& wt, const NativeHead* head, std::string& err);
+    bool bind(const WeightTable& wt, const NativeHead* head, std::string& err, const std::string& vocab = {});
     /// Frees every resource this drafter holds (device buffers, the five K/V states' arenas and
     /// their pinned staging, the stream) and leaves it unloaded.  Safe on a partially-uploaded
     /// drafter; called by the destructor and on upload()'s failure paths.
@@ -166,7 +167,7 @@ public:
     /// inputs [x, mask x (block-1)], attention non-causal over [0, pos+block) once the queries'
     /// own cells are appended.  Greedy argmax per row into `out`: candidate j is the token at
     /// pos+1+j.  Synchronizes the drafter's stream before returning.
-    bool propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err);
+    bool propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err, float* probabilities = nullptr);
 
     cudaStream_t stream() const { return cs_; }
     /// The drafter's per-layer K/V states (read-only: STRATA_STATE_HASH hashes them like MTP's).
@@ -200,10 +201,16 @@ public:
 
 private:
     cudaStream_t cs_ = nullptr;
+    std::array<cudaGraphExec_t, 9> graph_exec_{};
+    std::array<int64_t, 9> graph_chunks_{}, graph_cap_{};
+    bool graph_prob_ = false;
+    void clear_graphs();
 
     // the target's shared modules
     const NativeHead* head_ = nullptr;
     NativeHead* owned_head_ = nullptr;
+    int32_t* head_ids_ = nullptr;
+    int head_rows_ = 0;
     const WeightRef* emb_ref_ = nullptr;
 
     // weights (device GGML payloads, the GGUF layout) and the rms_norm gammas widened to F32
@@ -231,7 +238,7 @@ private:
     float *tapf_ = nullptr, *emb_ = nullptr, *h_ = nullptr, *xn_ = nullptr, *ctx_ = nullptr;
     float *q_ = nullptr, *kc_ = nullptr, *vc_ = nullptr, *attn_ = nullptr, *bo_ = nullptr;
     float *gate_ = nullptr, *up_ = nullptr, *logits_ = nullptr;
-    uint8_t *arg_scratch_ = nullptr, *xq_ = nullptr;
+    uint8_t *arg_scratch_ = nullptr, *top_scratch_ = nullptr, *xq_ = nullptr;
     int32_t* out_ = nullptr;         ///< the block's picks, device alias
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory
     int32_t* h_tok_ = nullptr;       ///< host-side token ids staged to tok_

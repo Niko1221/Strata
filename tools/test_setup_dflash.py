@@ -92,10 +92,26 @@ class DrafterChoice(unittest.TestCase):
         with patch.object(setup, "fail", side_effect=ValueError):
             with self.assertRaises(ValueError): setup.choose_drafter("mtp", None, "q4", True)
 
+    def test_indexed_head_does_not_claim_mtp_head_memory_savings(self):
+        note = setup.small_card_note(8192, None, mtp=False)
+        self.assertFalse(any("draft head" in line or "--draft-vocab" in line for line in note))
+
+    def test_saved_subset_updates_indexed_dflash_without_mtp(self):
+        cfg = {"args": setup.drafter_args(Path("draft.gguf"), None), "draft_vocab": "en"}
+        self.assertTrue(setup.sync_dflash_vocab(cfg))
+        self.assertEqual(cfg["args"][cfg["args"].index("--dflash-vocab") + 1], str(setup.ROOT / "data/draft_vocab_en.bin"))
+        self.assertFalse(setup.sync_dflash_vocab(cfg))
+        self.assertNotIn("--mtp", cfg["args"])
+        self.assertFalse(setup.sync_dflash_vocab({"args": ["--dflash", "draft.gguf"], "draft_vocab": "en"}))
+
     def test_exclusive_arguments_and_saved_choice(self):
         a = setup.drafter_args(Path("drafter-Q4.gguf"), Path("mtp/rt"))
         self.assertIn("--dflash", a)
         self.assertNotIn("--mtp", a)
+        self.assertEqual(a[a.index("--spec-min-p")+1], "0.5")
+        self.assertEqual(Path(a[a.index("--dflash-vocab")+1]), setup.ROOT / "data/draft_vocab.bin")
+        en = setup.drafter_args(Path("draft.gguf"), None, "en")
+        self.assertEqual(Path(en[en.index("--dflash-vocab")+1]), setup.ROOT / "data/draft_vocab_en.bin")
         self.assertEqual(a[a.index("--dflash-window")+1], "0")
         self.assertNotIn("--dflash", setup.drafter_args(None, Path("mtp/rt")))
         with tempfile.TemporaryDirectory() as folder:

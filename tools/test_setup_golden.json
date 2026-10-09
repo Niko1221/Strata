@@ -32,6 +32,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -84,6 +85,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -136,6 +138,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -188,6 +191,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -242,6 +246,8 @@
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -293,6 +299,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -353,6 +360,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -413,6 +421,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -473,6 +482,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -535,6 +545,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -588,6 +600,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -647,6 +660,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -705,6 +719,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -764,6 +779,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -825,6 +841,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -880,6 +898,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -932,6 +951,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -984,6 +1004,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1034,6 +1055,7 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1087,6 +1109,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1137,6 +1161,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1188,6 +1213,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1239,6 +1265,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1290,6 +1317,7 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1343,6 +1371,8 @@
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
