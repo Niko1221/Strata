@@ -4734,11 +4734,20 @@ int main(int argc, char **argv) try {
         }
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
-        if (unmirrored_misses > 0 && [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }()) {
+        const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
+        if (unmirrored_misses > 0 && no_host) {
             std::fprintf(stderr, "strata generate: REFUSED: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
                                  "the device plan cannot run them and generation would lack a safe host fallback - raise "
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
             return 2;
+        }
+        // The same rule after the start: the mirror holds the start's misses only, so an expert an adaptive swap moves
+        // out of VRAM would be in neither, and the device plan would wait for a host that never serves it (every token
+        // 0 after a --batch window had counted misses and the tier swapped).
+        if (!miss.empty() && no_host && o.adapt_every > 0 && o.adapt_swaps > 0) {
+            std::fprintf(stderr, "strata generate: adaptive swaps off: with STRATA_VERIFY_NO_HOST an expert they move out of "
+                                 "VRAM would be neither there nor mirrored\n");
+            o.adapt_every = 0;
         }
     }
 
