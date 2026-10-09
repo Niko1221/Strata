@@ -1474,7 +1474,14 @@ yet, so this is a measurement switch rather than a speed one — `--mtp-probe` i
 against the oracle.
 
 **`--glm-gpu-experts N`** — put the routed experts in VRAM, `N` MiB of them (`-1`, the default, is off; `0` means
-every free byte less `STRATA_GLM_GPU_RESERVE_MIB`, 2,048 by default). A token routes 8 experts over 42 layers —
+every free byte less `STRATA_GLM_GPU_RESERVE_MIB`, 512 by default, which was 2,048 until the reserve was measured:
+sampling all four cards once a second through a whole run, every card ended with 2,473-2,580 MiB free, of which
+2,048 was this reserve and the rest the round of the budget into whole slots, and the whole chunk path — plan,
+activations, scratch — moved a card by 2 MiB peak to peak. The 1.5 GiB it gives back is the second half of a
+chunk's slots, which is what lets a wave's copies run under the previous wave's kernel. On a card that cannot hold
+the model and 512 MiB at once the flag refuses rather than degrades: at a 16K context on one RTX 3060 the native
+head's own upload fails first, and at 6,144 tokens it refuses ("there is no VRAM free for --glm-gpu-experts"), so a
+run with no tier is the only shape one card holds. A token routes 8 experts over 42 layers —
 3.92 GB read on the host every token — and that read is what a decode step spends its time on. With the tier on, the
 card computes the experts it holds and the CPU pool computes the rest; the hits are queued first, so the card works
 while the CPU thread works, and only the misses cross PCIe. Each card gets `budget / (its own MoE layers × blob
@@ -1510,6 +1517,30 @@ layer was 0.28, so the bar sits in a 7.9× gap. `STRATA_GLM_GPU_CHECK=2` also pr
 
 One interaction worth knowing: with the tier on, `--expert-profile-save` counts only the experts the card did *not*
 hold, so the profile it writes is the misses' routing and not the router's.
+
+**A prefill chunk is fed from the source's own bytes, on its own stream, two waves deep.** `run_chunk` asks the
+expert source to hand an expert's bytes over instead of a blob this process assembled — a GGUF-in-place pack gives
+three ranges (gate, up, down), a source whose experts live in registered memory gives one — and DMAs them straight
+into the slot, so the host copies nothing and no staging ring is allocated (`STRATA_GLM_GPU_CHUNK_DIRECT=0` puts the
+ring back, which is the arm that measures the copy: 1.26× on the 5,304-token prompt, chunk 4096, 4-way split —
+103.3 s / 51.4 tok/s staged against 80.7 s / 65.7 tok/s direct, both with the per-wave instrument off). A source
+that can do neither falls back to the ring rather than failing, checked against `copy_blob` for every layer at init.
+The copies run on a second stream released to the caller's by one event a wave, and a wave's slots are split in two
+halves with consecutive waves taking turns between them, so a wave's DMA overlaps the previous wave's kernel
+instead of queueing behind it; standalone on a 5060 (`bw/wave.cu`, 283 blobs of 11.66 MB into 13 slots) that is a
+layer's wall 1.19 s → 0.36 s. Two details of that shape are correctness rather than tuning: the per-wave plan lives
+in *pinned* host buffers, so its upload is a real DMA the host does not wait for, and one copy of it is refilled
+while the previous upload is in flight (measured with `STRATA_GLM_GPU_CHECK=1` at max/rms 10.66 on layer 3 with the
+instrument off and 0.10-0.19 with it on, whose per-wave sync was the only thing draining the upload — it is eight
+copies deep now); and a job in direct mode must name no ring buffer, because there is none.
+
+**`STRATA_GLM_GPU_SLOT_CHECK=1`** walks the slot table's own invariant — every `slot_[layer * n_expert + e]`
+against its `owner_` — at the top of a decode step's `run_hits` and at the end of every chunk, and fails the
+request naming the layer, the slot and both experts. That is a few hundred comparisons a layer a call, and it is
+what catches a table corrupted one token before a wrong value can be read: this path's two silent bugs were exactly
+that shape. `admit`'s LFU scan read `cnt[-1]` when a slot's owner was "empty", which could record a freed slot one
+entry *before* the layer's own array, and `run_chunk` filled slots without advancing `next_[layer]`, so the next
+decode blind-took one the chunk had filled without clearing the displaced expert.
 
 **A chunked prefill reads each projection's weights once per group of tokens, not once per token — and the default
 chunk is 512 tokens.** A `--prefill` chunk hands the layer its tokens eight at a time — eight is the widest the
@@ -1609,6 +1640,23 @@ size moves the output" below. `STRATA_SLICE_MT_DOWN` opts in the
 down-rows half of the same kernels (about 4% here; off because the engine's own dispatch deliberately does not name
 IQ4_XS for it). `STRATA_MTP_DUMP_H=<path>` writes the hidden state the draft block is fed, as raw f32, so it can be
 diffed against the oracle's own dump.
+
+**The chunk path's own arms.** `STRATA_GLM_GROUP_MAX=<n>` is the token-group width a chunk carves for and runs at,
+`8` — the widest `native_mmvq` takes — unless it is set, clamped to 512; past that cap a native projection goes
+through one MMQ over the whole group (`prefill::mmq::dense`) instead of the per-column walk, which on a 4,096-token
+chunk is the difference between reading each dense weight matrix once and reading it once per eight tokens (the
+`pre` section's report: 722 GB of reads on a stage holding 1.4 GB). `STRATA_GLM_GPU_CHUNK_DIRECT=0` restores the
+staging ring in front of the source for a chunk, and is the arm that prices the copy. `STRATA_GLM_GPU_SLOT_CHECK=1`
+turns on the slot table's invariant (above). `STRATA_GLM_GPU_CHECK_FROM=<layer>` starts the per-layer check at that
+layer rather than 0, for a run whose lower layers are already proved. `STRATA_GLM_GPU_CHUNK_TIME=1` prints where a
+chunk's wall went — the host's blob assembly, the wait on the ring, the blocking at the end of a wave, the plan —
+and **costs about 27%**, because its per-wave `cudaStreamSynchronize` destroys the very overlap it is there to
+measure (102.3 s against 80.7 s on the same arm); it is a diagnostic and every figure taken with it on is a floor.
+`STRATA_GLM_GPU_PIN_GIB=<GiB>` reserves that much RAM as one registered anonymous mapping a MoE layer, so a chunk
+DMAs straight out of it — **off unless set**, because as an auto-sized default it measured a 2.4× regression
+(245.7 s / 21.6 tok/s against 103.3 s / 51.4 tok/s for the same binary with the knob at 0): pinned is 2.2× faster
+than pageable in the probe, but every registered byte is one the kernel can no longer hand to the pool's own reads
+of the file mapping, and that is the side that loses.
 
 **The chunk size moves the output, which the default CPU pool kernels make unavoidable.** `--prefill` is not only a
 speed knob. Measured greedy on a 344-token prompt on the 4-way rig, 1, 128, 256 and 512 give four arms that each
