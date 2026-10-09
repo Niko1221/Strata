@@ -4899,6 +4899,45 @@ int main(int argc, char** argv) {
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     claimed[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
+        // The RAM residency and the helper caches draw from the same ranked list, and the order they are spent in is
+        // what a prompt pays for: it reads every routed expert's blob back from wherever it lives, and from a helper
+        // that is one copy per expert over *that card's* PCIe link.  Measured on the 2080 Ti (Gen 3 x16) + P100
+        // (Gen 3 x4) rig: the helper held 8782 experts and a prompt read 14.63 GiB back at that link's saturated
+        // 3.4 GB/s - 4.3 s of an 8 s prompt, its largest single term - while the same bytes served by the host tier
+        // travel the primary's link.  So an explicit --resident-budget-gib is spent first, hottest first, exactly
+        // the walk the resident copy takes, and an auto cache takes what is left.  A helper with an explicit
+        // --expert-cache-device1 N keeps what it was asked for, and so does the whole tier set around one.
+        const bool helper_explicit = (o.expert_cache_remote[0] > 0 && !o.expert_cache_remote_auto[0]) ||
+                                     (o.expert_cache_remote[1] > 0 && !o.expert_cache_remote_auto[1]) ||
+                                     (o.expert_cache_remote[2] > 0 && !o.expert_cache_remote_auto[2]);
+        if (o.resident_cpu_experts && o.resident_budget > 0 && !helper_explicit) {
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            uint64_t ram_bytes = o.resident_budget;
+            strata::core::detail::HostMemory mem;
+            if (strata::core::detail::host_available_memory(mem))   // the same bound the resident copy gets (#403)
+                ram_bytes = strata::core::detail::clamp_resident_budget(o.resident_budget, mem.available, mem.commit,
+                                                                        o.resident_headroom);
+            uint64_t at = 0;
+            int64_t reserved = 0;
+            // `ranked` is moved into by_device[0] when the only helper is CUDA1, so the walk reads by_device[0]
+            // then; with CUDA2/3 the per-device lists are already cut down to each card's slot count, and the
+            // reservation has to see the whole rank order.
+            const std::vector<std::pair<int32_t, int32_t>>& rank_walk = ranked.empty() ? by_device[0] : ranked;
+            for (const auto& pr : rank_walk) {
+                if (pr.first < 0 || pr.first >= g.n_layers || pr.second < 0 || pr.second >= g.n_expert) continue;
+                const size_t index = (size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second;
+                if (claimed[index] || xcache.slot_of(pr.first, pr.second) >= 0) continue;
+                const uint64_t bytes = lay.blob_bytes(pr.first);
+                if (bytes > ram_bytes - at) continue;
+                claimed[index] = 1;
+                at += bytes;
+                ++reserved;
+            }
+            if (reserved > 0)
+                std::fprintf(stderr, "strata generate: the %.2f GiB RAM residency reserves %lld ranked experts for "
+                                     "the host tier; the helper caches take what is left\n",
+                             (double) ram_bytes / 1073741824.0, (long long) reserved);
+        }
         for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
             if (remote_opt) remote_opt->attach(remote_experts[(size_t) r]);
             if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
