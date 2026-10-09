@@ -10,8 +10,8 @@ import unittest
 
 from serve.frontend import ChatTemplate
 from serve.media import MediaKind, read_bundle
-from serve.server import ByteTokenizer, EngineStarting, MockEngine, Service, request_body_limit, serve
-from serve.video import VIDEO_PROFILE, VideoError, VideoRequestBudget
+from serve.server import ByteTokenizer, EngineStarting, MockEngine, Service, Vision, request_body_limit, serve
+from serve.video import VIDEO_PROFILE, VideoError, VideoPolicy, VideoRequestBudget
 from serve.test_video_encoder import clip_info, ready_encoder, synthetic_video
 
 
@@ -63,6 +63,20 @@ class VideoPreparation(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertEqual(self.bridge.quota.used,self.bridge.cache_used)
 
+    def test_preparing_status_covers_media_artifact_setup(self):
+        original = self.bridge.request_artifact
+        observed = []
+        def check(bundle, limits):
+            live = self.svc.metrics()["live"]
+            observed.append((live["state"], live["video_progress"]["stage"]))
+            return original(bundle, limits)
+        self.bridge.request_artifact = check
+        try:
+            self.svc.prepare(video_message(str(self.source)), None, {}, 10)
+        finally:
+            self.bridge.request_artifact = original
+        self.assertEqual(observed, [("preparing_video", "assembling_prompt")])
+
     def test_run_and_abandoned_prepare_both_drop_previous_artifact(self):
         ids,thinking,max_new=self.svc.prepare(video_message(str(self.source)),None,{},10)
         path=self.svc.embeddings.owner.path
@@ -105,6 +119,27 @@ class VideoPreparation(unittest.TestCase):
             self.svc.fifo.release();timer.join()
         self.assertIsNone(getattr(self.svc.embeddings,"owner",None))
         self.assertEqual(self.bridge.quota.used,self.bridge.cache_used)
+
+
+class VideoProgressProtocol(unittest.TestCase):
+    def test_encoder_progress_lines_precede_final_reply(self):
+        from io import StringIO
+
+        class Process:
+            def __init__(self):
+                self.stdin = StringIO()
+                self.stdout = StringIO("VPROG 1 3\nVPROG 2 3\nVPROG 3 3\nVOK 24 3 0\n")
+            def poll(self): return None
+            def kill(self): raise AssertionError("valid progress must not kill the encoder")
+            def wait(self, timeout=None): return 0
+
+        vision = object.__new__(Vision)
+        vision.proc, vision.stopped = Process(), False
+        progress = []
+        reply = vision._video_exchange("ENCV frames output", VideoRequestBudget(VideoPolicy()),
+                                       lambda done, total: progress.append((done, total)))
+        self.assertEqual(reply, "VOK 24 3 0")
+        self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
 
 
 class BodyCap(unittest.TestCase):

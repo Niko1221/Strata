@@ -88,6 +88,40 @@ class Monitor(unittest.TestCase):
         summary = self.request("/api/requests")[1]["requests"][0]
         return self.request("/api/requests?id=" + summary["id"])[1]
 
+    def test_metrics_prioritizes_video_preparation_over_engine_activity(self):
+        with self.svc.status_lock:
+            self.svc.video_preparing = 1
+            request_id = object()
+            self.svc.video_progress[request_id] = {"stage": "decoding", "done": 1, "total": 3,
+                                                   "unit": "frames", "updated_at": time.monotonic()}
+            self.svc.status.update(busy=True, phase="reading the prompt", started=time.time(), first_token=None)
+        try:
+            live = self.request("/metrics")[1]["live"]
+            self.assertEqual(live["state"], "preparing_video")
+            self.assertEqual(live["video_preparing"], 1)
+            self.assertEqual(live["video_progress"], {"stage": "decoding", "done": 1, "total": 3,
+                                                        "unit": "frames"})
+        finally:
+            with self.svc.status_lock:
+                self.svc.video_preparing = 0
+                self.svc.video_progress.pop(request_id, None)
+                self.svc.status["busy"] = False
+
+    def test_metrics_reports_queued_request_instead_of_idle(self):
+        with self.svc.status_lock:
+            self.svc.status["queued"] = 1
+        try:
+            live = self.request("/metrics")[1]["live"]
+            self.assertEqual(live["state"], "queued")
+            self.assertEqual(live["queued"], 1)
+            with self.svc.status_lock:
+                self.svc.status.update(busy=True, phase="reading the prompt", first_token=None)
+            live = self.request("/metrics")[1]["live"]
+            self.assertEqual((live["state"], live["queued"]), ("reading", 1))
+        finally:
+            with self.svc.status_lock:
+                self.svc.status.update(queued=0, busy=False)
+
     def test_output_and_reasoning_for_both_dialects_and_stream_modes(self):
         for api in ("openai", "anthropic"):
             for stream in (False, True):

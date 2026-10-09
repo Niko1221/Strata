@@ -1916,13 +1916,17 @@ class Vision:
             print("[strata] video: " + ("configured (engine capability is checked next)" if self.video.available else
                                        self.video.reason), flush=True)
 
-    def _video_exchange(self, command, budget):
-        """One bounded control reply. Poisoned/cancelled exchanges are killed and
-        reaped; the next image/video encode restarts under the inference FIFO."""
-        result = queue.Queue(maxsize=1)
+    def _video_exchange(self, command, budget, on_progress=None):
+        """One bounded control reply, with optional VPROG progress lines before it."""
+        result = queue.Queue()
+        report, counting = on_progress or (lambda done, total: None), command.startswith("ENCV ")
         def reply():
             try:
-                result.put(self.proc.stdout.readline(4097))
+                while True:
+                    line = self.proc.stdout.readline(4097)
+                    result.put(line)
+                    if not line or not line.startswith("VPROG "):
+                        return
             except Exception as e:
                 result.put(e)
         thread = None
@@ -1934,18 +1938,30 @@ class Vision:
             self.proc.stdin.flush()
             thread = threading.Thread(target=reply, daemon=True, name="strata-video-reply")
             thread.start()
+            last_done, expected_total, lines = 0, None, 0
             while True:
                 budget.check()
                 try:
                     line = result.get(timeout=0.05)
-                    break
                 except queue.Empty:
                     continue
-            if isinstance(line, Exception):
-                raise RuntimeError("the vision encoder reply failed: " + str(line))
-            if not line or len(line) > 4096 or not line.endswith("\n"):
-                raise RuntimeError("the vision encoder returned an incomplete/oversized reply")
-            return line.strip()
+                if isinstance(line, Exception):
+                    raise RuntimeError("the vision encoder reply failed: " + str(line))
+                if not line or len(line) > 4096 or not line.endswith("\n"):
+                    raise RuntimeError("the vision encoder returned an incomplete/oversized reply")
+                if line.startswith("VPROG "):
+                    fields = line.split()
+                    lines += 1
+                    ok = counting and lines <= 4096 and len(fields) == 3 and all(x.isdecimal() for x in fields[1:])
+                    if ok:
+                        done, total = map(int, fields[1:])
+                        ok = total >= 1 and last_done < done <= total and expected_total in (None, total)
+                    if not ok:
+                        raise RuntimeError("the vision encoder returned invalid video progress")
+                    last_done, expected_total = done, total
+                    report(done, total)
+                    continue
+                return line.strip()
         except BaseException:
             self.stopped = True
             self.proc.kill()
@@ -1957,11 +1973,19 @@ class Vision:
                 if thread.is_alive():
                     raise RuntimeError("the vision encoder reply reader did not terminate")
 
-    def encode_video(self, packet, source_hash, info, budget, tokenizer=None):
+    def encode_video(self, packet, source_hash, info, budget, tokenizer=None, progress=None):
         with self.lock:
             if not self.alive():
                 self.restart()
-            return self.video.encode(packet, source_hash, info, budget, self._video_exchange, tokenizer)
+            groups = (len(info.indices) + 1) // 2
+            def exchange(command, current_budget):
+                def report(done, total):
+                    if total != groups:
+                        raise RuntimeError("the vision encoder reported an unexpected video group count")
+                    if progress is not None:
+                        progress(done, total)
+                return self._video_exchange(command, current_budget, report)
+            return self.video.encode(packet, source_hash, info, budget, exchange, tokenizer)
 
     def _readline(self, timeout: float, what: str) -> str:
         """One line from the encoder, waiting at most `timeout` s (#1317).  On a timeout the encoder is killed, so the
@@ -2734,6 +2758,8 @@ class Service:
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
         self.status_lock = threading.Lock()
+        self.video_preparing = 0
+        self.video_progress = {}
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
@@ -3155,17 +3181,28 @@ class Service:
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
+            video_preparing = self.video_preparing
+            progress_entries = list(self.video_progress.values())
+            video_progress = max(progress_entries, key=lambda p: p["updated_at"], default=None)
+            if video_progress is not None:
+                video_progress = {k: v for k, v in video_progress.items() if k != "updated_at"}
         now = time.time()
         progress = getattr(self.engine, "progress", None)
-        if s.get("busy") and s.get("first_token") is None:
+        if video_preparing:
+            state = "preparing_video"
+        elif s.get("busy") and s.get("first_token") is None:
             state = "reading"
         elif s.get("busy"):
             state = "generating"
+        elif s.get("queued"):
+            state = "queued"
         elif not self.loaded():
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        live = {"state": state, "queued": s.get("queued", 0), "video_preparing": video_preparing,
+                "video_progress": video_progress,
+                "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -3331,7 +3368,12 @@ class Service:
             reason = "the video-capable engine is not loaded/ready"
         return {"enabled": True, "available": reason is None, "profile": VIDEO_PROFILE, "reason": reason}
 
-    def _prepare_video(self, messages, tools, kwargs, force, cancel):
+    def _set_video_progress(self, request_id, event):
+        entry = {**event, "updated_at": time.monotonic()}
+        with self.status_lock:
+            self.video_progress[request_id] = entry
+
+    def _prepare_video(self, messages, tools, kwargs, force, cancel, progress):
         status = self.video_status()
         if not status["available"]:
             if status["enabled"]:
@@ -3355,29 +3397,43 @@ class Service:
                 else:
                     bridge.evict_for(bridge.policy.max_source_bytes - budget.source_bytes)
                     file, sha = stage_video(source, self.vision.dir, bridge.quota, budget, kind=kind,
-                                            url_maximum=IMAGE_URL_MAX if kind == "image" else None)
+                                            url_maximum=IMAGE_URL_MAX if kind == "image" else None,
+                                            on_progress=progress)
                     owned.enter_context(file)
                 if kind == "video":
+                    progress({"stage": "checking_cache", "done": None, "total": None, "unit": None})
                     cached = bridge.cached(sha, budget, self.tok)
                     if cached is not None:
                         staged.append((kind, cached, None, None))
                         continue
                     # Codec-only work is OUTSIDE the GPU inference FIFO.
                     bridge.evict_for(bridge.policy.max_rgb_bytes + 36 + bridge.policy.max_frames * 8)
-                    packet, info = decode_video(file.path, self.vision.dir, bridge.quota, budget)
+                    packet, info = decode_video(file.path, self.vision.dir, bridge.quota, budget,
+                                                on_progress=progress)
                     owned.enter_context(packet)
                     staged.append((kind, packet.path, sha, info))
                 else:
                     dimensions = media_worker("image", file.path, "unused", budget)
                     budget.charge(frames=1, rgb_bytes=dimensions["width"] * dimensions["height"] * 3)
                     staged.append((kind, file.path, None, None))
+            progress({"stage": "waiting_for_encoder", "done": None, "total": None, "unit": None})
             while not self.fifo.acquire(timeout=0.05):
                 budget.check()
             try:
                 budget.check()
                 for kind, item, sha, info in staged:
                     if kind == "video":
-                        bundle = item if info is None else self.vision.encode_video(item, sha, info, budget, self.tok)
+                        if info is None:
+                            progress({"stage": "loading_cached_video", "done": None, "total": None, "unit": None})
+                        else:
+                            progress({"stage": "encoding", "done": 0, "total": len(info.indices), "unit": "frames"})
+                        def encoding_progress(done, total):
+                            # the group count and its monotonicity are checked where the reply is read
+                            if info is not None:
+                                progress({"stage": "encoding", "done": min(done * 2, len(info.indices)),
+                                          "total": len(info.indices), "unit": "frames"})
+                        bundle = item if info is None else self.vision.encode_video(
+                            item, sha, info, budget, self.tok, progress=encoding_progress)
                         pieces.append((media.MediaKind.VIDEO, bundle))
                     else:
                         path, _ = self.vision.encode(Path(item).read_bytes(), budget=budget)
@@ -3396,16 +3452,37 @@ class Service:
                 self.fifo.release()
             ctx = self.engine.max_context
             limits = bridge.limits(tokens=ctx, position=ctx - 1, vocab=int((getattr(self.engine, "info", {}) or {}).get("vocab") or 1 << 31))
+            progress({"stage": "assembling_prompt", "done": None, "total": None, "unit": None})
             bundle = media.splice_media(ids, pieces, limits)
             budget.check()
             return bundle, limits
 
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
+        has_video = any(k == "video" for k, _ in media_of(messages))
+        if not has_video:
+            return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel,
+                                      has_video=False, progress=None)
+        request_id = object()
+        with self.status_lock:
+            self.video_preparing += 1
+            self.video_progress[request_id] = {"stage": "staging", "done": 0, "total": None,
+                                               "unit": "bytes", "updated_at": time.monotonic()}
+        progress = lambda event: self._set_video_progress(request_id, event)
+        try:
+            return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel,
+                                      has_video=True, progress=progress)
+        finally:
+            with self.status_lock:
+                self.video_preparing -= 1
+                self.video_progress.pop(request_id, None)
+
+    def _prepare_impl(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None,
+                      *, has_video, progress):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
+        progress = progress or (lambda event: None)
         # Pure image/text requests retain their original render/encode path.
-        has_video = any(k == "video" for k, _ in media_of(messages))
         fetched = {} if has_video else self._note_unreadable_tool_images(messages)
         ids = None if has_video else self.encode_prompt(messages, tools, kwargs)
         if not has_video and force and kwargs.get("enable_thinking", True) is False:
@@ -3414,7 +3491,7 @@ class Service:
         images = images_of(messages)
         video_bundle = video_limits = None
         if has_video:
-            video_bundle, video_limits = self._prepare_video(messages, tools, kwargs, force, cancel)
+            video_bundle, video_limits = self._prepare_video(messages, tools, kwargs, force, cancel, progress)
             ids = list(video_bundle.tokens)
         elif images:
             if self.vision is None:
@@ -3487,6 +3564,7 @@ class Service:
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images or has_video))
+        progress({"stage": "handoff", "done": None, "total": None, "unit": None})
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
