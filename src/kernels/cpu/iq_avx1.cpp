@@ -309,11 +309,11 @@ inline void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, co
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     const int nb = n / QK_K;
     float g[NT], u[NT];
-    // two rows per pass while the token count is small (that is where the decode is latency-bound); at
-    // NT >= 3 the decode is already amortized and the registers are better spent on the tokens.
+    // two rows per pass at one token (that is where the decode is latency-bound); at NT >= 2 the tokens
+    // already fill the issue window and a second row pair only adds register pressure (measured neutral).
     // (A four-row fused gate+up pass was measured: it spills on 16 XMM registers and loses 10-20%.)
     int r = r0;
-    if (NT <= 2) {
+    if (NT == 1) {
         float g2[2 * NT], u2[2 * NT];
         for (; r + 1 < r1; r += 2) {
             const uint8_t* rows[2] = {blob + (size_t) r * gu_row, blob + (size_t) (r + 1) * gu_row};
@@ -332,18 +332,6 @@ inline void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, co
         row_dot<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
         row_dot<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
-    }
-}
-
-template <int TY, int NT>
-inline void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out,
-                     int r0, int r1) {
-    const block_q8_K* y[NT];
-    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
-    float res[NT];
-    for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
-        for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
 
