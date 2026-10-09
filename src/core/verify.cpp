@@ -2688,7 +2688,11 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         cur_layer_ = want - 1;
         set_plan_slot(0);
         progress_at("verify batch: the CPU experts of layer", l);
+        // The recorded graph consumes the helper mask and weighted sum just as
+        // the solo graph does. Reset both and supply this layer's routing weights.
+        if (remote_opt_) remote_opt_->begin(h_w_, 0, S);
         if (pool != nullptr) pool(user, h_x_, h_ids_, S, ss_->k, h_ymiss_, l);
+        if (remote_opt_) remote_opt_->end();
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
@@ -2840,7 +2844,9 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
         const Clock::time_point b = Clock::now();
         cur_layer_ = want - 1;
         set_plan_slot(0);
+        if (remote_opt_) remote_opt_->begin(h_w_, 0, S);
         if (pool != nullptr) pool(user, h_x_, h_ids_, S, ss_->k, h_ymiss_, lb_ + b_k_);
+        if (remote_opt_) remote_opt_->end();
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
