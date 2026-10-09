@@ -216,6 +216,23 @@ of decode (one card 47.5 / 46.9 / 48.3 -> 50.5 / 48.5 / 51.3 tok/s with it on). 
 `bench/results/2026-10-04-community-rx-6800-windows`): on was 12-22% slower. 4x R9700: fork off was 13-45% faster.
 Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way.
 
+**Long prompts on a big card: check the lend-coverage line (#1389, measured by the reporter on an RX 7900 XTX, gfx1100,
+v0.1.40.2, 50 GB RAM).** With `--resident-experts` the prompt path borrows cache slots, and the experts of those slots
+must also sit in RAM. After the first request of a start the engine prints
+`FileExpertSource: N of M of the prompt path's lendable slots keep their experts in RAM too`. When N is not M, the
+experts not covered are read from the pack during the prompt (now also a `WARNING` line). A 74K prompt routes through
+nearly all experts, so the misses repeat: the reporter saw `wait copy` at 0.2% and 2,583 tok/s with 6201 of 6201, and
+36.8% and 1,810 tok/s with 5093 of 6202 (same binary, only the start differed). Short prompts (25K) read the same either
+way. The resident set is sized from `MemAvailable` at start, minus `STRATA_RESIDENT_HEADROOM_GIB` (default 4, in GiB; the
+`--resident-experts` switch and `--resident-budget-gib` read it). If the line is short, lower the headroom a little and
+restart; if the machine then swaps or stalls, raise it again. Re-check the line after a ROCm update: the reporter's newer
+runtime kept about 1 GiB more host RAM, which moved the best value from 8 to 7. Other levers from the same report (his
+numbers, not re-measured here): `STRATA_PF_FUSED=1 STRATA_PF_GEMM=1 STRATA_PF_SWITCH_MIN_T=4096` 925 -> 1,092 tok/s,
+`--resident-experts` 1,092 -> 2,503 tok/s, `--prefill auto:32768` +23% at 74K. The engine uses a hipBLASLt tuning table
+only when its version matches the installed library; otherwise it prefills on plain hipBLAS (about 45% slower for a 131K
+prompt), so keep the table and the library paired. Not worth trying (measured flat): `--kv-resident` changes, a prefill
+chunk above 32768, `--spec` above 4.
+
 ## Linux: verify timeouts while the kernel reclaims host memory (experimental workarounds)
 
 A `verify: timed out at layer N` or "no progress for 60 s" message does not by itself mean a kernel or handshake bug. Two
@@ -418,8 +435,12 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 - **gfx1150** (Radeon 890M, Ryzen AI 9 HX PRO 370, Strix Point, #1217): builds and runs from 0.1.40.2 as an unvalidated target (CMake warns; the
   device code already covers it: the WMMA guards and `gfx_arch_is_gfx11_wmma()` include it). One community machine: MINISFORUM N5 PRO, 96 GB DDR5-5600, GTT
   raised to 64 GiB (`ttm.pages_limit=16777216 ttm.page_pool_size=16777216`), TheRock ROCm 7.14.1 for gfx1150, an unprivileged LXC container, IQ3_XXS: chat and
-  tool calls work, decode 17-19 tok/s, prompt about 125-135 tok/s, the HIP ctest passes apart from tests that need files a public checkout lacks.
-  Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`.
+  tool calls work, decode 15-19 tok/s, the HIP ctest passes apart from tests that need files a public checkout lacks.
+  Prompts read at about 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `tools/hip/gfx1150-hipblaslt-100401.txt` (ROCm 7.14.1's
+  hipBLASLt; 3.6K tokens 124 -> 216 tok/s, 7K 130 -> 226 tok/s, decode unchanged):
+  [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+  Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`
+  and point `STRATA_HIPBLASLT_TUNING` at the table yourself.
 - **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
@@ -535,6 +556,26 @@ Shipped tables:
   valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
   `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
   `tune_hipblaslt` before using this table with a different 1.5.0 build.
+- `gfx1151-hipblaslt-100400.txt`: Radeon 8060S (Ryzen AI Max+ 395, gfx1151, 128 GB; Fedora 44, kernel 7.2.8),
+  calibrated with the ROCm 7.14.0a20260608 wheels that setup installs for gfx1151 since 0.1.40.2 (#1267): their
+  hipBLASLt is 1.4.0 (version number 100400), so neither `gfx1151-hipblaslt-100401.txt` nor `-100500.txt` applied and
+  setup's engine read the prompt through plain hipBLAS. The same 90 rows as the 100401 table (its geometries, the
+  prompt shapes at `--prefill 16384` included), calibrated with `tune_hipblaslt --workspace-mib 32` and that table's
+  cases: 3.1x to 14.1x faster than plain hipBLAS per shape (median 6.2x). With `STRATA_HIPBLASLT_TUNING` set,
+  `hip_prefill_hipblaslt_gemm` passes (`launches=4 fallbacks=0`), `hip_prefill_hcd_exact_parity` passes (solutions
+  1176 / 1177 at 9 chunk sizes, 0 outputs differ, `fallbacks=0`), and the HIP ctest passes 61 of 62 (`ple_parity`
+  needs the Q2_0 model fixture). setup uses it only when the installed hipBLASLt reports 1.4.0. The prompt speed
+  of a whole model with this table is not measured yet.
+
+- `gfx1150-hipblaslt-100401.txt`: Radeon 890M (gfx1150, Strix Point APU, 16 CUs), calibrated with AMD's TheRock ROCm 7.14.1 for
+  gfx1150 (hipBLASLt 1.4.1 `cd957402`, version number 100401) and the engine's 32 MiB workspace. The 16 dense GEMM geometries a
+  Qwen3.8-Flash-Next prompt logs on that card (the same 16 as the gfx1201 100500 table) at T = 64, 128, ..., 16384: 144 rows. Two
+  `tune_hipblaslt` passes back to back; each row keeps the solution with the lowest median of all six repetitions, because one
+  repetition stalled now and then (a 100 ms call read up to 1.6 s) and the tool's mean-of-three picks differed in 26 rows between
+  the passes. Every row beats plain hipBLAS, 1.55-22.6x per GEMM (geometric mean 4.5x), and `STRATA_HIPBLASLT_VERBOSE=1` reported
+  no fallbacks over prompts of 28-7,880 tokens. Setup does not use it (it does not install for gfx1150): point
+  `STRATA_HIPBLASLT_TUNING` at it. Measurements and the per-row timings:
+  [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
 
 Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
 R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,

@@ -271,6 +271,26 @@ class CodexCompaction(unittest.TestCase):
         self.assertEqual(tools_of(codex_request("compaction", meta=odd)), (None, None))   # not a compaction: as sent
 
 
+class NoLeakedSampler(unittest.TestCase):
+    """Test isolation: a stopped server stops its hardware sampler.  Every Service these tests started used to leave one
+    running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings."""
+
+    def test_server_close_ends_the_sampler(self):
+        import threading
+        import time
+        tok = ByteTokenizer()
+        before = sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)"))
+        httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
+        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
+        httpd.shutdown()
+        httpd.server_close()
+        for _ in range(50):
+            if sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")) == before:
+                break
+            time.sleep(0.1)
+        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
+
+
 # ------------------------------------------------------------------------------------------------ over HTTP
 class Server(unittest.TestCase):
     script = ANSWER

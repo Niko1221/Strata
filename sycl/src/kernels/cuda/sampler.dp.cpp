@@ -33,7 +33,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <type_traits>
 #include <vector>
+
+namespace {
+// The sampler's accumulators are strata::samp_acc_t (float unless -DSTRATA_SYCL_SAMPLER_FP64=1), so its kernels need FP64
+// only in that build. dpct left an `aspect::fp64` check before every launch; on an Arc Alchemist (A750, no FP64) it
+// threw "'double' is not supported" at the first sampled token unless Intel's FP64 emulation was switched on.
+inline void sampler_require_fp64([[maybe_unused]] const sycl::device& d) {
+    if constexpr (std::is_same_v<strata::samp_acc_t, double>) dpct::has_capability_or_fail(d, {sycl::aspect::fp64});
+}
+}  // namespace
 
 namespace strata::kernels {
 namespace {
@@ -1530,9 +1540,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         */
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
-            {sycl::aspect::fp64});
+        sampler_require_fp64(strata::q_of(stream)->get_device());
 
         strata::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
@@ -1590,9 +1598,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
             {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
-                dpct::has_capability_or_fail(
-                    strata::q_of(stream)->get_device(),
-                    {sycl::aspect::fp64});
+                sampler_require_fp64(strata::q_of(stream)->get_device());
 
                 strata::q_of(stream)
                     ->parallel_for<dpct_kernel_name<
@@ -1617,9 +1623,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
             */
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(
-                strata::q_of(stream)->get_device(),
-                {sycl::aspect::fp64});
+            sampler_require_fp64(strata::q_of(stream)->get_device());
 
             strata::q_of(stream)
                 ->submit([&](sycl::handler &cgh) {
@@ -1756,7 +1760,7 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp64});
+        sampler_require_fp64(s->get_device());
 
         s->parallel_for<dpct_kernel_name<class coupled_merge_kernel_1fbeb1>>(
             sycl::nd_range<3>(sycl::range(1, 1, 32), sycl::range(1, 1, 32)),

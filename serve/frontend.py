@@ -669,7 +669,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
-    name = body[len("<function="):body.index(">")]
+    name = body[len("<function="):body.index(">")].strip()      # `<function= capture>`: the model's stray space
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
@@ -944,7 +944,7 @@ class OutputParser:
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
-                        name = body[:end].strip()[len("<function="):].split(">", 1)[0]
+                        name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
                         if name in self.schemas:
                             call = parse_tool_call(body[:end], self.schemas.get(name))
                     except ValueError:
@@ -1178,7 +1178,7 @@ class OutputParser:
     def _finish_call(self, body: str) -> list[Event]:
         """A whole call body in the template's form -> its tool_call event.  With recover, one that still does not
         parse is the text it is instead of an error that ends the request."""
-        name = body.strip()[len(FUNC_START):].split(">", 1)[0]
+        name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
         bare, self.bare = self.bare, False
         try:
             call = parse_tool_call(body, self.schemas.get(name))
