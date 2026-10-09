@@ -101,14 +101,51 @@ marker, not an architectural limit"). `K ≥ 8` is refused: it exceeds both the 
 block and `kVerifyMaxT - 1`. In Strata terms `--spec T` stays the **window size**, so
 `K = T - 1` and `T ≤ 8`.
 
-### Greedy only
+### Greedy and sampled requests
 
-v1 supports `temperature = 0` acceptance (the verifier's exact-match against the row pick).
-A sampled request (`temperature > 0`) with `--dflash` is served **without** the drafter
-(explicit `dflash: sampled request decoded without the drafter` line) — greedy draft
-acceptance under sampling semantics is not proven for this checkpoint; coupled sampling is
-a later milestone. `--mtp` and `--dflash` are mutually exclusive; the flag combination is
-rejected at startup.
+DFlash runs for both `temperature = 0` and `temperature > 0`. Its proposals remain
+argmax tokens. The verifier applies the target's own sampler, including temperature,
+top-k, top-p, min-p and per-row penalty history, and keeps only the consecutive
+proposals equal to those target picks. At the first disagreement it emits the
+target pick and discards the remaining speculative rows. With all proposals
+accepted it also emits the target's final-row pick.
+
+This preserves the target sampling distribution: every emitted token is drawn
+from the target conditioned on the already emitted prefix. The draw uses
+Philox(seed, absolute position), so rejected speculative rows do not advance an
+RNG state. A smaller draft vocabulary affects proposals only; target sampling
+still uses the full target head. DFlash does not use MTP's coupled-draft or
+probabilistic-rejection modes. Those modes require a separate draft sampling
+implementation and are not needed for exact-match acceptance.
+
+CLI sampling follows Strata's existing convention: pass `--seed N` to select
+sampling, together with `--temperature F`; `--greedy` selects argmax decoding.
+The server honors each request's sampling parameters. `--mtp` and `--dflash`
+remain mutually exclusive.
+
+The GPU integration gate exercises the native server protocol and CLI, positive
+temperatures, top-k/top-p/min-p, penalties, rejection, repeated seeds and greedy
+regression. It pins expert residency and uses `STRATA_IQ_MT_MIN=1` to compare
+tokens under consistent CPU/GPU arithmetic:
+
+```sh
+python tools/dflash_sampling.py --config strata-iq3_xxs.json \
+  --engine build/strata --baseline /path/to/previous/strata --output /tmp/df-sampling
+```
+
+The supplied fixture must pass token equality against target-only decoding.
+This does not establish byte equality for every workload: adaptive expert
+placement and different verify widths can introduce floating-point differences.
+
+Sampling measurement (2026-10-09, RTX 4070 Ti SUPER 16 GB, Ryzen 5900X,
+128 GB RAM, Linux/CUDA 13.4): IQ3_XXS target, Q4_0 DFlash, temperature 0.7,
+seed 8675309, eight serial HTTP requests, up to 512 generated tokens each.
+Aggregate decode throughput was 74.30 tok/s with DFlash, 61.72 with the previous
+sampled target-only fallback, and 79.66 with MTP. Startup and prefill are excluded.
+EOS was respected: the runs emitted 4020, 3897 and 4096 tokens respectively.
+These are single short-context suites with adaptive expert placement, not
+bitwise-identical continuations or a general speed guarantee. DFlash is still
+slower than MTP in this comparison.
 
 ## One-click setup and server
 
@@ -131,9 +168,10 @@ accepts a local artifact; an additional quantization requires an original BF16
 source. Selecting DFlash skips the MTP download, preparation and load. Selecting
 MTP again writes an MTP-only configuration.
 
-The selected drafter is passed to the server. Setup defaults DFlash requests to
-`temperature: 0`; clients can still request sampling, which uses target-only
-decoding and logs that DFlash was skipped. Subsequent starts use the saved choice.
+The selected drafter is passed to the server. New DFlash installations default
+to `temperature: 0`; setup retains existing saved sampling settings. Clients
+can request sampling by setting a positive temperature. Subsequent starts use
+the saved choice.
 DFlash currently supports one GPU and serial requests. The server rereads the
 full prompt for each request because target-only snapshots do not contain the
 DFlash pools. Elastic target KV growth is disabled with DFlash. Setup uses
@@ -177,9 +215,9 @@ eager execution for comparisons. Stage dumps and GPU-event profiling also use
 eager execution. Prompt-lookup drafts follow `--suffix-draft`; lookup-chain
 composition remains unsupported.
 
-Sampled requests use target-only decoding and do not compute or grow the draft
-context during prefill. A greedy request exceeding an explicit draft capacity
-is rejected before changing state; sampled requests use the target's capacity.
+Both greedy and sampled requests compute the draft context during prefill and
+use the same draft capacity checks. A request exceeding an explicit draft capacity
+is rejected before changing state.
 The server and CLI capture the same layer boundaries, and the prompt feature
 stride follows the current buffer layout after each relayout.
 
