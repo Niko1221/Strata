@@ -1762,6 +1762,13 @@ int main(int argc, char **argv) try {
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
+        else if (a == "--vram-frac" || a == "--vram-cap-mode") {
+            const char* which = a.c_str();
+            (void) next(which);
+            std::fprintf(stderr, "strata generate: %s is not supported: the VRAM cap is not implemented in the SYCL build\n",
+                         which);
+            return 2;
+        }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
         else if (a == "--prefill") {
@@ -1942,6 +1949,16 @@ int main(int argc, char **argv) try {
             usage();
             return 2;
         }
+        }
+    }
+    // The VRAM cap (--vram-frac / --vram-cap-mode) is CUDA-only: refuse a capping STRATA_VRAM_FRAC here
+    // rather than silently ignoring it. A value of 1 (or unset) leaves the cap off and runs as before.
+    if (const char* env_frac = std::getenv("STRATA_VRAM_FRAC")) {
+        char* end = nullptr;
+        const double f = std::strtod(env_frac, &end);
+        if (end != env_frac && *end == '\0' && std::isfinite(f) && f > 0.0 && f < 1.0) {
+            std::fprintf(stderr, "strata generate: STRATA_VRAM_FRAC=%s refused: the VRAM cap is not implemented in the SYCL build\n", env_frac);
+            return 2;
         }
     }
 #if defined(STRATA_USE_HIP)
