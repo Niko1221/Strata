@@ -6,6 +6,7 @@ which TheRock index each family installs from.  No GPU, no ROCm, no downloads.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -430,12 +431,38 @@ class CalibrationKey(unittest.TestCase):
 
 
 class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+    def test_cpu_encoder_on_windows(self):
+        for win in (True, False):
+            with mock.patch.object(setup, "WIN", win), mock.patch.object(setup, "warn", lambda *a: None):
+                self.assertEqual(setup.hip_vision("cpu"), "cpu")
+                self.assertEqual(setup.hip_vision("yes"), "gpu")       # the Vulkan encoder
+                self.assertEqual(setup.hip_vision("gpu"), "gpu")
+                self.assertEqual(setup.hip_vision(None), "none")
+
+    def test_encoder_needs_the_build_tools(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "version": "0.1.40"}))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: None), \
+                    mock.patch.object(setup, "warn", lambda *a: None):
+                self.assertFalse(setup.win_hip_vision(eng, "llama"))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: Path("vcvars64.bat")), \
+                    mock.patch.object(setup, "build_vision_cpu") as built:
+                self.assertTrue(setup.win_hip_vision(eng, "llama"))
+                built.assert_called_once()
+
+    def test_gpu_encoder_needs_the_vulkan_sdk(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "version": "0.1.40"}))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: Path("vcvars64.bat")), \
+                    mock.patch.object(setup, "warn", lambda *a: None):
+                with mock.patch.object(setup, "find_vulkan_sdk", lambda: False):
+                    self.assertFalse(setup.win_hip_vision(eng, "llama", "gpu"))
+                with mock.patch.object(setup, "find_vulkan_sdk", lambda: True), \
+                        mock.patch.object(setup, "build_vision_vulkan") as built:
+                    self.assertTrue(setup.win_hip_vision(eng, "llama", "gpu"))
+                    built.assert_called_once()
 
 
 class HipRuntimeBesideExe(unittest.TestCase):

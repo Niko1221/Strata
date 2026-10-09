@@ -14,6 +14,7 @@ project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_VULKAN "run the vision encoder on the GPU through Vulkan (builds ggml-vulkan; AMD, any vendor)" OFF)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -52,6 +53,7 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_VULKAN ${STRATA_VISION_VULKAN} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 

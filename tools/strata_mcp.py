@@ -1236,16 +1236,6 @@ class Tools:
                 context = 8192 if vram < 14 else 32768
         if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
-        if vision is not None and backend == "hip" and vision != "no":
-            # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
-            # images on the CPU beside it (Linux; the ready-made Windows AMD engine has no encoder)
-            if vision == "cpu" and not WIN:
-                pass
-            elif vision == "cpu":
-                raise ToolError("images on the CPU with an AMD card are Linux-only for now: use vision=no")
-            else:
-                raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
-                                "Linux) or vision=no")
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
