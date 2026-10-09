@@ -160,6 +160,23 @@ routing count of the expert coming in against the one going out), so fewer exper
 The log line's `adapt wait` is the time the main thread spent on the tier per window (the blocking tier: waiting for
 its round).
 
+Measured with the same setup as the `--batch-mtp` numbers above (2x RTX 3080 20 GB, UD-Q4_K_XL, `"layer_split": "23"`,
+`"parallel": 2`, `--batch-mtp`, engine 0.1.41 with our production stack; two concurrent greedy decodes, the streams'
+tok/s added, median of 20 measurements per restart):
+
+| tier | aggregate tok/s | restarts | per window | routed entries served from VRAM |
+| --- | --- | --- | --- | --- |
+| `--adapt-async 1 --adapt-every 2` | **89.2** | 3 | 34.6 ms, adapt wait 0.2 ms | 92.1% |
+| blocking, `--adapt-every 2` | 74.7 | 1 | 41.4 ms, adapt wait 8.4 ms | 92.3% |
+| none, the cache frozen from a profile the tier had learned on the same prompts | 69.5 | 1 | 43.6 ms | 77.2% |
+| none, `--adapt-every 0` | 45.2 | 2 | 66-68 ms | 52.7% |
+
+The switch changes the tier in the solo path as well (there is no switch for batch windows alone), so the table
+compares the tier as a whole, not "batch windows only": the solo decode speed moves the same way (81.7, 66.3, 69.0 and
+43.1 tok/s). The prompts are the benchmark's own, eight topics that repeat, which the tier learns quickly, so on a
+more varied workload the gain may be smaller (not measured). Upstream main runs no tier in batch windows, and this
+was not measured against an upstream binary.
+
 ## Exactness
 
 A batch row's arithmetic is the single-token window's, so with greedy decoding **every conversation of a batch
