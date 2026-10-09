@@ -96,8 +96,30 @@ chunks its conversation has reached.
   (`SAVE`/`RESTORE`, single-session only) read and write the K/V through the same chunk tables; a restore reserves its
   chunks first and is refused (retryable) when the lanes hold the pool.
 
-Measured with this change on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer split, UD-Q4_K_XL, with
-`--max-context 262144 --kv int8 --kv-resident 32768 --kv-pool-tokens 524288` (engine 0.1.40.3 plus the pool; one run each):
+Measured on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer split, UD-Q4_K_XL, with
+`--max-context 262144 --kv int8 --kv-resident 32768 --kv-pool-tokens 524288`.
+
+Pool against per-session buffers, the same binary with and without `--kv-pool-tokens` (engine 0.1.41 plus our patches
+including the pool; `"parallel": 2`, `--batch-mtp`, a 90 GiB container; 3 restarts with the pool, 2 without, each
+restart measured separately):
+
+| | with the pool | without the pool |
+|---|---|---|
+| Pinned shared memory while serving | 72.0-72.2 GiB | 75.1 GiB (3.1 GiB more) |
+| Lowest `MemAvailable` | 11.1-12.2 GiB | 8.0 GiB |
+| Two streams decoding together (aggregate, median) | 89.2 tok/s (n=60) | 87.7 tok/s (n=40) |
+| One stream decoding (median) | 81.7 tok/s (n=72) | 82.5 tok/s (n=48) |
+| Prompt read at 25k / 51k / 104k tokens (the last pool restart against both restarts without) | 2048 / 2200 / 2638 tok/s | 2050 and 1980 / 2169 and 2202 / 2661 and 2655 tok/s |
+
+The engine accepted both layouts without a warning, and the expert caches came out the same size to within a few
+slots (4,209-4,211 on the second card; 4,136 in one restart with the pool). The two-stream
+difference is 1.7% (95% interval 0% to 3.6%) in favour of the pool and lies within the 2-3% spread of the same
+configuration across restarts: no change in speed was measured, in either direction. The 3.1 GiB is what the arithmetic
+gives for two slots and the main session: three sessions of 262,144 cells are 1.5 times the pool's 524,288 cells
+(6.24 GiB). Each further slot adds about that much without the pool and nothing with it (arithmetic; no run with three
+or more slots was made).
+
+Pool behaviour, measured earlier on engine 0.1.40.3 plus the pool (one run each):
 
 | | |
 |---|---|
@@ -106,8 +128,9 @@ Measured with this change on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer s
 | Four lanes (`"parallel": 4`), four concurrent 133,865-token prompts (556K tokens against the 524K pool, a 233K conversation already held) | all answered 200, each lane returned its own needle; the "KV pool full: slot N gives back its cached conversation" path ran |
 | A 134K-token conversation moved between the main session and a slot | about 0.2 s (chunk-table swap, no copy) |
 
-Not measured: decode or prompt speed against per-lane buffers (no run without the pool was made on these cards), HIP,
-SYCL, three or more cards, a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
+Not measured: the move time and the pool-full paths on engine 0.1.41 (the comparison above did not exercise them),
+requests near 262K tokens in both lanes at once in the comparison, three or more slots, HIP, SYCL, three or more cards,
+a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
 
 ## How the server uses the slots
 
