@@ -51,9 +51,13 @@ only the tuner and the main process drive this PC.  Endpoints (JSON in and out):
     GET  /log?port=P&lines=N   a worker's log tail
     POST /sink                 reads the body; answers its bytes and the seconds it took (a link test toward here)
     POST /send                 {"url": "http://other:7840", "mib": 64} - sends to another node's /sink
-    POST /put?path=P&offset=N&total=T[&mode=755]
+    POST /put?path=P&offset=N&total=T[&mode=755][&sha256=H]
                                writes the body at byte N of data_dir/P (a file of T bytes, sparse where nothing
                                was written) and answers the body's sha256; P.ranges.json records what is written
+                               (with sha256=H only when the body hashes to H: a damaged piece is sent again, and
+                               a range recorded before under it is dropped).  Several at once to one file (other
+                               offsets) are fine, and a /put answered ok (its body read whole) keeps an HTTP/1.1
+                               connection open for the next (every other answer closes it)
     GET  /ranges?path=P        the byte ranges of data_dir/P written so far ([[offset, length], ...]) and its size
     GET  /sha256?path=P        the sha256 of data_dir/P (a whole file shipped again only when it changed)
 The shipped model files keep every offset of the originals, so a node that holds only its layers' bytes (and
@@ -420,6 +424,18 @@ def merge_ranges(rs: list[list[int]]) -> list[list[int]]:
     return out
 
 
+def cut_range(rs: list[list[int]], off: int, n: int) -> list[list[int]]:
+    """rs without the bytes [off, off + n)."""
+    out: list[list[int]] = []
+    for o, k in rs:
+        if o < off:
+            out.append([o, min(k, off - o)])
+        if o + k > off + n:
+            s = max(o, off + n)
+            out.append([s, o + k - s])
+    return out
+
+
 class Store:
     """data_dir: the shipped files and, next to each, the byte ranges written so far (P.ranges.json)."""
 
@@ -432,7 +448,8 @@ class Store:
     def path(self, rel: str) -> Path:
         if self.root is None:
             raise ValueError("this node has no data_dir")
-        p = (self.root / rel).resolve()
+        with self.lock:   # not while a /put creates the file: Windows' realpath can answer "\\?\C:\..." meanwhile
+            p = (self.root / rel).resolve()
         if self.root not in p.parents:
             raise ValueError(f"{rel}: outside data_dir")
         return p
@@ -451,22 +468,29 @@ class Store:
 
     def ranges(self, rel: str) -> dict:
         p = self.path(rel)
-        d = self.read_side(p)
+        with self.lock:   # not a sidecar a /put is rewriting
+            d = self.read_side(p)
         return {"ok": True, "path": rel, "size": p.stat().st_size if p.exists() else None, "ranges": d["ranges"],
                 "fp": d["fp"]}
 
-    def put(self, rel: str, offset: int, total: int, body, n: int, mode: str | None, fp: str | None) -> dict:
+    def put(self, rel: str, offset: int, total: int, body, n: int, mode: str | None, fp: str | None,
+            want: str | None = None) -> dict:
+        """`want`: the body's sha256 as the shipper read it - the range is recorded only when the bytes that arrived
+        hash to it (else they stay on disk unrecorded, and the next ship sends them again)."""
         p = self.path(rel)
         if not self.allow_bin and (mode or rel.split("/", 1)[0] == "bin"):
             return {"ok": False, "error": "this node does not take executables (node.json allow_put_bin)"}
-        p.parent.mkdir(parents=True, exist_ok=True)
         with self.lock:
+            p.parent.mkdir(parents=True, exist_ok=True)
             d = self.read_side(p) if p.exists() else {"fp": None, "ranges": []}
             # (a sidecar without a fingerprint, from before they existed: kept, and it takes this one)
             if not p.exists() or p.stat().st_size != total or (fp and d["fp"] is not None and d["fp"] != fp):
                 # a new file, or a different source (size or fingerprint): what was written of it is void
                 new_sparse(p, total)
                 self.side(p).write_text(json.dumps({"fp": fp, "ranges": []}))
+        # the body streamed to disk 4 MiB at a time, hashed on the way; a handle of this request's own, so /puts at
+        # other offsets of the file (the shipper's pieces in flight) write at once without a lock (Windows has no
+        # pwrite: an own handle has its own position); the sidecar's read-merge-write is under the lock
         h = hashlib.sha256()
         with open(p, "r+b") as f:
             f.seek(offset)
@@ -483,26 +507,58 @@ class Store:
                 os.fsync(f.fileno())
         if self.drop:
             drop_cache(p, offset, n)
-        if left:
-            return {"ok": False, "error": f"the body ended {left} bytes short"}
-        if mode:
-            os.chmod(p, int(mode, 8))
+        bad = (f"the body ended {left} bytes short" if left else
+               "sha256 differs: the piece arrived damaged (not recorded)" if want is not None and h.hexdigest() != want
+               else None)
         with self.lock:
             d = self.read_side(p)
-            self.side(p).write_text(json.dumps({"fp": d["fp"] or fp, "ranges": merge_ranges(d["ranges"] + [[offset, n]])}))
+            if bad:   # these bytes are on disk now: a range an earlier put recorded there is no longer sure
+                self.side(p).write_text(json.dumps({"fp": d["fp"], "ranges": cut_range(d["ranges"], offset, n - left)}))
+                return {"ok": False, "error": bad, "sha256": h.hexdigest()}
+            if p.stat().st_size != total or (fp and d["fp"] is not None and d["fp"] != fp):
+                # another ship (a different source) started the file anew meanwhile: these bytes are not its
+                return {"ok": False, "error": "the file was started anew by another ship meanwhile (not recorded)"}
+            if mode:
+                os.chmod(p, int(mode, 8))
+            self.side(p).write_text(json.dumps({"fp": d["fp"] or fp,
+                                                "ranges": merge_ranges(d["ranges"] + [[offset, n]])}))
         return {"ok": True, "sha256": h.hexdigest(), "bytes": n}
+
+
+class Body:
+    """A request body of n bytes: what is left of it to read."""
+
+    def __init__(self, f, n: int):
+        self.f, self.left = f, n
+
+    def read(self, k: int) -> bytes:
+        b = self.f.read(min(k, self.left))
+        self.left -= len(b)
+        return b
+
+    def drain(self) -> None:
+        while self.left > 0 and self.read(1 << 20):
+            pass
 
 
 def make_handler(cfg: dict, workers: Workers, store: Store):
     class Handler(BaseHTTPRequestHandler):
+        # HTTP/1.1, but only a /put answered ok (its body read whole) keeps the connection (the shipper's next piece
+        # follows on it); every other answer closes it, as HTTP/1.0 did - no handler is left with an unread body before
+        # a next request.  An idle kept connection is closed after `timeout` s (its thread freed).
+        protocol_version = "HTTP/1.1"
+        timeout = 600
+
         def log_message(self, fmt, *args):   # one line per request on stderr
             sys.stderr.write("stage_node: %s %s\n" % (self.address_string(), fmt % args))
 
-        def reply(self, code: int, obj) -> None:
+        def reply(self, code: int, obj, keep: bool = False) -> None:
             body = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if not keep:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
@@ -560,13 +616,21 @@ def make_handler(cfg: dict, workers: Workers, store: Store):
             path = u.path
             if path == "/put":   # a shipped file's bytes (tools/stage_ship.py)
                 q = parse_qs(u.query)
+                body = Body(self.rfile, 0)
                 try:
-                    r = store.put(q["path"][0], int(q["offset"][0]), int(q["total"][0]), self.rfile,
-                                  int(self.headers.get("Content-Length", "0")), q.get("mode", [None])[0],
-                                  q.get("fp", [None])[0])
+                    body = Body(self.rfile, int(self.headers.get("Content-Length", "0")))
+                    r = store.put(q["path"][0], int(q["offset"][0]), int(q["total"][0]), body, body.left,
+                                  q.get("mode", [None])[0], q.get("fp", [None])[0], q.get("sha256", [None])[0])
                 except (KeyError, ValueError, OSError) as e:
                     r = {"ok": False, "error": str(e)}
-                self.reply(200 if r.get("ok") else 400, r)
+                # a refused /put's body read to its end first: closed with bytes unread, the socket would be reset
+                # under the sender (on Windows) and the reason lost; kept alive only when the body was read whole
+                try:
+                    body.drain()
+                except OSError:
+                    pass
+                self.reply(200 if r.get("ok") else 400, r, keep=bool(r.get("ok")) and body.left == 0 and
+                           not self.headers.get("Transfer-Encoding"))
                 return
             if path == "/sink":   # a link test: read the body as fast as it comes
                 n = int(self.headers.get("Content-Length", "0"))

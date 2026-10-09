@@ -11,7 +11,13 @@ What the node has already (its /ranges) is not sent again, and every piece's sha
     python3 tools/stage_ship.py --agent http://192.0.2.12:7840 --token-file /opt/strata/stage-token \\
         --model-dir /data/models/<model> --pack-dir /data/packs/<pack> \\
         --profile /opt/strata/data/expert-profile.bin [--bin-dir /opt/strata/build/bin] \\
-        --layers 36-47 [--data-dir <the node's data_dir>]
+        --layers 36-47 [--data-dir <the node's data_dir>] [--parallel 4]
+
+The pieces (64 MiB) overlap: a reader thread reads and hashes them ahead, and --parallel senders (default 4) put
+them, each on its own HTTP/1.1 keep-alive connection, so the disk, the hashing, the link and the node's writes run
+at once and a slow link stays busy.  At most parallel + 3 pieces are in memory (448 MiB with 4).  The first piece
+that fails (an HTTP error, a sha256 that differs) stops the run; what arrived is in the node's /ranges, so the same
+command resumes.
 
 On the node the files land under its data_dir: models/<model dir name>/, packs/<pack name>/, data/<profile>,
 bin/.  A /start that names the model ({"model": {"dir": ..., "native": ..., "pack": ...}}, as stage_tune.py sends)
@@ -21,11 +27,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
+import queue
 import re
 import stat
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gguf_reader import GGUFFile  # noqa: E402
 
 PIECE = 64 << 20
+READ_AHEAD = 2   # pieces read and hashed ahead of the senders
 
 
 class Item:
@@ -118,36 +128,68 @@ def tree_items(src: Path, prefix: str) -> list[Item]:
 
 
 class Agent:
+    """A node agent.  Every request goes to it directly, never through an HTTP proxy from the environment (the
+    /puts use http.client, which knows no proxies; the agent is a LAN or tunnel address a proxy cannot reach)."""
+    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
     def __init__(self, url: str, token: str):
         self.url = url.rstrip("/")
         self.token = token
+        u = urllib.parse.urlsplit(self.url)
+        self.scheme, self.netloc, self.base = u.scheme, u.netloc, u.path
 
     def sha256(self, rel: str) -> dict:
         req = urllib.request.Request(f"{self.url}/sha256?path={urllib.parse.quote(rel)}",
                                      headers={"X-Stage-Token": self.token})
-        with urllib.request.urlopen(req, timeout=600) as r:
+        with self.direct.open(req, timeout=600) as r:
             return json.load(r)
 
     def ranges(self, rel: str) -> dict:
         req = urllib.request.Request(f"{self.url}/ranges?path={urllib.parse.quote(rel)}",
                                      headers={"X-Stage-Token": self.token})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with self.direct.open(req, timeout=60) as r:
             return json.load(r)
 
-    def put(self, item: Item, off: int, data: bytes) -> dict:
+    def connect(self) -> http.client.HTTPConnection:
+        """A connection for /put, kept alive between pieces (an agent that answers HTTP/1.0 closes it after each
+        request: http.client then opens the next one itself)."""
+        cls = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
+        return cls(self.netloc, timeout=600)
+
+    def put(self, conn: http.client.HTTPConnection, item: Item, off: int, data: bytes, sha: str | None = None) -> dict:
+        """`sha`: the piece's sha256 - an agent that knows the parameter records the range only when the bytes
+        that arrived hash to it (an older one ignores it; the answer's sha256 is compared here either way)."""
         q = f"path={urllib.parse.quote(item.rel)}&offset={off}&total={item.total}"
         if item.fp:
             q += f"&fp={urllib.parse.quote(item.fp)}"
         if item.mode:
             q += f"&mode={item.mode}"
-        req = urllib.request.Request(f"{self.url}/put?{q}", data=data, method="POST",
-                                     headers={"X-Stage-Token": self.token,
-                                              "Content-Type": "application/octet-stream"})
-        try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                return json.load(r)
-        except urllib.error.HTTPError as e:
-            return {"ok": False, "error": f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"}
+        if sha:
+            q += f"&sha256={sha}"
+        view = memoryview(data)
+        for attempt in (0, 1):
+            reused = conn.sock is not None
+            try:
+                # the body 1 MiB at a time, with its length given (no chunked encoding): the socket's timeout is
+                # then a stall's, not the whole 64 MiB's - one piece of `parallel` on a slow link takes long
+                conn.request("POST", f"{self.base}/put?{q}",
+                             body=(view[i:i + (1 << 20)] for i in range(0, len(view), 1 << 20)),
+                             headers={"X-Stage-Token": self.token, "Content-Type": "application/octet-stream",
+                                      "Content-Length": str(len(view))})
+                r = conn.getresponse()
+                body = r.read()
+            except (OSError, http.client.HTTPException) as e:
+                conn.close()
+                if reused and attempt == 0:   # a kept-alive connection the agent had closed: once more, anew
+                    continue
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if r.status != 200:
+                return {"ok": False, "error": f"HTTP {r.status}: {body.decode(errors='replace')[:300]}"}
+            try:
+                return json.loads(body)
+            except ValueError:
+                return {"ok": False, "error": f"not JSON: {body[:300]!r}"}
+        return {"ok": False, "error": "unreachable"}
 
 
 def file_sha256(path: Path) -> str:
@@ -158,14 +200,18 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def ship(agent: Agent, items: list[Item], say=print) -> int:
-    """Send what the node lacks; returns the bytes sent."""
+def ship(agent: Agent, items: list[Item], say=print, parallel: int = 4) -> int:
+    """Send what the node lacks; returns the bytes sent.  A reader thread reads and hashes the pieces READ_AHEAD
+    ahead, `parallel` senders put them (each on its own connection): at most parallel + READ_AHEAD + 1 pieces in
+    memory.  The first piece that fails stops the run (SystemExit) once the pieces in flight are answered."""
     todo = []
     for it in items:
         have = agent.ranges(it.rel)
         same = have.get("size") == it.total and (it.fp is None or have.get("fp") in (None, it.fp))
         got = merge(have.get("ranges") or []) if same else []   # another source: everything again
         miss = subtract(it.ranges, got)
+        if it.total == 0:   # an empty file: one empty put creates it, unless the node has it (size None: missing)
+            miss = [] if have.get("size") == 0 else [[0, 0]]
         if it.whole and not miss and it.total > 0:   # a whole file the node has: the same bytes?
             remote = agent.sha256(it.rel)
             if remote.get("sha256") != file_sha256(it.local):
@@ -174,30 +220,117 @@ def ship(agent: Agent, items: list[Item], say=print) -> int:
     need = sum(n for _, miss in todo for _, n in miss)
     say(f"ship: {sum(it.nbytes for it in items) / 2**30:.2f} GiB wanted, {need / 2**30:.2f} GiB to send "
         f"({len(items)} files)")
-    sent, t0 = 0, time.time()
+    pieces = []   # (item, its range's index in left, offset, bytes)
+    left = []     # each range: its pieces not yet answered (a progress line when none is left)
     for it, miss in todo:
-        if not miss and it.total == 0:
-            continue
-        if it.total == 0:   # an empty file: one empty put creates it
-            miss = [[0, 0]]
-        with open(it.local, "rb") as f:
-            for off, n in miss:
-                pos, end = off, off + n
-                while pos < end or n == 0:
-                    f.seek(pos)
-                    data = f.read(min(PIECE, end - pos))
-                    if not data and n != 0:
-                        raise SystemExit(f"ship: {it.local} ended at {pos} (it changed while shipping)")
-                    r = agent.put(it, pos, data)
-                    if not r.get("ok") or r.get("sha256") != hashlib.sha256(data).hexdigest():
-                        raise SystemExit(f"ship: {it.rel} at {pos}: {r.get('error') or 'sha256 differs'}")
-                    pos += len(data)
-                    sent += len(data)
-                    if n == 0:
-                        break
+        for off, n in miss:
+            pos, end = off, off + n
+            left.append(0)
+            while True:
+                k = min(PIECE, end - pos)
+                pieces.append((it, len(left) - 1, pos, k))
+                left[-1] += 1
+                pos += k
+                if pos >= end:
+                    break
+    if not pieces:
+        return 0
+    parallel = max(1, parallel)
+    work: queue.Queue = queue.Queue(READ_AHEAD)   # (piece, its bytes, their sha256); None: no more
+    done: queue.Queue = queue.Queue()             # (piece, None) answered, or (None, the error)
+    stop = threading.Event()
+
+    def offer(x) -> bool:
+        while not stop.is_set():
+            try:
+                work.put(x, timeout=0.5)
+                return True
+            except queue.Full:
+                pass
+        return False
+
+    def reader() -> None:
+        f, cur = None, None
+        try:
+            for p in pieces:
+                it, _, pos, n = p
+                if it is not cur:
+                    if f is not None:
+                        f.close()
+                    f, cur = open(it.local, "rb"), it
+                f.seek(pos)
+                data = f.read(n)
+                if len(data) != n:
+                    raise ValueError(f"{it.local} ended at {pos + len(data)} (it changed while shipping)")
+                if not offer((p, data, hashlib.sha256(data).hexdigest())):
+                    return
+                del data
+        except BaseException as e:   # noqa: BLE001 - every failure ends the run with its reason
+            done.put((None, f"ship: {e}"))
+        finally:
+            if f is not None:
+                f.close()
+            for _ in range(parallel):
+                offer(None)
+
+    def sender() -> None:
+        conn = None
+        try:
+            conn = agent.connect()
+            while not stop.is_set():
+                try:
+                    x = work.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if x is None:
+                    return
+                p, data, sha = x
+                del x
+                it, _, pos, _ = p
+                r = agent.put(conn, it, pos, data, sha)
+                del data
+                if not r.get("ok") or r.get("sha256") != sha:
+                    done.put((None, f"ship: {it.rel} at {pos}: {r.get('error') or 'sha256 differs'}"))
+                    return
+                done.put((p, None))
+        except BaseException as e:   # noqa: BLE001 - not a thread that ends without a word
+            done.put((None, f"ship: {e}"))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    threads = [threading.Thread(target=reader, daemon=True)]
+    threads += [threading.Thread(target=sender, daemon=True) for _ in range(parallel)]
+    for t in threads:
+        t.start()
+    sent, t0, todo_n, err = 0, time.time(), len(pieces), None
+    try:
+        while todo_n and err is None:
+            try:
+                p, err = done.get(timeout=1)   # (a wait with a timeout: Ctrl+C gets through on Windows too)
+            except queue.Empty:
+                continue
+            if p is None:
+                continue
+            it, k, _, n = p
+            todo_n -= 1
+            sent += n
+            left[k] -= 1
+            if left[k] == 0:
                 el = time.time() - t0
                 say(f"  {it.rel}: {sent / 2**30:.2f} of {need / 2**30:.2f} GiB, "
                     f"{sent / max(el, 1e-6) / 1e6:.0f} MB/s")
+    except BaseException:
+        stop.set()   # Ctrl+C: not waiting for the pieces in flight (the threads end with the process)
+        raise
+    stop.set()       # done, or a failure: the pieces in flight are answered first
+    if err:          # said now: a stalled piece in flight can take its timeout before the run ends
+        say(f"{err} - waiting for the pieces in flight")
+    for t in threads:   # a join with a timeout: Ctrl+C gets through on Windows while a sender waits on a node
+        while t.is_alive():
+            t.join(1)
+    if err:
+        raise SystemExit(err)
     return sent
 
 
@@ -233,12 +366,16 @@ def main() -> None:
     ap.add_argument("--bin-dir", type=Path)
     ap.add_argument("--layers", required=True, help="LO-HI, both included (the node's first and last layer)")
     ap.add_argument("--data-dir", help="the node's data_dir: print the node.json paths for what was shipped")
+    ap.add_argument("--parallel", type=int, default=4,
+                    help="pieces in flight at once, each on its own connection (default 4; 1: one at a time)")
     a = ap.parse_args()
+    if a.parallel < 1:
+        ap.error("--parallel: 1 or more")
     token = (Path(a.token_file).read_text().strip() if a.token_file else os.environ.get("STRATA_STAGE_TOKEN", ""))
     lo, hi = (int(x) for x in a.layers.split("-"))
     items = plan(a.model_dir, a.pack_dir, a.profile, a.bin_dir, lo, hi + 1)
     t0 = time.time()
-    sent = ship(Agent(a.agent, token), items)
+    sent = ship(Agent(a.agent, token), items, parallel=a.parallel)
     print(f"ship: {sent / 2**30:.2f} GiB in {time.time() - t0:.0f} s")
     if a.data_dir:
         print("node.json paths:", json.dumps(node_paths(a.data_dir, a.model_dir, a.pack_dir, a.profile), indent=1))
