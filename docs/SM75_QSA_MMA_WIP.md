@@ -67,3 +67,22 @@ A separate 3656-token, single-needle free-generation smoke test with MTP returne
 - Measure T=2/3/4 and longer contexts separately on latest upstream; true CPU end-to-end ablation is pending.
 - Build HIP fallback; SYCL implementation is unchanged.
 - Default remains disabled; this draft is not requesting merge or review yet.
+
+### October 9 expanded fixed-token and true 16K checks
+
+Same code head d115ed7 and complete-kernel diagnostic build as above; local logits export only. Full CPU experts retained, six participants, PCIe=0, fixed residency, adaptation/cache off, dynamic prefill CPU share disabled. Prefill=1024, max-context=32768. Suffix draft and lookup chain disabled: after the initial native T=1 position, every scored row uses the indicated T. External CPU load may vary; these are numerical comparisons, not end-to-end performance measurements.
+
+|Fixed continuation|Prompt tokens|Scored positions|Top-1 agreement|Mean KL|Native PPL|MMA PPL|PPL change|
+|---|---:|---:|---:|---:|---:|---:|---:|
+|chinese-T3|9|300|94.67%|0.006560|17.363044|17.435742|+0.419%|
+|code-T2|13|326|98.47%|0.004060|2.270584|2.255700|-0.656%|
+|long16k-T4|16384|355|95.49%|0.004780|5.295901|5.312329|+0.310%|
+|systems-T4|9|355|98.31%|0.004386|6.535099|6.521321|-0.211%|
+
+The two independent 16K native runs have identical complete logits-file SHA256 (a09363dbc7b98b756588fcb45d6b5fcbf62b513af6b0e2a436567cd7cee821a7). Every condition's initial T=1 row matches between native/MMA. Total 1336 scored positions; the long condition repeats the English target, so this is three distinct continuations, not four independent corpora. PPL is exp(mean target NLL), not a standard corpus benchmark. No quality-equivalence CI95 is claimed from correlated token positions. Largest final-logit absolute difference is 7.15; this optimization is numerically different even though these PPL changes are small.
+
+The separate free-generation smoke test used exactly 16384-token chat prompts, one needle at 10%/50%/90% of the filler, greedy MTP up to T=4, and one persistent engine per variant. All six native/MMA requests returned the exact code AMBER-7319; output token sequences match for each paired placement. Prompt cache/adaptation and suffix/lookup drafts were off. Repetitive filler and a single needle make this a limited smoke test, not a general long-context benchmark or 80K qualification.
+
+For calibration, a separate 18-process experiment with MMA disabled compared default dynamic prefill CPU sharing (environment unset) against sharing disabled (0). On three small continuations, mean Top-1 agreement was 95.65%, 98.92%, and 95.00%. Paired process PPL changes were +1.46 +/-2.59%, -1.57 +/-3.12%, and +0.29 +/-3.08% (CI95, three pairs, df=2). Disabled-path independent repeats were bit-identical; default dynamic sharing varied across repeats. These small-sample scheduling differences are context for measurement, not an acceptance threshold for MMA. STRATA_PREFILL_CPU_SHARE=1 means a fixed 100% CPU share, not the default automatic mode.
+
+Remaining review gates: a broader standard quality corpus and agreed numerical criteria; HIP fallback compilation; low-PTX fallback qualification with a supporting older CUDA toolchain; current-upstream layer/end-to-end ablation and final dispatch/kernel review. Keep opt-in/default-off and Draft.
