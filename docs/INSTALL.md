@@ -11,6 +11,10 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 
 ## What you need
 
+Advanced NVIDIA users: setup has an **off-by-default SM86 prefill choice** that
+builds and configures a separate experimental engine. See
+[SM86 installer options](INSTALL_SM86_PREFILL.md) (`--sm86-prefill`, available choices in `--help`).
+
 | | |
 | --- | --- |
 | **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
@@ -245,6 +249,7 @@ START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for othe
 START-HERE.bat --no-browser                     do not open the chat page when the model is ready (remembered;
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
+START-HERE.bat --setup --sm86-prefill MODE       experimental SM86 prefill (off by default; MODE choices in --help)
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
 START-HERE.bat --calibrate                      tune the engine for this PC (about 15-30 minutes, longer on a slow card), then start
 START-HERE.bat --check                          only check this PC

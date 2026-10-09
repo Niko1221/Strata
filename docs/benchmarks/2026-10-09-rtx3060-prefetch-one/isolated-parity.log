@@ -1,0 +1,227 @@
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+prefill experiment: stages=4 prefetch=2 grid=1
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+prefill fused native: STRATA_PF_PREFETCH_ONE=1 (gate/up lookahead one superblock)
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+prefill experiment: stages=4 prefetch=2 grid=1
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+prefill fused native: STRATA_PF_PREFETCH_ONE=1 (gate/up lookahead one superblock)
+IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+EXACT_HASH IQ2_S / Q2_0 tokens=256 6006b44aac3bf1f6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ2_XXS / Q2_0 tokens=256 72373105961c0f51
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+EXACT_HASH IQ2_XS / IQ4_NL tokens=256 99c029f43f2c50c6
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 2.095e-04  worst 4.474e-03
+  MMQ   vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs FP32 reference: rel RMS 1.460e-02  worst row max rel 2.525e-02
+  fused vs MMQ           : rel RMS 2.729e-04  worst row max rel 4.474e-03
+IQ3_XXS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 225, experts without rows 4
+EXACT_HASH IQ3_XXS / IQ4_NL tokens=256 e9b87116a1a2646e
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.929e-04  worst 3.541e-03
+  MMQ   vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs FP32 reference: rel RMS 1.446e-02  worst row max rel 2.482e-02
+  fused vs MMQ           : rel RMS 2.264e-04  worst row max rel 3.722e-03
+IQ3_S / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 230, experts without rows 4
+EXACT_HASH IQ3_S / IQ4_NL tokens=256 52313412a4e1f677
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 7.110e-05  worst 9.498e-04
+  MMQ   vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.304e-02
+  fused vs MMQ           : rel RMS 1.685e-04  worst row max rel 3.287e-03
+IQ4_XS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+EXACT_HASH IQ4_XS / Q2_0 tokens=256 ec1a4e0e64d67d16
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.010e-04  worst 2.000e-03
+  MMQ   vs FP32 reference: rel RMS 1.453e-02  worst row max rel 2.799e-02
+  fused vs FP32 reference: rel RMS 1.454e-02  worst row max rel 2.799e-02
+  fused vs MMQ           : rel RMS 1.731e-04  worst row max rel 4.469e-03
+prefill fused MoE (native formats) parity passed
+PASS: six format pairs, both tile sizes, identical output fingerprints

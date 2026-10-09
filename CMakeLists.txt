@@ -1259,7 +1259,20 @@ if(STRATA_NATIVE_EXPERTS)
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
     # #136: the Q2_0 pack's prompt experts on Strata's own int8 kernels (moe_fused.cu, opt-in STRATA_PF_FUSED=1; CUDA
     # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
-    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
+    option(STRATA_CUDA_SM86_PREFETCH_ONE "Build the opt-in SM86 native prefill prefetch specialization" OFF)
+    set(_strata_native_fused src/prefill/moe_fused_iq.cu)
+    if(STRATA_CUDA_SM86_PREFETCH_ONE)
+      set(_strata_sm86_archs ${CMAKE_CUDA_ARCHITECTURES})
+      list(FILTER _strata_sm86_archs INCLUDE REGEX "^86(-real|-virtual)?$")
+      if(NOT _strata_sm86_archs)
+        message(FATAL_ERROR "STRATA_CUDA_SM86_PREFETCH_ONE requires an explicit CUDA architecture 86 target")
+      endif()
+      if(STRATA_CUDA_SM86_IQ3_STAGE2)
+        message(FATAL_ERROR "The two independent SM86 prefill build variants cannot be combined")
+      endif()
+      set(_strata_native_fused src/prefill/cuda/moe_fused_iq_prefetch_sm86.cu)
+    endif()
+    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu ${_strata_native_fused}
                 src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch

@@ -49,6 +49,10 @@ build-vision-cuda12.bat
 # setup.py outputs (engine, downloads) and release builds
 /engine/
 /engine-cuda12/
+/engine-sm86-*/
+/engine-cuda12-sm86-*/
+/build-strata*-sm86-*.bat
+/build-vision*-sm86-*.bat
 /build-release*/
 /dist/
 *.done

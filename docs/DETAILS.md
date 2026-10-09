@@ -28,6 +28,15 @@ argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previo
 IQ3 packs about even); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
 below are 0.1.26's.
 
+**SM86 CUDA native fused prefill:** build with `-DSTRATA_CUDA_SM86_PREFETCH_ONE=ON`
+and an explicit CUDA architecture 86 target, then opt in with `STRATA_PF_PREFETCH_ONE=1` and `STRATA_PF_FUSED=1`.
+The gate/up kernels prefetch one weight superblock ahead instead of two. Down kernels,
+tile selection and activation staging retain their existing settings. On an RTX 3060
+12 GB at 100 W with an i7-12700KF, the experimental implementation improved three
+12K–31K code/documentation prompts by 0.55–0.81% with matching output IDs (six paired
+runs each). The build option defaults off; other CUDA devices take the original path,
+and HIP/SYCL do not compile the specialization. [Measurement and validation details](benchmarks/2026-10-09-rtx3060-prefetch-one/README.md).
+
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
