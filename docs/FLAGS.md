@@ -112,5 +112,8 @@ layer bends to it, and it does not bend to them.
   cache still holds; the spill tier removes conversations from that cache, so it changes what the hold sees. The
   interaction is **untested** - the host-only tests do not cover it.
 
-What has been verified against this base (build, flags, tests) and what has not (any live run):
-[SPILL_AND_PROMPT_CACHE.md](SPILL_AND_PROMPT_CACHE.md), "Validation environment" and "Non-claims".
+What has been verified against this base (build, flags, tests, and a live `--serve` run of the four scenarios the
+battery covers, with the layer on) and what has not (a run with the layer **off** to compare against, and the flags
+that battery never reached - `--head-device`, a layer split, `--batch-mtp`, cancellation, the GC's age and budget
+levers, compaction): [SPILL_AND_PROMPT_CACHE.md](SPILL_AND_PROMPT_CACHE.md), "Validation environment", "Measured
+benefit" and "Non-claims".

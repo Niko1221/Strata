@@ -181,7 +181,18 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
   `C1D54A4F5A405F076A0D5F1EB0384DECB5A5E422C3A109A7AD6CD7B86A26FB99`; its `--help` lists all 17 flags of this
   layer; an unknown flag is fatal (`unknown argument`, exit 2); the full host-only battery passes **12/12**
   (`ctest` exit 0); and the layer's own anchor/flag verifier (kept beside this series, not part of the diff)
-  reports 39 anchors and 17 flags OK, exit 0. None of that is a live run - see the first non-claim below.
+  reports 39 anchors and 17 flags OK, exit 0.
+- **A live run against this base exists now.** That same `strata.exe` (sha256
+  `C1D54A4F5A405F076A0D5F1EB0384DECB5A5E422C3A109A7AD6CD7B86A26FB99`, the digest of the binary that was launched -
+  the run log itself records `build_info`, not a digest) served `127.0.0.1:5012` on the verification machine on a
+  clone of the production serve config, and reported `/props` `build_info='Strata 0.1.41'` with `n_ctx=196608`
+  (`qwen3.8-flash-next-unsloth-ud-iq4_xs`), ready in **156.6 s** in both runs. A four-test battery (smoke, streamed
+  throughput, repeated system prompt, two conversations that spill) ran against it **twice**, the second time after
+  a server restart with the tier's folders left in place: `bench-20261009-051623.log` and
+  `bench-20261009-061613.log` (`OVERALL: PASS`). The first run reported `OVERALL: FAIL` for one reason only: its
+  harness (v1.0.0) could not compute a throughput figure at `max_tokens=256`; the second run (harness v1.1.0, no
+  output cap) passed all four tests. The logs are kept with the harness, not in this repository. The numbers are
+  under [Measured benefit](#measured-benefit) and what they do not show is under [Non-claims](#non-claims).
 
 ## Measured benefit
 
@@ -194,10 +205,30 @@ Each extra checkpoint is about **118 MB**. These are single runs.
 **KV streaming.** Holding the context's K/V in host RAM costs about **13.7 KB per context token** (1.7 GB at
 128K). This is the dominant term when sizing a spill folder.
 
-**This layer, end to end.** There is **no measurement yet of the disk tier or the system-prompt cache with the
-model loaded**: no hit rate, no tokens saved, no per-turn latency. The counters exist (hits, misses, tokens saved,
-bytes, live variants, evictions by space and age, hash changes) and are logged at start and at shutdown; they have
-not been read from a real run.
+**This layer, end to end (live, the first two runs).** On the engine above, with the tier's folders left in place
+between the runs:
+
+- **Cold prefill against a restore after a process restart.** Two ~8k-token conversations (`prompt_tokens=8016`)
+  took **29.76 s** and **30.10 s** in the first run (a fresh process, nothing on disk for them) and **1.98 s**
+  each in the second one (a new process, both already on disk), with the engine counting `restores=4` in that
+  second run against `restores=0` in the first. The 33,409-character system-prompt test has the same shape:
+  **30.296 s** for the first call of the first run (nothing reused) against **2.298 s** for the first call of the
+  second one.
+- **The tier wrote, and its counters moved.** After the second run the engine reported
+  `disk: enabled=True spills=2 bytes=2153775104 restores=4` over a folder of 19 files / 2,154,484,304 bytes, and
+  `sysprompt: enabled=True variants=3 hits=1 misses=0 bytes=719323136`.
+- **What the same binary serves** (a property of the build, not of the layer): with no output cap and a natural
+  stop, three reps produced 472 / 480 / 458 tokens (`finish=stop`) at a median TTFT of **0.452 s**, at **28.11
+  tok/s** decoding (27.39 tok/s end to end).
+
+**What those numbers are not.** Both runs used the same binary with the layer **on**, so what is measured is
+**cold prefill against a restore from disk after a restart** - nothing more. It is not a comparison against
+upstream, not a speedup ratio for the layer, and not a throughput claim about it. `restores=4` and `hits=1` are
+**one run each**: a working signal, not a rate. The `conversations=0` on that same counter line is what the engine
+reports and is not interpreted here. The system-prompt test of the second run (TTFT 1.096 s then 1.52 s, with
+`reused=7920/7925` already warm) is one sample of a warm prefix, not a regression - and the **-92.6 %** of the
+first run is a cold-prefill KV-reuse figure (that run read `sysprompt hits=0`), so it is not a property of the
+system-prompt cache either.
 
 ## Sizes by KV type
 
@@ -220,15 +251,16 @@ Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the de
 
 ## Non-claims
 
-- **Not tested live against v0.1.41.** No inference instance of this tree was ever started against the `v0.1.41`
-  base: the live probe was blocked by VRAM capacity on the verification machine (both cards held by a production
-  instance), so the live test is **pending and blocked by capacity, not cancelled**. Every runtime statement in
-  this page - that the tier parks and restores against a real engine, that the prompt cache writes and reuses its
-  root in a live server, that `--head-device` orders the cards as described, that the layer is inert with the
-  flags off under load - is **unverified** until that run is made and recorded against the binary identified
-  above. What is verified is static and of compilation: the build, the flags in `--help`, the parser, and the
-  host-only tests, which exercise the pure classes (cache, spill, file, prompt cache, stage plan) - not the
-  `--serve` loop and not CUDA.
+- **The live run is a functional pass, not a benchmark.** The non-claim that used to sit here - that no instance of
+  this tree was ever started on the `v0.1.41` base - is **withdrawn**: the two runs under [Validation
+  environment](#validation-environment) started a real engine on this base and read real counters. What replaces it
+  is narrower. They are **two runs of one harness on one machine**, with the layer **on** in both, so there is
+  still no run with the layer off to compare against and **no speedup over upstream is claimed anywhere in this
+  diff**. The battery covers four scenarios (a short completion, a streamed throughput set, a repeated system
+  prompt, two conversations that spill and restore); it does **not** cover `--head-device` card order, a layer
+  split, `--batch-mtp`, a cancelled request, the GC's age and budget levers, or the compaction path (when a rewrite
+  happens is the harness's decision, and this delivery carries no archive tier) - those stay unverified at runtime.
+  That the layer is **inert with the flags off under load** is likewise still unshown: both runs had it on.
 - **Attention is causal.** A token's K/V was computed against the system prompt that was in front of it, so the
   tail of a conversation (its K/V) cannot be kept under a _different_ system prompt: everything after the
   divergence is **reprocessed**. If the change is at the **end** of the system prompt, only the tail is paid; if it
@@ -241,8 +273,10 @@ Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the de
 - There is a real, documented case in the field in which a client that **mutates the head of the prompt** (a
   per-request attribution/version block) destroys reuse: the system-prompt prefix hash changes every request, so
   every request is a miss. The cache does not fix that; it makes it visible (a `hash_changes` counter).
-- **There is no end-to-end measurement yet** with the model loaded. The hit rate, the tokens saved and the
-  per-turn latency of these two functions have not been read from a real run.
+- **The end-to-end numbers are two runs, not a profile.** The live figures under [Measured
+  benefit](#measured-benefit) are one harness's four tests on one machine, read twice: one `restores=4`, one
+  `hits=1`, one median TTFT, one conversation length. There is **no hit rate and no tokens-saved total** (both runs
+  read `tokens_saved=0`), no distribution, no second machine and no second model.
 - **The known limitation of the divergence discard is declared here, not tested on this base.** The defect is in this
   layer's own code - the guard quoted under [Use and limits](#use-and-limits) is what this branch ships - so it is
   present on `v0.1.41` as it was on `v0.1.40.1`. The test that reproduces it (red on the base, green under the fix)
