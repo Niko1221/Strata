@@ -85,7 +85,7 @@ report `PASS_CPU_TORCH` for the absolute positions and for the position after th
 the token IDs the checkpoint's own `tokenizer.json` gives (`PASS_RUST_TOKENIZERS`, SHA256 `0997f410…29b9f3`). The
 C++ position planner and the Python planner produce the same positions and the same row bindings for these prompts.
 
-## Tests on the head commit
+## Tests on the 2026-10-08 head
 
 ```
 ctest --test-dir <build> -R '^media_embeddings_test$'                              1/1 passed
@@ -97,6 +97,38 @@ python -m unittest serve.test_media serve.test_media_process serve.test_media_pr
 
 `MEDIA_TEST_EXE` pointed at the C++ test, so the cross-language transport tests ran, and `STRATA_FFMPEG` and
 `STRATA_FFPROBE` pointed at the static FFmpeg above, so the real decoder tests ran instead of skipping.
+
+## Frame budget sizing on 2026-10-09
+
+Separate **synthetic CPU-only** runs for the configurable 1,024-frame policy, on the same i9-12900K. The input
+repeats the 8-frame 192x320 RGB QA spool; repeating frames measures resource cost, not natural-video accuracy.
+The encoder ran with its default 12 CPU threads, `--max-tokens 300`, without `--gpu`.
+
+| selected frames | visual rows | encoder wall | SVE2 bytes | SVE2 MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 240 | 1.207 s | 2,461,888 | 2.35 |
+| 64 | 1,920 | 9.603 s | 19,694,744 | 18.78 |
+| 128 | 3,840 | 19.126 s | 39,389,464 | 37.56 |
+| 1,024 | 30,720 | 153.117 s | 315,117,192 | 300.52 |
+
+The 8/64/128 rows used the earlier CPU encoder (`35d0c017…938249fd`); its peak process RSS for the three runs
+was 1,008 MiB. The 1,024 row used the new CPU encoder built from `8c4c8fa7` (`c84b2bb2…59cc464`), with peak
+process RSS 1,297 MiB. Both returned `VOK`; a repeat 128-frame encode with the new binary had the same
+SHA256 as the old one and took 19.092 s. The 1,024-frame artifact's SHA256 is `ac5b6f07…f964`.
+
+Separately, FFmpeg 8.1 decoded generated 320x192, 512 s `testsrc2` MP4s at 2 and 30 FPS: 1,024 and 15,360
+source frames, respectively, both selecting 1,024. Both produced 30,720 visual rows, 188,743,680 retained RGB
+bytes and 251,658,240 streamed RGBA bytes. Staging, probing and decoding took 0.659 s and 1.711 s, respectively,
+after the source files existed. The encoder timing above and these decoder timings used **different synthetic
+inputs**. The configured 600 s deadline is a safety budget, not a latency guarantee on other CPUs, source formats
+or resolutions. The actual selected-frame costs are checked
+before decode; exceeding any row, wire, RGB, decoder-output, duration or disk budget rejects the request.
+
+At `8c4c8fa7`, the host transport test passed 5,013 checks, CTest passed 1/1, and 73 Python video/media tests
+passed with zero skips (`MEDIA_TEST_EXE`, `STRATA_FFMPEG` and `STRATA_FFPROBE` set). The host C++ Qwen-profile
+reader also accepted the 1,024-frame artifact: 512 spans, 30,720 rows under the engine's new limits. A separate
+CUDA 13.4 engine build linked and reported version 0.1.41, but **was not run on a GPU**. These checks add no
+model-answer or natural-video accuracy claim to the earlier live-server results.
 
 ## Requests to a running server
 

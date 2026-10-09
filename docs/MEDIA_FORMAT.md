@@ -15,13 +15,15 @@ variable-frame-rate clip - a phone recording, a screen capture - is sampled by t
 No transcode to constant frame rate is done or required.
 
 Each emitted frame keeps the timestamp of the frame that was chosen, and a temporal group is labelled with the mean
-of its two frames' times, as the pinned processor does. On constant-rate input the grid reproduces the pinned
-processor's frame count; which frame it lands on can differ by one where the two rules disagree, because the grid
-follows time rather than frame index. `sample_indices()` keeps the pinned index-linspace rule for the trace fixtures
-and is no longer the serving path.
+of its two frames' times, as the pinned processor does. Short constant-rate test clips reproduce the pinned
+processor's frame count; long clips can exceed that processor's configurable 768-frame default. Which frame the
+grid lands on can differ by one where time-based and index-based rules disagree. `sample_indices()` keeps the
+pinned index-linspace rule for the trace fixtures and is no longer the serving path.
 
-The grid is bounded by `max_frames`: a clip whose grid would need more frames is rejected rather than silently
-sampled more thinly, so duration at the configured fps is capped by that budget (128 frames at 2 fps is 64 s).
+`max_frames` counts unique frames emitted after repeated PTS selections are removed, not grid points. A clip that
+selects too many frames is rejected without reducing its cadence. The grid itself is bounded to 36,001 points by
+the supported 3,600 s / 10 FPS ceilings. Duration has its own limit: a sparse VFR clip may use more grid points
+than emitted frames. At the default 2 FPS, 1,024 densely sampled frames cover about 512 s.
 
 ## Compatibility
 
@@ -92,11 +94,23 @@ it is a transport test, not a claim about Qwen's native frame positions.
 ## Validation and ownership
 
 The default codec ceilings are 1,048,576 tokens, 128 spans, 16,384 visual rows, width 16,384, and 256 MiB of wire
-bytes. These are host-codec ceilings, not approved serving defaults or model limits. The caller must supply
-`expected_width`, vocabulary size, verified allowed pad IDs, effective context/rotary limits and smaller request
-budgets as appropriate. An allowed-pad list is not a model profile: callers must also bind each kind to its
-verified pad ID. Source bytes, decoded frames/pixels, retained RGB, disk use and deadlines need separate
+bytes. These generic defaults are not video serving defaults or model limits. The video caller explicitly raises
+span/row/wire allowances to its configured budgets; the engine bounds SVE2 requests to 65,536 rows and 768 MiB
+of wire bytes. The encoder advertises its ceilings in `CAPS` and accepts matching budgets through `VSET`.
+The caller must supply `expected_width`, vocabulary size, verified allowed pad IDs, effective context/rotary limits
+and smaller request budgets as appropriate. An allowed-pad list is not a model profile: callers must also bind
+each kind to its verified pad ID. Source bytes, decoded frames/pixels, retained RGB, disk use and deadlines need separate
 limits in the decoder/server; this codec cannot enforce them.
+
+The opt-in serving defaults are 1,024 selected frames, 600 s clip duration, 32,768 visual rows, 256 MiB retained
+RGB, 384 MiB wire, 4 GiB streamed decoder output, 256 MiB source, 2 GiB shared disk and a 600 s request deadline.
+The configured frame ceiling is 4,096; it does not relax the row, RGB, wire, decoder-output, disk, duration or
+request deadline budgets. `ClipInfo` calculates rows, RGB, decoder output and a conservative wire reservation from
+the actual selected indices and resized dimensions before decoding. The disk quota covers source, RGB spool,
+encoder output, request artifact and completed cache files, including concurrent requests. At their default
+individual maxima, source + RGB + two wire artifacts + cache total at most 1,536 MiB against a 2 GiB disk quota;
+requests can also be rejected when the shared quota is busy. HTTP request-body limits independently restrict large
+base64 data URLs. These are safety budgets, not model context or video-quality guarantees.
 
 Readers check header counts, checked byte arithmetic and canonical offsets before payload allocation. They
 validate token/span/grid/position structure before reading embeddings, then require exact embedding lengths,
