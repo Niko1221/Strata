@@ -9,6 +9,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 
 namespace strata::prefill::mmq {
 namespace {
@@ -99,15 +101,18 @@ __global__ void iota_kernel(int32_t* dst, int64_t n) {
     if (i < n) dst[i] = (int32_t) i;
 }
 
-#if defined(__HIPCC__)   // #820: only the HIP dense-MMQ path (Gemm::native_mmq) uses these two
-__global__ void f16_to_f32_kernel(const uint16_t* __restrict__ x, float* __restrict__ y, int64_t n) {
-    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __half2float(__ushort_as_half(x[i]));
-}
-
+// The bounds of ONE matrix.  Under the MoE path the caller writes one entry an expert on the host; a dense
+// product has a single trivial pair, and `glm_layer.cpp`'s dense MMQ path builds it here - so this one is not
+// behind #820's HIP guard.
 __global__ void set_bounds_kernel(int32_t* d, int32_t rows) {
     d[0] = 0;
     d[1] = rows;
+}
+
+#if defined(__HIPCC__)   // #820: only the HIP dense-MMQ path (Gemm::native_mmq) uses this one
+__global__ void f16_to_f32_kernel(const uint16_t* __restrict__ x, float* __restrict__ y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __half2float(__ushort_as_half(x[i]));
 }
 
 #endif
@@ -228,6 +233,87 @@ void Context::run(const Product& p, void* stream) {
     ck(cudaGetLastError(), "mul_mat_q");
 }
 
+// ---- A DENSE PRODUCT (moe_mmq.hpp's `dense`).  `Context::run` is shaped for a GROUP: `bounds` says which
+// activation rows each expert owns and `ids` remaps each output row.  One matrix against every row is the
+// degenerate case, and it is the one glm5-next's prompt path needs - see the header for why.  The state is
+// per DEVICE, because a layer split gives each card its own stream and its own largest product.
+namespace {
+struct DenseState {
+    Context* ctx = nullptr;
+    void* buf = nullptr;              // the q8_1 activation rows | the identity row map | the bounds
+    size_t buf_bytes = 0;
+    bool failed = false;
+};
+DenseState& dense_state() {
+    static std::map<int, DenseState> all;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    return all[dev];                  // a reference into `all`: stable across later insertions
+}
+
+// One map, several stage threads: `all[dev]` may insert, so the lookup and the resize are under this.  The
+// entry itself is then used OUTSIDE it - each device has its own, and two threads never share one.
+std::mutex& dense_mutex() {
+    static std::mutex m;
+    return m;
+}
+}  // namespace
+
+bool dense(const void* w, int type, float* y, int64_t ldy, const float* x, int64_t ldx, int64_t T, int64_t N,
+           int64_t K, void* stream) {
+    if (!built() || w == nullptr || x == nullptr || y == nullptr) return false;
+    if (T <= 0 || N <= 0 || K <= 0 || T > INT32_MAX) return false;
+    if (K % 256 != 0) return false;
+    if (!fits(type, N)) return false;
+    if (ldx <= 0) ldx = K;
+    if (ldy <= 0) ldy = N;
+    const auto up = [](size_t v) { return (v + 255) & ~(size_t) 255; };
+    const size_t ids_off = up(q8_bytes(T, K));
+    const size_t bounds_off = ids_off + up((size_t) T * sizeof(int32_t));
+    const size_t need = bounds_off + 256;
+    DenseState* sp = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(dense_mutex());
+        DenseState& st = dense_state();
+        if (st.failed) return false;
+        if (st.buf == nullptr || need > st.buf_bytes) {
+            if (st.buf != nullptr) cudaFree(st.buf);
+            st.buf = nullptr;
+            st.buf_bytes = 0;
+            if (cudaMalloc(&st.buf, need) != cudaSuccess) {
+                cudaGetLastError();
+                st.failed = true;
+                return false;
+            }
+            st.buf_bytes = need;
+        }
+        if (st.ctx == nullptr) st.ctx = new Context();
+        sp = &st;
+    }
+    DenseState& st = *sp;
+    quantize(x, nullptr, st.buf, type, K, ldx, T, stream);
+    int32_t* ids = (int32_t*) ((uint8_t*) st.buf + ids_off);
+    int32_t* bounds = (int32_t*) ((uint8_t*) st.buf + bounds_off);
+    iota(ids, T, stream);
+    set_bounds(bounds, (int32_t) T, stream);
+    Product p;
+    p.w = w;
+    p.type = type;
+    p.w_rows = N;
+    p.w_cols = K;
+    p.expert_bytes = matrix_bytes(type, N, K);
+    p.n = 1;
+    p.xq = st.buf;
+    p.bounds = bounds;
+    p.ids = ids;
+    p.total_rows = T;
+    p.max_rows = T;
+    p.dst = y;
+    p.ld_dst = ldy;
+    st.ctx->run(p, stream);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const void* down, size_t d_bytes,
                    void* gu_dst, void* d_dst, void* stream) {
     const cudaStream_t s = (cudaStream_t) stream;
@@ -282,16 +368,16 @@ void iota(int32_t* dst, int64_t n, void* stream) {
     ck(cudaGetLastError(), "iota");
 }
 
+void set_bounds(int32_t* dst, int32_t rows, void* stream) {
+    set_bounds_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(dst, rows);
+    ck(cudaGetLastError(), "set_bounds");
+}
+
 #if defined(__HIPCC__)
 void f16_to_f32(const uint16_t* x, float* y, int64_t n, void* stream) {
     if (n <= 0) return;
     f16_to_f32_kernel<<<blocks(n), 256, 0, (cudaStream_t) stream>>>(x, y, n);
     ck(cudaGetLastError(), "f16_to_f32");
-}
-
-void set_bounds(int32_t* dst, int32_t rows, void* stream) {
-    set_bounds_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(dst, rows);
-    ck(cudaGetLastError(), "set_bounds");
 }
 #endif
 

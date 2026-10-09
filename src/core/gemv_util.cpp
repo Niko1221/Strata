@@ -5,6 +5,7 @@
 
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/prefill/moe_mmq.hpp"
 #include "strata/kernels/s2_gemv_q8.hpp"
 #include "strata/kernels/s_gemv.hpp"
 
@@ -123,7 +124,15 @@ void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weight
 /// picks.  Producing only the one it thinks it needs is how the assumption gets baked in again.
 bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::SForm& f, const uint8_t* x80, const uint8_t* xq8k,                    float* y, int64_t n_in, int64_t n_out, const std::string& name, void* stream,                    std::string& err, const float* x_f32, bool x_q8_1_ready, int ncols) {
     using namespace strata::kernels;
-    if (ncols < 1 || ncols > NATIVE_MMVQ_MAX_NCOLS) {
+    // A NATIVE TENSOR MAY CARRY MORE COLUMNS THAN `native_mmvq` TAKES.  Its kernels cap at
+    // `NATIVE_MMVQ_MAX_NCOLS` and its scratch is sized for exactly that, so a wider group would have to be cut
+    // back into eight-column calls - and the number of calls IS the cost: a 4,096-token glm5-next chunk enters
+    // its pre-section 512 times, reads each dense weight matrix 512 times (722 GB of reads on a stage whose
+    // weights are 1.4 GB) and spends 55 us a call.  MMQ takes the whole group in one GEMM off the same
+    // native bytes, so past the cap it is the path; a canonical tensor has no such route and is still refused.
+    const bool wide_native = (ncols > NATIVE_MMVQ_MAX_NCOLS) && w.native_data != nullptr &&
+                             strata::prefill::mmq::built();
+    if (ncols < 1 || (ncols > NATIVE_MMVQ_MAX_NCOLS && !wide_native)) {
         err = name + ": a projection may carry 1.." + std::to_string(NATIVE_MMVQ_MAX_NCOLS) + " columns, not " +
               std::to_string(ncols);
         return false;
@@ -161,7 +170,26 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::
             ps.bytes += call_bytes;   // one read, however many columns share it
             bn->bytes += call_bytes;
         }
-        if (!x_f32 || !w.native_q8_1 || !stream || n_in != w.ne0 || n_out != w.ne1) {
+        if (!x_f32 || !stream || n_in != w.ne0 || n_out != w.ne1) {
+            err = name + ": native projection requires matching FP32 input and session scratch";
+            return false;
+        }
+        // WIDE GOES TO MMQ, NARROW STAYS EXACTLY WHERE IT WAS.  The two produce the same product off the same
+        // native bytes, but MMQ rounds the activations into its own q8_1 layout and accumulates per K-tile
+        // whereas `native_mmvq` keeps one accumulator a row, so they are not bit-identical - and the group of
+        // eight is the arm every measurement on this branch was taken against.  Only past the cap, where the
+        // alternative is a per-column walk, is the trade made.  A refusal from `dense` (an uncovered type, a K
+        // that is not a whole number of 256-value chunks, no tile that fits the card) falls through to that
+        // same walk rather than failing the request.
+        if (ncols > NATIVE_MMVQ_MAX_NCOLS) {
+            if (strata::prefill::mmq::dense(w.native_data, w.native_type, y, n_out, x_f32, n_in, ncols, n_out,
+                                            n_in, stream)) {
+                return true;
+            }
+            // otherwise the per-column walk below takes it: each column re-enters with `ncols == 1` and lands
+            // on the native branch, off `x_f32`, which needs no column images of its own.
+        } else {
+        if (!w.native_q8_1) {
             err = name + ": native projection requires matching FP32 input and session scratch";
             return false;
         }
@@ -178,6 +206,7 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::
             return false;
         }
         return true;
+        }
     }
     // THE CANONICAL PATH IS PER COLUMN.  Its kernels take one activation vector and the two image kinds have
     // fixed per-column strides (`q8k_bytes` / 34 bytes per 32), so a batch is the same call with the column

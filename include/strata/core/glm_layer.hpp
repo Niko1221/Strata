@@ -419,10 +419,26 @@ uint64_t glm_chunk_init(const ModelGeometry& g, int64_t k, int64_t T, void* base
 void glm_chunk_view(const GlmChunkBuffers& c, const GlmBuffers& b, const MoEBuffers& mb, const BlockBuffers& bb,
                     int64_t t, GlmBuffers& out_b, MoEBuffers& out_mb, BlockBuffers& out_bb);
 
-/// **THE WIDEST TOKEN GROUP ONE `glm_block_layer_pre` CALL MAY BE HANDED.**  The bound is the quantized
+/// **THE WIDEST TOKEN GROUP ONE `glm_block_layer_pre` CALL MAY BE HANDED.**  The bound was the quantized
 /// projections': `native_mmvq` takes at most `NATIVE_MMVQ_MAX_NCOLS` columns, so a wider group would split the
-/// very weight read the group exists to amortize.
+/// very weight read the group exists to amortize.  A native tensor past that cap now goes through
+/// `prefill::mmq::dense` - one GEMM over the whole group, off the same bytes - so the cap no longer binds a
+/// native one; it still binds a canonical tensor, and `glm_group_max()` below is what a session actually carves.
 constexpr int64_t GLM_MAX_NTOK = 8;
+
+/// The ceiling on `STRATA_GLM_GROUP_MAX`.  NOT a free choice: `glm_heads_major` launches a grid whose y is
+/// `n_head * T` and refuses past 65535, and 64 heads put the wall at 1023 - so 512 is the largest power of two
+/// that is safe, and a wider group would return from that kernel having written nothing.
+constexpr int64_t kGlmGroupMaxNtok = 512;
+
+/// **THE GROUP WIDTH THIS SESSION CARVES FOR**: `GLM_MAX_NTOK` unless `STRATA_GLM_GROUP_MAX` names a wider one.
+///
+/// The group width is what a projection's weight read is divided by, and the read is what a chunk's `pre`
+/// costs: a 4,096-token chunk at the default eight enters `pre` 512 times and reads each dense weight matrix
+/// 512 times, which is why the section reports 722 GB of reads on a stage holding 1.4 GB.  Eight is where the
+/// MMVQ path stops, so the default is unchanged and the wider arms are opt-in - and every carve site asks this
+/// one function, so the group carve is always the width the loop is about to use.
+int64_t glm_group_max();
 
 /// The same as `glm_chunk_view`, for a GROUP of `ntok` tokens starting at `t0`: `b` is the session's group
 /// carve (`glm_buffers_init(g, GLM_MAX_NTOK, ...)`), which already holds every projection's scratch at a group

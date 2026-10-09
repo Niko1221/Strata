@@ -200,6 +200,17 @@ uint64_t glm_dsa_state_bytes(const ModelGeometry& g, int64_t max_cells) {
 
 }  // namespace
 
+int64_t glm_group_max() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("STRATA_GLM_GROUP_MAX");
+        if (e == nullptr) return GLM_MAX_NTOK;
+        const long long n = std::atoll(e);
+        if (n < 1) return GLM_MAX_NTOK;
+        return n > kGlmGroupMaxNtok ? (int64_t) kGlmGroupMaxNtok : (int64_t) n;
+    }();
+    return v;
+}
+
 /// **EVERY FIELD IN `GlmBuffers` IS PER TOKEN, SO THE WHOLE CARVE SCALES WITH `ntok`.**  There is no field in
 /// the list below that is shared across a chunk: the mHC maps, the normed input, the wide image pair, the KDA
 /// streams, the MLA latent and head stacks and the FFN pair are each one token's worth of scratch, written by a

@@ -1304,6 +1304,10 @@ if(STRATA_NATIVE_EXPERTS)
       target_compile_definitions(strata_mmq PRIVATE STRATA_ORCA_Q4KS_MMQ=1)
     endif()
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
+    # glm5-next's dense projections take the same MMQ kernels (mmq::dense, called from glm_layer.cpp), and that
+    # file is in strata_engine - so the composed layer library needs them too.  Declared here because strata_mmq
+    # exists only where the GGML sources do.
+    target_link_libraries(strata_engine PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
     if(STRATA_BUILD_TESTS)
       # #136: the fused int8 experts against a double-precision reference and the MMQ path (exit 77 below sm_80)
@@ -1368,6 +1372,8 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     target_link_libraries(strata_mmq PUBLIC ggml-base hip::host roc::hipblas)
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
+    # see the CUDA branch above: mmq::dense is called from glm_layer.cpp, which is in strata_engine
+    target_link_libraries(strata_engine PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
     # Aurora: the gfx11 fused experts against the FP64 reference and MMQ (tests/cuda's test; exit 77 off gfx11)
     add_executable(hip_prefill_fused_moe tests/cuda/prefill_fused_moe_test.cpp)
