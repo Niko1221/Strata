@@ -1,6 +1,6 @@
 # WIP: SM75 IQ4_XS four-row activation reuse and three-warps specialization
 
-Latest October 9 evening status: global B6 rows4 parity passes with NW3 off/on. An additional high-resolution three-pair T=4 final-code test gives GDN prefix reduction 0.196 +/- 0.591% and QSA prefix 0.241 +/- 0.454% (CI95), neither significant. The isolated targeted matrix increment of 8–10% below remains the performance evidence for this PR; no current-head layer or production tok/s speedup is claimed. The earlier coarse-printing pilot is not pooled. HIP compilation, #1418 dependency resolution and independent review remain open. Keep Draft and default off.
+Latest October9 continuation: complete CUDA13 and HIP7.0.2 engine compilation passes; global B6 rows4 parity passes with NW3 off/on. High-resolution three-pair T4 layer testing gives GDN prefix reduction0.196 +/-0.591% and QSA0.241 +/-0.454% (CI95), neither significant. Targeted matrix8–10% NW3 increment remains the performance claim; no layer/production tok/s gain claimed. WDDM Compute Sanitizer, #1418 dependency coordination and independent review remain open. Keep Draft/default off.
 
 ## Latest: October 9 B6 convergence (code c97e698)
 
