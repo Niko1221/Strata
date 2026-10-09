@@ -1763,6 +1763,12 @@ prompt run with them on is slower.
 - **`STRATA_DBG_FORCE_SLOW_LAYER=1`: make layer 0 take the slow prompt path**, the way a layer the fused path does not
   cover does. It is there to test that backstop; it is not a mode to run with.
 
+A related dump, for comparing two runs of the same prompt rather than reproducing one routing: `STRATA_DUMP_FIRST_LOGITS=<path>`
+in the engine's environment writes the first verify window's output logits - the prompt's last token run over the state
+the prompt path left, so the row shows what that path did, one float32 per vocabulary entry - to `<path>.0`, `<path>.1`,
+... in serve mode, one file per request; plain generate mode writes the window to `<path>` alone. So two prompt paths
+(a peer card's CPU share, a layer split) can be compared by KL. Off unless set.
+
 ---
 
 ## Experimental speed projection (EXPERIMENTAL, off by default)
