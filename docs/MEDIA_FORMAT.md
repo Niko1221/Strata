@@ -155,3 +155,7 @@ MEDIA_TEST_EXE=/tmp/strata-media-host/media_embeddings_test \
 Python/C++ tests share bytes, legacy adaptation, fingerprints, positions, truncations and seeded mutations.
 Without `MEDIA_TEST_EXE`, the cross-language tests are unrun, not passed. Run the standalone C++ test under
 ASan/UBSan as well. None of these results establishes decoder, projector, inference or backend parity.
+
+What the video path has been measured doing, on which build and against which reference, is written up in
+[VIDEO_VALIDATION.md](VIDEO_VALIDATION.md): frames chosen by PTS and the pixels they decode to, encoder rows
+against the checkpoint's visual tower, repeat encodes, positions and prompt tokens, and requests to a running server.
