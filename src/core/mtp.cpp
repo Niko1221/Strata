@@ -1252,7 +1252,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     if (!mtp_catchup_all()) T = a + 1;
     const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
     if (!capture_round(T, cp, err)) return false;
-    const int max_steps = std::min(max_t_ - 1, max_drafts_);
+    // Draft j writes its K/V at cell p + a + j, and the K/V ends at max_cells (its page table has no page past it):
+    // near the context's end the round drafts only the cells that exist
+    const int max_steps = (int) std::min<int64_t>(std::min(max_t_ - 1, max_drafts_), st_.max_cells - (p + a));
     for (int j = 1; j < max_steps; ++j)
         if (!capture_step(j, cp, err)) return false;
     const Clock::time_point t0 = Clock::now();

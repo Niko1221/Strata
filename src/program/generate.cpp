@@ -11738,13 +11738,18 @@ int main(int argc, char** argv) {
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
             }
+            // The window's rows sit at p .. p + T - 1, and past the context there is no cell to verify them in: near
+            // its end the window takes only the rows that fit (the admission checked the prompt and max_new, which a
+            // full window can overrun)
+            const int room = (int) std::min<int64_t>(o.spec, o.max_context - p);
+            T = std::min(T, room);
             // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
             int chain_n = 0, cm = 0;
-            if (o.lookup_chain > 0 && use_mtp && !first_window && !from_sfx && T < o.spec) {
+            if (o.lookup_chain > 0 && use_mtp && !first_window && !from_sfx && T < room) {
                 int csrc = -1;
                 const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                 chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
-                                                             std::min(o.lookup_chain, o.spec - T), o.lookup_chain_min,
+                                                             std::min(o.lookup_chain, room - T), o.lookup_chain_min,
                                                              cbuf.data(), &cm, &csrc);
                 if (chain_n > 0 && std::getenv("STRATA_LOOKUP_CHAIN_FIXED") == nullptr) {
                     double p_mtp = 1.0;
