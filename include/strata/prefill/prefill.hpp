@@ -134,6 +134,15 @@ public:
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
 
+    /// DFlash feature taps (docs/DFLASH.md): at each listed boundary layer, capture the ATTN-HALF HC
+    /// read's contracted residual (n_embd BF16 per row - the fusion's input precision) for every row
+    /// of each chunk.  Before init.  Buffer: [n_taps x chunk x n_embd] bf16, rows [0, T) of the last
+    /// chunk; delivered by on_taps right after on_chunk (same synchronization).
+    void set_tap_layers(const int* layers, int n);
+    /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
+    int64_t tap_stride_rows() const;
+    std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> on_taps;
+
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
     /// earlier stage is a chunk or more ahead of the last one by the time `on_chunk` runs, so this is where a

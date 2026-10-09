@@ -141,6 +141,21 @@ public:
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
 
+    // ---- DFlash FEATURE TAPS (docs/DFLASH.md) ------------------------------------------
+    // At each listed layer the window graph copies the ATTN-HALF HC read's contracted residual
+    // (n_embd f32 per row) into the tap buffer: the boundary `tap + 1`, i.e. the contracted
+    // residual AFTER layer `tap` including its FFN write-back - what the DFlash drafter's fusion
+    // consumes.  Before init(); a layer-split stage captures only the taps inside [lb_, le_).
+    // Layout: tap t's rows [0, last window's T) at taps() + t * tap_stride(), row-major; rows
+    // [T, max_t) are stale from an earlier window.
+    void set_tap_layers(const int* layers, int n) {
+        n_taps_ = n > 8 ? 8 : n;
+        for (int i = 0; i < n_taps_; ++i) tap_layers_[i] = layers[i];
+    }
+    int n_taps() const { return n_taps_; }
+    const float* taps() const { return taps_; }
+    int64_t tap_stride() const { return tap_stride_; }   // floats per tap (max_t * n_embd); 0 until init
+
     // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
     //
     // A batch window holds S INDEPENDENT sequences, one token each: row s is slot s, at slot s's own position,
@@ -388,6 +403,10 @@ private:
     VerifyHits hits_;
     const NativeHead* head_ = nullptr;
     int max_t_ = 0;
+    int tap_layers_[8] = {};                 ///< set_tap_layers: the boundary layers to capture
+    int n_taps_ = 0;
+    float* taps_ = nullptr;                  ///< n_taps_ x max_t_ x n_embd f32 (the DFlash taps)
+    int64_t tap_stride_ = 0;
     float* ple_key_ = nullptr;   ///< STRATA_PLE_BATCH: the window rows' PLE key / value projections
     float* ple_val_ = nullptr;
     int last_t_ = 0;

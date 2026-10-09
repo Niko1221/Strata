@@ -183,6 +183,21 @@ class Calibrate(unittest.TestCase):
             self.assertIsNone(CAL.engine_error(None))
             self.assertIsNone(CAL.engine_error(str(Path(d) / "missing.log")))
 
+    def test_apply_removes_all_duplicate_overrides(self):
+        args = BASE + ["--pcie-frac", "0.2", "--pcie-frac", "0.75", "--spec-min-p", "0.7"]
+        default = CAL.apply(args, {})
+        self.assertNotIn("--pcie-frac", default)
+        self.assertEqual(default.count("--spec-min-p"), 1)
+        self.assertEqual(CAL.arg_value(default, "--spec-min-p"), "0.5")
+
+    def test_close_reaps_a_killed_engine(self):
+        import subprocess
+        eng = mock.Mock()
+        eng.proc.wait.side_effect = [subprocess.TimeoutExpired("engine", 60), 0]
+        CAL.close(eng)
+        eng.proc.kill.assert_called_once()
+        self.assertEqual(eng.proc.wait.call_args_list, [mock.call(60), mock.call(timeout=10)])
+
     def test_worker_candidates(self):
         self.assertEqual(CAL.worker_candidates(6), [6, 4, 3, 2])
         self.assertEqual(CAL.worker_candidates(23), [23, 15, 12, 6])        # a quarter: 4 beat 15 on 8P + 16E
@@ -196,6 +211,72 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [53, 52, 60]}, "a"), "b")
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [51, 51.5, 51]}, "a"), "a")
         self.assertEqual(CAL.pick({}, "a"), "a")
+
+
+class DFlashCalibration(unittest.TestCase):
+    def measure(self, speed, maximum=7, base=None):
+        starts = []
+        base = base or CAL.with_arg(BASE, "--spec", "8") + ["--dflash", "draft.gguf"]
+        class DraftEngine(FakeEngine):
+            def __init__(self, args):
+                super().__init__(args, lambda *a: 50, info_workers=0, starts=starts)
+                self.info.update(dflash_block=int(CAL.arg_value(args, "--dflash-block") or maximum), dflash_max=maximum)
+            def generate(self, ids, max_new, sampling, cancel):
+                tune = sampling.get("strata_tune") or {}
+                k = tune.get("dflash_block", self.info["dflash_block"])
+                assert 1 <= k <= maximum
+                rate = speed(k, tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]))
+                yield from [1] * max_new
+                self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000}
+        return CAL.measure(base, [[1]] * 3, DraftEngine, say=lambda *_: None), starts
+
+    def test_forward_width_persisted_through_restarts(self):
+        res, starts = self.measure(lambda k, f, p: 60 if k == 4 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "4")
+        self.assertTrue(all(CAL.arg_value(a, "--dflash-block") == "4" for a in starts[1:]))
+        self.assertEqual(len(res["report"]["dflash_block_sweeps"]), 2)
+        self.assertTrue(all(len(rates) == CAL.SWEEP_ROUNDS
+                            for sweep in res["report"]["dflash_block_sweeps"]
+                            for rates in sweep["rates"].values()))
+
+    def test_noise_keeps_default_and_resets_old_width(self):
+        res, starts = self.measure(lambda k, f, p: 51 if k == 4 else 50,
+                                  base=BASE + ["--dflash", "draft.gguf", "--dflash-block", "4"])
+        self.assertEqual(res["settings"], {})
+        self.assertIsNone(CAL.arg_value(starts[0], "--dflash-block"))
+
+    def test_loaded_capacity_limits_candidates(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 2 else 50, maximum=3)
+        self.assertEqual(res["settings"]["--dflash-block"], "2")
+        self.assertEqual(set(res["report"]["dflash_block_sweeps"][0]["rates"]), {"1", "2", "3"})
+
+    def test_retunes_width_after_pcie_change(self):
+        # A GPU-favouring share changes which forward width wins.
+        def speed(k, f, p):
+            if f == 0.2:
+                return 80 if k == 3 else 65
+            return 60 if k == 4 else 50
+        res, _ = self.measure(speed)
+        self.assertEqual(res["settings"]["--dflash-block"], "3")
+        self.assertEqual(res["settings"]["--pcie-frac"], "0.20")
+
+    def test_six_row_forward_is_measured(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 6 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "6")
+
+    def test_block_sweep_uses_median_despite_first_round_outlier(self):
+        seen = {}
+        def speed(k, f, p):
+            seen[k] = seen.get(k, 0) + 1
+            if k == 4 and seen[k] <= 3:
+                return 100  # one full three-prompt measurement is an outlier
+            return 60 if k == 3 else 50
+        res, _ = self.measure(speed)
+        self.assertEqual(res["settings"]["--dflash-block"], "3")
+
+    def test_mtp_never_receives_dflash_setting(self):
+        args = CAL.apply(BASE, {"--dflash-block": "4"})
+        self.assertNotIn("--dflash-block", args)
 
 
 class SetupIntegration(unittest.TestCase):
@@ -235,6 +316,16 @@ class SetupIntegration(unittest.TestCase):
         # another context size is another key (its KV cache changes the expert cache)
         other = dict(written, args=CAL.with_arg(written["args"], "--max-context", "131072"))
         self.assertIsNone(self.S.saved_calibration(other))
+
+    def test_calibration_keys_separate_drafters_and_quantization(self):
+        cfg = {"args": BASE + ["--mtp", "mtp"], "model_name": "m", "drafter": "mtp"}
+        df = dict(cfg, args=BASE + ["--dflash", "q4.gguf", "--dflash-vocab", "vocab.bin"], drafter="dflash")
+        keys = [self.S.hardware_key(cfg), self.S.hardware_key(df),
+                self.S.hardware_key(dict(df, args=CAL.with_arg(df["args"], "--dflash", "q8.gguf"))),
+                self.S.hardware_key(dict(cfg, args=BASE, drafter="none"))]
+        self.assertEqual(len(set(keys)), 4)
+        # The calibrated width itself is not part of its cache key.
+        self.assertEqual(keys[1], self.S.hardware_key(dict(df, args=df["args"] + ["--dflash-block", "4"])))
 
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"

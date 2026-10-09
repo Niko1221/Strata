@@ -43,4 +43,13 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
 
+/// The DFlash drafter's slice of the batch attention: the cells are the identity [0, active_cells)
+/// (no selection table, `ids` is not read) and only their chunks launch - `cap` stays the stride
+/// the caller allocated the scratch (and would have allocated a selection table) with.  The grid
+/// is (ceil(active_cells / CHUNK), n_head_kv, n_q); every score is the same expression the
+/// selection kernel computes for the same cell.  `qsa_decode_attn_batch` is the TARGET's path
+/// and is unchanged.
+void dflash_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* steps, int64_t active_cells,
+                       int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+
 }  // namespace strata::kernels

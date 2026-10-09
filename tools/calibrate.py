@@ -1,6 +1,6 @@
 """Tune the engine's hardware-dependent settings on this PC (setup's --calibrate).
 
-Three settings depend on the machine more than on the model, and the defaults are right for the PC they were
+These settings depend on the machine more than on the model, and the defaults are right for the PC they were
 measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
   --pcie-frac     the share of the experts missing from VRAM that are copied over PCIe and run on the GPU instead of
                   on the CPU.  A fast PCIe link and a slow CPU want more; a laptop's x8 link or a fast CPU want less.
@@ -13,8 +13,9 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   its use counts fade.  A PC whose CPU reads the missed experts slowly (DDR3, ~24 GB/s) gains from
                   swapping more: 160 swaps every window measured +7.9% over the default tier on a Xeon E5-2673 v3 (DDR3) with an
                   RTX 4060 Ti on PCIe 3.0 x8 (Q2_0; with the swaps taking effect a window later, #764).
-The first two are measured through one engine (per-request `strata_tune` keys); the worker count and the adaptive
-tier need a restart per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
+  --dflash-block   the actual DFlash forward length, capped by the loaded artifact and --spec.
+The PCIe share, probability floor and DFlash block are measured through one engine (per-request `strata_tune`
+keys); the worker count and the adaptive tier need a restart per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
 
 A setting is kept only when it beats the default by more than MIN_GAIN in an interleaved re-measurement - the
 adaptive expert tier and the OS make single measurements noisy by a few percent.
@@ -37,6 +38,7 @@ sys.path.insert(0, str(ROOT))
 MIN_GAIN = 0.03                    # a setting must beat the default by this much to be kept
 PCIE_FRACS = (0.0, 0.2, 0.35, 0.55, 0.75, 0.9, 1.0)   # 1.0: every miss over PCIe, the CPU pool gets no expert
 SPEC_MIN_PS = (0.3, 0.5, 0.7)
+DFLASH_BLOCKS = (1, 2, 3, 4, 5, 6, 7)
 SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
@@ -65,7 +67,7 @@ def arg_value(args: list[str], flag: str) -> str | None:
 def with_arg(args: list[str], flag: str, value: str | None) -> list[str]:
     """`args` with `flag value` set (replaced if present), or removed when value is None."""
     out = list(args)
-    if flag in out:
+    while flag in out:
         i = out.index(flag)
         del out[i:i + 2]
     if value is not None:
@@ -212,36 +214,68 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         d_workers = int(info.get("pool_workers", 0)) or None
         s = Session(eng, ids_list)
         s.warm_up()
+        # DFlash's actual forward width is independent of the confidence-gated verify prefix.
+        # Query the loaded artifact/arena capacity; MTP and older engines have no such tuning key.
+        d_block = int(info.get("dflash_block", 0)) if "--dflash" in base_args else 0
+        max_block = int(info.get("dflash_max", 0)) if d_block else 0
+        blocks = sorted({k for k in DFLASH_BLOCKS if k <= max_block} | {d_block}) if max_block else []
+        best_block = d_block
+        block_sweeps = []
+
+        def tune(f, p, block):
+            out = {"pcie_frac": f, "spec_min_p": p}
+            if blocks:
+                out["dflash_block"] = block
+            return out
+
+        def sweep_blocks(f, p):
+            rates = sweep(s, blocks, {"pcie_frac": f, "spec_min_p": p},
+                          "dflash_block", "DFlash forward block", say)
+            block_sweeps.append({"pcie_frac": f, "spec_min_p": p, "rates": {str(k): v for k, v in rates.items()}})
+            return max(rates, key=lambda k: statistics.median(rates[k]))
+
+        if blocks:
+            best_block = sweep_blocks(d_pcie, d_minp)
         # 1. the PCIe share, at the default draft floor
-        by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}), {"spec_min_p": d_minp}, "pcie_frac",
-                        "PCIe share", say)
+        block_tune = {"dflash_block": best_block} if blocks else {}
+        by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}),
+                        {"spec_min_p": d_minp, **block_tune}, "pcie_frac", "PCIe share", say)
         best_pcie = max(by_pcie, key=lambda k: statistics.median(by_pcie[k]))
         # 2. the draft floor, at that share
-        by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}), {"pcie_frac": best_pcie}, "spec_min_p",
-                        "draft floor", say)
+        by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}),
+                        {"pcie_frac": best_pcie, **block_tune}, "spec_min_p", "draft floor", say)
         best_minp = max(by_minp, key=lambda k: statistics.median(by_minp[k]))
+        if blocks:
+            best_block = sweep_blocks(best_pcie, best_minp)
         # 3. the winner against the default, interleaved, the same number of rounds
-        dflt, cand = (round(d_pcie, 2), round(d_minp, 2)), (best_pcie, best_minp)
+        dflt, cand = (round(d_pcie, 2), round(d_minp, 2), d_block), (best_pcie, best_minp, best_block)
         confirm = {dflt: [], cand: []}
         if cand != dflt:
             for _ in range(SWEEP_ROUNDS):
                 for k in (dflt, cand):
-                    confirm[k].append(s.rate({"pcie_frac": k[0], "spec_min_p": k[1]}))
+                    confirm[k].append(s.rate(tune(*k)))
         chosen = pick(confirm, dflt) if cand != dflt else dflt
+        if blocks:
+            say(f"    Confirmed settings: PCIe share {chosen[0]:.2f}, draft floor {chosen[1]:.2f}, DFlash block {chosen[2]}")
         report.update(default={"pcie_frac": dflt[0], "spec_min_p": dflt[1], "pool_workers": d_workers},
                       pcie_sweep={str(k): v for k, v in by_pcie.items()},
                       min_p_sweep={str(k): v for k, v in by_minp.items()},
-                      confirm={f"{k[0]}/{k[1]}": v for k, v in confirm.items()})
+                      confirm={"/".join(map(str, k if blocks else k[:2])): v for k, v in confirm.items()})
+        if blocks:
+            report["default"]["dflash_block"] = d_block
+            report["dflash_block_sweeps"] = block_sweeps
     finally:
         close(eng)
     settings = {}
     if chosen != dflt:
         settings["--pcie-frac"] = f"{chosen[0]:.2f}"
         settings["--spec-min-p"] = f"{chosen[1]:.2f}"
+        if blocks and chosen[2] != d_block:
+            settings["--dflash-block"] = str(chosen[2])
     base_rate = statistics.median(confirm[chosen]) if confirm.get(chosen) else None
     # 4. fewer CPU workers (a restart each), with the chosen settings
     if d_workers and len(worker_candidates(d_workers, extra_workers)) > 1:
-        tuned = with_arg(with_arg(base_args, "--pcie-frac", f"{chosen[0]:.2f}"), "--spec-min-p", f"{chosen[1]:.2f}")
+        tuned = apply(base_args, settings)
         by_workers = {}
         for w in worker_candidates(d_workers, extra_workers):
             say(f"  Measuring with {w} CPU workers (restarts the engine) ...")
@@ -320,6 +354,7 @@ def close(eng):
         proc.wait(60)
     except Exception:
         proc.kill()
+        proc.wait(timeout=10)  # reap it and release VRAM before a subsequent measurement starts
 
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice
@@ -331,7 +366,10 @@ def apply(args: list[str], settings: dict) -> list[str]:
     default (setup's --spec-min-p 0.5, the engine's own PCIe share and worker count), so an older calibration's
     values never linger."""
     out = list(args)
-    for flag, default in DEFAULTS.items():
+    defaults = dict(DEFAULTS)
+    if "--dflash" in args:
+        defaults["--dflash-block"] = None
+    for flag, default in defaults.items():
         out = with_arg(out, flag, settings.get(flag, default))
     return out
 

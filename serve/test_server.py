@@ -1522,6 +1522,11 @@ class SamplingKeys(unittest.TestCase):
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
 
+    def test_dflash_block_tune_key(self):
+        self.assertIn("dflash_block=4", self.keys(strata_tune={"dflash_block": 4}))
+        for value in (0, 8, -1, True, 4.0, "4", float("nan"), float("inf")):
+            self.assertFalse([k for k in self.keys(strata_tune={"dflash_block": value}) if k.startswith("dflash_block=")])
+
     def test_checkpoint_key(self):
         self.assertIn("ckpt=0", self.keys(temperature=0, strata_checkpoint=False))
         for absent in ({}, {"strata_checkpoint": True}, {"strata_checkpoint": 0}, {"cache_prompt": False}):
