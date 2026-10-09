@@ -45,7 +45,7 @@ Unchanged from the 0.1.40.1 report except the engine:
   the card and read back on later starts, so it no longer depends on the start-up heuristic). Same build options,
   plus `-DSTRATA_GGML_DIR` pointing at llama.cpp `159c651f5` with six RDNA2 MMQ patches (wider tiles, 24-bit scale
   multiplies, Q8_K-style activations, VOP3P dot-chain heads; the patches, build flags and their own measurements are in
-  [xjc10/dual-6900xt-flash-next-tuning](https://github.com/xjc10/dual-6900xt-flash-next-tuning/tree/main/patches/llama.cpp)).
+  [Vop3p/dual-6900xt-flash-next-tuning](https://github.com/Vop3p/dual-6900xt-flash-next-tuning/tree/main/patches/llama.cpp)).
   Strata takes its expert prompt GEMMs from that MMQ; on 0.1.40.2 the ggml change alone was +1.5% at a 32K prompt with
   byte-identical output. The PR commits and the ggml change were not separated again here.
 - **Other load:** nothing else used the GPUs (telemetry); an idle llama-swap router, a home-automation stack and the
@@ -178,4 +178,4 @@ accepted). Throughput numbers only; the session's content is not part of this re
 
 Developed with an AI coding assistant; every number above was measured on 2x RX 6900 XT (gfx1030, PCIe 4.0 x8 each) /
 Ryzen 5 5600X, ROCm 10.0. The tuning history behind the "PRs" arm, step by step with its measurements, is at
-[xjc10/dual-6900xt-flash-next-tuning](https://github.com/xjc10/dual-6900xt-flash-next-tuning).
+[Vop3p/dual-6900xt-flash-next-tuning](https://github.com/Vop3p/dual-6900xt-flash-next-tuning).
