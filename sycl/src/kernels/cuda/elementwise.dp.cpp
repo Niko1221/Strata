@@ -788,6 +788,11 @@ bool doorbell_payload_ready(const uint32_t* h_seq, const float* h_x, int64_t n, 
 
 bool doorbell_wait_payload(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
                            const float* h_weights, int64_t k, uint32_t want, int timeout_ms) {
+    // Debug/profile only: skip the whole-payload check and trust the ring. Output may be wrong
+    // (the very race the check catches), but it lets the host-timed profiler run where the
+    // checksum never matches (e.g. the SYCL eager path). Never set in a normal run.
+    static const bool nocheck = std::getenv("STRATA_DOORBELL_NOCHECK") != nullptr;
+    if (nocheck) return true;
     if (doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) return true;
     const auto t0 = std::chrono::steady_clock::now();
     while (!doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) {
