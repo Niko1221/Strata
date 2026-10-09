@@ -538,5 +538,20 @@ class CudaVision(unittest.TestCase):
                 self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
 
 
+class SwiftIq3s(unittest.TestCase):
+    """#1651: Swift 1.5 has its own IQ3_S tier since 2026-10-08 (ukisai's Swift-1.5 GGUF repo) - the model choice
+    must not hide it behind the qwen family.  Names and sizes checked against the Hub listing when written."""
+
+    def test_iq3_s_is_a_swift_choice(self):
+        self.assertIn("swift", setup.MODELS["IQ3_S"].get("families", ("qwen", "swift")))
+
+    def test_the_published_file_names(self):
+        fam = setup.FAMILIES["swift"]
+        self.assertEqual(setup.model_shards(fam, "IQ3_S"), 2)
+        self.assertEqual([setup.model_file(fam, "IQ3_S", i) for i in (1, 2)],
+                         ["Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                          "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"])
+
+
 if __name__ == "__main__":
     unittest.main()
