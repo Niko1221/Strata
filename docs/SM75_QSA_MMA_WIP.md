@@ -86,3 +86,34 @@ The separate free-generation smoke test used exactly 16384-token chat prompts, o
 For calibration, a separate 18-process experiment with MMA disabled compared default dynamic prefill CPU sharing (environment unset) against sharing disabled (0). On three small continuations, mean Top-1 agreement was 95.65%, 98.92%, and 95.00%. Paired process PPL changes were +1.46 +/-2.59%, -1.57 +/-3.12%, and +0.29 +/-3.08% (CI95, three pairs, df=2). Disabled-path independent repeats were bit-identical; default dynamic sharing varied across repeats. These small-sample scheduling differences are context for measurement, not an acceptance threshold for MMA. STRATA_PREFILL_CPU_SHARE=1 means a fixed 100% CPU share, not the default automatic mode.
 
 Remaining review gates: a broader standard quality corpus and agreed numerical criteria; HIP fallback compilation; low-PTX fallback qualification with a supporting older CUDA toolchain; current-upstream layer/end-to-end ablation and final dispatch/kernel review. Keep opt-in/default-off and Draft.
+
+
+# October 9: QSA MMA WikiText subset quality check
+
+Three fixed, nonoverlapping target segments from the first 500 rows of Salesforce/wikitext, wikitext-2-raw-v1 test split. This is a subset check, not the full WikiText benchmark. Prompts are 256/256/8192 tokens; each segment has 384 teacher-forced target positions. T=2/3/4 each has native/MMA process pairs, with order alternated. CPU experts remain enabled, prefill CPU sharing, adaptive residency and speculative lookup/suffix paths are disabled. Same executable, same nominal cache byte budget; all 18 logs report 8136 initial resident experts. All initial T=1 logits are identical. CPU was shared with other programs; process wall times are not a throughput experiment.
+
+| Segment | T | Native PPL | MMA PPL | PPL change % | Top-1 agreement % | Mean KL |
+|---|---:|---:|---:|---:|---:|---:|
+|wiki0|2|2.324350|2.370520|+1.986|94.271|0.025758|
+|wiki0|3|2.320599|2.332855|+0.528|96.094|0.023137|
+|wiki0|4|2.338502|2.359436|+0.895|93.750|0.027887|
+|wiki1|2|1.472899|1.482264|+0.636|96.875|0.007000|
+|wiki1|3|1.474211|1.465530|-0.589|99.219|0.007749|
+|wiki1|4|1.474202|1.466795|-0.502|98.698|0.005825|
+|wiki2long|2|3.188446|3.159130|-0.919|95.573|0.011450|
+|wiki2long|3|3.189549|3.192524|+0.093|96.875|0.008349|
+|wiki2long|4|3.199310|3.215236|+0.498|95.833|0.010810|
+
+## Exploratory sequence-level intervals
+
+The three target segments, not individual correlated tokens, are the units. Student-t CI95 uses df=2 on paired mean NLL differences; endpoints are transformed with exp(delta)-1 to PPL change. Only three segments and mixed prompt lengths make these exploratory intervals, not a quality-equivalence guarantee. T variants reuse the same corpus and are not additional independent samples.
+
+| T | Pooled PPL change % | Exploratory CI95 % | Mean Top-1 agreement % |
+|---|---:|---:|---:|
+|2|+0.561|[-2.989, +4.240]|95.573|
+|3|+0.010|[-1.380, +1.419]|97.396|
+|4|+0.295|[-1.481, +2.103]|96.094|
+
+Largest observed absolute logit difference: 7.053290605545044. Max per-position KL: 0.6280740816848684. The method changes numerical results; these data do not support bit equivalence or a general no-quality-loss claim. No acceptance threshold was prespecified. Keep the path optional and Draft pending review and broader qualification.
+
+Source: https://huggingface.co/datasets/Salesforce/wikitext. Corpus provenance/hash: SOURCE.json; commands, fixed tokens and raw per-position statistics are in this directory. Results should be published without redistributing the corpus.
