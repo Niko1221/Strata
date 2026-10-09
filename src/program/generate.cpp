@@ -2465,6 +2465,17 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // a model the batched prompt path does not run on this GPU (qwen35moe below sm_75, or on HIP): every prompt is
+    // read through the verify windows, in serve (every part a short read) as in one-shot generate
+    const bool no_prompt_path = native_pack && !model_geom.has_hc() && !strata::prefill::Prefill::supports(model_geom);
+    if (no_prompt_path) {
+        std::fprintf(stderr, "strata generate: this GPU has no batched prompt path for a %s model (NVIDIA sm_75+): "
+                             "prompts are read through the decode windows (slower)\n",
+                     strata::core::arch_name(model_geom.arch));
+        o.prefill_chunk = 0;
+        o.prefill_auto = false;
+        o.short_read = std::numeric_limits<int64_t>::max();
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -2614,7 +2625,7 @@ int main(int argc, char** argv) {
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
         if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
-            (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
+            (o.prefill_chunk <= 0 && o.tokens.size() > 1 && !no_prompt_path)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
@@ -6253,7 +6264,7 @@ int main(int argc, char** argv) {
                      dropped ? "is closed" : "stays open", why.c_str());
     }
     if (o.serve) {
-        if (o.spec < 2 || o.prefill_chunk <= 0 ||
+        if (o.spec < 2 || (o.prefill_chunk <= 0 && !no_prompt_path) ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
             std::fprintf(stderr, "strata serve: needs --spec T and --prefill CHUNK (and a fillable "
                                  "--expert-cache; the graphed hit path additionally needs --expert-profile P)\n");
@@ -6335,7 +6346,7 @@ int main(int argc, char** argv) {
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
-        if (pf_borrow && d_res != nullptr) {
+        if (pf_borrow && d_res != nullptr && !no_prompt_path) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
@@ -6535,7 +6546,7 @@ int main(int argc, char** argv) {
                              pf_parts[i].dev, (long long) (pf_parts[i].cache->slots() - pf_parts[i].first),
                              (long long) pf_parts[i].cache->slots(),
                              (double) part_bytes(pf_parts[i], pf_parts[i].first) / 1073741824.0);
-        } else {
+        } else if (!no_prompt_path) {
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
         }
         rss_probe("the prompt path set up");
@@ -6570,7 +6581,7 @@ int main(int argc, char** argv) {
             return 0;
         };
         static constexpr int64_t kStepChunks[] = {6144, 4096, 3072, 2048, 1536, 1024, 512};
-        {
+        if (!no_prompt_path) {
             // First by arithmetic: a prompt path without a loan allocates its buffers, so the chunk must leave
             // headroom on that device (a chunk that fits to the last MiB left hipBLAS nothing: its GEMMs then
             // failed to launch on gfx1201 and the prompt hung).  `bytes_needed` is the same count `init` makes.
@@ -6608,7 +6619,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        for (;;) {
+        while (!no_prompt_path) {   // no prompt path: every read goes through the windows (windows_ok)
             const int r = init_prompt_paths();
             if (r == 0) break;
             int64_t next = 0;
@@ -9455,6 +9466,7 @@ int main(int argc, char** argv) {
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
             int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
+                if (no_prompt_path) return true;
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)

@@ -5220,6 +5220,18 @@ def main() -> int:
                      "anyway", "  Try it anyway?")
         warn(f"installing {fam['title']} {size_of(model)} on an AMD card, as you chose (untested: please report how "
              "it runs)")
+    if not hip and fam.get("nvidia_only") and str(gpu.get("arch", "")).isdigit() and \
+            int(gpu["arch"]) < CUDA13_MIN_ARCH:
+        # Pascal / Volta (the experimental CUDA 12 engine): the batched prompt path needs sm_75, so the engine reads
+        # every prompt through the decode windows, and the model has not been run on these cards.  Before the download
+        confirm_risk(f"{fam['title']} has not been run on {gpu_name(gpu)} (sm_{gpu['arch']}): its batched prompt path "
+                     "needs an RTX 20 or newer (sm_75), so prompts are read through the slower decode path (on an RTX 4070 Ti "
+                     "made to take it: ~90 tokens/s, an 8K-token prompt in 1.5 minutes; slower on this card)", bool(a.model or a.family), a.yes,
+                     f"{fam['title']} is untested below sm_75",
+                     f"use Qwen3.8-Flash-Next on this card, or --family {family} --model {size_of(model)} --yes to try "
+                     "it anyway", "  Try it anyway?")
+        warn(f"installing {fam['title']} {size_of(model)} on {gpu_name(gpu)}, as you chose (untested: please report "
+             "how it runs)")
     if fam.get("one_gpu") and multi:
         # like UD-Q4_K_XL's RAM budget: the engine has no layer split for this model yet, so one card runs it
         warn(f"{fam['title']} runs on one GPU for now (the engine has no layer split for it yet): using "

@@ -159,9 +159,10 @@ added (Coder, three short prompts and an 8K prompt, back to back on the same PC)
 
 ## Limits
 
-- **NVIDIA only for now.** The prompt path's dense attention is a tensor-core kernel (RTX 20 and newer). On AMD and
-  older NVIDIA cards the engine reads the prompt through the decode windows instead (on the 4070 Ti that path read
-  ~80 tokens/s, against 4,000+ batched) - and it has not been run on an AMD card at all; setup says so and asks.
+- **NVIDIA RTX 20 and newer for now.** The prompt path's dense attention is a tensor-core kernel (sm_75+). On AMD and
+  older NVIDIA cards (Pascal, Volta) the engine, and the server, read every prompt through the decode windows instead
+  (on the 4070 Ti, made to take that path: a 9,800-token prompt in 113 s, ~87 tokens/s, against 3.9 s batched). It
+  has not been run on an AMD or a pre-RTX 20 card; setup says so and asks before the download.
 - **One GPU.** The layer split across several cards is not done for this model.
 - **No images** yet (its vision encoder is not wired in).
 - The low-RAM mode (`--resident-experts`) gives the same tokens as the normal mode on this PC (UD-IQ3_S: 9.0 GiB of

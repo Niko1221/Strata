@@ -497,6 +497,32 @@ class Amd(Base):
         self.assertIn("untested on AMD", line)
 
 
+class Pascal(Base):
+    """Below sm_75 the engine reads every prompt through the decode windows, and the model was never run there."""
+    CARD = [{"index": 0, "name": "NVIDIA GeForce GTX 1080", "vram_gb": 8.0, "arch": "61", "driver": "535.104"}]
+
+    def test_asked_default_no_before_the_download(self):
+        code, out, cfg = self.main(["--family", "qwen36"], found=self.CARD, answers={})
+        self.assertEqual(code, 1)
+        self.assertTrue(any("Try it anyway?" in q and "[n]" in q for q in self.asked), self.asked)
+        self.assertIn("Qwen3.6-35B-A3B is untested below sm_75", out)
+        self.assertEqual(self.downloads, [])
+        self.assertIsNone(cfg)
+
+    def test_yes_with_the_model_goes_on(self):
+        code, out, cfg = self.main(["--family", "qwen36", "--model", "UD-IQ3_S"], found=self.CARD)
+        self.assertEqual(code, 0, out)
+        self.assertIn("has not been run on GPU 0 (NVIDIA GeForce GTX 1080, 8 GB) (sm_61)", out)
+        self.assertIn("installing Qwen3.6-35B-A3B UD-IQ3_S on GPU 0", out)
+
+    def test_turing_is_not_asked(self):
+        card = [{**self.CARD[0], "name": "NVIDIA GeForce RTX 2080 SUPER", "arch": "75", "driver": "580.97"}]
+        code, out, cfg = self.main(["--family", "qwen36", "--model", "UD-IQ3_S"], found=card)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("sm_75", out.replace("(sm_75)", ""))
+        self.assertNotIn("untested below", out)
+
+
 class OneGpu(Base):
     def test_gpus_keeps_one(self):
         code, out, cfg = self.main(["--family", "qwen36", "--model", "UD-IQ4_XS", "--gpus", "0,1"],
