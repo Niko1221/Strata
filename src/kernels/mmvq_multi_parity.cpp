@@ -63,6 +63,10 @@ const Case CASES[] = {
     {"Q6_K", 14, 2048, 512, 256, 210, {208, -1}},     // Q6KBlock: half d after ql, qh, scales
     {"IQ4_XS", 23, 4096, 512, 256, 136, {0, -1}},     // IQ4XSBlock: half d; n_in 4096, see THE NEGATIVE CONTROL
     {"Q5_K wide", 13, 4096, 2048, 256, 176, {0, 2}},
+    {"IQ4_XS NW3 6K", 23, 2560, 6144, 256, 136, {0, -1}},
+    {"IQ4_XS NW3 10K", 23, 2560, 10240, 256, 136, {0, -1}},
+    {"IQ4_XS NW3 12K", 23, 2560, 12288, 256, 136, {0, -1}},
+    {"IQ4_XS row tail", 23, 2560, 5, 256, 136, {0, -1}},
 };
 
 // a normal fp16 in +-[2^-10, 2^-5): exponent field 5..9 (bias 15), any mantissa, either sign

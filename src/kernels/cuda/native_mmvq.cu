@@ -1147,6 +1147,141 @@ struct SmallTraits<IQ4NLBlock, 4> {
     }
 };
 
+#if !defined(__HIPCC__)
+extern bool g_multi_exact;
+static bool s26_tsum_on();
+struct IQ4Hoist : IQ4XSTraits {
+    struct A { int u[8]; float d8; };
+    __device__ static A load_act(const Q81Block* x, int iqs) {
+        A a;
+        const auto* b = x + iqs / 4;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) a.u[j] = reinterpret_cast<const int*>(b->qs)[j];
+        a.d8 = __low2float(b->ds);
+        return a;
+    }
+    __device__ static float dot(const W& r, const A& a, int) {
+        int sumi = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            sumi = STRATA_DP4A(r.v[j].x, a.u[j], sumi);
+            sumi = STRATA_DP4A(r.v[j].y, a.u[j + 4], sumi);
+        }
+        sumi *= r.ls - 32;
+        const float d = r.dw * a.d8;
+        return d * sumi;
+    }
+};
+
+// Draft: enable only on the architecture used in the historical experiments.
+// No CUDA-only candidate is compiled into the HIP path.
+bool reuse_sm75_device() {
+    int dev = 0, major = 0, minor = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+        return false;
+    return major == 7 && minor == 5;
+}
+template<typename F, int NCOLS, int NW, int ROWS>
+__launch_bounds__(NW * WARP, 1)
+__global__ void activation_reuse_kernel(const typename F::Block* __restrict__ w,
+                                         const Q81Block* __restrict__ x,
+                                         float* __restrict__ y, int n_in, int n_out) {
+    constexpr int BPI = F::BPI * NW / WARPS;           // blocks per iteration scale with the warp count
+    const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
+    const int row0 = ROWS * int(blockIdx.x);
+    const int blocks_per_row = n_in / F::DIV;
+    const int x_stride = n_in / Q8K;                   // Q8_1 blocks per activation column
+    float tmp[NCOLS][ROWS] = {};
+    for (int kbx = tid / F::T; kbx < blocks_per_row; kbx += BPI) {
+        const int kby = kbx * F::KBY;
+        const int kqs = F::kqs(tid);
+        if constexpr (ROWS > 1) {
+            // The activation operands are row-independent: load them once for every column, then walk rows.
+            typename F::A act[NCOLS];
+#pragma unroll
+            for (int j = 0; j < NCOLS; ++j)
+                act[j] = F::load_act(x + std::size_t(j) * x_stride + kby, kqs);
+#pragma unroll
+            for (int i = 0; i < ROWS; ++i) {
+                if (row0 + i < n_out) {
+                    const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
+                    const typename F::W wv = F::load(w + block, kqs);
+#pragma unroll
+                    for (int j = 0; j < NCOLS; ++j) tmp[j][i] += F::dot(wv, act[j], kqs);
+                }
+            }
+        } else {
+#pragma unroll
+            for (int i = 0; i < ROWS; ++i) {
+                if (row0 + i < n_out) {
+                    const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
+                    const typename F::W wv = F::load(w + block, kqs);      // once per (row, block)
+#pragma unroll
+                    for (int j = 0; j < NCOLS; ++j)                         // then per column
+                        tmp[j][i] += F::apply(wv, x + std::size_t(j) * x_stride + kby, kqs);
+                }
+            }
+        }
+    }
+    __shared__ float partial[NW - 1 > 0 ? NW - 1 : 1][NCOLS][ROWS][WARP];
+    if (threadIdx.y > 0) {
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][j][i][threadIdx.x] = tmp[j][i];
+    }
+    __syncthreads();
+    if (threadIdx.y > 0) return;
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j) {
+#pragma unroll
+        for (int i = 0; i < ROWS; ++i) {
+#pragma unroll
+            for (int l = 0; l < NW - 1; ++l) tmp[j][i] += partial[l][j][i][threadIdx.x];
+            tmp[j][i] = warp_sum(tmp[j][i]);
+            if (threadIdx.x == i && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = tmp[j][i];
+        }
+    }
+}
+
+
+template<typename F, int C>
+void launch_activation_reuse(const void* weights, const void* input, float* y, int k, int r, void* stream) {
+    constexpr int rows = 4;
+    const auto* w = static_cast<const typename F::Block*>(weights);
+    const auto* x = static_cast<const Q81Block*>(input);
+    const unsigned blocks = unsigned((std::size_t(r) + rows - 1) / rows);
+    const auto s = static_cast<cudaStream_t>(stream);
+    static const bool nw3 = [] {
+        const char* e = std::getenv("STRATA_IQ4_NW3");
+        return e && e[0] == '1';
+    }();
+    // Ten K blocks occupy only the first three warps. Their accumulation and
+    // reduction order is unchanged; the fourth warp adds zeros in this shape.
+    if (nw3 && k == 2560 && (r == 6144 || r == 10240 || r == 12288)) {
+        activation_reuse_kernel<F, C, 3, rows><<<blocks, dim3(WARP, 3), 0, s>>>(w, x, y, k, r);
+        return;
+    }
+    activation_reuse_kernel<F, C, 4, rows><<<blocks, dim3(WARP, 4), 0, s>>>(w, x, y, k, r);
+}
+template<typename F>
+bool try_activation_reuse(const void* weights, const void* x, float* y, int k, int r, int cols, void* stream) {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_IQ4_ACT_REUSE");
+        return e && e[0] == '1';
+    }();
+    if (!on || !g_multi_exact || s26_tsum_on() || cols < 2 || cols > 4 || !reuse_sm75_device()) return false;
+    switch (cols) {
+        case 2: launch_activation_reuse<F, 2>(weights, x, y, k, r, stream); break;
+        case 3: launch_activation_reuse<F, 3>(weights, x, y, k, r, stream); break;
+        case 4: launch_activation_reuse<F, 4>(weights, x, y, k, r, stream); break;
+    }
+    return true;
+}
+#endif
+
 // NW warps per block and ROWS rows per block. The EXACT layout (NW = 4, ROWS = 1, or 4 for small K) is the
 // ncols = 1 layout and keeps every column bitwise equal to a single-column call. The UPSTREAM layout is
 // llama.cpp's generic multi-column table (ncols 2-4: 4 warps; 5-8: 2 warps; always 2 rows per block): faster,
@@ -2226,6 +2361,12 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+#if !defined(__HIPCC__)
+    if (try_activation_reuse<IQ4Hoist>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) {
+        launch_check();
+        return;
+    }
+#endif
     STRATA_WAVE_MMVQ(IQ4XSTraits)
     if (ncols > 1) {
         launch_multi<IQ4XSTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
