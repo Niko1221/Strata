@@ -7143,7 +7143,7 @@ int main(int argc, char** argv) {
                        conversations.evict_oldest())
                     ++evicted;
                 if (!admit()) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor; evicted %zu, %zu still parked, or telemetry unavailable)\n",
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM admission; need %zu MiB plus %lld MiB floor; evicted %zu, %zu still parked, or telemetry unavailable)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib,
                                  evicted, conversations.size());
                     return true;
@@ -7168,7 +7168,7 @@ int main(int argc, char** argv) {
                     image.stage_images.push_back(std::move(part));
                 }
                 if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after capture, or telemetry unavailable)\n");
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture, or telemetry unavailable)\n");
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();

@@ -1,5 +1,6 @@
 #include "strata/core/conversation_memory.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <limits>
@@ -37,7 +38,9 @@ std::optional<uint64_t> conversation_available_memory() {
 #if defined(_WIN32)
     MEMORYSTATUSEX status{};
     status.dwLength = sizeof status;
-    if (GlobalMemoryStatusEx(&status)) return status.ullAvailPhys;
+    // #1607: the commit limit (RAM + page file) ends the process before physical RAM does - under WDDM the card's
+    // VRAM is charged to it too (#141).  Admit no more than either bound still offers.
+    if (GlobalMemoryStatusEx(&status)) return std::min(status.ullAvailPhys, status.ullAvailPageFile);
     return {};
 #elif defined(__linux__)
     std::ifstream meminfo("/proc/meminfo");

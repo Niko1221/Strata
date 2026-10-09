@@ -6,8 +6,9 @@
 
 namespace strata::core {
 
-// Host physical memory, not swap/commit or a container/job memory reservation.
-// Unknown telemetry is deliberately distinct from a measured zero.
+// Host physical memory, not swap or a container/job memory reservation - except on Windows, where the commit
+// charge is what kills the process (0xC0000409 at the commit limit, #1607), so the tighter of the two is the
+// bound.  Unknown telemetry is deliberately distinct from a measured zero.
 std::optional<uint64_t> conversation_available_memory();
 std::optional<uint64_t> conversation_mem_available(std::istream& meminfo);
 
