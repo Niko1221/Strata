@@ -105,11 +105,15 @@ class VideoPolicyTests(unittest.TestCase):
             sample_times([0.0, 0.5], 0, 128)
 
     def test_cumulative_budget_repeat_costs_cancel_and_deadline(self):
-        b = VideoRequestBudget(policy(max_frames=6, max_duration_s=4))
+        b = VideoRequestBudget(policy(max_frames=12, max_duration_s=8, max_tokens=40))
         info = probe_info(probe_data(), b.policy)
         info.charge(b)
-        with self.assertRaises(VideoLimitError):
+        self.assertEqual((b.frames, b.tokens, b.embedding_bytes), (5, info.rows, info.rows * 2560 * 4))
+        with self.assertRaisesRegex(VideoLimitError, "tokens budget"):
             info.charge(b)
+        self.assertEqual((b.frames, b.tokens, b.embedding_bytes), (5, info.rows, info.rows * 2560 * 4))
+        with self.assertRaisesRegex(VideoLimitError, "wire payload"):
+            info.charge(VideoRequestBudget(policy(max_embedding_bytes=info.rows * 2560 * 4 + 1)))
         cancel=threading.Event(); cancel.set()
         with self.assertRaises(VideoCancelled):
             VideoRequestBudget(policy(),cancel).check()

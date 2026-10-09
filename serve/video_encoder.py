@@ -14,7 +14,7 @@ import shutil
 import threading
 
 from .media import (HEADER, SPAN, MediaLimits, read_bundle, validate_qwen4, write_bundle)
-from .video import VIDEO_PROFILE, VideoError, VideoPolicy
+from .video import VIDEO_PROFILE, VideoError, VideoLimitError, VideoPolicy
 from .video_source import DiskQuota, OwnedMediaFile
 
 
@@ -109,7 +109,8 @@ class VideoEncoder:
         if frames:
             info.charge(budget)
         rows = sum(len(span.positions) for span in bundle.spans)
-        budget.charge(tokens=rows, embedding_bytes=rows * bundle.width * 4)
+        if rows != info.rows or bundle.width != 2560:
+            raise VideoError("video encoder returned an unexpected visual row count or width")
 
     @staticmethod
     def check_tokens(bundle, info, tokenizer):
@@ -144,12 +145,10 @@ class VideoEncoder:
         if not self.available:
             raise VideoError("video unavailable: " + (self.reason or "encoder is not ready"))
         budget.check()
-        # A pair has <=256 wrapper tokens (checked by the native exporter). The
-        # precise completed wire size is checked before cache publication.
         groups, rows = (len(info.indices) + 1) // 2, info.rows
-        maximum = HEADER.size + (rows + groups * 512) * 4 + groups * SPAN.size + rows * (12 + 2560 * 4)
+        maximum = info.max_wire_bytes
         if maximum > self.policy.max_embedding_bytes:
-            raise VideoError("video wire payload exceeds its embedding/transport byte budget")
+            raise VideoLimitError("video wire payload exceeds its embedding/transport byte budget")
         self.evict_for(maximum)
         owned = OwnedMediaFile(self.directory, self.quota, maximum, ".sve2")
         try:
@@ -163,7 +162,7 @@ class VideoEncoder:
                     any(int(s.kind) != 2 for s in bundle.spans)):
                 raise VideoError("video encoder did not preserve all temporal groups/rows")
             self.check_tokens(bundle, info, tokenizer)
-            self.costs(bundle, info, budget, frames=False)  # decoder already charged frames/RGB/duration
+            self.costs(bundle, info, budget, frames=False)
             owned.finish(owned.path.stat().st_size)
             if owned.reserved <= self.policy.cache_bytes:
                 with self.cache_lock:

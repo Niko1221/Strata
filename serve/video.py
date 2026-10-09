@@ -13,6 +13,8 @@ import struct
 import time
 from dataclasses import asdict, dataclass, fields
 
+from .media import HEADER as MEDIA_HEADER, SPAN as MEDIA_SPAN
+
 
 class VideoError(ValueError):
     pass
@@ -116,6 +118,7 @@ class VideoRequestBudget:
 
     def charge(self, **costs):
         self.check()
+        projected = {}
         for key, n in costs.items():
             if key not in ("source_bytes", "frames", "rgb_bytes", "tokens", "embedding_bytes", "duration_s"):
                 raise VideoError("unknown video budget cost")
@@ -124,6 +127,8 @@ class VideoRequestBudget:
             value = getattr(self, key) + n
             if value > getattr(self.policy, "max_" + key):
                 raise VideoLimitError(f"video request exceeds its {key} budget")
+            projected[key] = value
+        for key, value in projected.items():
             setattr(self, key, value)
 
 
@@ -244,8 +249,17 @@ class ClipInfo:
     def packet_bytes(self):
         return FRAME_HEADER.size + len(self.indices) * FRAME_TIME.size + self.rgb_bytes
 
+    @property
+    def max_wire_bytes(self):
+        groups = (len(self.indices) + 1) // 2
+        return (MEDIA_HEADER.size + (self.rows + groups * 512) * 4 + groups * MEDIA_SPAN.size +
+                self.rows * (12 + 2560 * 4))
+
     def charge(self, budget):
-        budget.charge(duration_s=self.duration_s, frames=len(self.indices), rgb_bytes=self.rgb_bytes)
+        if self.max_wire_bytes > budget.policy.max_embedding_bytes:
+            raise VideoLimitError("video wire payload exceeds its embedding/transport byte budget")
+        budget.charge(duration_s=self.duration_s, frames=len(self.indices), rgb_bytes=self.rgb_bytes,
+                      tokens=self.rows, embedding_bytes=self.rows * 2560 * 4)
 
 
 def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
