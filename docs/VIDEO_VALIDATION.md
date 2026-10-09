@@ -124,11 +124,12 @@ inputs**. The configured 600 s deadline is a safety budget, not a latency guaran
 or resolutions. The actual selected-frame costs are checked
 before decode; exceeding any row, wire, RGB, decoder-output, duration or disk budget rejects the request.
 
-At `8c4c8fa7`, the host transport test passed 5,013 checks, CTest passed 1/1, and 73 Python video/media tests
-passed with zero skips (`MEDIA_TEST_EXE`, `STRATA_FFMPEG` and `STRATA_FFPROBE` set). The host C++ Qwen-profile
-reader also accepted the 1,024-frame artifact: 512 spans, 30,720 rows under the engine's new limits. A separate
-CUDA 13.4 engine build linked and reported version 0.1.41, but **was not run on a GPU**. These checks add no
-model-answer or natural-video accuracy claim to the earlier live-server results.
+At `0b2a6360`, the host transport test passed 5,013 checks, CTest passed 1/1, and the host C++ Qwen-profile
+reader accepted the 1,024-frame artifact: 512 spans, 30,720 rows under the engine's limits. After the serving
+row/wire defaults changed in `5811cf93`, the 73 Python video/media tests passed again with zero skips
+(`MEDIA_TEST_EXE`, `STRATA_FFMPEG` and `STRATA_FFPROBE` set). A separate CUDA 13.4 engine build linked and
+reported version 0.1.41, but **was not run on a GPU**. These checks add no model-answer or natural-video accuracy
+claim to the earlier live-server results.
 
 ## Requests to a running server
 
