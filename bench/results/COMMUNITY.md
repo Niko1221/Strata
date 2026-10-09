@@ -11,6 +11,7 @@ How to read the table:
 
 | Folder | Hardware | Model | Prompt tok/s | Output tok/s | Strata | PR |
 |---|---|---|---|---|---|---|
+| [2026-10-09-community-rtx5090-9800x3d-swift-1m](2026-10-09-community-rtx5090-9800x3d-swift-1m/) | RTX 5090, Ryzen 7 9800X3D, 91.9 GiB usable RAM, 480 W | Swift IQ3_XXS, 1M YaRN | 6,687 / 6,426 (32K / 131K, greedy, n=2) | 198.9 / 190.6 (same runs); native 1M disk restore 6.107 s | 0.1.41 | not submitted |
 | [2026-10-01-0.1.31-release](2026-10-01-0.1.31-release/) | RX 7900 XTX 24 GB, Ryzen 7 7700X | Coder IQ1_M | 545 to 900 median (0.1.30 to 0.1.31) | 16-34 to 17-65 | 0.1.30 / 0.1.31 | #404 |
 | [2026-10-01-community-2x-rtx-pro-4500](2026-10-01-community-2x-rtx-pro-4500/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 1,428 / 2,454 / 2,785 | 115 / 120 / 93 | 0.1.30 | #418 |
 | [2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36](2026-10-02-community-2x-rtx-pro-4500-engine-0.1.36/) | 2x RTX PRO 4500 32 GB, Threadripper 7960X | Swift IQ3_XXS | 2,960 / 5,065 / 5,762 | 127 / 130 / 105 | 0.1.36 | #418 |
