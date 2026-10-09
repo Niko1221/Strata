@@ -157,6 +157,21 @@ class Calibrate(unittest.TestCase):
             self.assertIsNone(CAL.engine_error(None))
             self.assertIsNone(CAL.engine_error(str(Path(d) / "missing.log")))
 
+    def test_apply_removes_all_duplicate_overrides(self):
+        args = BASE + ["--pcie-frac", "0.2", "--pcie-frac", "0.75", "--spec-min-p", "0.7"]
+        default = CAL.apply(args, {})
+        self.assertNotIn("--pcie-frac", default)
+        self.assertEqual(default.count("--spec-min-p"), 1)
+        self.assertEqual(CAL.arg_value(default, "--spec-min-p"), "0.5")
+
+    def test_close_reaps_a_killed_engine(self):
+        import subprocess
+        eng = mock.Mock()
+        eng.proc.wait.side_effect = [subprocess.TimeoutExpired("engine", 60), 0]
+        CAL.close(eng)
+        eng.proc.kill.assert_called_once()
+        self.assertEqual(eng.proc.wait.call_args_list, [mock.call(60), mock.call(timeout=10)])
+
     def test_worker_candidates(self):
         self.assertEqual(CAL.worker_candidates(6), [6, 4, 3, 2])
         self.assertEqual(CAL.worker_candidates(23), [23, 15, 12, 6])        # a quarter: 4 beat 15 on 8P + 16E
@@ -215,6 +230,10 @@ class DFlashCalibration(unittest.TestCase):
         res, _ = self.measure(speed)
         self.assertEqual(res["settings"]["--dflash-block"], "3")
         self.assertEqual(res["settings"]["--pcie-frac"], "0.20")
+
+    def test_six_row_forward_is_measured(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 6 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "6")
 
     def test_mtp_never_receives_dflash_setting(self):
         args = CAL.apply(BASE, {"--dflash-block": "4"})

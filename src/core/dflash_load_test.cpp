@@ -195,6 +195,36 @@ int main() {
                       "missing block_size"),
               "missing required key refused");
     }
+    {   // signed metadata must not travel through double, which reads sign-extended u as positive
+        auto kv = meta();
+        for (auto& k : kv) if (k.key == "dflash.mask_token_id") k = fixture::i32(k.key, (uint64_t) -1);
+        fixture::write(dir / "signed-mask.gguf", kv, tensors_llama());
+        DFlashGeometry g;
+        check(loads(dir / "signed-mask.gguf", &g) && g.mask_token_id == -1, "signed mask sentinel preserved");
+    }
+    for (const fixture::Kv& bad : {
+             fixture::Kv{"dflash.embedding_length", 10, {}, UINT64_MAX},
+             fixture::Kv{"dflash.embedding_length", 6, {}, 0x42000000}, // F32 32: integer keys require integer types
+             fixture::Kv{"dflash.embedding_length", 11, {}, (uint64_t) INT64_MAX},
+             fixture::str("dflash.attention.key_length", "not-an-integer"),
+             fixture::str("dflash.attention.causal", "maybe"),
+             fixture::i32("dflash.attention.key_length", (uint64_t) -1),
+             fixture::Kv{"dflash.rope.frequency_base", 6, {}, 0x7fc00000}}) {
+        auto kv = meta();
+        bool present = false;
+        for (auto& k : kv) if (k.key == bad.key) { k = bad; present = true; }
+        if (!present) kv.push_back(bad);
+        fixture::write(dir / "bad-number.gguf", kv, tensors_llama());
+        check(refuses(dir / "bad-number.gguf", bad.key.c_str()), "invalid numeric/boolean metadata refused");
+    }
+    {   // a floating tap index must not silently truncate into a valid integer layer
+        auto kv = meta();
+        for (auto& k : kv) if (k.key == "dflash.target_layers") {
+            k.elem = 6; k.arr = {0x3f000000, 0x3f800000}; // F32 0.5 and 1.0
+        }
+        fixture::write(dir / "float-taps.gguf", kv, tensors_llama());
+        check(refuses(dir / "float-taps.gguf", "floating tap indices"), "floating taps refused");
+    }
     {   // a required tensor missing
         auto ts = tensors_llama();
         ts.erase(ts.begin() + 5);   // blk.1.attn_q.weight (3 fixed + 11 per layer)

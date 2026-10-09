@@ -19,8 +19,10 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace strata::core {
 
@@ -36,13 +38,25 @@ const MetaValue* meta(const GgufFile& f, const std::vector<const char*>& keys) {
     return nullptr;
 }
 
-bool meta_i64(const GgufFile& f, const std::vector<const char*>& keys, int64_t* out) {
-    if (const MetaValue* v = meta(f, keys)) {
-        if (!v->is_num()) return false;
-        *out = (int64_t) v->num();
+bool integer_value(const MetaValue& v, int64_t* out) {
+    switch (v.type) {
+    case strata::MetaType::I8: case strata::MetaType::I16:
+    case strata::MetaType::I32: case strata::MetaType::I64:
+        // The reader sign-extends signed payloads into u. Avoid a lossy double round trip.
+        std::memcpy(out, &v.u, sizeof(*out));
         return true;
+    case strata::MetaType::U8: case strata::MetaType::U16:
+    case strata::MetaType::U32: case strata::MetaType::U64:
+        if (v.u > (uint64_t) std::numeric_limits<int64_t>::max()) return false;
+        *out = (int64_t) v.u;
+        return true;
+    default: return false;
     }
-    return false;
+}
+
+bool meta_i64(const GgufFile& f, const std::vector<const char*>& keys, int64_t* out) {
+    const MetaValue* v = meta(f, keys);
+    return v && integer_value(*v, out);
 }
 
 bool meta_f64(const GgufFile& f, const std::vector<const char*>& keys, double* out) {
@@ -57,13 +71,16 @@ bool meta_f64(const GgufFile& f, const std::vector<const char*>& keys, double* o
 bool meta_flag(const GgufFile& f, const std::vector<const char*>& keys, bool* out) {
     if (const MetaValue* v = meta(f, keys)) {
         if (v->type == strata::MetaType::STRING) {
-            *out = v->s == "true" || v->s == "1";
-            return true;
+            if (v->s == "true" || v->s == "1") { *out = true; return true; }
+            if (v->s == "false" || v->s == "0") { *out = false; return true; }
+            return false;
         }
-        if (v->is_num()) {
-            *out = v->u != 0;
-            return true;
-        }
+        int64_t value = 0;
+        if (v->type == strata::MetaType::BOOL) value = (int64_t) v->u;
+        else if (!integer_value(*v, &value)) return false;
+        if (value != 0 && value != 1) return false;
+        *out = value != 0;
+        return true;
     }
     return false;
 }
@@ -204,6 +221,10 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     };
     for (const auto& n : nums) {
         if (!meta_i64(f, n.keys, n.out)) {
+            if (meta(f, n.keys)) {
+                err = std::string("dflash: invalid integer metadata ") + n.keys[0];
+                return false;
+            }
             if (n.required) {
                 err = std::string("dflash: missing metadata key") + (n.keys.size() > 1 ? " (any of" : "") + " " +
                       n.keys[0] + (n.keys.size() > 1 ? "...)" : "") + " in " + path_;
@@ -213,23 +234,45 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
         }
     }
     if (g.head_dim <= 0) {
+        if (meta(f, {"dflash.attention.key_length", "qwen3.attention.key_length"})) {
+            err = "dflash: attention.key_length must be positive when present";
+            return false;
+        }
         if (g.hidden <= 0 || g.n_head <= 0 || g.hidden % g.n_head != 0) {
             err = "dflash: cannot derive the head dim from embedding_length / attention.head_count";
             return false;
         }
         g.head_dim = g.hidden / g.n_head;
     }
-    (void) meta_f64(f, {"dflash.rope.frequency_base", "qwen3.rope.frequency_base"}, &g.rope_theta);
-    meta_flag(f, {"dflash.sample_from_anchor"}, &g.sample_from_anchor);
-    meta_flag(f, {"dflash.attention.causal", "dflash.causal"}, &g.causal);
-    meta_flag(f, {"dflash.has_confidence_head"}, &g.confidence_head);
+    const std::vector<const char*> rope_keys = {"dflash.rope.frequency_base", "qwen3.rope.frequency_base"};
+    if (meta(f, rope_keys) && (!meta_f64(f, rope_keys, &g.rope_theta) ||
+                              !std::isfinite(g.rope_theta) || g.rope_theta <= 0.0)) {
+        err = "dflash: rope.frequency_base must be a finite positive number";
+        return false;
+    }
+    struct Flag { std::vector<const char*> keys; bool* out; };
+    for (const Flag& flag : {Flag{{"dflash.sample_from_anchor"}, &g.sample_from_anchor},
+                             Flag{{"dflash.attention.causal", "dflash.causal"}, &g.causal},
+                             Flag{{"dflash.has_confidence_head"}, &g.confidence_head}}) {
+        if (meta(f, flag.keys) && !meta_flag(f, flag.keys, flag.out)) {
+            err = std::string("dflash: invalid boolean metadata ") + flag.keys[0];
+            return false;
+        }
+    }
 
     if (const MetaValue* tl = meta(f, {"dflash.target_layers", "target_layers"})) {
         if (tl->type != strata::MetaType::ARRAY || tl->elem == strata::MetaType::STRING) {
             err = "dflash: target_layers must be an integer array";
             return false;
         }
-        for (const auto& e : tl->items) g.target_layers.push_back((int32_t) e.num());
+        for (const auto& e : tl->items) {
+            int64_t layer = 0;
+            if (!integer_value(e, &layer) || layer < 0 || layer > std::numeric_limits<int32_t>::max()) {
+                err = "dflash: target_layers must contain non-negative int32 layer indices";
+                return false;
+            }
+            g.target_layers.push_back((int32_t) layer);
+        }
         // The reader keeps a 64-item sample; a tap list that long is not a tap list.
         if ((int64_t) g.target_layers.size() != (int64_t) tl->count) {
             err = "dflash: implausibly long target_layers array";
@@ -248,6 +291,16 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
               std::to_string(g.n_head_kv) + " head_dim=" + std::to_string(g.head_dim) +
               " intermediate=" + std::to_string(g.intermediate) + " vocab=" + std::to_string(g.vocab) +
               " block_size=" + std::to_string(g.block_size) + ")";
+        return false;
+    }
+    // Check products before evaluating signed dimensions or payload sizes below.
+    constexpr int64_t max_product = (std::numeric_limits<int64_t>::max() - 31) / 2;
+    auto fits = [](int64_t a, int64_t b) { return a > 0 && b > 0 && a <= max_product / b; };
+    if (!fits(g.hidden, (int64_t) g.target_layers.size()) || !fits(g.n_head, g.head_dim) ||
+        !fits(g.n_head_kv, g.head_dim) || !fits(g.hidden, g.fusion_in()) ||
+        !fits(g.hidden, g.n_head * g.head_dim) || !fits(g.hidden, g.n_head_kv * g.head_dim) ||
+        !fits(g.hidden, g.intermediate)) {
+        err = "dflash: empty tap list or geometry products exceed the supported integer range";
         return false;
     }
     for (size_t i = 0; i < g.target_layers.size(); ++i) {

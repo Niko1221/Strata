@@ -8963,7 +8963,7 @@ int main(int argc, char** argv) {
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
             int req_dflash_k = dflash_k;
-            bool req_dflash_block_set = false, bad_dflash_block = false;
+            bool req_dflash_block_set = false, bad_dflash_block = false, bad_tune = false;
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -8988,8 +8988,14 @@ int main(int argc, char** argv) {
                     else if (key == "penalty_freq") req_penalty_freq = fv;
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
-                    else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
-                    else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "pcie_frac" || key == "spec_min_p") {
+                        char* tail = nullptr;
+                        const double value = std::strtod(tok.c_str() + eq + 1, &tail);
+                        bad_tune = bad_tune || tail == tok.c_str() + eq + 1 || *tail != '\0' ||
+                                   !std::isfinite(value) || value < 0.0 || value > 1.0;
+                        if (key == "pcie_frac") req_pcie_frac = value;
+                        else req_spec_min_p = value;
+                    }
                     else if (key == "dflash_block") {
                         char* tail = nullptr;
                         errno = 0;
@@ -9002,6 +9008,10 @@ int main(int argc, char** argv) {
                     }
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
+            }
+            if (bad_tune) {
+                std::printf("ERR bad request: calibration parameter\n");
+                continue;
             }
             if (bad_dflash_block) {
                 std::printf("ERR bad request: dflash_block\n");
@@ -10789,7 +10799,11 @@ int main(int argc, char** argv) {
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
                 if (req_dflash && !eos && produced_n < max_new) {
                     if (adapt_thr.joinable()) adapt_thr.join();
-                    drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err);
+                    // The next proposal waits on this same stream. Keep an explicit wait when
+                    // there is no proposal or the ungated policy needs the completed context time.
+                    const bool sync_context = df_auto || p + a + 1 + req_dflash_k + 1 > o.max_context;
+                    drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err,
+                                                    sync_context);
                     const auto ctx_done = Clock::now();
                     if (df_auto && rounds > 1 && !from_sfx) {
                         const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
@@ -12064,7 +12078,7 @@ int main(int argc, char** argv) {
                 if ((int64_t) produced.size() < max_new) {
                     const Clock::time_point td = Clock::now();
                     const bool ok = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(),
-                                                           p - (a + 1), a + 1, err) &&
+                                                           p - (a + 1), a + 1, err, false) &&
                                     (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
                                                                 o.spec_min_p > 0 ? dprob.data() : nullptr));
                     if (ok && std::getenv("STRATA_DF_DBG") != nullptr) {

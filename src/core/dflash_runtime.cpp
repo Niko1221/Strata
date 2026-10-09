@@ -357,9 +357,9 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             uint32_t bits = (uint32_t) host[i] << 16;
             std::memcpy(&wide[(size_t) i], &bits, 4);
         }
+        wf_.push_back({t.name, f32d});
         if (cudaMemcpyAsync(f32d, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess)
             return bail("dflash: the norm weight upload failed");
-        wf_.push_back({t.name, f32d});
     }
 
     // ---- the drafter's own K/V: the target's QSA pool shapes, but only `layers` pools.  The pool
@@ -635,7 +635,7 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
 }
 
 bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t stride_floats, int64_t pos0, int64_t rows,
-                                    std::string& err) {
+                                    std::string& err, bool synchronize) {
     // The verify window's capture: [n_taps][stride_floats] f32 (stride_floats = max_t*n_embd), the
     // rows [0, rows) of each tap valid.  (The prompt path's add_context takes ROWS instead: its
     // tap stride is the chunk capacity in rows.)
@@ -651,6 +651,7 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
         strata::kernels::dflash_gather_taps(taps, tapin_, n_taps, (int) N, (int) rows, stride_floats, cs_);
     }
     if (!fusion_rows(pos0, (int) rows, err)) return false;
+    if (!synchronize) return true;   // propose uses this stream and waits for both operations
     {
         DFlashSection s("ctx.sync");
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {

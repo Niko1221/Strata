@@ -159,8 +159,9 @@ public:
                      std::string& err);
     /// The same from the verify window's capture: f32 taps [n_taps][stride_floats] (the window's
     /// max_t * n_embd), rows [0, rows) of each tap valid (at most 8).
+    /// synchronize=false requires an immediate propose()/idle() before the caller reuses taps.
     bool add_context_f32(const float* taps, int n_taps, int64_t stride_floats, int64_t pos0, int64_t rows,
-                         std::string& err);
+                         std::string& err, bool synchronize = true);
 
     /// One block (docs/DFLASH.md): the anchor token `x` at position `pos` (its own context cell
     /// does not exist - query 0 carries it), `block` query rows at rope positions [pos, pos+block),

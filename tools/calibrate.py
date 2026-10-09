@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 MIN_GAIN = 0.03                    # a setting must beat the default by this much to be kept
 PCIE_FRACS = (0.0, 0.2, 0.35, 0.55, 0.75)
 SPEC_MIN_PS = (0.3, 0.5, 0.7)
-DFLASH_BLOCKS = (1, 2, 3, 4, 5, 7)
+DFLASH_BLOCKS = (1, 2, 3, 4, 5, 6, 7)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
 ADAPT_CANDIDATES = (None, ("1", "80", "0.97"), ("1", "160", "0.97"))
@@ -66,7 +66,7 @@ def arg_value(args: list[str], flag: str) -> str | None:
 def with_arg(args: list[str], flag: str, value: str | None) -> list[str]:
     """`args` with `flag value` set (replaced if present), or removed when value is None."""
     out = list(args)
-    if flag in out:
+    while flag in out:
         i = out.index(flag)
         del out[i:i + 2]
     if value is not None:
@@ -316,6 +316,7 @@ def close(eng):
         proc.wait(60)
     except Exception:
         proc.kill()
+        proc.wait(timeout=10)  # reap it and release VRAM before a subsequent measurement starts
 
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice
