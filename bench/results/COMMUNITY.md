@@ -1,6 +1,6 @@
 # Community bench results, index
 
-One row per community folder in this directory (ported for 0.1.40.2 from the community bench PRs, authors credited in the commits). Raw dumps, logs and binaries were trimmed from the folders; each trimmed folder has a `TRIMMED.md` listing what was left out. The README in each folder has the full method.
+One row per community folder in this directory (ported for 0.1.40.2 and 0.1.41 from the community bench PRs, authors credited in the commits). Raw dumps, logs and binaries were trimmed from the folders; each trimmed folder has a `TRIMMED.md` listing what was left out. The README in each folder has the full method.
 
 How to read the table:
 
@@ -90,3 +90,14 @@ Notes:
 | [2026-10-07-community-rtx-5090-laptop-ud-iq4xs](2026-10-07-community-rtx-5090-laptop-ud-iq4xs/) | RTX 5090 Laptop 24 GB | UD-IQ4_XS (first NVIDIA measurement) | see the README | see the README | 0.1.40.1 | #1245 |
 | [2026-10-06-community-rtx-5090-laptop](2026-10-06-community-rtx-5090-laptop/) | RTX 5090 Laptop 24 GB, Windows 11 | see README | see the README | see the README | 0.1.40.1 | #1263 |
 | [2026-10-06-community-2x-rx-6900xt-0.1.40.1](2026-10-06-community-2x-rx-6900xt-0.1.40.1/) | 2x RX 6900 XT (gfx1030), Ryzen 5 5600X | IQ3_S, 131K | see the README | see the README | 0.1.40.1 | #1270 |
+| [2026-10-07-community-arc-b65-v01402](2026-10-07-community-arc-b65-v01402/) | Arc Pro B65 32 GB (Gen4 x16), i5-12600K | Flash-Next IQ2_XS, 8K / 262K profiles | 7K input: 315 (8K, prefill 512), 830 (prefill 4096), 288 (262K) | 43.5 (8K), 42.9 (prefill 4096), 42.4 (262K) at 7K | 0.1.40.2 (SYCL) | #1432 |
+| [2026-10-07-community-rtx5090-pro4000-helper](2026-10-07-community-rtx5090-pro4000-helper/) | RTX 5090 32 GB + RTX PRO 4000 Blackwell 24 GB (helper cache), Ryzen 7 9800X3D, Windows 11 | UD-Q4_K_XL, 262K | 1,514 / 2,048 / 2,201 (5K / 33K / 115K prompt) | 103 / 92 / 94 | 0.1.40.3 | #1433 |
+| [2026-10-07-community-2x-rtx-4000](2026-10-07-community-2x-rtx-4000/) | 2x Quadro RTX 4000 8 GB, 2x Xeon E5-2620 v3, Proxmox LXC | Swift IQ2_XS, 131K | 99.9 to 249.2 on 73K-token prompts (fresh and cached tail) | 18.1 to 22.8 | 0.1.38 | #1443 |
+| [2026-10-07-community-v100-p100-helper](2026-10-07-community-v100-p100-helper/) | Tesla V100 32 GB + Tesla P100 16 GB (P100 as expert helper, mixed sm_70 + sm_60), Xeon E5-2699 v3 | Flash-Next IQ3_XXS, 262K | 1,437 (18K) / 1,446 (44K) / 1,411 (120K, one run) | about 73 (256-token cap) | 0.1.40.2 | #1452 |
+| [2026-10-07-community-xtx-6800xt-1m-helper](2026-10-07-community-xtx-6800xt-1m-helper/) | RX 7900 XTX 24 GB + RX 6800 XT 16 GB (helper), Xeon E5-2696 v4, 1M context, source HIP build with local patches | UD-Q4_K_XL | 1,350 (50K) / 1,294 (130K) / 592 (1,048K cold) | 97 long coding (final arm); 39 at the full 1M depth | 0.1.40.2 + local patches | #1459 |
+| [2026-10-07-community-rtx-5080-docker-wsl2](2026-10-07-community-rtx-5080-docker-wsl2/) | RTX 5080 16 GB in Docker Desktop on Windows (WSL2), Ryzen 9 9950X | Coder IQ1_M, 131K and 65K | 2,253 / 3,304 (4K / 32K, 131K limit) | 75.7 / 80.8 / 72.2 (4K / 32K / 130K) | 0.1.40.3 | #1460 |
+| [2026-10-08-community-rtx-5090-laptop-engine-0.1.40.3](2026-10-08-community-rtx-5090-laptop-engine-0.1.40.3/) | RTX 5090 Laptop 24 GB (175 W), Ryzen 9 9955HX3D, Windows 11 | Flash-Next Q2_0, 131K | 1,950 / 2,893 / 2,780 (4K / 32K / 128K) | 138 / 144 / 131 | 0.1.40.3 (0.1.40.2 in a short section) | #1462 |
+| [2026-10-08-community-rtx4090-iq3xxs-200k-code](2026-10-08-community-rtx4090-iq3xxs-200k-code/) | RTX 4090, Ryzen 9 7950X, 46 GB RAM, Linux source build | Flash-Next IQ3_XXS, 204,800, code prompts, experimental speed projection on | 2,146 / 3,342 / 3,292 (4K / 32K / 125K) | 128 / 138 / 122 | 0.1.40.3 | #1467 |
+| [2026-10-08-community-rtx4090-iq3xxs-200k-ru](2026-10-08-community-rtx4090-iq3xxs-200k-ru/) | RTX 4090, Ryzen 9 7950X (same PC) | Flash-Next IQ3_XXS, 204,800, Russian prompts | see the README | see the README | 0.1.40.3 | #1467 |
+| [2026-10-08-community-2x-titan-rtx-0.1.40.3](2026-10-08-community-2x-titan-rtx-0.1.40.3/) | 2x TITAN RTX 24 GB (NVLink, unused), Xeon E5-2696 v4, source build | Flash-Next IQ3_S, 262K | 869 / 1,549 / 1,627 (4K / 32K / 128K) | 70.9 / 77.3 / 71.1 | 0.1.40.3 | #1429 |
+| [2026-10-07-community-gfx1150](2026-10-07-community-gfx1150/) | Radeon 890M (gfx1150), Ryzen AI 9 HX PRO 370, 96 GB unified memory | IQ3_XXS | 153 / 216 / 226 (1K / 3.6K / 7K) with the gfx1150 hipBLASLt table, 99 / 124 / 130 without | 15.2-17.6 | 0.1.40.2 | - |

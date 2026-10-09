@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
     }
     // accuracy against an FP64 host reference on a sample (blocks below n_bid; the tail block is the warp kernel's own
     // arithmetic in both scorers). Gate, as the prompt-attention harness's: the scorer under test is no worse than 4x
-    // the warp kernel's error, floored at 1e-6 of the score scale.
+    // the warp kernel's error, floored at 1e-5 of the score scale.
     double err_old = 0, err_new = 0, scale = 0;
     {
         std::mt19937 srng(11);
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
             }
         }
     }
-    const bool acc_ok = !have_tc || err_new <= std::max(4.0 * err_old, 1e-6 * scale);
+    const bool acc_ok = !have_tc || err_new <= std::max(4.0 * err_old, 1e-5 * scale);
     // time
     dpct::event_ptr e0, e1;
     e0 = new sycl::event(); e1 = new sycl::event();

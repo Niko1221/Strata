@@ -199,8 +199,6 @@ void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int n
 
 }  // namespace
 
-bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
-
 void bf16_rows_dot_multi(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
     // each row is read once for all `nt` (<= 8) tokens: the router (2.6 MB per layer) streams once per prediction
     for (int r = 0; r < rows; ++r) {
