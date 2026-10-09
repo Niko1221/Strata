@@ -4452,6 +4452,7 @@ int main(int argc, char** argv) {
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
     bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits
+    int64_t min_slots = 1;          // shared with the post-touch guard: never apply the fixed haircut below this
     // --pipeline-windows: what it allocates on CUDA0 after the cache (see kPipeWindowMib)
     const int64_t pipe_first = o.pipeline_windows <= 0 ? 0
         : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
@@ -4590,7 +4591,7 @@ int main(int argc, char** argv) {
         // reserve): 400 MiB failed in the graph instantiation at 8K, 32K and 64K; 450 started at all three and
         // ended with 136-204 MiB free.  500 keeps 50 MiB over that.
         const int kSmallReserveMib = g.has_indexer ? 300 : 500;
-        const int64_t min_slots = (o.prefill_chunk > 0 && pf_borrow)
+        min_slots = (o.prefill_chunk > 0 && pf_borrow)
             ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + 128 : 1;
         if (o.expert_cache < min_slots && !o.vram_reserve_given && !vram_capped && o.vram_reserve_mib > kSmallReserveMib) {
             // the largest reserve (in MiB) that still leaves min_slots
@@ -4793,11 +4794,16 @@ int main(int argc, char** argv) {
         // allocation is not resident until it is touched, and the free figure read before it can be ~1 GB too
         // high.  A cache sized from it filled the card to 0 MiB, the driver then paged, and a request that needed a
         // page back while the verify graph spun on a host flag never finished.  So the slots are zeroed and the
-        // free figure read again; while it is short of the reserve the cache is reopened smaller.
+        // free figure read again.  That read is not a size: the same allocation reports 0 MiB or a few
+        // hundred MiB.  A cache large enough to spare 1 GiB gives back that much of the pre-touch budget,
+        // once (the upper end of the ~0.7-1 GiB the figure runs high, and the give a 0 reading used to take
+        // twice).  A smaller cache keeps the measured shortfall, so a small card's reserve is unchanged.
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
         int zero_reads = 0;
+        bool fixed_haircut = false;
+        int64_t pretouch_bytes = -1;
         for (int attempt = 0;; ++attempt) {
             bool ok = false;
             if (fake_fails > 0) {
@@ -4853,13 +4859,42 @@ int main(int argc, char** argv) {
                 }
                 break;
             }
-            // Uncapped auto retains the original WDDM retry path, including both zero-read haircuts.
+            // Uncapped auto. A large native qwen35moe cache takes one fixed 1 GiB haircut from the
+            // pre-touch budget. qwen4exp (g.has_indexer) and a cache that cannot spare 1 GiB keep the
+            // measured shortfall, including both zero-read haircuts. Capped sizing already returned.
             if (!auto_cache || attempt - failed >= 6) break;
+            if (pretouch_bytes < 0) pretouch_bytes = xcache.bytes();
             cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
+            // Keep the cap's late bytes and quality staging in the shortfall. Both are 0 on the uncapped fast path.
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first + cap_cache_extra + quality_staging_extra;
+            // The haircut already chose the size from the pre-touch budget.  Stop, whatever this read is.
+            if (fixed_haircut) {
+                std::fprintf(stderr, "strata generate: expert cache auto: %lld MiB free after the fixed haircut "
+                                     "(reserve %d MiB); the slot count stays\n",
+                             (long long) (free_b >> 20), o.vram_reserve_mib);
+                break;
+            }
+            // 1 GiB, once, from the budget sized before the touch.  Same command, same slots: a 0 MiB read and
+            // a few-hundred-MiB read no longer take different gives.  A cache that cannot spare 1 GiB (small
+            // cards, whose reserve was just fit to the prefill minimum) keeps the measured shortfall below.
+            // Scope this measured WDDM correction to native qwen35moe; qwen4exp keeps its existing path.
+            constexpr int64_t kAutoHaircut = 1ll << 30;
+            if (under_wddm() && native_pack && !g.has_indexer && !reserve_adapted &&
+                (int64_t) free_b < want - (64ll << 20) &&
+                pretouch_bytes > kAutoHaircut + want + min_slots *
+                    (int64_t) strata::kernels::cpu::expert_layout().max_blob) {
+                fixed_haircut = true;
+                const int64_t keep_bytes = pretouch_bytes - kAutoHaircut;
+                std::fprintf(stderr, "strata generate: expert cache auto: one 1024 MiB haircut from the "
+                                     "pre-touch budget (post-touch free %lld MiB is not the size; reserve %d MiB)\n",
+                             (long long) (free_b >> 20), o.vram_reserve_mib);
+                xcache.close();
+                if (!shrink_to(keep_bytes)) break;
+                continue;
+            }
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
