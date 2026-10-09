@@ -538,5 +538,53 @@ class CudaVision(unittest.TestCase):
                 self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
 
 
+class HostCompilers(unittest.TestCase):
+    """#1645: CC / CXX / CUDAHOSTCXX name the build's compilers - handed to CMake as -D, so a build folder that is
+    already configured picks them up too (CXX alone reaches CMake only on the first configure: the reporter's
+    `CXX=g++-14` run died at the last step).  CUDAHOSTCXX is nvcc's host compiler and defaults to CXX."""
+
+    def test_env_names_the_compilers(self):
+        with mock.patch.dict(os.environ, {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": "g++-14-alt"}):
+            self.assertEqual(setup.host_compiler_defs(True), ["-DCMAKE_C_COMPILER=gcc-14",
+                                                              "-DCMAKE_CXX_COMPILER=g++-14",
+                                                              "-DCMAKE_CUDA_HOST_COMPILER=g++-14-alt"])
+
+    def test_cudahostcxx_defaults_to_cxx_and_needs_cuda(self):
+        with mock.patch.dict(os.environ, {"CC": "", "CXX": "g++-14", "CUDAHOSTCXX": ""}):
+            self.assertEqual(setup.host_compiler_defs(True), ["-DCMAKE_CXX_COMPILER=g++-14",
+                                                              "-DCMAKE_CUDA_HOST_COMPILER=g++-14"])
+            self.assertEqual(setup.host_compiler_defs(False), ["-DCMAKE_CXX_COMPILER=g++-14"])   # a C++-only project
+
+    def test_unset_adds_nothing(self):
+        with mock.patch.dict(os.environ, {"CC": "", "CXX": "", "CUDAHOSTCXX": ""}):
+            self.assertEqual(setup.host_compiler_defs(True), [])
+
+    def test_the_defs_reach_cmake(self):
+        """The engine's and the CUDA encoder's configure both take them."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "old"}))
+            built = []
+
+            def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+                built.append((target, defs))
+                (bdir / "bin").mkdir(parents=True, exist_ok=True)
+                (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+                (bdir / setup.EXE).write_bytes(b"engine")
+
+            env = {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": ""}
+            with mock.patch.dict(os.environ, env), mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "new"), \
+                    mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
+                    mock.patch.object(setup, "source_version", lambda: "test"):
+                quiet(setup.build_engine, {"arch": "86"}, "gpu", True, "llama")
+        for target, defs in built:
+            self.assertIn("-DCMAKE_CXX_COMPILER=g++-14", defs, target)
+            self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=g++-14", defs, target)
+
+
 if __name__ == "__main__":
     unittest.main()

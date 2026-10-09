@@ -3151,6 +3151,20 @@ def isa_floor_defs(floor: str, bdir: Path, meta: dict) -> list:
     return [f"-DSTRATA_ISA_FLOOR={floor}"] if floor else []
 
 
+def host_compiler_defs(cuda: bool) -> list:
+    """CC / CXX / CUDAHOSTCXX pick the host compilers of a build - as -D definitions, so an existing build folder
+    takes them too (the environment reaches CMake only on a folder's first configure, which is why CXX=g++-14 alone
+    could die at the last step, #1645).  CUDAHOSTCXX is nvcc's host compiler (-ccbin); it defaults to CXX, as
+    CMake's does.  `cuda`: the project compiles CUDA (the host-compiler definition means nothing to a C++-only
+    one)."""
+    cc = os.environ.get("CC", "").strip()
+    cxx = os.environ.get("CXX", "").strip()
+    hostcxx = os.environ.get("CUDAHOSTCXX", "").strip() or cxx
+    return ([f"-DCMAKE_C_COMPILER={cc}"] if cc else []) + \
+           ([f"-DCMAKE_CXX_COMPILER={cxx}"] if cxx else []) + \
+           ([f"-DCMAKE_CUDA_HOST_COMPILER={hostcxx}"] if cuda and hostcxx else [])
+
+
 def toolkit_root_defs(nvcc) -> list:
     """CUDAToolkit_ROOT for the toolkit whose nvcc builds the engine.  Without it CMake can take cudart and cuBLAS from
     another toolkit: with STRATA_NVCC=/opt/cuda-13.0/bin/nvcc on Ubuntu 24.04 that also has the distribution's CUDA
@@ -3220,14 +3234,14 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
-                     *engine_defs(archs, toolkit),
+                     *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
-                "-DSTRATA_PORTABLE=OFF"]                   # built here, for this PC: native, like the engine
+                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
                      *toolkit_root_defs(nvcc)]
