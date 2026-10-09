@@ -1,5 +1,7 @@
 # WIP: optional SM75 padded QSA decode MMA
 
+Latest October 9 evening status: final-code 16K T=4 captured-graph validation shows QSA prefix 537.22 to 472.22 us/layer and attention 137.50 to 72.22 us/layer. Both gains remain positive under the reported worst-case print-rounding sensitivity envelope. Pure-release vs flags-off complete logits parity and two 240-case fallback fault tests pass. Six further WikiText subset segments show pooled PPL changes -0.308% (T2) and -0.472% (T4), with exploratory intervals that do not prove quality equivalence. Full protocols, numbers and limitations are in the evening sections below. HIP/SYCL builds, actual older-CUDA low-PTX qualification, independent code review and production throughput qualification remain open. Keep Draft and default off.
+
 `STRATA_QSA_SM75_MMA=1` permits the padded FP16 QK/PV MMA candidate for explicitly marked main-model verification calls with 2-4 queries on SM75. FP32 accumulators are used. T=1, MTP, prompt processing, other architectures and HIP keep their native path. The query/head geometry and split-K scratch/merge layout remain the existing 256-dimension, 12-query-heads-per-KV-head, 64-cell design.
 
 The shared tiles have padded row strides to reduce bank conflicts. K and V are read directly through selection IDs and the page table; they are not pre-expanded or permanently repacked. Failure to configure the required shared memory falls back to native attention.
@@ -117,3 +119,67 @@ The three target segments, not individual correlated tokens, are the units. Stud
 Largest observed absolute logit difference: 7.053290605545044. Max per-position KL: 0.6280740816848684. The method changes numerical results; these data do not support bit equivalence or a general no-quality-loss claim. No acceptance threshold was prespecified. Keep the path optional and Draft pending review and broader qualification.
 
 Source: https://huggingface.co/datasets/Salesforce/wikitext. Corpus provenance/hash: SOURCE.json; commands, fixed tokens and raw per-position statistics are in this directory. Results should be published without redistributing the corpus.
+
+
+## October 9 evening: default and failure-path validation
+
+Pure release fb58e0d was built completely with the same diagnostic logits-export patch and compared against this PR with the opt-in flag disabled. Both have 6528 actual resident experts and byte-identical complete logits files (128 scored fixed targets, short prompt), SHA256 90282b6de653c5bf9ab26cb40a3f25f8f5a25e8acf8ccd64bab789dc00cc5d23. This fills the separately-built upstream default-path gate for this input, not every workload.
+
+Two local-only fault-instrumented fixture runs each passed all 240 cases with max_abs=0, NRMSE=0 and byte equality against native, including CUDA Graph capture/repeated replay. One overrides reported compiled-image PTX metadata to 70; the other makes the real cudaFuncSetAttribute call request an invalid 1GiB dynamic shared-memory limit. Both use the existing fallback branch. The metadata test is not an actual low-PTX/older-CUDA build, which remains pending. Source bytes were restored after diagnostic builds; no fault hook is included in this PR.
+
+## Additional QSA MMA quality validation, October 9
+
+Six additional target spans, disjoint from one another and from the afternoon spans, from the same 500-row WikiText-2 raw test subset. Four prompts have 256 tokens, one 4096 and one 8192. Each has 256 scored targets, with 255 following the initial unchanged T=1 position. T=2 and T=4 each have paired native/MMA runs, order balanced over segments. All 24 processes exit successfully, all report 6528 resident experts, and all initial T=1 logits match. CPU experts enabled; dynamic prefill CPU sharing, cache adaptation, lookup/suffix drafts disabled. No quality threshold was selected in advance. This is still a corpus subset, not the full WikiText benchmark.
+
+| Segment | Prompt tokens | T | Native PPL | MMA PPL | Change % | Top-1 agreement % | Mean KL |
+|---|---:|---:|---:|---:|---:|---:|---:|
+|ext0|256|2|1.451758|1.451880|+0.008|98.438|0.010139|
+|ext0|256|4|1.459641|1.435095|-1.682|98.047|0.011476|
+|ext1|256|2|2.862478|2.903388|+1.429|96.094|0.018159|
+|ext1|256|4|2.869537|2.940481|+2.472|96.484|0.018705|
+|ext2|4096|2|2.987666|2.960399|-0.913|98.047|0.007065|
+|ext2|4096|4|3.006574|2.971270|-1.174|96.484|0.007223|
+|ext3|8192|2|6.178413|6.132165|-0.749|95.312|0.010735|
+|ext3|8192|4|6.198417|6.137170|-0.988|95.703|0.010900|
+|ext4|256|2|6.080145|6.013576|-1.095|95.312|0.011857|
+|ext4|256|4|5.969146|5.978688|+0.160|96.875|0.011437|
+|ext5|256|2|5.531649|5.503532|-0.508|95.312|0.006337|
+|ext5|256|4|5.511568|5.425716|-1.558|97.266|0.005120|
+
+## Exploratory segment-level CI95
+
+Student-t intervals (df=5) use the six paired segment mean NLL differences; transformed with exp(delta)-1. Tokens within a segment and the two T conditions are not treated as independent samples. Segments from one subset, shared topics and mixed prompt lengths limit generalization. Intervals containing zero do not prove equivalence.
+
+| T | Pooled PPL change % | Exploratory CI95 % | Mean Top-1 agreement % | Mean KL |
+|---|---:|---:|---:|---:|
+|2|-0.308|[-1.276, +0.669]|96.419|0.010715|
+|4|-0.472|[-2.101, +1.185]|96.810|0.010810|
+
+Largest absolute logit difference 4.742702; maximum per-position KL 0.885974. Numerical differences remain observable; no general no-quality-loss or bit-equivalence claim is justified. Keep opt-in. CPU occupancy is logged every two seconds; no production throughput inference is made from these logits-export runs.
+
+Raw commands, logits, per-position statistics, CPU samples and completion records are saved here. Corpus provenance is in the sibling wikitext/SOURCE.json. Source: https://huggingface.co/datasets/Salesforce/wikitext.
+
+## Final-head layer validation, October 9
+
+Three independent process pairs per feature: QSA order AB/BA/AB; primary high-resolution IQ4 order BA/AB/BA. T=4 fixed oracle/follow continuation, captured graphs, CPU experts enabled (six participants), PCIe=0; fixed nominal byte budget and actual resident expert counts validated equal. Prefill CPU sharing/adaptive cache/suffix and lookup disabled. The first four rounds are excluded from device profiles, so measured windows are T=4. There is no logits export or added device marker; a diagnostic-only patch prints existing stamps and resets their sums after warmup. Times are aggregate GDN/36 and QSA/12 per layer, not individual layer measurements. CI95 is paired Student-t, df=2. CPU load is observed over the entire process, including cache fill/prefill; it is not a decode-only utilization counter. All pairs are reported, with imbalance flagged separately.
+
+IQ4 compares global shared B6 ROWS=4 NW4 vs the restricted IQ4 NW3 increment on a short prompt; QSA compares native/MMA on an exact 16K prompt. Results from these different conditions must not be added.
+
+| Feature | Metric | Baseline us +/- CI95 | Candidate us +/- CI95 | Reduction % +/- CI95 | Worst-rounding CI95 envelope % |
+|---|---|---:|---:|---:|---:|
+|qsa|GDN_prefix_us|353.89 +/- 3.16|354.07 +/- 2.79|-0.052 +/- 0.297|[-2.852, 2.690]|
+|qsa|QSA_prefix_us|537.22 +/- 1.20|472.22 +/- 1.20|12.099 +/- 0.027|[5.987, 18.160]|
+|qsa|QSA_attention_us|137.50 +/- 0.00|72.22 +/- 1.20|47.475 +/- 0.869|[45.124, 49.541]|
+
+## CPU load and diagnostic throughput
+
+| Pair | CPU mean baseline/candidate % | Difference pp | Forced-follow tok/s baseline/candidate |
+|---|---:|---:|---:|
+|qsa-0|15.7/16.5|+0.7|59.01/62.54|
+|qsa-1|16.0/17.6|+1.6|63.74/62.24|
+|qsa-2|15.4/15.6|+0.2|62.81/62.01|
+
+IQ4 primary results use an additional BA/AB/BA set of three pairs with six-decimal ms profile output. The earlier two-decimal IQ4 set remains archived but is not pooled.
+QSA uses the original two-decimal ms stage output: each stage sum is rounded by at most 0.005 ms per window before division by layer count. The ordinary CI95 does not include print rounding. The separate worst-rounding envelope propagates all stage bounds into each paired percentage, then computes the most extreme Student-t interval endpoints over all eight endpoint combinations for the three pairs. It is a conservative sensitivity envelope, not a second independent confidence interval or a hardware-counter accuracy guarantee.
+
+Forced-follow throughput has acceptance 100% by construction and is not production MTP tok/s. CPU load, altered routing for numerically different MMA, and device clock differences limit end-to-end attribution. Stage timings include execution and inter-kernel gaps; they are not hardware-counter decompositions. Three pairs are a small sample. The run matrix covers the final integrated code but does not qualify every T/context/KV mode or backend.
