@@ -4795,15 +4795,26 @@ int main(int argc, char** argv) {
         // high.  A cache sized from it filled the card to 0 MiB, the driver then paged, and a request that needed a
         // page back while the verify graph spun on a host flag never finished.  So the slots are zeroed and the
         // free figure read again.  That read is not a size: the same allocation reports 0 MiB or a few
-        // hundred MiB.  A cache large enough to spare 1 GiB gives back that much of the pre-touch budget,
-        // once (the upper end of the ~0.7-1 GiB the figure runs high, and the give a 0 reading used to take
-        // twice).  A smaller cache keeps the measured shortfall, so a small card's reserve is unchanged.
+        // hundred MiB.  A cache large enough to spare 1 GiB gives back the shortfall over the reserve plus the
+        // 64 MiB tolerance, rounded up to a 256 MiB step, taken once from the pre-touch budget so two readings
+        // inside one step keep the same slot count.  A 128 MiB step is finer than the WDDM jitter on this path
+        // (a 20 MiB swing crossed a boundary and changed the slot count).  The reopen has to clear the reserve
+        // within that tolerance.  One correction, sized the same way from the new shortfall, is allowed; a second
+        // miss closes the cache and stops the engine.  A smaller cache keeps the measured shortfall, so a small
+        // card's reserve is unchanged.  qwen4exp (`g.has_indexer`) does not take this cut.
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
         int zero_reads = 0;
         bool fixed_haircut = false;
+        bool haircut_corrected = false;   // one post-haircut reopen, then refuse
         int64_t pretouch_bytes = -1;
+        // Shortfall plus the 64 MiB tolerance, rounded up to 256 MiB.  Never shorter than `need`.
+        auto bucket_haircut = [](int64_t need) -> int64_t {
+            constexpr int64_t step = 256ll << 20;
+            if (need <= 0) return step;
+            return (need + step - 1) / step * step;
+        };
         for (int attempt = 0;; ++attempt) {
             bool ok = false;
             if (fake_fails > 0) {
@@ -4859,9 +4870,10 @@ int main(int argc, char** argv) {
                 }
                 break;
             }
-            // Uncapped auto. A large native qwen35moe cache takes one fixed 1 GiB haircut from the
-            // pre-touch budget. qwen4exp (g.has_indexer) and a cache that cannot spare 1 GiB keep the
-            // measured shortfall, including both zero-read haircuts. Capped sizing already returned.
+            // Uncapped auto. A large native qwen35moe cache takes one bucketed haircut (shortfall + 64 MiB,
+            // rounded up to 256 MiB) from the pre-touch budget, then one correction or a refusal.
+            // qwen4exp (g.has_indexer) and a cache that cannot spare 1 GiB keep the measured shortfall,
+            // including both zero-read haircuts. Capped sizing already returned.
             if (!auto_cache || attempt - failed >= 6) break;
             if (pretouch_bytes < 0) pretouch_bytes = xcache.bytes();
             cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
@@ -4870,29 +4882,77 @@ int main(int argc, char** argv) {
             free_b = strata::core::device_free_bytes(); (void) total_b;
             // Keep the cap's late bytes and quality staging in the shortfall. Both are 0 on the uncapped fast path.
             const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first + cap_cache_extra + quality_staging_extra;
-            // The haircut already chose the size from the pre-touch budget.  Stop, whatever this read is.
+            constexpr int64_t kTol = 64ll << 20;
+            constexpr int64_t kLargeCacheSpare = 1ll << 30;   // eligibility only: the old "can spare 1 GiB" gate
+            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+            const int64_t floor_keep = min_slots * blob;
+            const bool reserve_ok = (int64_t) free_b >= want - kTol;
+            // The haircut already chose a size.  Accept it only when the post-touch read clears the reserve.
+            // One correction reopen, then a clean refusal: not another trip around the measured loop.
             if (fixed_haircut) {
-                std::fprintf(stderr, "strata generate: expert cache auto: %lld MiB free after the fixed haircut "
-                                     "(reserve %d MiB); the slot count stays\n",
-                             (long long) (free_b >> 20), o.vram_reserve_mib);
-                break;
+                if (reserve_ok) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: %lld MiB free after the bucketed haircut "
+                                         "(reserve %d MiB, tolerance 64 MiB); the slot count stays\n",
+                                 (long long) (free_b >> 20), o.vram_reserve_mib);
+                    break;
+                }
+                if (haircut_corrected) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: %lld MiB free after the haircut is still "
+                                         "short of the %d MiB reserve (tolerance 64 MiB); refusing\n",
+                                 (long long) (free_b >> 20), o.vram_reserve_mib);
+                    xcache.close();
+                    return 1;
+                }
+                haircut_corrected = true;
+                const int64_t shortfall = want - (int64_t) free_b;
+                const int64_t cut = bucket_haircut(shortfall + kTol);
+                const int64_t keep_bytes = xcache.bytes() - cut;
+                std::fprintf(stderr, "strata generate: expert cache auto: post-haircut free %lld MiB is under the "
+                                     "reserve; one %lld MiB correction\n",
+                             (long long) (free_b >> 20), (long long) (cut >> 20));
+                if (keep_bytes < floor_keep) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: the correction would drop the cache "
+                                         "under %lld slots; refusing\n", (long long) min_slots);
+                    xcache.close();
+                    return 1;
+                }
+                xcache.close();
+                if (!shrink_to(keep_bytes)) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: the correction does not fit; refusing\n");
+                    return 1;
+                }
+                continue;
             }
-            // 1 GiB, once, from the budget sized before the touch.  Same command, same slots: a 0 MiB read and
-            // a few-hundred-MiB read no longer take different gives.  A cache that cannot spare 1 GiB (small
-            // cards, whose reserve was just fit to the prefill minimum) keeps the measured shortfall below.
-            // Scope this measured WDDM correction to native qwen35moe; qwen4exp keeps its existing path.
-            constexpr int64_t kAutoHaircut = 1ll << 30;
+            // Shortfall plus tolerance, once, from the budget sized before the touch.  Rounded up to 256 MiB
+            // steps, so a small shortfall does not give back a flat 1 GiB and the WDDM jitter in the free
+            // reading stays on the same step.  A cache that cannot spare 1 GiB (small cards, whose reserve was
+            // just fit to the prefill minimum) keeps the measured shortfall below.
+            // Scope this WDDM correction to native qwen35moe; qwen4exp keeps its existing path.
             if (under_wddm() && native_pack && !g.has_indexer && !reserve_adapted &&
-                (int64_t) free_b < want - (64ll << 20) &&
-                pretouch_bytes > kAutoHaircut + want + min_slots *
-                    (int64_t) strata::kernels::cpu::expert_layout().max_blob) {
+                !reserve_ok &&
+                pretouch_bytes > kLargeCacheSpare + want + min_slots * blob) {
+                const int64_t shortfall = want - (int64_t) free_b;
+                const int64_t cut = bucket_haircut(shortfall + kTol);
+                const int64_t keep_bytes = pretouch_bytes - cut;
+                if (keep_bytes < floor_keep) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: a %lld MiB haircut would drop the cache "
+                                         "under %lld slots with %lld MiB still short of the %d MiB reserve; refusing\n",
+                                 (long long) (cut >> 20), (long long) min_slots, (long long) (shortfall >> 20),
+                                 o.vram_reserve_mib);
+                    xcache.close();
+                    return 1;
+                }
                 fixed_haircut = true;
-                const int64_t keep_bytes = pretouch_bytes - kAutoHaircut;
-                std::fprintf(stderr, "strata generate: expert cache auto: one 1024 MiB haircut from the "
-                                     "pre-touch budget (post-touch free %lld MiB is not the size; reserve %d MiB)\n",
+                std::fprintf(stderr, "strata generate: expert cache auto: %lld MiB haircut (shortfall %lld MiB + 64 MiB "
+                                     "tolerance, bucketed to 256 MiB; post-touch free %lld MiB is not the size; "
+                                     "reserve %d MiB)\n",
+                             (long long) (cut >> 20), (long long) (shortfall >> 20),
                              (long long) (free_b >> 20), o.vram_reserve_mib);
                 xcache.close();
-                if (!shrink_to(keep_bytes)) break;
+                if (!shrink_to(keep_bytes)) {
+                    std::fprintf(stderr, "strata generate: expert cache auto: the haircut does not fit; refusing\n");
+                    return 1;
+                }
                 continue;
             }
             if ((int64_t) free_b >= want - (64ll << 20)) break;
