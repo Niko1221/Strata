@@ -740,8 +740,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (le_ < 0) le_ = g.n_layers;
-    if (lb_ < 0 || lb_ >= le_ || le_ > g.n_layers || (lb_ > 0 && hand_in_ == nullptr) ||
-        (le_ < g.n_layers && hand_out_ == nullptr)) {
+    // remote-stage: a head-only stage (set_remote, the layers before it ran in another process) has no layer of its own
+    const bool head_only = remote_run_ && lb_ == g.n_layers && le_ == g.n_layers;
+    if (lb_ < 0 || (lb_ >= le_ && !head_only) || le_ > g.n_layers || (lb_ > 0 && hand_in_ == nullptr) ||
+        ((le_ < g.n_layers || no_head_) && hand_out_ == nullptr) || (no_head_ && head_only)) {
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
@@ -2070,8 +2072,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const char* e = std::getenv("STRATA_FUSE_HEAD_GR");
         return e && e[0] == '1';
     }();
-    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
-                              !cvec().covers(g.n_layers - 1);
+    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && lb_ < le_ && !no_head_ &&
+                              (head_ != nullptr && head_->loaded()) && !cvec().covers(g.n_layers - 1);
     auto post = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
         const uint32_t ring = (uint32_t) ((l - lb_) * G + grp + 1);
@@ -2227,14 +2229,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         return true;
     };
 
-    for (int grp = 0; grp < G; ++grp)
+    for (int grp = 0; grp < G && lb_ < le_; ++grp)
         if (!pre(lb_, grp)) return false;
     for (int64_t l = lb_; l < le_; ++l)
         for (int grp = 0; grp < G; ++grp) {
             if (!post(l, grp)) return false;
             if (l + 1 < le_ && !pre(l + 1, grp)) return false;
         }
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: hand the residual on, no head
+    if (writes_handoff()) {   // a layer split's earlier stage (or a remote worker's last): hand the residual on, no head
         float* hout = hand_out_ + (size_t) hrow0 * HB;
         if (hflag_out_d_ != nullptr && !batch_rec_) {   // the overlapped split: payload + the next stage's flag
             handoff_publish(hout, R_, (int64_t) T * HC * N, bo_, (int64_t) T * N, inj2_, (int64_t) T * HC, hcount_d_,
@@ -2877,6 +2879,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
+    // remote-stage: the layers between the previous stage and this one run in the worker; its rows land in hand_in_
+    // (a remote stage is a split on one GPU, so STRATA_SPLIT_OVERLAP never prelaunches it: `pre` stays false)
+    if (remote_run_ && !remote_run_(T, tokens, pos0, err)) return false;
     // the overlapped split launched this stage's window already: keep the graph variant (#871) chosen for it then,
     // or this thread would serve the window as the other variant
     const bool pre = prelaunched_ == T;
@@ -3158,7 +3163,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
     // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
+    if (writes_handoff()) {   // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
@@ -3385,6 +3390,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
 #endif
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
+    if (remote_commit_ && !remote_commit_(n_keep, err)) return false;   // remote-stage: the worker's part (one way)
     const Clock::time_point t0 = Clock::now();
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;

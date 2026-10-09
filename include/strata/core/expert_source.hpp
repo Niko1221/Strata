@@ -1256,6 +1256,11 @@ public:
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF: `native` is the
     /// --native shard, and native_experts.txt names the other shards beside it (per layer, or per role in v4).
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// REMOTE STAGE: hold only layers [lo, hi) (-1: to the last) - a process that runs only
+    /// those layers.  The other layers' experts are absent: blob() and blob_at() are null for them.  Set before
+    /// `open`; a native pack read from its GGUF only (no experts.bin, no STRATA_ARENA_MMAP, no shared arena, no pin
+    /// by need).
+    void set_layer_range(int64_t lo, int64_t hi) { lo_ = lo; hi_ = hi; }
     void close();
 
     bool mapped() const { return base_ != nullptr; }
@@ -1333,6 +1338,9 @@ private:
     std::vector<uint8_t> layer_pcie_;
     /// index of the registered range holding [off, off + len), or -1
     int64_t pin_range_of(uint64_t off, uint64_t len) const;
+    int64_t lo_ = 0, hi_ = -1;       ///< set_layer_range
+    uint64_t lo_off_ = 0;            ///< the arena's first byte is layer lo_'s (base_ is shifted back by it)
+    bool in_range(int64_t layer) const { return layer >= lo_ && (hi_ < 0 || layer < hi_); }
     std::string gguf_;
 };
 
@@ -1344,8 +1352,11 @@ bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::E
 /// `unbuffered`: each chunk read past the file cache (Windows); `ready`: layer l is written only once
 /// *ready > l + 1 (an arena that is still being registered).
 /// `pad` (optional): the destination is the page-aligned padded layout (pin by need), see PadMap.
+/// remote-stage: only layers [layer_lo, layer_hi) (-1: to the last), written at `dst + blob_offset - dst_off`
+/// (the packed layout only: a layer range is never padded).
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
                             int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr,
-                            const PadMap* pad = nullptr);
+                            const PadMap* pad = nullptr, int64_t layer_lo = 0, int64_t layer_hi = -1,
+                            uint64_t dst_off = 0);
 
 }  // namespace strata::core
