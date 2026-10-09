@@ -484,10 +484,26 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    which is the log): read on from where it was last read, from the start of the engine's current run.  The disk
+    tier's "spill dir ready ..." and "spilled ..." lines and the system prompt cache's "system prompt cache: ..."
+    lines (key=value counters) are read the same way, for the Monitor's card."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it
+    SPILL_DIR = re.compile(r"conversation cache: spill dir ready \((\d+) conversations?, (\d+) MiB, "
+                           r"when-full=([^,\s]+), max-age=(\d+) d, (\d+) oversized kept, (\d+) stale kept, "
+                           r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, (\d+) age evictions\)")
+    SPILLED = re.compile(r"conversation cache: spilled \d+ tokens .*?disk=(\d+) MiB disk_evictions=(\d+)")
+    # the system prompt cache (F5): its ready/hit/miss/persisted lines (prose counts) and the shutdown line's
+    # key=value counters (hits=, misses=, tokens_saved=, hash_changes=, evicted_by_space=, evicted_by_age=)
+    SYS_READY = re.compile(r"system prompt cache: ready \((\d+) variants?, (\d+) MiB, slots=(\d+), max-age=(\d+) d, "
+                           r"(\d+) foreign kept, (\d+) stale kept, (\d+) orphans kept, (\d+) oversized kept\)")
+    SYS_HIT = re.compile(r"system prompt cache: hit \d+ tokens \((\d+) variants?\)")
+    SYS_MISS = re.compile(r"system prompt cache: prefix changed \(miss, (\d+) variants? live\)")
+    SYS_PERSIST = re.compile(r"system prompt cache: persisted the \d+-token root \((\d+) variants?, (\d+) MiB\)")
+    SYS_SHUTDOWN = re.compile(r"system prompt cache: shutdown: (\d+) variants?, (\d+) MiB,")
+    KV = re.compile(r"([a-z][a-z0-9_]*)=(-?\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -496,7 +512,11 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      "disk": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "evictions": 0,
+                               "age_evictions": 0, "when_full": None, "max_age_days": None,
+                               "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
+                      "sysprompt": {}}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -520,6 +540,35 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "system prompt cache:" in line:
+                s = self.state["sysprompt"]
+                m = self.SYS_READY.search(line)
+                if m:
+                    s.update({"variants": int(m.group(1)), "bytes": int(m.group(2)) * 1048576,
+                              "slots": int(m.group(3)), "max_age_days": int(m.group(4)),
+                              "kept_foreign": int(m.group(5)), "kept_stale": int(m.group(6)),
+                              "kept_orphan": int(m.group(7)), "kept_oversized": int(m.group(8))})
+                    continue
+                m = self.SYS_HIT.search(line)
+                if m:
+                    s["hits"], s["variants"] = s.get("hits", 0) + 1, int(m.group(1))
+                    continue
+                m = self.SYS_MISS.search(line)               # the prefix changed: a miss that rewrites the variant
+                if m:
+                    s["misses"], s["hash_changes"] = s.get("misses", 0) + 1, s.get("hash_changes", 0) + 1
+                    s["variants"] = int(m.group(1))
+                    continue
+                m = self.SYS_PERSIST.search(line)
+                if m:
+                    s["variants"], s["bytes"] = int(m.group(1)), int(m.group(2)) * 1048576
+                    continue
+                m = self.SYS_SHUTDOWN.search(line)           # the authoritative counters, at the engine's exit
+                if m:
+                    s["variants"], s["bytes"] = int(m.group(1)), int(m.group(2)) * 1048576
+                    s.update({k: int(v) for k, v in self.KV.findall(line)})
+                    continue
+                s.update({k: int(v) for k, v in self.KV.findall(line)})   # any other key=value line
+                continue
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)
@@ -535,20 +584,77 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                continue
+            m = self.SPILL_DIR.search(line)
+            if m:
+                d = self.state["disk"]
+                (d["conversations"], d["bytes"], d["when_full"], d["max_age_days"], d["kept"]["oversized"],
+                 d["kept"]["stale"], d["kept"]["foreign"], d["kept"]["orphan"], d["evictions"],
+                 d["age_evictions"]) = (int(m.group(1)), int(m.group(2)) * 1048576, m.group(3), int(m.group(4)),
+                                        int(m.group(5)), int(m.group(6)), int(m.group(7)), int(m.group(8)),
+                                        int(m.group(9)), int(m.group(10)))
+                d["ready"] = True
+                continue
+            m = self.SPILLED.search(line)
+            if m:
+                d = self.state["disk"]
+                d["bytes"], d["evictions"], d["spills"], d["ready"] = int(m.group(1)) * 1048576, int(m.group(2)), \
+                    d["spills"] + 1, True
         return dict(self.state)
+
+
+_SYSPROMPT_KEYS = {
+    "hits": ("hits", "hit"),
+    "misses": ("misses", "miss"),
+    "variants": ("variants", "live_variants", "variants_alive"),
+    "bytes": ("bytes", "disk_bytes", "cache_bytes"),
+    "evicted_by_age": ("evicted_by_age", "age_evictions", "expired_age"),
+    "evicted_by_space": ("evicted_by_space", "space_evictions", "disk_evictions", "budget_evictions"),
+    "hash_changes": ("hash_changes", "hash_change", "prefix_changes", "reprocessed"),
+    "tokens_saved": ("tokens_saved", "saved_tokens", "reused_tokens", "tokens_reused"),
+}
+
+
+def sysprompt_counts(raw: dict) -> dict:
+    """The system prompt cache's counters as the card wants them, from the engine's own key=value names."""
+    out = {name: next((raw[a] for a in aliases if a in raw), 0) for name, aliases in _SYSPROMPT_KEYS.items()}
+    out["raw"] = dict(raw)                              # whatever else the engine logged, verbatim
+    return out
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back.
+    Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
+    object (F5's hits, misses, live variants, bytes, evictions and hash changes), both read from the same log."""
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
+    d = parked.get("disk") or {}
+    spill_dir = info.get("conversation_cache_spill_dir")
+    disk = {"enabled": bool(d.get("ready") or spill_dir), "dir": spill_dir,
+            "budget_mib": info.get("conversation_cache_disk_mib"), "bytes": d.get("bytes", 0),
+            "conversations": d.get("conversations", 0), "spills": d.get("spills", 0),
+            "restores": parked.get("restores", 0), "evictions": d.get("evictions", 0),
+            "age_evictions": d.get("age_evictions", 0), "when_full": d.get("when_full"),
+            "max_age_days": d.get("max_age_days"), "kept": dict(d.get("kept") or {})}
+    raw_sys = parked.get("sysprompt") or {}
+    sysprompt = {"enabled": bool(raw_sys or info.get("system_prompt_cache")
+                                 or info.get("system_prompt_cache_dir") or info.get("system_prompt_cache_mib")),
+                 "dir": info.get("system_prompt_cache_dir"), "budget_mib": info.get("system_prompt_cache_mib"),
+                 "slots": raw_sys.get("slots") if raw_sys.get("slots") is not None
+                          else info.get("system_prompt_cache_slots"),
+                 "max_age_days": raw_sys.get("max_age_days"),
+                 "kept": {k[len("kept_"):]: v for k, v in raw_sys.items() if k.startswith("kept_")},
+                 **{k: v for k, v in sysprompt_counts(raw_sys).items() if k != "raw"},
+                 "raw": dict(raw_sys)}
+    legacy = {k: v for k, v in parked.items() if k not in ("disk", "sysprompt")}
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), **parked,
+            "slots": info.get("conversation_cache_slots"), **legacy,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
-            "last_prompt": last.get("prompt_tokens") if last else None}
+            "last_prompt": last.get("prompt_tokens") if last else None,
+            "disk": disk, "system_prompt_cache": sysprompt}
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -1360,8 +1466,13 @@ class StrataEngine:
                         phase = "none"
                         f = line.split()
                         if len(f) >= 5 and isinstance(self.last, dict):
-                            self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
-                                         "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                            # fields 5 and 6 (delta 3's --batch-mtp): the slot's own MTP acceptance for the
+                            # request that just ended (accepted, offered).  Appended, so an engine without the
+                            # fields (or the pipelined path, which does not draft) leaves the DONE's numbers.
+                            upd = {"finish": f[3], "decode_ms": float(f[4]),
+                                   "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                            upd.update(bdone_drafts(f))
+                            self.last = {**self.last, **upd}
                         # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
                         self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
                         if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
@@ -2087,6 +2198,45 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
+def head_device_value(cfg: dict) -> int | None:
+    """Delta 3: the config's "head_device" - the card (numbered as nvidia-smi numbers them, the same numbering
+    "gpu" uses) that runs the output head and, with it, the MTP draft layer.  None when the config names none: the
+    engine's default, the last stage as placed.  ValueError for a card that is not one of this model's."""
+    v = cfg.get("head_device")
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        if isinstance(v, bool) or isinstance(v, float):
+            raise ValueError
+        n = int(str(v).strip())
+    except ValueError:
+        raise ValueError(f'"head_device" must be a card number as nvidia-smi numbers them, not {v!r}')
+    cards = gpu_list(cfg)
+    if len(cards) < 2:
+        raise ValueError('"head_device" needs two or more cards in "gpu" (one card runs the whole model)')
+    if n not in cards:
+        raise ValueError(f'"head_device" is {n}, which is not one of this model\'s cards '
+                         f'({", ".join(str(c) for c in cards)})')
+    return n
+
+
+def ordered_gpus(cfg: dict) -> list[int]:
+    """The config's cards with the head's LAST: the engine's device 0 is the first one it sees
+    (CUDA_VISIBLE_DEVICES follows this order) and the head runs on the last stage of a layer split, so listing the
+    head's card last is what puts the head (and the draft layer) on it.  Without "head_device" this is exactly the
+    config's "gpu", in order.  No engine flag is involved: an older engine understands it too."""
+    cards = gpu_list(cfg)
+    try:
+        head = head_device_value(cfg)
+    except ValueError:
+        head = None                                    # said by the caller; the engine runs the config's order
+    # a value that cannot be reached is refused at start by head_device_value's caller; here it only orders what it
+    # was given (and, when the config cannot be read, leaves the engine the config's own order)
+    if head is None or head not in cards:
+        return cards
+    return [c for c in cards if c != head] + [head]
+
+
 def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
     """#458 (opt-in): the engine arguments for "effort_position": "end" - the id of "system" as --tail-role-token, so
     the engine checkpoints in front of the trailing effort turn - or None when the config leaves it at the top (the
@@ -2357,6 +2507,7 @@ def child_env(cfg: dict) -> dict:
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
+        # delta 3: "head_device" moves that card to the end (the engine's last stage holds the head and the draft)
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
@@ -3760,6 +3911,21 @@ class Service:
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
         yield "done", done
+
+
+def bdone_drafts(f: list[str]) -> dict:
+    """delta 3 (`--batch-mtp`): the MTP acceptance an engine appends to its `BDONE` line, as fields 5 and 6
+    (`BDONE <slot> <generated> <stop/length/cancel> <ms> <accepted> <offered>`).  A request that admitted a slot
+    prints its own `DONE ... 0 of 0` (it decoded one token), so the slot's acceptance is only on the `BDONE`.
+    -> {"drafts_accepted": ..., "drafts_offered": ...}, or {} for an engine without the fields (an older engine,
+    or the `--batch-groups` pipeline, which does not draft).  Appended after <ms>, so the first five fields are
+    read exactly as before."""
+    if len(f) >= 7:
+        try:
+            return {"drafts_accepted": int(f[5]), "drafts_offered": int(f[6])}
+        except ValueError:
+            return {}
+    return {}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -5706,6 +5872,13 @@ def main() -> int:
         elif len(gpu_list(cfg)) > 1:
             print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
                   flush=True)
+        try:
+            head = head_device_value(cfg)               # delta 3: before the start, like the split (it orders them)
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if head is not None:
+            print(f"[strata] the head and the draft layer on GPU {head}: the cards are ordered "
+                  f"{ordered_gpus(cfg)}", flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))

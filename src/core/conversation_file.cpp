@@ -714,6 +714,10 @@ struct In {
     uint64_t left;
     std::string& error;
     const SessionReadLimits& limits;
+    // Streaming K/V sizes: `record_kv` receives them (the read pass); `verify_kv`, set from the read pass's list,
+    // makes this walk refuse a file whose layer count or any part size differs (the apply pass).  At most one set.
+    std::vector<std::array<uint64_t, 5>>* record_kv = nullptr;
+    const std::vector<std::array<uint64_t, 5>>* verify_kv = nullptr;
     SessionError kind = SessionError::invalid;
     size_t kv_layer = 0;
     bool fail(const std::string& m) { if (error.empty()) error = "session file: " + m; return false; }
@@ -762,7 +766,7 @@ bool get_checkpoint(In& in, ConversationCheckpoint& c) {
            in.vec(c.block_pos, m[4]) && in.u64(c.used);
 }
 
-bool get_payload(In& in, SavedConversation& s) {
+bool get_meta_prefix(In& in, SavedConversation& s) {
     for (auto& g : s.geometry) if (!in.i64(g)) return false;
     // checked before any state array is read: a file of another geometry allocates nothing
     if (in.limits.geometry && *in.limits.geometry != s.geometry)
@@ -780,6 +784,12 @@ bool get_payload(In& in, SavedConversation& s) {
     if (!in.count(n, 72, in.limits.max_checkpoints)) return false;
     s.checkpoints.resize((size_t) n);
     for (auto& c : s.checkpoints) if (!get_checkpoint(in, c)) return false;
+    return true;
+}
+
+bool get_payload(In& in, SavedConversation& s) {
+    if (!get_meta_prefix(in, s)) return false;
+    uint64_t n = 0;
     if (!in.count(n, 96, in.limits.max_kv_layers)) return false;
     s.kv.resize((size_t) n);
     for (auto& k : s.kv) {
@@ -791,6 +801,52 @@ bool get_payload(In& in, SavedConversation& s) {
         k.format = (int) format;
         if (!in.buffer(k.k, 0) || !in.buffer(k.v, 1) || !in.buffer(k.k_scale, 2) || !in.buffer(k.v_scale, 3) ||
             !in.buffer(k.pooled, 4)) return false;
+    }
+    return true;
+}
+
+// The streaming read: the same walk, but every K/V part's bytes are read through one 16 MiB block and hashed, never
+// kept; a `sink` (the apply pass) gets each block as it is read.  When `in.record_kv` is set the part sizes are
+// recorded for the caller; when `in.verify_kv` is set (the apply pass) the file must have exactly the layer count
+// and part sizes the read pass saw, checked before that layer or part is applied.
+bool get_payload_streamed(In& in, SavedConversation& s, const SessionKvBlock& sink) {
+    if (!get_meta_prefix(in, s)) return false;
+    uint64_t n = 0;
+    if (!in.count(n, 96, in.limits.max_kv_layers)) return false;
+    if (in.verify_kv && in.verify_kv->size() != (size_t) n)
+        return in.fail("K/V layer count differs from the read pass");
+    s.kv.resize((size_t) n);
+    if (in.record_kv) in.record_kv->assign((size_t) n, {});
+    Aligned block;
+    if (n) {
+        block = aligned_block();
+        if (!block) { in.kind = SessionError::memory; return in.fail("out of memory for the K/V read block"); }
+    }
+    for (size_t l = 0; l < (size_t) n; ++l) {
+        auto& k = s.kv[l];
+        in.kv_layer = l;
+        int64_t format = 0;
+        if (!in.i64(format) || !in.i64(k.cells) || !in.i64(k.heads) || !in.i64(k.head_dim) ||
+            !in.i64(k.page_size) || !in.i64(k.pooled_rows) || !in.i64(k.idx_dim)) return false;
+        if (format < INT32_MIN || format > INT32_MAX) return in.fail("invalid K/V format");
+        k.format = (int) format;
+        for (size_t part = 0; part < 5; ++part) {
+            uint64_t size = 0;
+            const uint64_t limit = l < in.limits.max_kv_bytes.size() ? in.limits.max_kv_bytes[l][part] : UINT64_MAX;
+            if (!in.count(size, 1, limit)) return false;
+            if (in.record_kv) (*in.record_kv)[l][part] = size;
+            if (in.verify_kv && size != (*in.verify_kv)[l][part])
+                return in.fail("K/V part size differs from the read pass");
+            for (uint64_t at = 0; at < size; at += kBlock) {
+                const size_t c = (size_t) std::min<uint64_t>(kBlock, size - at);
+                if (!in.raw(block.get(), c)) return false;
+                if (sink && !sink(l, part, at, block.get(), c)) {
+                    if (in.error.empty()) in.error = "session file: the K/V sink failed";
+                    in.kind = SessionError::io;
+                    return false;
+                }
+            }
+        }
     }
     return true;
 }
@@ -880,8 +936,10 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     b.str("engine", c.engine_version);
     b.str("backend", c.backend);
     b.str("kv", c.kv);
+    // --kv-resident is deliberately absent: it decides where the K/V bytes live (the VRAM slots or the host pool),
+    // not what they mean.  The state's bytes are the same either way, and the residency is rebuilt at restore
+    // (kv_stream_reset / kv_ring_restore), so a session saved under one residency must load under another.
     b.i64("max_context", c.max_context);
-    b.i64("kv_resident", c.kv_resident);
     b.i64("mtp_window", c.mtp_window);
     b.i64("kv_rot", c.kv_rot ? 1 : 0);
     b.i64("rope.type", c.rope.type);
@@ -1021,6 +1079,21 @@ uint64_t session_read_peak_bytes(uint64_t file_bytes) {
     const uint64_t segments = file_bytes / kBlock + 1;
     // the parsed image (about the payload), the read buffer, a page per buffer segment, the small vectors
     return sat_add(sat_add(sat_add(file_bytes, kBlock), sat_mul(segments, 4096)), uint64_t(1) << 20);
+}
+
+uint64_t session_read_stream_peak_bytes(uint64_t file_bytes, const SessionReadLimits& limits) {
+    // the reader's block and the block a K/V part is moved through, plus the small vectors
+    uint64_t n = sat_add(sat_mul(2, kBlock), uint64_t(1) << 20);
+    // the parsed running-state metadata: the live checkpoint and every checkpoint the limits accept, each bounded
+    // by the tokens and state bytes the engine allows (an open limit can hold no more than the file itself)
+    uint64_t cp = sat_mul(limits.max_tokens, sizeof(int32_t) + sizeof(ConversationImageKey));
+    for (uint64_t b : limits.max_state_bytes) cp = sat_add(cp, b);
+    cp = sat_add(cp, 64);
+    const uint64_t checkpoints = limits.max_checkpoints == UINT64_MAX ? file_bytes : sat_mul(limits.max_checkpoints, cp);
+    n = sat_add(n, std::min(sat_add(cp, checkpoints), file_bytes));
+    // one hash per <= 16 MiB block moved, and the per-layer directories (a tiny term, bounded by the file)
+    n = sat_add(n, sat_mul(file_bytes / kBlock + 1, 6 * sizeof(uint64_t)));
+    return n;
 }
 
 namespace {
@@ -1171,34 +1244,11 @@ bool session_file_write(const std::string& path, const SavedConversation& image,
 }
 
 namespace {
-bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
-               size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus& st) {
-    error.clear();
-    st = {};
-    st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
-    RawFile raw;
-    uint64_t size = 0;
-    if (!raw.open_session(path, size)) {
-        st.error = raw.refused() ? SessionError::invalid : raw.kind();
-        error = "session file: " + path + ": " + raw.error();
-        return false;
-    }
-    if (size < kHeader + kTrailer) { error = "session file: size " + std::to_string(size) + " is below the minimum"; return false; }
-    const uint64_t max_size = session_read_max_file_bytes(limits);
-    if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
-        error = "session file: size " + std::to_string(size) + " exceeds this engine's limit" +
-                (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
-        return false;
-    }
-    FileSource f(raw);
-    if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
-    // installed before the first block (the header's) is read: every block reports, the first one included
-    if (limits.progress) f.progress.emplace(limits.progress);
-    f.expected = size;
-    uint8_t h[kHeader];
-    if (!f.read(h, kHeader)) { st.error = f.kind(); error = "session file: header read error: " + f.error(); return false; }
+// The header every read checks first: magic, version, fields, size and both fingerprints, leaving `payload` set.
+bool header_ok(const uint8_t* h, uint64_t size, const SessionFileIdentity& id, uint64_t& payload,
+               std::string& error) {
     uint32_t version = 0, hsize = 0;
-    uint64_t model = 0, config = 0, payload = 0, r0 = 0, r1 = 0, hh = 0;
+    uint64_t model = 0, config = 0, r0 = 0, r1 = 0, hh = 0;
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
     std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
@@ -1213,26 +1263,141 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
                 std::to_string(kHeader + payload + kTrailer) + ")";
         return false;
     }
+    return true;
+}
+
+// A read's prologue: open the file by its name (never what a symbolic link there points to), bound its size, and
+// read and check the header.  On success the source is positioned after the header and `payload` is set.
+struct ReadFile {
+    RawFile raw;
+    FileSource source;
+    uint64_t size = 0;
+    ReadFile() : source(raw) {}
+    bool open(const std::string& path, const SessionFileIdentity& id, const SessionReadLimits& limits,
+              uint64_t& payload, std::string& error, SessionStatus& st) {
+        if (!raw.open_session(path, size)) {
+            st.error = raw.refused() ? SessionError::invalid : raw.kind();
+            error = "session file: " + path + ": " + raw.error();
+            return false;
+        }
+        if (size < kHeader + kTrailer) {
+            error = "session file: size " + std::to_string(size) + " is below the minimum";
+            return false;
+        }
+        const uint64_t max_size = session_read_max_file_bytes(limits);
+        if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
+            error = "session file: size " + std::to_string(size) + " exceeds this engine's limit" +
+                    (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
+            return false;
+        }
+        if (!source.ok()) { st.error = SessionError::memory; error = "session file: " + source.error(); return false; }
+        // installed before the first block (the header's) is read: every block reports, the first one included
+        if (limits.progress) source.progress.emplace(limits.progress);
+        source.expected = size;
+        uint8_t h[kHeader];
+        if (!source.read(h, kHeader)) {
+            st.error = source.kind();
+            error = "session file: header read error: " + source.error();
+            return false;
+        }
+        return header_ok(h, size, id, payload, error);
+    }
+};
+
+bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
+               size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus& st) {
+    error.clear();
+    st = {};
+    st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
+    ReadFile rf;
+    uint64_t payload = 0;
+    if (!rf.open(path, id, limits, payload, error, st)) return false;
     if (limits.admit) {
         std::string why;
-        if (!limits.admit(session_read_peak_bytes(size), why)) {
+        if (!limits.admit(session_read_peak_bytes(rf.size), why)) {
             st.error = SessionError::memory;
             error = "session file: " + why;
             return false;
         }
     }
     SavedConversation parsed;
-    In in{&f, SessionHasher(0), payload, error, limits};
+    In in{&rf.source, SessionHasher(0), payload, error, limits};
     if (!get_payload(in, parsed)) { st.error = in.kind; return false; }
     if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
     uint8_t t[kTrailer];
-    if (!f.read(t, kTrailer)) { st.error = f.kind(); error = "session file: trailer read error: " + f.error(); return false; }
+    if (!rf.source.read(t, kTrailer)) { st.error = rf.source.kind(); error = "session file: trailer read error: " + rf.source.error(); return false; }
     uint64_t ph = 0;
     std::memcpy(&ph, t, 8);
     if (ph != in.hash.digest()) { error = "session file: payload checksum mismatch"; return false; }
     if (std::memcmp(t + 8, kEnd, 8) != 0) { error = "session file: bad end marker"; return false; }
     image = std::move(parsed);
-    bytes = (size_t) size;
+    bytes = (size_t) rf.size;
+    st.error = SessionError::none;
+    return true;
+}
+
+// The read pass of a streaming restore: the whole file is validated without materializing the K/V (see
+// conversation_file.hpp).  The apply pass re-walks the same file with a sink, bound by the K/V sizes recorded here.
+bool read_stream_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& meta,
+                      size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                      std::vector<std::array<uint64_t, 5>>* kv_part_bytes, SessionStatus& st) {
+    error.clear();
+    st = {};
+    st.error = SessionError::invalid;
+    ReadFile rf;
+    uint64_t payload = 0;
+    if (!rf.open(path, id, limits, payload, error, st)) return false;
+    if (limits.admit) {
+        std::string why;
+        if (!limits.admit(session_read_stream_peak_bytes(rf.size, limits), why)) {
+            st.error = SessionError::memory;
+            error = "session file: " + why;
+            return false;
+        }
+    }
+    SavedConversation parsed;
+    In in{&rf.source, SessionHasher(0), payload, error, limits};
+    in.record_kv = kv_part_bytes;
+    if (!get_payload_streamed(in, parsed, {})) { st.error = in.kind; return false; }
+    if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
+    uint8_t t[kTrailer];
+    if (!rf.source.read(t, kTrailer)) { st.error = rf.source.kind(); error = "session file: trailer read error: " + rf.source.error(); return false; }
+    uint64_t ph = 0;
+    std::memcpy(&ph, t, 8);
+    if (ph != in.hash.digest()) { error = "session file: payload checksum mismatch"; return false; }
+    if (std::memcmp(t + 8, kEnd, 8) != 0) { error = "session file: bad end marker"; return false; }
+    meta = std::move(parsed);
+    bytes = (size_t) rf.size;
+    st.error = SessionError::none;
+    return true;
+}
+
+// The apply pass: the file is walked again and every K/V block goes to the sink.  `kv_part_bytes` is the read
+// pass's list: this walk refuses a file whose layer count or part sizes differ before applying that layer or part,
+// so the sink only ever sees the bytes the read pass admitted.  The payload hash is recomputed and compared to the
+// trailer at the end - a same-size divergence since the read pass ends the caller (fail-stop).  Any failure past
+// the first sink call leaves the caller's state partly written - the caller must fail-stop.
+bool apply_stream_impl(const std::string& path, const SessionFileIdentity& id, const SessionKvBlock& sink,
+                       const std::vector<std::array<uint64_t, 5>>& kv_part_bytes, std::string& error,
+                       SessionStatus& st) {
+    error.clear();
+    st = {};
+    st.error = SessionError::invalid;
+    ReadFile rf;
+    uint64_t payload = 0;
+    if (!rf.open(path, id, SessionReadLimits{}, payload, error, st)) return false;
+    SessionReadLimits open;   // the read pass checked the engine's bounds; this walk only hands the K/V over
+    SavedConversation parsed;   // re-parsed, then discarded
+    In in{&rf.source, SessionHasher(0), payload, error, open};
+    in.verify_kv = &kv_part_bytes;
+    if (!get_payload_streamed(in, parsed, sink)) { st.error = in.kind; return false; }
+    if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
+    uint8_t t[kTrailer];
+    if (!rf.source.read(t, kTrailer)) { st.error = rf.source.kind(); error = "session file: trailer read error: " + rf.source.error(); return false; }
+    uint64_t ph = 0;
+    std::memcpy(&ph, t, 8);
+    if (ph != in.hash.digest()) { error = "session file: the file changed since the read pass (payload checksum)"; return false; }
+    if (std::memcmp(t + 8, kEnd, 8) != 0) { error = "session file: bad end marker"; return false; }
     st.error = SessionError::none;
     return true;
 }
@@ -1244,6 +1409,38 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
     bool ok = false;
     try {
         ok = read_impl(path, id, image, bytes, error, limits, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while reading " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
+}
+
+bool session_file_read_streamed(const std::string& path, const SessionFileIdentity& id, SavedConversation& meta,
+                                size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                                std::vector<std::array<uint64_t, 5>>* kv_part_bytes, SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = read_stream_impl(path, id, meta, bytes, error, limits, kv_part_bytes, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while reading " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
+}
+
+bool session_file_apply_streamed(const std::string& path, const SessionFileIdentity& id, const SessionKvBlock& sink,
+                                 const std::vector<std::array<uint64_t, 5>>& kv_part_bytes, std::string& error,
+                                 SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = apply_stream_impl(path, id, sink, kv_part_bytes, error, st);
     } catch (const std::bad_alloc&) {
         error = "session file: out of memory while reading " + path;
         st.error = SessionError::memory;

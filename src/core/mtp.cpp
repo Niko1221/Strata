@@ -3,6 +3,7 @@
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/stage_plan.hpp"   // the draft head's type and the reason a slot drafter cannot run
 
 #include "strata/core/native_head.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -627,6 +628,10 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
+        // ...AND THE SUBSET'S FORMAT.  The main drafter made it (the native head's type, Q4_0 under --mtp-q4, or
+        // the Q6_K packed layout), so it is the authority; this field used to stay at its -1 initial value and
+        // reached native_mmvq(), which threw "unsupported native MMVQ GGML type" on the first draft of a slot.
+        dhead_type_ = strata::core::draft_head_type(true, shared->dhead_type_, false, -1, head->type());
         owns_draft_head_ = false;
     }
     // the draft head's token subset, when tools/draft_vocab.py wrote one
@@ -655,6 +660,15 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 strata::kernels::native_q6_k_pack(dhead_, (int) (row_bytes / 210) * 256, (int) n_dvocab_,
                                                   "MTP draft head");
         }
+    }
+    // The draft head's type is what native_mmvq dispatches on: resolve it here, where a wrong answer is a start-up
+    // error the engine can fall back from, instead of a throw in the middle of an admission (see stage_plan.hpp).
+    if (const char* why = strata::core::slot_mtp_reason(dhead_ != nullptr ? dhead_type_ : head->type(),
+                                                        strata::kernels::native_mmvq_supported(
+                                                            dhead_ != nullptr ? dhead_type_ : head->type()));
+        why != nullptr) {
+        err = std::string("mtp: ") + why;
+        return false;
     }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
     return true;

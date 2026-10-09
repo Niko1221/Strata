@@ -1,6 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/stage_plan.hpp"   // delta 3a: batch_rows_fit_handoff (the hand-off row bound, host-testable)
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #if defined(_WIN32)
@@ -2523,8 +2524,15 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
 bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
                            std::string& err) {
     using namespace strata::kernels;
+    // DELTA 3a: with a layer split the bound is the HAND-OFF's capacity, not the slot count.  Row t of the window
+    // uses hand-off row hbase + t (one residual/pending-write/inject row per WINDOW row, indexed the same on every
+    // stage), so a window needs hbase + S rows whatever its slots are.  A --batch-mtp window carries up to two
+    // consecutive rows per slot (the confirmed token and its draft): refusing it because S > slots_ here (or in
+    // stage_batch's old grouped-rows guard) ended the engine mid-admission.  A layout that genuinely runs past the
+    // buffer is refused HERE, before any graph is captured - the ineligible combination is a start-up concern, not
+    // a runtime one.
     if (S < 1 || S > max_t_ || hbase < 0 ||
-        (next_ != nullptr && hbase + S > (int) slots_.size())) {
+        (next_ != nullptr && !batch_rows_fit_handoff(hbase, S, kVerifyMaxT))) {
         err = "verify: batch rows out of range (init_slots)";
         return false;
     }
@@ -2542,10 +2550,11 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
             err = "verify: proposed rows must have consecutive positions";
             return false;
         }
-        if (t > 0 && rows[t] == rows[t - 1] && next_ != nullptr) {
-            err = "verify: grouped slot rows do not support a layer split yet";
-            return false;
-        }
+        // DELTA 3a: grouped rows (several consecutive rows of ONE slot - what a --batch-mtp window proposes)
+        // cross a layer split unchanged.  The hand-off is per WINDOW ROW (hbase + t) and every stage indexes it
+        // the same way, while the per-slot state is handled per contiguous run of rows of one slot (the groups in
+        // record_window, capture_commit_batch and commit_slot_prefixes).  There is no per-slot hand-off row to
+        // collide: the old blanket refusal here was over-broad and, worse, ended the engine on a live admission.
     }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;

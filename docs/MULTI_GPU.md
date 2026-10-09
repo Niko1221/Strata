@@ -2,7 +2,10 @@
 
 One model can run across several NVIDIA cards in one PC. The layers are split into contiguous ranges, one per GPU:
 the first card runs layers 0 to K-1, the next card runs K onward, and so on; the last card also runs the output head
-and the draft (MTP) layer. Each card keeps an expert cache for **its own layers only**, so two cards hold about twice
+and the draft (MTP) layer - which is a placement of its own: `--head-device D` picks which of the split's devices is
+the last stage (the head and the drafter follow it), and the card **order** is what moves it to another card
+(`"head_device": N` in the config, and `setup --head-device N|auto`, which ranks the cards by their estimated time
+per layer instead of by free VRAM; docs/FLAGS.md has both). Each card keeps an expert cache for **its own layers only**, so two cards hold about twice
 the experts one card holds - for the Coder model on a 16 GB + 24 GB pair, nearly all of them, which is where the
 speed comes from (decode then barely touches the CPU pool).
 
@@ -274,4 +277,26 @@ These are opt-in settings on one rig, not defaults.
 ## Several conversations at once
 
 With a layer split, `--batch N --batch-groups G --trim-stage-weights` decodes several conversations together and
-pipelines them through the cards: see [BATCHING.md](BATCHING.md).
+pipelines them through the cards: see [BATCHING.md](BATCHING.md). With the MTP drafter, `--batch-mtp` also runs
+under a layer split: each slot's drafter lives on the head's card, beside that card's slot sessions, and a window's
+grouped rows (the confirmed token and its draft, two per slot) cross the stage hand-off one row at a time - a window
+row writes hand-off row `hbase + t` on the stage that runs it and the next stage reads it back (delta 3a; before it
+the combination was refused at run time). The throughput and the bit-exact comparison under a split are not measured
+in this tree.
+
+## Which card runs the head (`--head-device`)
+
+The output head and the MTP draft layer run on the **last stage**, and the split search never moves them: it places
+layers. On a two-card machine the head therefore follows the card the pipeline ends on - which is the *oldest
+generation* under `auto`'s ordering, not the fastest one. `--head-device D` (engine numbering: `0` is the primary,
+the rest are the `--split-device` list) reorders the later stages so `D` is last, and the head and the drafter go
+with it; a device the pipeline does not use, or the primary device of a split, is said and ignored (device 0 runs the
+first stage and the prompt path, so a head-only tail stage would be needed to put the head there - not implemented).
+
+To move the head to another **card**, set `"head_device": N` in the model's config (numbered as `nvidia-smi` numbers
+them). The server lists that card last in `CUDA_VISIBLE_DEVICES`, so the engine's last stage - the head's - is that
+card. No engine flag is involved, so an older engine understands it too. `setup --head-device auto` picks the card
+with the lowest **estimated** milliseconds per layer - the engine's own layer-cost model (SMs x clock) read from
+`strata-device --list-devices`, i.e. by time and not by free VRAM; `setup --head-device N` takes the user's own
+card. Setup prints that estimate for the chosen pair even when it is not asked to move anything ("recommend, never
+force").

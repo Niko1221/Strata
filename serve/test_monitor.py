@@ -249,6 +249,42 @@ class ConversationCacheCard(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_the_disk_and_system_prompt_metrics(self):
+        from serve.server import ConvCacheLog, conversation_cache_view
+        import tempfile
+        disk = ("strata serve: conversation cache: spill dir ready (2 conversations, 300 MiB, when-full=evict-oldest, "
+                "max-age=0 d, 1 oversized kept, 0 stale kept, 0 foreign kept, 0 orphans kept, 3 disk evictions, "
+                "0 age evictions)\n")
+        spilled = "strata serve: conversation cache: spilled 4000 tokens (120 MiB); disk=420 MiB disk_evictions=4\n"
+        sysp = ("strata serve: system prompt cache: ready (2 variants, 300 MiB, slots=2, max-age=0 d, 0 foreign kept, "
+                "0 stale kept, 0 orphans kept, 0 oversized kept)\n"
+                "strata serve: system prompt cache: hit 5000 tokens (2 variants)\n"
+                "strata serve: system prompt cache: prefix changed (miss, 2 variants live); reprocessing and rewriting\n"
+                "strata serve: system prompt cache: persisted the 2048-token root (1 variants, 120 MiB)\n"
+                "strata serve: system prompt cache: shutdown: 2 variants, 300 MiB, hits=3 misses=1, tokens_saved=7000, "
+                "hash_changes=1, evicted_by_space=0, evicted_by_age=2\n")
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(disk + spilled + sysp, encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+        self.assertEqual((st["disk"]["conversations"], st["disk"]["bytes"], st["disk"]["evictions"]), (2, 420 * 1048576, 4))
+        self.assertEqual(st["disk"]["spills"], 1)
+        self.assertEqual(st["disk"]["kept"]["oversized"], 1)
+        self.assertEqual((st["sysprompt"]["variants"], st["sysprompt"]["bytes"]), (2, 300 * 1048576))
+        self.assertEqual((st["sysprompt"]["hits"], st["sysprompt"]["misses"]), (3, 1))
+        self.assertEqual((st["sysprompt"]["hash_changes"], st["sysprompt"]["slots"]), (1, 2))
+        self.assertEqual((st["sysprompt"]["evicted_by_age"], st["sysprompt"]["tokens_saved"]), (2, 7000))
+        # the view adds the two objects and keeps every key it had
+        view = conversation_cache_view({"conversation_cache_mib": 8192, "conversation_cache_slots": 4,
+                                        "conversation_cache_disk_mib": 8192, "system_prompt_cache_mib": 2048}, [], {}, st)
+        self.assertEqual((view["enabled"], view["budget_mib"], view["slots"], view["parked"]), (True, 8192, 4, 0))
+        self.assertTrue(view["disk"]["enabled"])
+        self.assertEqual((view["disk"]["bytes"], view["disk"]["spills"], view["disk"]["restores"]), (420 * 1048576, 1, 0))
+        self.assertEqual((view["system_prompt_cache"]["hits"], view["system_prompt_cache"]["variants"]),
+                         (3, 2))
+        for key in ("hits", "misses", "variants", "bytes", "evicted_by_age", "evicted_by_space", "hash_changes"):
+            self.assertIn(key, view["system_prompt_cache"])
+
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")

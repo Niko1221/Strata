@@ -948,6 +948,67 @@ sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disa
 retention for diagnostic comparisons. Parked snapshots are not
 persisted across restarts; the session files below are.
 
+**Disk tier for the parked conversations (opt-in).** Set `--conversation-cache-spill-dir DIR` to keep a parked
+conversation when RAM pressure or `--conversation-cache-slots` evicts it: the evicted conversation is written to DIR
+as an ordinary session file (the same format and model/configuration identity as the slot save/restore below), so a
+later request - or a restart - can read it back. The directory is scanned at the next start, and a request that
+matches a spilled conversation resumes from it even though it is no longer in RAM. The cache is still off unless
+`--conversation-cache-mib` is nonzero, and `--prompt-cache 0` or `--conversation-cache-slots 0` disables it.
+`--conversation-cache-disk-mib N` caps this model's spill files at 8192 MiB by default; `0` disables the disk tier.
+The index holds at most 256 conversations and evicts the oldest first. On a clean `QUIT` or stdin close, Strata
+captures the active conversation and spills the parked ones before it exits. Use a separate directory per model.
+
+Each spilled conversation is a session file (`.sess`) plus a small metadata sidecar (`.meta`) that holds only its
+token and image lists, so a new request finds the best disk match without reading the conversation's K/V. The
+directory is only read when it is scanned: a file of another model/configuration identity, a sidecar whose session
+file is missing, a sidecar whose own checksum fails, an orphan session file and a leftover temporary are all
+ignored and counted (`foreign`, `stale`, `orphan`), never removed. Removal happens only in the GC. The identity is
+the same model fingerprint and configuration fingerprint the session files below are bound to, so a spilled
+conversation and a hand-saved session file are interchangeable. A layer-split conversation is one session file per
+stage (`<stem>.sess`, `<stem>.stage1.sess`, ...) plus one joint sidecar; the restore reads each stage with its own
+carve.
+
+`--conversation-cache-spill-when-full MODE` chooses what the GC does at the budget: `evict-oldest` (default, what
+Strata always did) drops the oldest conversation to make room; `reject` never evicts - a spill that would not fit is
+refused and logged, and nothing stored is removed. A conversation larger than the whole budget is always kept
+(counted as `oversized`), because removing it could not bring the directory under the budget.
+`--conversation-cache-spill-max-age-days N` is an independent, optional age lever: `0` (default) means no deletion
+by time at all; a positive N prunes conversations older than N days, oldest first, counted separately. Both counters
+appear in the start log and the shutdown line.
+
+`--conversation-cache-similarity F` sets the least longest-common-prefix fraction of the new prompt a disk hit may
+offer (the fraction is `common_prefix_tokens / new_prompt_tokens`, and must be strictly greater than F);
+`--conversation-cache-n-min N` sets the least common-prefix token count. Both default to 0, which keeps every exact
+prefix the RAM cache would have used. Even when a candidate passes the threshold, Strata restores only a saved
+checkpoint whose token and image keys are an exact prefix of the new prompt; the last prompt token stays unread so
+the next verify window starts in the right position.
+
+A disk hit is read into host RAM before it is restored: it must fit the configured RAM cache budget and leave the
+`--conversation-cache-min-free-mib` physical-memory floor available, or the request reads the prompt normally. The
+engine logs spill, restore and disk-budget events. The disk tier works with `--layer-split` (one file per stage).
+
+**System-prompt prefill cache (opt-in).** `--system-prompt-cache` persists the checkpoint root that ends the
+system prompt - the one `--prompt-cache-root` builds in RAM - as an ordinary session file in
+`--system-prompt-cache-dir`, and reloads it at the next start, so a NEW chat of the same client reads only the
+tokens after the root instead of the whole system prompt again. It is off by default (no directory is created, no
+byte written), needs `--prompt-cache > 0`, `--prompt-cache-root > 0`, `--turn-token` and `--mtp` (without MTP it
+reports itself off instead of capturing a different artifact). It works with `--layer-split` the way the disk tier
+does - one session file per stage under the variant's key, with a joint sidecar holding the stage count - and a
+variant stored while part of the context lived in host RAM loads back.
+
+A variant is keyed by the hash of the exact system-prompt token prefix plus `--system-prompt-cache-key` (when
+given) and the model/configuration identity, so only a prompt that begins with exactly those tokens can attach it.
+Causality (the reason the key is the prefix's own hash): attention is causal, so a token's K/V was computed against
+the system prompt that was in front of it; attaching a stored tail to a different system prompt would corrupt every
+later token. When the system prompt changes its hash changes: the request is a miss, is reprocessed from the start
+(the system prompt is re-read) and is stored as its own variant, with a log line and a `hash_changes` counter. A
+variant is never removed because the system prompt changed - only the GC removes one, by count
+(`--system-prompt-cache-slots`, default 2; 0 = no cap) or size (`--system-prompt-cache-mib`, default 2048), oldest
+first, plus the optional `--system-prompt-cache-max-age-days` (0 = off). The scan never deletes. The metrics (hits,
+misses, tokens saved, bytes, live variants, evictions by space and age, hash changes) are logged at start and at
+shutdown. This is a disk-resident prefill cache: it does not change what the model computes, only how much of the
+system prompt is read again.
+
 **Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
 requests of llama-server's slot API, for its single slot 0, when started with `--slot-save-path DIR` (also
@@ -1029,12 +1090,21 @@ only its own temporary file. Once the rename is done the old file is gone: if th
 fails with `published` set - the new file's bytes are complete and flushed, but its name may not survive a power loss.
 A filesystem that cannot flush a folder (`EINVAL`) is not a failure; the engine logs it. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
 anything but a regular file with one name; it checks the size, the header, both fingerprints (before the payload is
-parsed; the first 16 MiB block, header included, is already read), that the parse's peak (the image, the read buffer, the per-segment overhead) fits in RAM above the parking
+parsed; the first 16 MiB block, header included, is already read), that the read's peak (the running state metadata,
+two 16 MiB block buffers and the small vectors) fits in RAM above the parking
 floor (`--conversation-cache-min-free-mib`), the file's size against the largest this session can restore, the
 geometry and layer range before any state array, and every count against the bytes left and this session's exact
-limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, the payload hash
-and then the usual snapshot validation - all before any device write, and a refusal leaves the current session as it
-was. A transfer failure after the device writes began ends the engine (`FATAL`) rather than decode from a partial
+limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, and the payload hash
+- all before any device write, and a refusal leaves the current session as it was. The K/V itself is not held in RAM:
+after the running state and the K/V headers were validated against this engine, the engine reads the file again and
+copies the K/V into its pools a 16 MiB block at a time; this is what restores a session larger than RAM. The apply
+pass is bound to the read pass: a file whose K/V layer count or any part size differs from what the read pass saw is
+refused before that layer or part is applied, and the payload hash is recomputed and compared to the file's trailer
+at the end. The first applied block is the gate - everything before it can still be refused cleanly; a divergence
+found after it (a same-size edit, or a torn re-read) ends the engine, since the remaining bytes cannot be told apart.
+A complete atomic replacement that is itself self-consistent and keeps the same sizes is not detected: the file must
+have no writer but this engine. A transfer failure after the device
+writes began ends the engine (`FATAL`) rather than decode from a partial
 state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with
 `--layer-split`, `--peer-device`, `--batch` (the config's `"parallel"`, #465; the server answers `501`) or
 `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file

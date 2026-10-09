@@ -19,12 +19,26 @@ asked, with a note when it is more than setup would recommend.
 "parallel": 2
 ```
 
-On one GPU with MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
-server's environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch
-behaviour described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so
-check the engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer
-split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
-throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
+With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the server's
+environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch behaviour
+described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers (on the card
+that holds the head), so check the engine's free-memory log before using it on a smaller card. If it cannot run (one
+slot, no `--mtp`, no `--spec T >= 2`, no `--serve`, or both stages of a split on one GPU through `--split-device 0`)
+the engine says so in one line and batches as usual. RTX PRO 5000 owners measured +31% to +39% total throughput with
+2 to 4 clients on one GPU (a RX R9700 run too).
+
+**With a layer split.** `--batch-mtp` runs under a layer split too: every stage keeps its own session per slot (it
+already did, for plain batching) and each slot's **drafter** is built on the stage that runs the head - the last one -
+from that stage's slot session, so the draft's K/V, its buffers and the residual rows it reads all live on that
+card, and the window's residual crosses the hand-off like any other - **row by row**: a window row, whatever slot it
+names, writes hand-off row `hbase + t` and the next stage reads it back, so a `--batch-mtp` window (up to two rows
+per slot: the confirmed token and its draft) crosses the split unchanged. The PLE session stays the first card's,
+where the PLE table lives. Its VRAM therefore comes out of the **last card's** expert cache: `--batch 4 --batch-mtp`
+on two cards costs that card four draft states (~0.9 GB each on the artifact this tree ships with) beside its four
+slot sessions. **Not measured here**: the throughput it buys under a split is unmeasured (the one-GPU numbers above
+are the only ones there are), and the bit-exact batch-vs-solo comparison under a split is pending a window with both
+cards free. Under a split, the drafts a window accepts also depend on which card holds the head (`--head-device`,
+docs/FLAGS.md): the head and the drafter move together, and the head's card is the one that pays for both.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -124,7 +138,9 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- Grouped MTP currently uses one proposal per slot and requires one GPU; it does not support a layer split.
+- Grouped MTP uses one proposal per slot. It runs under a layer split, with the slot drafters on the last stage's
+  card: a window's grouped rows (two per slot) cross the stage hand-off one row at a time, and every stage's verifier
+  is sized for the `--batch-mtp` window (delta 3a); what it buys there is unmeasured (the one-GPU +31 % to +39 % is).
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
@@ -223,7 +239,7 @@ On top of `GEN` / `GENI`:
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
+| `BDONE <slot> <generated> <stop/length/cancel> <ms> [accepted] [offered]` | out | the slot is free again (it keeps its conversation). With `--batch-mtp` the last two fields are that slot's own MTP acceptance for the request that just ended (proposals the target picked of those verified); without the flag, or in the `--batch-groups` pipeline (which does not draft), they are absent. |
 | `BSTOP <slot>` | in | end that slot at its next window |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
@@ -231,3 +247,10 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+When the slots go idle the engine writes its own summary to stderr, **once per busy period** - the one the Monitor
+reads (`strata batch: <windows> windows, avg <rows> rows, ...`). With `--batch-mtp` it ends with the period's MTP
+acceptance: `; MTP drafts accepted A of O (P%)`, the proposals the target picked of those the slots verified (one per
+active slot per window). Without the flag the clause is absent, so the line is the base tag's. The request that
+admitted a slot still prints its own `DONE ... drafts accepted 0 of 0` (it decoded one token): its acceptance is what
+its `BDONE` carries, and what the summary adds up.
