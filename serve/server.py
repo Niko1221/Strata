@@ -488,6 +488,14 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # --conversation-cache-disk-only (#1480): the spill directory is the whole cache
+    DISK_READY = re.compile(r"conversation cache: spill dir ready \((\d+) conversations, (\d+) MiB")
+    DISK_OFF = re.compile(r"conversation cache: disk tier disabled \((.*)\)")
+    DISK_SAVED = re.compile(r"conversation cache: disk-saved (\d+) tokens \((\d+) MiB.*?disk=(\d+) MiB in (\d+) files")
+    PREFIX_SAVED = re.compile(r"conversation cache: prefix-saved the (\d+)-token root \((\d+) MiB\).*?(\d+) prefix")
+    DISK_RESTORED = re.compile(r"conversation cache: disk-restored (\d+) tokens")
+    DISK_REFUSED = re.compile(r"conversation cache: ((?:disk hit|disk save|prefix save) (?:skipped|failed).*)")
+    DISK_DISCARDED = re.compile(r"conversation cache: discard unusable disk conversation")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -496,7 +504,10 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      "disk_ready": None, "disk_error": None, "disk_files": None, "disk_mib": None,
+                      "disk_saves": 0, "disk_restores": 0, "disk_saved_tokens": 0, "disk_written_mib": 0,
+                      "prefixes": None, "disk_refused": 0, "disk_discarded": 0, "last_refusal": None}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -535,15 +546,57 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                continue
+            self.disk_line(line, now)
         return dict(self.state)
+
+    def disk_line(self, line, now):
+        st = self.state
+        m = self.DISK_SAVED.search(line)
+        if m:
+            st["disk_saves"] += 1
+            st["disk_saved_tokens"] += int(m.group(1))
+            st["disk_written_mib"] += int(m.group(2))
+            st["disk_mib"], st["disk_files"] = int(m.group(3)), int(m.group(4))
+            st["last_event"], st["last_tokens"], st["last_at"] = "disk-saved", int(m.group(1)), now
+            return
+        m = self.DISK_RESTORED.search(line)
+        if m:
+            st["disk_restores"] += 1
+            st["last_event"], st["last_tokens"], st["last_at"] = "disk-restored", int(m.group(1)), now
+            return
+        m = self.PREFIX_SAVED.search(line)
+        if m:
+            st["disk_written_mib"] += int(m.group(2))
+            st["prefixes"] = int(m.group(3))
+            return
+        m = self.DISK_READY.search(line)
+        if m:
+            st["disk_ready"], st["disk_error"] = True, None
+            st["disk_files"], st["disk_mib"] = int(m.group(1)), int(m.group(2))
+            return
+        m = self.DISK_OFF.search(line)
+        if m:
+            st["disk_ready"], st["disk_error"] = False, m.group(1)
+            return
+        m = self.DISK_REFUSED.search(line)
+        if m:
+            st["disk_refused"] += 1
+            st["last_refusal"] = m.group(1)
+            return
+        if self.DISK_DISCARDED.search(line):
+            st["disk_discarded"] += 1
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
     mib = info.get("conversation_cache_mib")
+    disk_only = info.get("conversation_cache_disk_only") == 1
     last = hist[-1] if hist else None
-    return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
+    return {"enabled": disk_only or (isinstance(mib, int) and mib > 0), "disk_only": disk_only,
+            "disk_budget_mib": info.get("conversation_cache_disk_mib"),
+            "budget_mib": mib if isinstance(mib, int) else None,
             "slots": info.get("conversation_cache_slots"), **parked,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
