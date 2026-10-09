@@ -3,10 +3,11 @@
 //
 //     build/pf_wmma_parity            (needs a CUDA GPU with FP16 tensor cores: sm_70+; synthetic blobs, no model)
 //
-// Every gate/up format the prompt path gives it (IQ2_XXS, IQ2_S, IQ1_M: 1280 rows of 2560) and the Q2_0 down product
-// (2560 rows of 640); a group of experts with 0, 1, 63, 64, 65, 200 and 300 rows (one past the 256-row chunk); the rows
-// placed past a nonzero first bound.  The sums are FP32 on tensor cores in another order than the reference, so the
-// check is a tolerance: max |got - ref| <= 2e-3 * (max |ref| of the matrix) + 1e-6.
+// Every gate/up format the prompt path gives it (IQ2_XXS, IQ2_S, IQ1_M, and this pack's IQ4_NL / IQ3_S / IQ4_XS: 1280
+// rows of 2560) and the down products (Q2_0, and IQ4_NL: 2560 rows of 640); a group of experts with 0, 1, 63, 64, 65,
+// 200 and 300 rows (one past the 256-row chunk); the rows placed past a nonzero first bound.  The sums are FP32 on
+// tensor cores in another order than the reference, so the check is a tolerance: max |got - ref| <= 2e-3 * (max |ref|
+// of the matrix) + 1e-6.
 #include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_fp16.h>
@@ -145,6 +146,8 @@ int main() {
     int fails = 0;
     for (int ty : {16, 22, 29}) fails += run(ty, 1280, 2560, rng);
     fails += run(42, 2560, 640, rng);
+    for (int ty : {20, 21, 23}) fails += run(ty, 1280, 2560, rng);   // this pack's gate/up formats, generic WK=256 path
+    fails += run(20, 2560, 640, rng);                                // the IQ4_NL down, the new WK=128 lane
     std::printf("pf_wmma_parity: %d failures\n", fails);
     return fails ? 1 : 0;
 }
