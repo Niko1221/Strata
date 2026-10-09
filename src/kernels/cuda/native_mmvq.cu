@@ -1197,33 +1197,21 @@ __global__ void activation_reuse_kernel(const typename F::Block* __restrict__ w,
     for (int kbx = tid / F::T; kbx < blocks_per_row; kbx += BPI) {
         const int kby = kbx * F::KBY;
         const int kqs = F::kqs(tid);
-        if constexpr (ROWS > 1) {
-            // The activation operands are row-independent: load them once for every column, then walk rows.
-            typename F::A act[NCOLS];
+        // The activation operands are row-independent: load them once for every column, then walk rows.
+        typename F::A act[NCOLS];
 #pragma unroll
-            for (int j = 0; j < NCOLS; ++j)
-                act[j] = F::load_act(x + std::size_t(j) * x_stride + kby, kqs);
+        for (int j = 0; j < NCOLS; ++j)
+            act[j] = F::load_act(x + std::size_t(j) * x_stride + kby, kqs);
 #pragma unroll
-            for (int i = 0; i < ROWS; ++i) {
-                if (row0 + i < n_out) {
-                    const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
-                    const typename F::W wv = F::load(w + block, kqs);
+        for (int i = 0; i < ROWS; ++i) {
+            if (row0 + i < n_out) {
+                const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
+                const typename F::W wv = F::load(w + block, kqs);
 #pragma unroll
-                    for (int j = 0; j < NCOLS; ++j) tmp[j][i] += F::dot(wv, act[j], kqs);
-                }
-            }
-        } else {
-#pragma unroll
-            for (int i = 0; i < ROWS; ++i) {
-                if (row0 + i < n_out) {
-                    const std::size_t block = std::size_t(row0 + i) * blocks_per_row + kbx;
-                    const typename F::W wv = F::load(w + block, kqs);      // once per (row, block)
-#pragma unroll
-                    for (int j = 0; j < NCOLS; ++j)                         // then per column
-                        tmp[j][i] += F::apply(wv, x + std::size_t(j) * x_stride + kby, kqs);
-                }
+                for (int j = 0; j < NCOLS; ++j) tmp[j][i] += F::dot(wv, act[j], kqs);
             }
         }
+
     }
     __shared__ float partial[NW - 1 > 0 ? NW - 1 : 1][NCOLS][ROWS][WARP];
     if (threadIdx.y > 0) {

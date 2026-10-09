@@ -21,7 +21,13 @@ Same-input historical shadow checks found zero bit differences and zero non-fini
 
 ## Publication checks and remaining work
 
-- CUDA 13, MSVC 14.51, SM75 translation unit compiled locally; full engine integration build pending.
+### October 9 construction update
+
+Removed the unreachable single-row ablation branch from the four-row candidate. A clean Release SM75 build of the complete engine and `mmvq_multi_parity` passed with CUDA 13/MSVC 14.51 and the installed ggml source; it did not link an old Strata support archive. With both opt-in flags enabled, the full-build fixture compared 980,113 exact-layout outputs with zero bit differences and zero non-finite outputs. Its non-exact control found 290,059 finite differences, so the comparison can detect a changed reduction path. The three NW3 target shapes and an incomplete four-row tile are included.
+
+These are synthetic correctness results, not a fresh performance result. Current-head model parity, capture, latency/throughput ablation and HIP builds still gate review. The row-reuse overlap with #1418 also needs resolution before merging.
+
+- CUDA 13, MSVC 14.51, SM75 full engine integration build passed as recorded above.
 - Expanded `mmvq_multi_parity` with all three NW3 shapes and an incomplete four-row tile. Fresh results are recorded below after running.
 - Re-run same-input real model checks on this exact head.
 - Re-test prefix latency and true CPU end-to-end throughput on current upstream, interleaving run order.
