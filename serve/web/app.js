@@ -11,6 +11,18 @@ const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
 const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
+const mediaBytes = (b) => {
+  if (b == null) return "–";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let n = Number(b), i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${fmt(n, i === 0 ? 0 : 1)} ${units[i]}`;
+};
+// video preparation: the counted stages show "n / total", the rest only say what is running (no ETA, no %)
+const VIDEO_COUNTED = {staging: "Staging source", decoding: "Decoding frames", encoding: "Encoding frames"};
+const VIDEO_STAGES = {probing: "Checking timestamps and selecting frames", checking_cache: "Checking the video cache",
+  waiting_for_encoder: "Waiting for the vision encoder", loading_cached_video: "Loading cached video embeddings",
+  assembling_prompt: "Assembling video embeddings into the prompt", handoff: "Submitting the prepared prompt"};
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -181,7 +193,9 @@ function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
   // the header pill
-  if (live.state === "reading") {
+  if (live.state === "preparing_video") {
+    setPill("reading", "Preparing video");
+  } else if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
@@ -239,11 +253,32 @@ function renderTotals(t) {
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
-  const on = live.queued > 0 ? "queued" : live.state;
+  const on = live.state === "preparing_video" ? "reading" : live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
   const prog = $("state-progress");
-  let label = "Waiting for a request", detail = "", pct = 0;
-  if (live.state === "reading") {
+  let label = "Waiting for a request", detail = "", pct = 0, indeterminate = false;
+  if (live.state === "preparing_video") {
+    label = "Preparing video";
+    prog.dataset.tone = "info";
+    const p = live.video_progress || {};
+    const done = Number.isFinite(p.done) ? p.done : null;
+    const total = Number.isFinite(p.total) && p.total > 0 ? p.total : null;
+    const counted = VIDEO_COUNTED[p.stage];
+    if (counted) {
+      detail = p.stage === "staging"
+        ? `${counted} · ${mediaBytes(done ?? 0)}${total ? ` / ${mediaBytes(total)}` : " read"}`
+        : `${counted} · ${fmt(done)} / ${fmt(total)}`;
+      if (total) pct = Math.min(100, 100 * (done || 0) / total);
+      else indeterminate = true;                      // a counted stage with no known total yet
+    } else {
+      detail = VIDEO_STAGES[p.stage] || "Preparing video";
+      indeterminate = true;
+    }
+  } else if (live.state === "queued") {
+    label = live.queued > 1 ? `${fmt(live.queued)} requests queued` : "Queued";
+    prog.dataset.tone = "info";
+    detail = "Waiting for the current model or vision task";
+  } else if (live.state === "reading") {
     label = "Reading prompt";
     prog.dataset.tone = "info";
     if (live.prompt_total) {
@@ -261,6 +296,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
   }
+  if (indeterminate) prog.dataset.indeterminate = "true";
+  else delete prog.dataset.indeterminate;
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;

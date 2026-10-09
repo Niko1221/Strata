@@ -18,6 +18,8 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "media_export.hpp"
+#include "strata/program/video_limits.hpp"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -25,6 +27,7 @@
 #include <unistd.h>
 #endif
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -180,6 +183,9 @@ int main(int argc, char** argv) {
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
     }
+    const bool video_profile = strata::vision::supports_video_profile(mmproj, text, n_embd);
+    bool video_ready = false;
+    strata::vision::VideoExportLimits video_limits;
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
 
@@ -187,7 +193,76 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         if (line == "QUIT") break;
+        if (line == "CAPS") {
+            // Requested, additive: NEVER another unsolicited line after READY.
+            std::printf("CAPS media=2 profile=%s width=%d image_pad=248056 video_pad=248057 "
+                        "vision_start=248053 vision_end=248054 image_min=%d image_max=%d "
+                        "video_max_frames=%u video_max_rows=%llu video_max_rgb_bytes=%llu "
+                        "video_max_wire_bytes=%llu video_max_duration_s=%.0f\n",
+                        video_profile ? strata::vision::video_profile_name : "none", n_embd,
+                        min_tokens > 0 ? min_tokens : 8, max_tokens > 0 ? max_tokens : 4096,
+                        strata::program::video_limits::max_frames,
+                        (unsigned long long) strata::program::video_limits::max_rows,
+                        (unsigned long long) strata::program::video_limits::max_rgb_bytes,
+                        (unsigned long long) strata::program::video_limits::max_wire_bytes,
+                        strata::program::video_limits::max_duration_s);
+            std::fflush(stdout);
+            continue;
+        }
+        if (line.rfind("VSET ", 0) == 0) {
+            strata::vision::VideoExportLimits requested;
+            std::istringstream values(line.substr(5));
+            std::string extra;
+            const bool parsed = bool(values >> requested.group_tokens >> requested.frames >> requested.rows >>
+                                     requested.rgb_bytes >> requested.embedding_bytes >> requested.duration_s);
+            const bool valid = parsed && !(values >> extra) && video_profile &&
+                requested.group_tokens >= uint32_t(min_tokens > 0 ? min_tokens : 8) &&
+                requested.group_tokens <= uint32_t(std::min(1024, max_tokens > 0 ? max_tokens : 4096)) &&
+                requested.frames >= 1 && requested.frames <= strata::program::video_limits::max_frames &&
+                requested.rows >= 1 && requested.rows <= strata::program::video_limits::max_rows &&
+                requested.rgb_bytes >= 1 && requested.rgb_bytes <= strata::program::video_limits::max_rgb_bytes &&
+                requested.embedding_bytes >= 1 && requested.embedding_bytes <= strata::program::video_limits::max_wire_bytes &&
+                std::isfinite(requested.duration_s) && requested.duration_s > 0 &&
+                requested.duration_s <= strata::program::video_limits::max_duration_s;
+            video_ready = false;
+            try {
+                if (!valid) throw strata::program::MediaError("unsupported video profile or video limits");
+                if (gpu) strata::vision::warm_video(ctx, uint32_t(n_embd), requested);
+                video_limits = requested;
+                video_ready = true;
+                std::printf("VOK\n");
+            } catch (const std::exception& e) {
+                std::printf("ERR %s\n", e.what());
+            }
+            std::fflush(stdout);
+            continue;
+        }
         std::string img, out;
+        if (line.rfind("ENCV ", 0) == 0) {
+            const auto t0 = std::chrono::steady_clock::now();
+            try {
+                if (!video_ready) throw strata::program::MediaError("video is not enabled for this encoder");
+                if (!parse_enc("ENC " + line.substr(5), img, out))
+                    throw strata::program::MediaError("expected: ENCV <RGB frame spool> <output>");
+                const auto progress = [](uint64_t done, uint64_t total) {
+                    const uint64_t step = std::max<uint64_t>(1, (total + 99) / 100);
+                    if (done % step == 0 || done == total) {
+                        std::printf("VPROG %llu %llu\n", (unsigned long long) done, (unsigned long long) total);
+                        std::fflush(stdout);
+                    }
+                };
+                const auto bundle = strata::vision::export_video(ctx, img, uint32_t(n_embd), video_limits, progress);
+                strata::vision::publish_media(out, bundle, video_limits);
+                size_t rows = 0;
+                for (const auto& span : bundle.spans) rows += span.positions.size();
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("VOK %zu %zu %.0f\n", rows, bundle.spans.size(), ms);
+            } catch (const std::exception& e) {
+                std::printf("ERR %s\n", e.what());
+            }
+            std::fflush(stdout);
+            continue;
+        }
         if (!parse_enc(line, img, out)) { std::printf("ERR expected: ENC <image> <output>\n"); std::fflush(stdout); continue; }
         const auto t0 = std::chrono::steady_clock::now();
         mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(ctx, img.c_str(), false,

@@ -60,6 +60,8 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/media_embeddings.hpp"
+#include "strata/program/video_limits.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
@@ -6192,6 +6194,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: the mapped view of the experts %s (%s)\n",
                      dropped ? "is closed" : "stays open", why.c_str());
     }
+    // Additive transport capability. Batch/helper-drafter and non-CUDA paths
+    // remain image-compatible but are NOT advertised for native video yet.
+    const bool media_v2_supported =
+#if defined(STRATA_USE_HIP) || defined(STRATA_USE_SYCL)
+        false;
+#else
+        o.vision && g.n_embd == 2560 && o.batch == 0 && o.peer_device < 0 &&
+        o.max_context <= std::numeric_limits<int32_t>::max();
+#endif
     if (o.serve) {
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
@@ -8043,7 +8054,8 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s "
+                        "media_sve=%d media_profile=%s vocab=%lld engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -8057,7 +8069,9 @@ int main(int argc, char** argv) {
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
-                                       " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
+                                       " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "",
+                        media_v2_supported ? 2 : 0,
+                        media_v2_supported ? "qwen4_exp_16x2x2_2560_v1" : "none", (long long) n_vocab);
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -8130,6 +8144,7 @@ int main(int argc, char** argv) {
         constexpr int64_t kImagePad = 248056;   // qwen4exp.ple.image_token_id: the PLE hash reads it for image cells
         bool mrope_identity = true;
         std::vector<float> img_rows;
+        strata::program::MediaBundle media_rows; // finalized before any row pointer is bound
         std::vector<const float*> row_ptr;
         // ---- #533: VRAM <reserve_mib>, between requests, only with --vram-elastic.  It shrinks the expert cache
         // until that much VRAM is free for other programs (a game, a CAD session), or grows it back towards its full
@@ -8978,7 +8993,30 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            // Check capacity/vocabulary BEFORE filling any rotary table or reading
+            // a visual payload (the legacy valid-request behavior is unchanged).
+            if (n < 1 || n > o.max_context - 8 || max_new > o.max_context - 8 - n) {
+                std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
+                            (long long) max_new, (long long) o.max_context);
+                continue;
+            }
+            bool bad = false;
+            for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
+            if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
+            sp.embd_rows = nullptr;
+            media_rows = {};
             req_imgs.clear();
+            bool media_v2 = false;
+            if (geni) {
+                std::ifstream header(emb_path, std::ios::binary);
+                char magic[4]{};
+                header.read(magic, 4);
+                media_v2 = header.gcount() == 4 && std::memcmp(magic, "SVE2", 4) == 0;
+                if (media_v2 && !media_v2_supported) {
+                    std::printf("ERR SVE2 needs a serial CUDA vision engine without a helper drafter\n");
+                    continue;
+                }
+            }
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
@@ -8992,6 +9030,40 @@ int main(int argc, char** argv) {
                 };
                 if (!geni) {
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
+                } else if (media_v2) {
+                    try {
+                        strata::program::MediaLimits limits;
+                        limits.max_rows = strata::program::video_limits::max_rows;
+                        limits.max_bytes = strata::program::video_limits::max_wire_bytes;
+                        limits.max_spans = limits.max_rows;
+                        limits.expected_width = uint32_t(g.n_embd);
+                        limits.max_tokens = std::min<uint64_t>(limits.max_tokens, uint64_t(cells));
+                        limits.max_position = int32_t(std::min<int64_t>(cells - 1, std::numeric_limits<int32_t>::max()));
+                        limits.vocab_size = uint32_t(n_vocab);
+                        limits.allowed_pad_ids = {248056, 248057};
+                        std::ifstream input(emb_path, std::ios::binary);
+                        auto bundle = strata::program::read_media(input, limits, true, &ids);
+                        const auto plan = strata::program::media_positions(bundle, uint64_t(n + max_new + 8), limits);
+                        const auto fingerprints = strata::program::media_fingerprints(bundle, limits);
+                        // Final payload storage first: subsequent code never grows it.
+                        media_rows = std::move(bundle);
+                        for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
+                        for (size_t c = 0; c < plan.positions.size(); ++c) {
+                            const auto& p = plan.positions[c];
+                            put(int64_t(c), p[0], p[1], p[2]);
+                            const auto& binding = plan.rows[c];
+                            if (binding.span != strata::program::MediaRow::text)
+                                row_ptr[c] = media_rows.spans[binding.span].embeddings.data() +
+                                             size_t(binding.row) * size_t(g.n_embd);
+                        }
+                        for (size_t k = 0; k < media_rows.spans.size(); ++k)
+                            req_imgs.push_back({int64_t(media_rows.spans[k].start), fingerprints[k]});
+                    } catch (const std::exception& e) {
+                        // No device update and no live KV/cache mutation on rejection.
+                        std::printf("ERR media: %s\n", e.what());
+                        std::fflush(stdout);
+                        continue;
+                    }
                 } else {
                     struct Img { int64_t n, nx, ny; size_t off; };
                     std::vector<Img> imgs;
@@ -9043,7 +9115,11 @@ int main(int argc, char** argv) {
                     for (int64_t c = n; ve.empty() && c < cells; ++c) put(c, p + (c - n), p + (c - n), p + (c - n));
                 }
                 tr("positions built", (long long) img_rows.size());
-                cudaDeviceSynchronize();
+                if (cudaDeviceSynchronize() != cudaSuccess) {
+                    std::printf("ERR device failed before the visual position upload\n");
+                    std::fflush(stdout);
+                    return 1;
+                }
                 tr("device idle");
                 // CUDA0's table and, with a layer split, every later stage's (each device reads its own)
                 auto upload_mrope = [&]() -> bool {
@@ -9051,17 +9127,26 @@ int main(int argc, char** argv) {
                                          cudaMemcpyHostToDevice) == cudaSuccess;
                     for (auto& st : stages) {
                         const strata::core::OnDevice on(st->dev);
-                        cudaDeviceSynchronize();
+                        ok = ok && cudaDeviceSynchronize() == cudaSuccess;
                         ok = ok && cudaMemcpy(st->mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t),
                                               cudaMemcpyHostToDevice) == cudaSuccess;
                     }
                     return ok;
                 };
-                if (ve.empty() && !upload_mrope()) ve = "the image position upload failed";
+                if (ve.empty() && !upload_mrope()) {
+                    // A partial multi-device update cannot be used or assumed repaired.
+                    std::printf("ERR the visual position upload failed; stopping the engine\n");
+                    std::fflush(stdout);
+                    return 1;
+                }
                 if (!ve.empty()) {
                     // leave the table as the identity so the next text request is untouched
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
-                    upload_mrope();
+                    if (!upload_mrope()) {
+                        std::printf("ERR cannot restore the identity visual positions; stopping the engine\n");
+                        std::fflush(stdout);
+                        return 1;
+                    }
                     mrope_identity = true;
                     std::printf("ERR %s\n", ve.c_str());
                     std::fflush(stdout);
@@ -9070,14 +9155,6 @@ int main(int argc, char** argv) {
                 mrope_identity = !geni;
             }
             sp.embd_rows = geni ? row_ptr.data() : nullptr;
-            if (n + max_new + 8 > o.max_context) {
-                std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
-                            (long long) max_new, (long long) o.max_context);
-                continue;
-            }
-            bool bad = false;
-            for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
-            if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
             std::array<int64_t, 3> remote_before{};
             std::array<int64_t, 3> launches_before{};
             std::array<uint64_t, 3> compact_before{}, full_before{};

@@ -59,7 +59,7 @@ class ChatTemplate:
         messages = [m for i, m in enumerate(messages)
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
-                                                      and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+                                                      and not _has_visual(m.get("content")) and not m.get("tool_calls"))]
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -122,6 +122,8 @@ def _text_of(content) -> str:
 
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
+VIDEO_PARTS = ("video_url", "input_video", "video")
+VISUAL_PARTS = IMAGE_PARTS + VIDEO_PARTS
 
 # Thinking levels.  The model's template knows low, medium and xhigh (its default; "high" means xhigh), and
 # enable_thinking=false for none.  Clients spell these many ways; everything maps onto those four.
@@ -171,10 +173,54 @@ def _image_source(part: dict) -> str:
     return url or ""
 
 
+def _video_source(part: dict) -> str:
+    """Strata video extensions; only finite sources, not a list of frame/image URLs."""
+    options = {"fps", "min_frames", "max_frames", "num_frames", "nframes", "frames", "start_time", "end_time",
+               "video_start", "video_end", "max_pixels", "resized_height", "resized_width"}
+    if options.intersection(part):
+        raise ValueError("per-request video sampling/resolution options are not supported; set vision.video in the server config")
+    source = part.get("video_url") if part.get("type") in ("video_url", "input_video") else part.get("video")
+    if source is None:
+        source = part.get("source")
+    if isinstance(source, dict):
+        if options.intersection(source):
+            raise ValueError("per-request video sampling/resolution options are not supported")
+        if source.get("type") == "base64":
+            mime, data = source.get("media_type"), source.get("data")
+            if not isinstance(mime, str) or not mime.startswith("video/") or not isinstance(data, str):
+                raise ValueError("video base64 requires a video/* media_type and string data")
+            source = f"data:{mime};base64,{data}"
+        elif source.get("type") in (None, "url"):
+            source = source.get("url")
+        else:
+            raise ValueError("unsupported video source type (use base64 or url)")
+    if not isinstance(source, str) or not source or "\x00" in source:
+        raise ValueError("a video must have a nonempty URL, data URL or local file source; frame lists are not supported")
+    return source
+
+
+def _check_video_content(content, role):
+    if not isinstance(content, list):
+        return
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind in VIDEO_PARTS and role != "user":
+            raise ValueError("video parts are supported only in user messages, not system/assistant/tool messages")
+        if isinstance(kind, str) and "video" in kind and kind not in VIDEO_PARTS:
+            raise ValueError(f"unsupported video part type {kind!r}")
+        if kind == "tool_result":
+            _check_video_content(part.get("content"), "tool")
+
+
+def _has_visual(content):
+    return isinstance(content, list) and any(isinstance(p, dict) and p.get("type") in VISUAL_PARTS for p in content)
+
+
 def _parts_of(content):
-    """Message content for the template: a string when there is no image (unchanged behaviour), otherwise the
-    template's list form - text items and image items, in order - whose image items carry their source."""
-    if not _has_image(content):
+    """Keep ordered text/image/video parts; text-only normalization is unchanged."""
+    if not _has_visual(content):
         return _text_of(content)
     items = []
     for part in content:
@@ -182,6 +228,8 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
+        elif part.get("type") in VIDEO_PARTS:
+            items.append({"type": "video", "source": _video_source(part)})
         elif part.get("type") in ("text", "input_text", None) and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
@@ -192,6 +240,12 @@ def images_of(messages: list[dict]) -> list[str]:
     <|vision_start|><|image_pad|><|vision_end|> per image item, message by message)."""
     return [item["source"] for m in messages if isinstance(m.get("content"), list)
             for item in m["content"] if item.get("type") == "image"]
+
+
+def media_of(messages: list[dict]) -> list[tuple[str, str]]:
+    """Normalized sources in prompt order. images_of remains the legacy image-only helper."""
+    return [(item["type"], item["source"]) for m in messages if isinstance(m.get("content"), list)
+            for item in m["content"] if item.get("type") in ("image", "video")]
 
 
 # #537: a literal <think> / </think> inside a message's text is plain text, not the model's reasoning markers.  The
@@ -369,6 +423,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         role = m.get("role")
         if role == "developer":
             role = "system"
+        _check_video_content(m.get("content"), role)
         out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
@@ -432,13 +487,15 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     messages = []
     system = req.get("system")
     if system:
+        _check_video_content(system, "system")
         messages.append({"role": "system", "content": pin_billing_stamp(_text_of(system))})
     for m in _object_list(req.get("messages"), "messages"):
         content = m.get("content")
+        _check_video_content(content, m.get("role"))
         if isinstance(content, str):
             messages.append({"role": m["role"], "content": content})
             continue
-        if m.get("role") == "user" and _has_image(content) and not any(
+        if m.get("role") == "user" and _has_visual(content) and not any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
@@ -448,7 +505,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             if kind == "text":
                 text.append(block.get("text", ""))
                 parts.append(block)
-            elif kind in IMAGE_PARTS:
+            elif kind in VISUAL_PARTS:
                 parts.append(block)
             elif kind == "thinking":
                 reasoning.append(block.get("thinking", ""))
@@ -460,7 +517,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
                 messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
-            out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
+            out = {"role": m["role"], "content": _parts_of(parts) if _has_visual(parts) else "".join(text)}
             if reasoning:
                 out["reasoning_content"] = "".join(reasoning)
             if calls:

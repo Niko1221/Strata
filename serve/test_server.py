@@ -4747,6 +4747,7 @@ class VisionShutdown(unittest.TestCase):
                     pass
 
             v.proc = Proc()
+            v.video = SimpleNamespace(close=lambda: None)
             v.close()
             self.assertTrue((d / "k.sve").exists())
             v.shutdown()
