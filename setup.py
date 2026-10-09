@@ -429,14 +429,120 @@ def ram_gb():
     return 0.0
 
 
+_MM_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
+
+
+def _mm_multi_sz(name):
+    """A REG_MULTI_SZ value of Memory Management, None when it cannot be read.  PagingFiles is what the Virtual memory
+    dialog set; ExistingPageFiles is where the page files are now."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _MM_KEY) as k:
+            v, _t = winreg.QueryValueEx(k, name)
+    except (ImportError, OSError):
+        return None
+    return [x for x in v if x] if isinstance(v, list) else None
+
+
+def parse_paging_file(line: str):
+    """One PagingFiles entry ("C:\\pagefile.sys 16000 64000", "C:\\pagefile.sys 0 0", "?:\\pagefile.sys"): (drive,
+    initial MB, maximum MB), both -1 when Windows manages the size and the drive '?' when it manages every drive;
+    None for anything else."""
+    s = line.strip()
+    if len(s) < 2 or s[1] != ":":
+        return None
+    parts = s.split()
+    try:
+        initial, maximum = (int(parts[1]), int(parts[2])) if len(parts) >= 3 else (-1, -1)
+    except ValueError:
+        initial, maximum = -1, -1
+    if maximum <= 0:
+        initial, maximum = -1, -1
+    return s[0].upper(), initial, maximum
+
+
+PAGE_FILE_FIXED_MB = 65536   # the advice: a fixed size (initial = maximum) of 64 GB, the size #60's PC started with
+
+
+def _drive_mb(drive: str):
+    """(free MB, the page file's size now in MB) of a drive, None when it cannot be read.  The page file is locked:
+    its size comes from the directory entry."""
+    root = f"{drive}:\\"
+    try:
+        du = shutil.disk_usage(root)
+    except OSError:
+        return None
+    current = 0
+    try:
+        with os.scandir(root) as it:
+            for e in it:
+                if e.name.lower() == "pagefile.sys":
+                    current = e.stat(follow_symlinks=False).st_size
+                    break
+    except OSError:
+        pass
+    return du.free / 2**20, current / 2**20
+
+
+def page_file_setting():
+    """The page files Windows is set to use (PagingFiles, what the Virtual memory dialog writes): [(drive, initial MB,
+    maximum MB, MB now, the drive's free MB)], the sizes -1 for a system-managed file; "?:" (every drive automatic) is
+    the drive ExistingPageFiles names.  None off Windows or when the setting cannot be read."""
+    if not WIN:
+        return None
+    lines = _mm_multi_sz("PagingFiles")
+    if lines is None:
+        return None
+    auto = []                                          # "?:\pagefile.sys": where Windows keeps it now, else C:
+    for s in _mm_multi_sz("ExistingPageFiles") or []:
+        i = s.find(":")
+        if i > 0:
+            auto.append(s[i - 1].upper())
+    auto = auto or [(os.environ.get("SystemDrive") or "C:")[0].upper()]
+    files = []
+    for line in lines:
+        e = parse_paging_file(line)
+        if e is None:
+            continue
+        drive, initial, maximum = e
+        for d in (auto if drive == "?" else [drive]):
+            free, now = _drive_mb(d) or (0.0, 0.0)
+            files.append((d, initial, maximum, now, free))
+    return files
+
+
+def page_file_grows(files) -> bool:
+    """Whether Windows grows one of these page files on demand: system-managed, or an initial size below the maximum."""
+    return any(maximum <= 0 or initial < maximum for _d, initial, maximum, _now, _free in files or [])
+
+
 def page_file_gb():
-    """The page file's current size (GB) on Windows, None elsewhere.  The graphics card's memory needs room there
-    too: under Windows' driver model every allocation on the card is also charged to the commit (RAM + page file),
-    so with the page file off or tiny the engine cannot use the free VRAM (issue #60)."""
+    """The page files' size (GB) that is there for sure on Windows, None elsewhere.  The graphics card's memory needs
+    room there too: under Windows' driver model every allocation on the card is also charged to the commit (RAM + page
+    file), so with the page file off or tiny the engine cannot use the free VRAM (issue #60).  What counts is the size
+    the files have now (the commit limit minus RAM), or a file's configured initial size when that is larger (within
+    its drive's free space) - never what a file may grow to: a page file Windows grows on demand may not grow in time
+    while the card's memory is charged (#60: "System managed" and 4096-32768 MB still failed, a fixed 64 GB worked)."""
     if not WIN:
         return None
     m = _memory_status()
-    return max(0.0, (m.ullTotalPageFile - m.ullTotalPhys) / 2**30)
+    mb = max(0.0, (m.ullTotalPageFile - m.ullTotalPhys) / 2**20)
+    files = page_file_setting()
+    if files:
+        mb = max(mb, sum(max(now, min(max(initial, 0), now + free)) for _d, initial, _m, now, free in files))
+    return mb / 1024
+
+
+def page_file_advice(pf: float, files) -> str:
+    """Step 1's warning for a page file below 4 GB (issue #60): a fixed size, and why when the setting (`files`,
+    page_file_setting) has Windows grow it on demand."""
+    grows = ("It is set to grow on demand (\"System managed\" or an initial size below the maximum), and a growing "
+             "page file may not grow in time for the card's memory (#60: \"System managed\" and 4096-32768 MB still "
+             "failed, a fixed 64 GB worked). ") if page_file_grows(files) else ""
+    return (f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so the "
+            f"model may not start or may use less VRAM. {grows}Set a fixed size: System > About > Advanced system "
+            "settings > Performance > Advanced > Virtual memory > Change, untick \"Automatically manage\", Custom size "
+            f"with initial and maximum size {PAGE_FILE_FIXED_MB} MB, Set, then restart Windows")
 
 
 def cpu_cores():
@@ -4896,9 +5002,7 @@ def main() -> int:
     (ok if ram >= need - 4 or low_ok else warn)(ram_msg)       # #977: a RAM below every model's floor is not [ok]
     pf = page_file_gb()
     if pf is not None and pf < 4:
-        warn(f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so "
-             "the model may not start or may use less VRAM. Set it to \"System managed\": System > About > "
-             "Advanced system settings > Performance > Advanced > Virtual memory")
+        warn(page_file_advice(pf, page_file_setting()))
     ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
     link = None if hip else pcie_link(int(gpu.get("index", 0)))
     if link is not None:
