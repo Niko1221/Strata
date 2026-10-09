@@ -223,6 +223,7 @@ void run_bench(int mb, const std::vector<int>& nts) {
             }
             const ggml_vec_dot_t gu_dot = traits_cpu(c.gu)->vec_dot, dn_dot = traits_cpu(c.dn)->vec_dot;
             // ggml-cpu's path (what the engine runs today on this CPU): per-token dots over every row
+            double ms_ggml_gu = 0, ms_ggml_dn = 0;
             auto t0 = Clock::now();
             for (int e = 0; e < nexp; ++e) {
                 for (int r = 0; r < kFF; ++r) {
@@ -233,6 +234,10 @@ void run_bench(int mb, const std::vector<int>& nts) {
                         ff[t][r] = (g / (1.f + std::exp(-g))) * u;
                     }
                 }
+            }
+            ms_ggml_gu = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            t0 = Clock::now();
+            for (int e = 0; e < nexp; ++e) {
                 for (int r = 0; r < kH; ++r) {
                     for (int t = 0; t < nt; ++t) {
                         float s = 0.f;
@@ -241,15 +246,22 @@ void run_bench(int mb, const std::vector<int>& nts) {
                     }
                 }
             }
-            const double ms_ggml = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            const double ms_ggml = ms_ggml_gu + (ms_ggml_dn = std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+            double ms_iq_gu = 0, ms_iq_dn = 0;
             t0 = Clock::now();
             for (int e = 0; e < nexp; ++e) {
                 cpu::iq128_gu_rows(c.gu, blob.data() + (size_t) e * per, fx.f.gu_row, fx.f.up_off, kH, actp, nt, ffp, 0, kFF);
+            }
+            ms_iq_gu = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            t0 = Clock::now();
+            for (int e = 0; e < nexp; ++e) {
                 cpu::iq128_down_rows(c.dn, blob.data() + (size_t) e * per + fx.f.down_off, fx.f.d_row, kFF, hqp, nt, outp, 0, kH);
             }
-            const double ms_iq = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-            std::printf("  %-16s nt=%d  ggml %8.2f ms/expert   iq128 %6.2f ms/expert   %.1fx\n",
-                        c.name, nt, ms_ggml / nexp, ms_iq / nexp, ms_ggml / ms_iq);
+            const double ms_iq = ms_iq_gu + (ms_iq_dn = std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+            std::printf("  %-16s nt=%d  ggml %8.2f ms/expert   iq128 %6.2f ms/expert   %.1fx   [gu %.2f vs %.2f = %.2fx  dn %.2f vs %.2f = %.2fx]\n",
+                        c.name, nt, ms_ggml / nexp, ms_iq / nexp, ms_ggml / ms_iq,
+                        ms_ggml_gu / nexp, ms_iq_gu / nexp, ms_ggml_gu / ms_iq_gu,
+                        ms_ggml_dn / nexp, ms_iq_dn / nexp, ms_ggml_dn / ms_iq_dn);
         }
     }
 }
