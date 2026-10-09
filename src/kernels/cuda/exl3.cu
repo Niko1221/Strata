@@ -259,6 +259,24 @@ void gemv_launch(const uint16_t* x, const uint16_t* suh, const uint16_t* svh, co
 
 }  // namespace
 
+namespace {
+// Persistent GEMV workspace, allocated before any graph capture (cudaMalloc is illegal inside a capture).
+struct GemvWs { float* xh = nullptr; float* z = nullptr; int* pinv = nullptr; uint16_t* x16 = nullptr; uint16_t* y16 = nullptr;
+                int cxh = 0, cz = 0, cx16 = 0, cy16 = 0; };
+GemvWs g_ws;
+}  // namespace
+
+void exl3_gemv_reserve(int max_k, int max_n) {
+    if (max_k > g_ws.cxh) { (void) cudaFree(g_ws.xh); g_ws.xh = nullptr; if (cudaMalloc(&g_ws.xh, (size_t) max_k * 4) != cudaSuccess) std::abort(); g_ws.cxh = max_k; }
+    if (max_n > g_ws.cz) { (void) cudaFree(g_ws.z); g_ws.z = nullptr; if (cudaMalloc(&g_ws.z, (size_t) max_n * 4) != cudaSuccess) std::abort(); g_ws.cz = max_n; }
+    if (max_k > g_ws.cx16) { (void) cudaFree(g_ws.x16); g_ws.x16 = nullptr; if (cudaMalloc(&g_ws.x16, (size_t) max_k * 2) != cudaSuccess) std::abort(); g_ws.cx16 = max_k; }
+    if (max_n > g_ws.cy16) { (void) cudaFree(g_ws.y16); g_ws.y16 = nullptr; if (cudaMalloc(&g_ws.y16, (size_t) max_n * 2) != cudaSuccess) std::abort(); g_ws.cy16 = max_n; }
+    if (g_ws.pinv == nullptr) {
+        if (cudaMalloc(&g_ws.pinv, 256 * 4) != cudaSuccess) std::abort();
+        int p[256]; build_pinv(p); (void) cudaMemcpy(g_ws.pinv, p, 256 * 4, cudaMemcpyHostToDevice);
+    }
+}
+
 void exl3_gemv(const uint16_t* x, const uint16_t* suh, const uint16_t* svh, const uint16_t* trellis,
                int ki, int nj, int bits, int cb, uint16_t* y, void* stream) {
     if (ki <= 0 || nj <= 0 || (ki * 16) % HAD || (nj * 16) % HAD) {
@@ -266,17 +284,8 @@ void exl3_gemv(const uint16_t* x, const uint16_t* suh, const uint16_t* svh, cons
         std::abort();
     }
     cudaStream_t st = (cudaStream_t)stream;
-    int k = ki * 16, n = nj * 16;
-    float* d_xh = nullptr; float* d_z = nullptr; int* d_pinv = nullptr;
-    if (cudaMalloc(&d_xh, (size_t)k * 4) != cudaSuccess || cudaMalloc(&d_z, (size_t)n * 4) != cudaSuccess ||
-        cudaMalloc(&d_pinv, 256 * 4) != cudaSuccess) {
-        std::fprintf(stderr, "exl3_gemv: cudaMalloc failed\n"); std::abort();
-    }
-    int pinv[256];
-    build_pinv(pinv);
-    (void)cudaMemcpy(d_pinv, pinv, 256 * 4, cudaMemcpyHostToDevice);
-    gemv_launch(x, suh, svh, trellis, ki, nj, bits, cb, y, d_xh, d_z, d_pinv, st);
-    (void)cudaFree(d_xh); (void)cudaFree(d_z); (void)cudaFree(d_pinv);
+    exl3_gemv_reserve(ki * 16, nj * 16);
+    gemv_launch(x, suh, svh, trellis, ki, nj, bits, cb, y, g_ws.xh, g_ws.z, g_ws.pinv, st);
 }
 
 namespace {
@@ -402,19 +411,18 @@ __global__ void accum_batched_kernel(const uint16_t* __restrict__ d, const float
 
 constexpr int GEMV_T = 2;
 
-void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const float* weights,
-                  int n_experts, const uint16_t* x, uint16_t* out, void* stream) {
-    if (n_experts <= 0) return;
-    cudaStream_t st = (cudaStream_t) stream;
+namespace {
+
+// Run gate/up/silu/down for every expert (batched, grid.z = expert) and return the process-wide device fp16
+// buffer holding each expert's down output (n_experts x n).  Shared by the weighted `exl3_moe_ffn` and the
+// unweighted `exl3_moe_rows`.
+uint16_t* moe_run_experts(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, int n_experts,
+                          const uint16_t* x, cudaStream_t st) {
     const int k = gate[0].ki * 16;
     const int ff = gate[0].nj * 16;
     const int n = down[0].nj * 16;
     const int maxk = k > ff ? k : ff;      // xh: gate/up transform k, down transforms ff
     const int maxn = ff > n ? ff : n;      // z: gate/up produce ff, down produces n
-
-    // Device copies of the per-expert descriptor arrays.  Their pointer fields already hold device
-    // addresses, so a struct copied to the device dereferences to the right tensors.  Cached: the store's
-    // arrays are stable for a given layer, so this copies once, not per token.
     static Exl3Mat* d_gate = nullptr; static Exl3Mat* d_up = nullptr; static Exl3Mat* d_down = nullptr;
     static int cne = 0;
     size_t msz = (size_t) n_experts * sizeof(Exl3Mat);
@@ -422,75 +430,150 @@ void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, c
         (void)cudaFree(d_gate); (void)cudaFree(d_up); (void)cudaFree(d_down);
         d_gate = d_up = d_down = nullptr;
         if (cudaMalloc((void**)&d_gate, msz) || cudaMalloc((void**)&d_up, msz) || cudaMalloc((void**)&d_down, msz)) {
-            std::fprintf(stderr, "exl3_moe_ffn: cudaMalloc failed\n"); std::abort();
+            const cudaError_t me = cudaGetLastError(); size_t fb=0,tb=0; const cudaError_t gi = cudaMemGetInfo(&fb,&tb); std::fprintf(stderr, "exl3_moe: cudaMalloc(msz=%zu) failed: %s; meminfo rc=%s %zu/%zu MiB\n", msz, cudaGetErrorString(me), cudaGetErrorString(gi), fb>>20, tb>>20); std::abort();
         }
         cne = n_experts;
     }
     (void)cudaMemcpyAsync(d_gate, gate, msz, cudaMemcpyHostToDevice, st);
     (void)cudaMemcpyAsync(d_up, up, msz, cudaMemcpyHostToDevice, st);
     (void)cudaMemcpyAsync(d_down, down, msz, cudaMemcpyHostToDevice, st);
-
-    // One process-wide workspace, grown to the largest shapes seen.
     static uint16_t* d_g = nullptr; static uint16_t* d_u = nullptr; static uint16_t* d_h = nullptr;
-    static uint16_t* d_d = nullptr; static float* d_acc = nullptr; static float* d_xh = nullptr;
-    static float* d_z = nullptr; static int* d_pinv = nullptr;
+    static uint16_t* d_d = nullptr; static float* d_xh = nullptr; static float* d_z = nullptr; static int* d_pinv = nullptr;
     static int cff = 0, cn = 0, cmk = 0, cmn = 0;
     if (ff > cff) {
         (void)cudaFree(d_g); (void)cudaFree(d_u); (void)cudaFree(d_h); d_g = d_u = d_h = nullptr;
         if (cudaMalloc((void**)&d_g, (size_t)ff * n_experts * 2) || cudaMalloc((void**)&d_u, (size_t)ff * n_experts * 2) ||
-            cudaMalloc((void**)&d_h, (size_t)ff * n_experts * 2)) { std::fprintf(stderr, "exl3_moe_ffn: cudaMalloc failed\n"); std::abort(); }
+            cudaMalloc((void**)&d_h, (size_t)ff * n_experts * 2)) {
+            size_t fb=0,tb=0; cudaMemGetInfo(&fb,&tb);
+            std::fprintf(stderr, "exl3_moe: cudaMalloc(ff=%d k=%d -> %.1f MiB) failed: %zu MiB free of %zu MiB\n", ff, n_experts, (double)ff*n_experts*2*3/(1<<20), fb>>20, tb>>20);
+            std::abort(); }
         cff = ff;
     }
     if (n > cn) {
-        (void)cudaFree(d_d); (void)cudaFree(d_acc); d_d = nullptr; d_acc = nullptr;
-        if (cudaMalloc((void**)&d_d, (size_t)n * n_experts * 2) || cudaMalloc((void**)&d_acc, (size_t)n * 4)) { std::fprintf(stderr, "exl3_moe_ffn: cudaMalloc failed\n"); std::abort(); }
+        (void)cudaFree(d_d); d_d = nullptr;
+        if (cudaMalloc((void**)&d_d, (size_t)n * n_experts * 2)) { std::fprintf(stderr, "exl3_moe: cudaMalloc failed\n"); std::abort(); }
         cn = n;
     }
     if (maxk * n_experts > cmk) { (void)cudaFree(d_xh); d_xh = nullptr; if (cudaMalloc((void**)&d_xh, (size_t)maxk * n_experts * 4)) std::abort(); cmk = maxk * n_experts; }
     if (maxn * n_experts > cmn) { (void)cudaFree(d_z); d_z = nullptr; if (cudaMalloc((void**)&d_z, (size_t)maxn * n_experts * 4)) std::abort(); cmn = maxn * n_experts; }
     if (!d_pinv) { if (cudaMalloc((void**)&d_pinv, 256 * 4)) std::abort(); int pinv[256]; build_pinv(pinv); (void)cudaMemcpy(d_pinv, pinv, 256 * 4, cudaMemcpyHostToDevice); }
-    static float* d_weights = nullptr; static int cw = 0;
-    if (n_experts > cw) { (void)cudaFree(d_weights); d_weights = nullptr; if (cudaMalloc((void**)&d_weights, (size_t)n_experts * 4)) std::abort(); cw = n_experts; }
-    (void)cudaMemcpyAsync(d_weights, weights, (size_t)n_experts * 4, cudaMemcpyHostToDevice, st);
-
     int gy_g = (gate[0].ki + 15) / 16; if (gy_g < 1) gy_g = 1;
     int gy_d = (down[0].ki + 15) / 16; if (gy_d < 1) gy_d = 1;
-
-    // gate
     prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_gate, d_xh, k);
     (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * ff * 4, st);
     gemv_batched_kernel<GEMV_T><<<dim3((ff / 16 + GEMV_T - 1) / GEMV_T, gy_g, n_experts), 256, 0, st>>>(d_xh, d_gate, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_z, d_gate, d_g, ff);
-    // up
     prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_up, d_xh, k);
     (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * ff * 4, st);
     gemv_batched_kernel<GEMV_T><<<dim3((ff / 16 + GEMV_T - 1) / GEMV_T, gy_g, n_experts), 256, 0, st>>>(d_xh, d_up, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_z, d_up, d_u, ff);
-    // silu(gate) * up
     { long tot = (long)n_experts * ff; silu_batched_kernel<<<(unsigned)((tot + 255) / 256), 256, 0, st>>>(d_g, d_u, d_h, tot); }
-    // down (its input is each expert's own hidden vector)
     prescale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_h, ff, d_down, d_xh, ff);
     (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * n * 4, st);
     gemv_batched_kernel<GEMV_T><<<dim3((n / 16 + GEMV_T - 1) / GEMV_T, gy_d, n_experts), 256, 0, st>>>(d_xh, d_down, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(n / HAD, n_experts), HAD, 0, st>>>(d_z, d_down, d_d, n);
-    // weighted sum over experts
+    return d_d;
+}
+
+}  // namespace
+
+void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const float* weights,
+                  int n_experts, const uint16_t* x, uint16_t* out, void* stream) {
+    if (n_experts <= 0) return;
+    cudaStream_t st = (cudaStream_t) stream;
+    const int n = down[0].nj * 16;
+    uint16_t* d_d = moe_run_experts(gate, up, down, n_experts, x, st);
+    static float* d_acc = nullptr; static float* d_weights = nullptr; static int cw = 0, ca = 0;
+    if (n > ca) { (void)cudaFree(d_acc); d_acc = nullptr; if (cudaMalloc((void**)&d_acc, (size_t)n * 4)) std::abort(); ca = n; }
+    if (n_experts > cw) { (void)cudaFree(d_weights); d_weights = nullptr; if (cudaMalloc((void**)&d_weights, (size_t)n_experts * 4)) std::abort(); cw = n_experts; }
+    (void)cudaMemcpyAsync(d_weights, weights, (size_t)n_experts * 4, cudaMemcpyHostToDevice, st);
     accum_batched_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_d, d_weights, n_experts, n, d_acc);
     f32_to_f16_out_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_acc, out, n);
 }
+
+void exl3_moe_rows(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const int* ids,
+                   int k, const uint16_t* x, uint16_t* out, void* stream) {
+    (void) ids;   // the caller orders gate/up/down to match ids, so row i is expert ids[i]
+    if (k <= 0) return;
+    cudaStream_t st = (cudaStream_t) stream;
+    const int n = down[0].nj * 16;
+    uint16_t* d_d = moe_run_experts(gate, up, down, k, x, st);
+    (void) cudaMemcpyAsync(out, d_d, (size_t)k * n * 2, cudaMemcpyDeviceToDevice, st);
+}
+
+__global__ void embed_gather_kernel(const uint16_t* __restrict__ row, long n, int bf16, float* __restrict__ out) {
+    long i = (long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const uint16_t h = row[i];
+    if (bf16) { uint32_t f = (uint32_t) h << 16; float o; __builtin_memcpy(&o, &f, 4); out[i] = o; }
+    else out[i] = __half2float(*(const __half*) &h);
+}
+
+
+__global__ void silu_mul_f32_kernel(const float* __restrict__ g, const float* __restrict__ u, float* __restrict__ h, long n) {
+    long i = (long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float gv = g[i];
+    h[i] = (gv / (1.0f + expf(-gv))) * u[i];
+}
+
+__global__ void shared_scalar_gate_kernel(float* __restrict__ out, const float* __restrict__ x,
+                                          const uint16_t* __restrict__ w_ginp, int n_embd) {
+    // one block: sigmoid(w_ginp . x) over n_embd, applied to every out element
+    __shared__ float red[256];
+    const int t = threadIdx.x;
+    float s = 0;
+    for (int i = t; i < n_embd; i += blockDim.x) {
+        const uint16_t h = w_ginp[i];
+        uint32_t f = (uint32_t) h << 16; float w; __builtin_memcpy(&w, &f, 4);
+        s += w * x[i];
+    }
+    red[t] = s; __syncthreads();
+    for (int step = blockDim.x >> 1; step > 0; step >>= 1) { if (t < step) red[t] += red[t + step]; __syncthreads(); }
+    if (t == 0) red[0] = 1.0f / (1.0f + expf(-red[0]));
+    __syncthreads();
+    const float gate = red[0];
+    for (int i = t; i < n_embd; i += blockDim.x) out[i] *= gate;
+}
+
+static float* g_sh_g = nullptr; static float* g_sh_u = nullptr; static float* g_sh_h = nullptr;
+static int g_sh_ff = 0;
+
+void exl3_shared_reserve(int n_ff) {
+    if (n_ff <= g_sh_ff) return;
+    (void) cudaFree(g_sh_g); (void) cudaFree(g_sh_u); (void) cudaFree(g_sh_h);
+    g_sh_g = g_sh_u = g_sh_h = nullptr;
+    if (cudaMalloc((void**) &g_sh_g, (size_t) n_ff * 4) || cudaMalloc((void**) &g_sh_u, (size_t) n_ff * 4) ||
+        cudaMalloc((void**) &g_sh_h, (size_t) n_ff * 4)) std::abort();
+    g_sh_ff = n_ff;
+}
+
+void exl3_shared_expert(const float* x, const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down,
+                        const uint16_t* w_ginp, float* out, int n_embd, int n_ff, void* stream) {
+    cudaStream_t st = (cudaStream_t) stream;
+    exl3_shared_reserve(n_ff);
+    float* const d_g = g_sh_g; float* const d_u = g_sh_u; float* const d_h = g_sh_h;
+    exl3_gemv_f32(x, gate->suh, gate->svh, gate->trellis, gate->ki, gate->nj, gate->bits, gate->cb, d_g, stream);
+    exl3_gemv_f32(x, up->suh, up->svh, up->trellis, up->ki, up->nj, up->bits, up->cb, d_u, stream);
+    silu_mul_f32_kernel<<<(unsigned)((n_ff + 255) / 256), 256, 0, st>>>(d_g, d_u, d_h, n_ff);
+    exl3_gemv_f32(d_h, down->suh, down->svh, down->trellis, down->ki, down->nj, down->bits, down->cb, out, stream);
+    shared_scalar_gate_kernel<<<1, 256, 0, st>>>(out, x, w_ginp, n_embd);
+}
+
+void exl3_embed_gather(const uint16_t* row, int64_t n, bool bf16, float* out, void* stream) {
+    cudaStream_t st = (cudaStream_t) stream;
+    embed_gather_kernel<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(row, n, bf16 ? 1 : 0, out);
+}
+
 
 void exl3_gemv_f32(const float* x, const uint16_t* suh, const uint16_t* svh, const uint16_t* trellis,
                    int ki, int nj, int bits, int cb, float* y, void* stream) {
     cudaStream_t st = (cudaStream_t) stream;
     const int k = ki * 16, n = nj * 16;
-    uint16_t* d_x = nullptr; uint16_t* d_y = nullptr;
-    if (cudaMalloc(&d_x, (size_t) k * 2) != cudaSuccess || cudaMalloc(&d_y, (size_t) n * 2) != cudaSuccess) {
-        std::fprintf(stderr, "exl3_gemv_f32: cudaMalloc failed\n");
-        std::abort();
-    }
-    f32_to_f16_out_kernel<<<(k + 255) / 256, 256, 0, st>>>(x, d_x, k);
-    exl3_gemv(d_x, suh, svh, trellis, ki, nj, bits, cb, d_y, stream);
-    f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_y, y, n);
-    (void) cudaFree(d_x); (void) cudaFree(d_y);
+    exl3_gemv_reserve(k, n);
+    f32_to_f16_out_kernel<<<(k + 255) / 256, 256, 0, st>>>(x, g_ws.x16, k);
+    exl3_gemv(g_ws.x16, suh, svh, trellis, ki, nj, bits, cb, g_ws.y16, stream);
+    f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, st>>>(g_ws.y16, y, n);
 }
 
 }  // namespace strata::kernels

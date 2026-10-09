@@ -37,4 +37,23 @@ private:
     size_t bytes_ = 0;
 };
 
+// Streaming EXL3 experts for the engine's pool: reads a token's routed experts straight from the model's
+// safetensors (mmap), uploads just those, runs them, and hands back the k UNWEIGHTED rows in fp32 (the
+// engine's `moe_combine` applies the router weights).  One instance serves all layers.
+class Exl3ExpertStream {
+public:
+    Exl3ExpertStream(const std::string& model_dir, int n_embd, void* stream);
+    ~Exl3ExpertStream();
+    Exl3ExpertStream(const Exl3ExpertStream&) = delete;
+    Exl3ExpertStream& operator=(const Exl3ExpertStream&) = delete;
+
+    // out[i*n_embd] = ffn(layer, expert ids[i], x) for i in [0,k).  `x_f32` and `out` are HOST fp32.
+    bool run(int layer, const float* x_f32, const int* ids, int k, float* out, void* stream);
+    size_t bytes() const;
+
+private:
+    struct Impl;
+    Impl* impl_ = nullptr;
+};
+
 }  // namespace strata::kernels

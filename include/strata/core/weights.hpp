@@ -139,8 +139,15 @@ public:
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
 
+    /// Build a table directly (the EXL3 loader), rather than from `<pack>/index.txt`.  `set` inserts or
+    /// replaces one role; `finish` records the report.  Kept separate from `load` so the pack path is
+    /// untouched and an EXL3 table is a first-class citizen with the same consumers.
+    void set(const std::string& name, const WeightRef& ref) { table_[name] = ref; }
+    void finish(const LoadReport& r) { report_ = r; }
+
 private:
     friend class NativeDense;
+    friend class Exl3Pack;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
 };

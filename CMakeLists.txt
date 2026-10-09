@@ -266,8 +266,9 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/artifact/exl3_pack.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_core PRIVATE strata_kernels_cpu)   # the EXL3 loader dequantizes the indexer via the CPU codec
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
     target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
@@ -1146,6 +1147,9 @@ if(STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA)
   add_executable(strata-exl3-moe src/kernels/exl3_moe_layer_check.cpp)
   target_include_directories(strata-exl3-moe PRIVATE ${_strata_gpu_include_directories} include)
   target_link_libraries(strata-exl3-moe PRIVATE strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  add_executable(strata-exl3-pack src/artifact/exl3_pack_check.cpp)
+  target_include_directories(strata-exl3-pack PRIVATE ${_strata_gpu_include_directories} include)
+  target_link_libraries(strata-exl3-pack PRIVATE strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
 endif()
 
 # EXL3 decode (docs/EXL3.md): the scalar CPU kernel against the numpy format specification in
