@@ -1,5 +1,5 @@
 """0.1.41 server hardening: a JSON body of the wrong shape is a 400 (not a dropped connection), an oversized body is a
-413 before it is read, a bad Content-Length is a 400.
+413 before it is read, a bad Content-Length is a 400, and a sampling field of the wrong type is a 400 that names it.
 
     python -m unittest serve.test_request_hardening -v
 """
@@ -91,6 +91,44 @@ class Hardening(unittest.TestCase):
             self.assertEqual(body_limit(), 256 << 20)
         with mock.patch.dict(os.environ, {"STRATA_MAX_BODY_MIB": "junk"}):
             self.assertEqual(body_limit(), 256 << 20)
+
+    # A request whose sampling field has the wrong JSON type is a 400 that names the field, not a greedy reply.
+    # Only types are checked: in-type values of any range, and null fields, answer as before.
+    def test_a_wrong_type_is_a_400_that_names_the_field(self):
+        chat = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}
+        responses = {"model": "m", "input": "hi", "store": False, "max_output_tokens": 8}
+        for path, body, field in (
+                ("/v1/chat/completions", {**chat, "temperature": "0.7"}, "temperature"),
+                ("/v1/chat/completions", {**chat, "top_k": 40.0}, "top_k"),
+                ("/v1/chat/completions", {**chat, "seed": "7"}, "seed"),
+                ("/v1/messages", {**chat, "top_k": "40"}, "top_k"),
+                ("/v1/messages", {**chat, "repetition_penalty": "1.1"}, "repetition_penalty"),
+                ("/v1/messages", {**chat, "presence_penalty": True}, "presence_penalty"),
+                ("/v1/responses", {**responses, "top_p": True}, "top_p"),
+                ("/v1/responses", {**responses, "temperature": "0.7"}, "temperature"),
+                ("/v1/responses", {**responses, "seed": 7.5}, "seed"),
+                ("/v1/messages/count_tokens", {"messages": chat["messages"], "temperature": "0.7"},
+                 "temperature")):
+            with self.subTest(path=path, field=field):
+                with mock.patch("builtins.print"):
+                    code, out = self.post(path, body)
+                self.assertEqual(code, 400, (path, body, out))
+                self.assertIn(field, json.dumps(out))
+
+    def test_in_type_values_and_nulls_still_answer(self):
+        chat = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8, "temperature": 0, "top_k": 0,
+                "seed": 7}
+        code, out = self.post("/v1/chat/completions", chat)
+        self.assertEqual(code, 200, out)
+        code, out = self.post("/v1/messages", {**chat, "temperature": -1, "top_k": 100, "presence_penalty": 0.5,
+                                               "penalty_last_n": 64})
+        self.assertEqual(code, 200, out)
+        code, out = self.post("/v1/responses", {"model": "m", "input": "hi", "store": False, "max_output_tokens": 8,
+                                                "temperature": None, "top_p": None, "seed": None})
+        self.assertEqual(code, 200, out)
+        code, out = self.post("/v1/messages/count_tokens", {"messages": [{"role": "user", "content": "hi"}],
+                                                            "temperature": 0.7})
+        self.assertEqual(code, 200, out)
 
 
 if __name__ == "__main__":

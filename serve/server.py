@@ -4962,6 +4962,7 @@ def make_handler(svc: Service):
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
+            check_request_sampling(req)                       # ... and a sampling field of the wrong type
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -5131,6 +5132,10 @@ def make_handler(svc: Service):
                 stop_strings(req)
             except ValueError as e:
                 raise ResponsesError(str(e), "stop") from None
+            try:
+                check_request_sampling(req)                   # the request is also the sampling dict (see below)
+            except ValueError as e:                           # its message starts with the field's name: the param
+                raise ResponsesError(str(e), str(e).partition(":")[0]) from None
             svc.load()
             # #924 (opt-in): a Codex compaction request is rendered with its conversation's tools, so its prompt
             # starts as the cached one did; the parser and the response keep the request's own tools
@@ -5163,6 +5168,7 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             stop_strings(req)                                 # the same 400 as the request itself would get
+            check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
 
         def _anthropic(self, req):
@@ -5176,6 +5182,7 @@ def make_handler(svc: Service):
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
+            check_request_sampling(req)                       # ... and a sampling field of the wrong type
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -5606,6 +5613,23 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
         else:
             print(f"[strata] config sampling.{key}={value!r}: unknown key, ignored", flush=True)
     return out
+
+
+def check_request_sampling(req) -> None:
+    """A request's sampling field of the wrong JSON type ("temperature": "0.7", "top_k": 40.0, "seed": true) is a 400
+    that names the field, as the same value is through POST /settings or the run config.  Unchecked, the value
+    replaced the configured default in run()'s merge and sampling_keys dropped it, so the reply was greedy.  Only
+    types are checked: a number (int or float, never bool) for temperature, top_p, min_p and the three penalties; an
+    integer (never bool or float) for top_k, penalty_last_n and seed.  Ranges behave as before (a temperature <= 0 is
+    greedy, top_k 0 or above 64 is clamped, a seed <= 0 is unset), and an absent or null field is not checked."""
+    for key, integer in (("temperature", False), ("top_p", False), ("min_p", False), ("presence_penalty", False),
+                         ("frequency_penalty", False), ("repetition_penalty", False), ("top_k", True),
+                         ("penalty_last_n", True), ("seed", True)):
+        value = (req or {}).get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+            raise ValueError(f"{key}: {'an integer' if integer else 'a number'}")
 
 
 def main() -> int:
