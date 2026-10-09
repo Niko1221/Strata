@@ -6,6 +6,7 @@ waits for GO on stdin before it can start a decoder; its job is installed first.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import queue
 import signal
@@ -52,10 +53,11 @@ class _PrivateJob:
 
 class OwnedMediaProcess:
     def __init__(self, args, budget, *, max_stdout, max_stderr=65536, worker_gate=False, inherit_group=False,
-                 check_exit=True):
+                 check_exit=True, on_progress=None):
         self.args, self.budget = args, budget
         self.max_stdout, self.max_stderr = max_stdout, max_stderr
         self.worker_gate, self.inherit_group, self.check_exit = worker_gate, inherit_group, check_exit
+        self.on_progress = on_progress
         self.stop = threading.Event()
         self.chunks = queue.Queue(maxsize=4)
         self.errors, self.stderr, self.threads = {}, bytearray(), []
@@ -103,7 +105,7 @@ class OwnedMediaProcess:
             self._put(None)
 
     def _stderr(self):
-        total = 0
+        total, pending = 0, bytearray()
         try:
             while not self.stop.is_set():
                 data = self.proc.stderr.read(4096)
@@ -115,8 +117,37 @@ class OwnedMediaProcess:
                 if total > self.max_stderr:
                     self.errors["stderr"] = "video decoder diagnostics exceed the limit"
                     return
+                if self.on_progress is not None:
+                    pending.extend(data)
+                    while b"\n" in pending:
+                        line, _, rest = pending.partition(b"\n")
+                        pending = bytearray(rest)
+                        self._progress_line(line)
+                    if len(pending) > 4096:
+                        if pending.startswith(b"STRATA_PROGRESS "):
+                            self.errors["progress"] = "media worker progress line exceeds the limit"
+                            return
+                        pending.clear()
+            if pending:
+                self._progress_line(pending)
         except (OSError, ValueError) as e:
             self.errors["stderr"] = str(e)
+
+    def _progress_line(self, line):
+        prefix = b"STRATA_PROGRESS "
+        if not line.startswith(prefix):
+            return
+        try:
+            event = json.loads(line[len(prefix):])
+            stage, done, total, unit = (event[k] for k in ("stage", "done", "total", "unit"))
+            if stage not in ("staging", "decoding") or unit != ("bytes" if stage == "staging" else "frames") or \
+                    isinstance(done, bool) or not isinstance(done, int) or done < 0 or \
+                    total is not None and (isinstance(total, bool) or not isinstance(total, int) or
+                                           total < 1 or done > total):
+                raise ValueError()
+            self.on_progress({"stage": stage, "done": done, "total": total, "unit": unit})
+        except Exception:
+            self.errors["progress"] = "media worker returned invalid progress"
 
     def __iter__(self):
         total = 0

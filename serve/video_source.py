@@ -16,7 +16,7 @@ import time
 import urllib.parse
 
 from .media_process import OwnedMediaProcess
-from .video import ClipInfo, VideoCancelled, VideoError, VideoLimitError
+from .video import ClipInfo, VideoCancelled, VideoError, VideoLimitError, progress_step
 
 
 def network_path(path: str) -> bool:
@@ -106,7 +106,7 @@ class OwnedMediaFile:
         self.close()
 
 
-def worker(mode, source, out, budget, maximum=0, info=None):
+def worker(mode, source, out, budget, maximum=0, info=None, on_progress=None):
     budget.check()
     remaining = budget.deadline - time.monotonic()
     policy = {**asdict(budget.policy), "deadline_s": max(0.01, remaining)}
@@ -114,7 +114,8 @@ def worker(mode, source, out, budget, maximum=0, info=None):
             "--policy", json.dumps(policy, separators=(",", ":")), "--maximum", str(maximum)]
     if info is not None:
         args += ["--info", json.dumps(asdict(info), separators=(",", ":"))]
-    with OwnedMediaProcess(args, budget, max_stdout=65536, worker_gate=True, check_exit=False) as process:
+    with OwnedMediaProcess(args, budget, max_stdout=65536, worker_gate=True, check_exit=False,
+                           on_progress=on_progress) as process:
         raw = process.read()
     try:
         result = json.loads(raw)
@@ -136,7 +137,7 @@ def worker(mode, source, out, budget, maximum=0, info=None):
         raise VideoError("video worker returned invalid metadata") from None
 
 
-def stage_video(source, root, quota, budget, *, kind="video", url_maximum=None):
+def stage_video(source, root, quota, budget, *, kind="video", url_maximum=None, on_progress=None):
     """Return (owned local source, content SHA256). Downloads stay outside the FIFO."""
     maximum = budget.policy.max_source_bytes - budget.source_bytes
     if url_maximum is not None and source.startswith(("http://", "https://")):
@@ -155,6 +156,10 @@ def stage_video(source, root, quota, budget, *, kind="video", url_maximum=None):
             if estimated > maximum:
                 raise VideoLimitError("video base64 exceeds its source byte budget")
             digest, size = hashlib.sha256(), 0
+            step = progress_step(estimated)
+            next_progress = 0
+            if on_progress is not None:
+                on_progress({"stage": "staging", "done": 0, "total": estimated, "unit": "bytes"})
             with owned.path.open("wb") as out:
                 for i in range(0, len(payload), 65536):
                     budget.check()
@@ -170,13 +175,16 @@ def stage_video(source, root, quota, budget, *, kind="video", url_maximum=None):
                         raise VideoLimitError("video source byte budget exceeded")
                     digest.update(data)
                     out.write(data)
+                    if on_progress is not None and (size >= next_progress or size == estimated):
+                        on_progress({"stage": "staging", "done": size, "total": estimated, "unit": "bytes"})
+                        next_progress = size + step
             sha = digest.hexdigest()
         else:
             remote = source.startswith(("http://", "https://"))
             if remote and (len(source) > 8192 or any(c in source for c in "\x00\r\n")):
                 raise VideoError("invalid video URL")
             result = worker("download" if remote else "copy", source if remote else local_video_path(source),
-                            owned.path, budget, maximum)
+                            owned.path, budget, maximum, on_progress=on_progress)
             size, sha = result.get("bytes"), result.get("sha256")
             if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= maximum or \
                     not isinstance(sha, str) or not re.fullmatch("[0-9a-f]{64}", sha):
@@ -192,9 +200,11 @@ def stage_video(source, root, quota, budget, *, kind="video", url_maximum=None):
         raise
 
 
-def decode_video(source, root, quota, budget):
+def decode_video(source, root, quota, budget, *, on_progress=None):
     # Probe first, then reserve the PRECISE finite RGB spool before decode. The
     # source is staged/private and unchanged between the two owned worker jobs.
+    if on_progress is not None:
+        on_progress({"stage": "probing", "done": None, "total": None, "unit": "frames"})
     result = worker("probe", source, "unused", budget)
     info = result.get("info")
     if not isinstance(info, dict):
@@ -220,9 +230,11 @@ def decode_video(source, root, quota, budget):
             info.resized_width % 32 == info.resized_height % 32 == 0):
         raise VideoError("video decoder metadata exceeds its policy")
     info.charge(budget)
+    if on_progress is not None:
+        on_progress({"stage": "decoding", "done": 0, "total": len(info.indices), "unit": "frames"})
     owned = OwnedMediaFile(root, quota, info.spool_reservation, ".svf")
     try:
-        result = worker("decode", source, owned.path, budget, info=info)
+        result = worker("decode", source, owned.path, budget, info=info, on_progress=on_progress)
         info = result.get("info")
         if not isinstance(info, dict):
             raise VideoError("video decoder returned invalid clip metadata")

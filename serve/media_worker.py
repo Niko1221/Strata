@@ -21,7 +21,7 @@ import urllib.request
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from serve.media_process import OwnedMediaProcess
-from serve.video import (FRAME_HEADER, FRAME_TIME, VideoCancelled, VideoError, VideoLimitError,
+from serve.video import (FRAME_HEADER, FRAME_TIME, VideoCancelled, VideoError, VideoLimitError, progress_step,
                          VideoPolicy, VideoRequestBudget, probe_info)
 
 
@@ -35,13 +35,15 @@ class _HttpOnlyRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def stage(source, output, maximum, budget, download=False):
-    h, count = hashlib.sha256(), 0
+def stage(source, output, maximum, budget, download=False, on_progress=None):
+    h, count, total = hashlib.sha256(), 0, None
     if download:
         request = urllib.request.Request(source, headers={"User-Agent": "strata", "Accept-Encoding": "identity"})
         stream = urllib.request.build_opener(_HttpOnlyRedirect()).open(request, timeout=min(60, budget.policy.deadline_s))
         claimed = stream.headers.get("Content-Length", "").strip()
-        if claimed.isdigit() and int(claimed) > maximum:
+        if claimed.isdigit() and int(claimed) > 0:
+            total = int(claimed)
+        if total is not None and total > maximum:
             stream.close()
             raise VideoLimitError("video source exceeds its byte budget")
     else:
@@ -53,7 +55,12 @@ def stage(source, output, maximum, budget, download=False):
         if info.st_size > maximum:
             os.close(fd)
             raise VideoLimitError("video source exceeds its byte budget")
+        total = info.st_size or None
         stream = os.fdopen(fd, "rb")
+    if on_progress is not None:
+        on_progress({"stage": "staging", "done": 0, "total": total, "unit": "bytes"})
+    step = progress_step(total)
+    next_progress = 0
     with stream, open(output, "wb") as out:
         while True:
             budget.check()
@@ -65,8 +72,14 @@ def stage(source, output, maximum, budget, download=False):
                 raise VideoLimitError("video source exceeds its byte budget")
             h.update(data)
             out.write(data)
+            if on_progress is not None and (count >= next_progress or count == total):
+                on_progress({"stage": "staging", "done": count,
+                             "total": total if total is None or count <= total else None, "unit": "bytes"})
+                next_progress = count + step
     if count == 0:
         raise VideoError("video source is empty")
+    if on_progress is not None:
+        on_progress({"stage": "staging", "done": count, "total": count, "unit": "bytes"})
     return {"bytes": count, "sha256": h.hexdigest()}
 
 
@@ -96,7 +109,7 @@ def select_filter(indices):
     return "select=" + terms[0]
 
 
-def decode(source, output, budget, info=None):
+def decode(source, output, budget, info=None, on_progress=None):
     from PIL import Image
     info = info or probe(source, budget)
     p = budget.policy
@@ -123,6 +136,7 @@ def decode(source, output, budget, info=None):
                 max_stdout=info.decoded_bytes, inherit_group=True) as process:
             out.write(FRAME_HEADER.pack(b"SVF1", 0, len(info.indices), info.resized_width, info.resized_height,
                                        info.duration_s, info.rgb_bytes))
+            step = progress_step(len(info.indices), minimum=1, fallback=1)
             for chunk in process:
                 pending.extend(chunk)
                 while len(pending) >= original_bytes:
@@ -140,6 +154,9 @@ def decode(source, output, budget, info=None):
                     out.write(FRAME_TIME.pack(info.times[written]))
                     out.write(im.tobytes())
                     written += 1
+                    if on_progress is not None and (written % step == 0 or written == len(info.indices)):
+                        on_progress({"stage": "decoding", "done": written,
+                                     "total": len(info.indices), "unit": "frames"})
             if pending or written != len(info.indices):
                 raise VideoError("video decoder returned a short RGB frame stream")
     finally:
@@ -170,13 +187,15 @@ def main():
         cpu = math.ceil(p.deadline_s) + 2
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     budget = VideoRequestBudget(p, cancel)
+    def report(event):
+        print("STRATA_PROGRESS " + json.dumps(event, separators=(",", ":")), file=sys.stderr, flush=True)
     if args.mode == "probe":
         result = {"info": probe(args.source, budget).__dict__}
     elif args.mode == "decode":
         from serve.video import ClipInfo
         info = json.loads(args.info) if args.info else None
         info = ClipInfo(**{**info, "indices": tuple(info["indices"]), "times": tuple(info["times"])}) if info else None
-        result = decode(args.source, args.output, budget, info)
+        result = decode(args.source, args.output, budget, info, report)
     elif args.mode == "image":
         from PIL import Image
         with Image.open(args.source) as image:
@@ -185,7 +204,7 @@ def main():
             raise VideoError("mixed-request image dimensions exceed the video source pixel budget")
         result = {"width": w, "height": h}
     else:
-        result = stage(args.source, args.output, args.maximum, budget, args.mode == "download")
+        result = stage(args.source, args.output, args.maximum, budget, args.mode == "download", report)
     print(json.dumps(result), flush=True)
 
 

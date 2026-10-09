@@ -49,12 +49,18 @@ class SourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             original=Path(d)/"original";original.write_bytes(b"opaque source bytes")
             quota=DiskQuota(1000);b=VideoRequestBudget(policy(max_source_bytes=40))
-            with stage_video(str(original),d,quota,b)[0] as f:
+            local_progress=[]
+            with stage_video(str(original),d,quota,b,on_progress=local_progress.append)[0] as f:
                 self.assertEqual(f.path.read_bytes(),original.read_bytes())
+            self.assertEqual(local_progress[-1], {"stage":"staging", "done":len(original.read_bytes()),
+                                                   "total":len(original.read_bytes()), "unit":"bytes"})
             src="data:video/mp4;base64,"+base64.b64encode(original.read_bytes()).decode()
-            file,digest=stage_video(src,d,quota,b)
+            data_progress=[]
+            file,digest=stage_video(src,d,quota,b,on_progress=data_progress.append)
             with file:
                 self.assertEqual(digest,hashlib.sha256(original.read_bytes()).hexdigest())
+            self.assertEqual(data_progress[-1], {"stage":"staging", "done":len(original.read_bytes()),
+                                                  "total":len(original.read_bytes()), "unit":"bytes"})
             with self.assertRaises(VideoLimitError):
                 stage_video(src,d,quota,b)
             self.assertEqual(quota.used,0)
@@ -90,8 +96,9 @@ class DecoderTests(unittest.TestCase):
 
     def test_real_cfr_sampling_spool_timestamps_and_cleanup(self):
         b=VideoRequestBudget(self.p)
-        with stage_video(str(self.source),self.root,self.q,b)[0] as source:
-            packet,info=decode_video(source.path,self.root,self.q,b)
+        progress=[]
+        with stage_video(str(self.source),self.root,self.q,b,on_progress=progress.append)[0] as source:
+            packet,info=decode_video(source.path,self.root,self.q,b,on_progress=progress.append)
             with packet:
                 raw=packet.path.read_bytes()
                 self.assertEqual(len(raw),info.packet_bytes)
@@ -103,6 +110,11 @@ class DecoderTests(unittest.TestCase):
                     offset+=FRAME_TIME.size+per
                 self.assertEqual(offset,len(raw))
                 self.assertEqual((b.frames,b.duration_s,b.rgb_bytes),(5,2.5,122880))
+                self.assertEqual([event["stage"] for event in progress if event["stage"] in ("probing", "decoding")][0],
+                                 "probing")
+                decoded = [event for event in progress if event["stage"] == "decoding"]
+                self.assertEqual([event["done"] for event in decoded], list(range(0, 6)))
+                self.assertEqual(decoded[-1], {"stage":"decoding", "done":5, "total":5, "unit":"frames"})
         self.assertEqual(self.q.used,0)
         self.assertEqual(list(self.root.iterdir()),[self.source])
 

@@ -135,6 +135,12 @@ class VideoRequestBudget:
             setattr(self, key, value)
 
 
+def progress_step(total: int, minimum: int = 65536, fallback: int = 1 << 20) -> int:
+    """How often a counted stage reports: about every 1% of `total`, never more often than `minimum`, or every
+    `fallback` units while the total is unknown.  Stages report counts, never a percentage or an ETA."""
+    return max(minimum, (total + 99) // 100) if total else fallback
+
+
 def sample_indices(total_frames: int, source_fps: float, target_fps: float = 2.0) -> tuple[int, ...]:
     """The pinned HF processor sample_frames method: index linspace, ties-to-even, min 4/max 768.
 
