@@ -53,13 +53,14 @@ class ChatTemplate:
         self.caps = self._detect_caps()
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
-               **kwargs) -> str:
+               preserve_empty_reasoning: bool = False, **kwargs) -> str:
         # Do not use completed empty assistant turns as examples for the next reply. Keep the final message.
         # (#843.  STRATA_KEEP_EMPTY_TURNS=1 renders them as before.)
         messages = [m for i, m in enumerate(messages)
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
-                                                      and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+                                                      and not _has_image(m.get("content")) and not m.get("tool_calls")
+                                                      and not (preserve_empty_reasoning and m.get("reasoning_content")))]
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -703,7 +704,7 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, parse_tools: bool = True):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -713,6 +714,7 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        self.parse_tools = parse_tools
         # #804/#1058: calls found inside the reasoning wait here as [raw text, ToolCall | None] until the turn shows
         # they were acts: only whitespace (or more calls) after them, then the end of the turn or `</think>`.  The
         # reasoning text before them is tracked (code fence, inline code, current line) to tell an act from a quote.
@@ -1017,6 +1019,11 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
+                if not self.parse_tools:
+                    if self.buf:
+                        out.append(Event("content", self.buf))
+                        self.buf = ""
+                    return out
                 i = self.buf.find(CALL_START)
                 b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
                 if b >= 0 and (i < 0 or b < i):
