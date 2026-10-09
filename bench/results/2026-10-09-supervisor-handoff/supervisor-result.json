@@ -1,0 +1,126 @@
+{
+  "schema": "strata.supervisor-handoff-result.v1",
+  "qualification": "resource_lifecycle_and_build_feedback_verified_with_disclosed_prompt_deviation",
+  "hardware": {
+    "cpu": "AMD Ryzen 9 7940HS",
+    "gpu": "NVIDIA RTX 4070 Laptop 8 GB",
+    "installed_ram": "64 GB DDR5-5600",
+    "os": "Windows",
+    "storage": "NVMe PCIe 4.0"
+  },
+  "configuration": {
+    "upstream_base": "v0.1.41",
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "context_tokens": 65536,
+    "resident_budget_gib": 32,
+    "reasoning": "high",
+    "reasoning_budget_tokens": 8192,
+    "vision": "enabled, CPU sidecar",
+    "mtp_spec_argument": 4,
+    "pool_workers": 7,
+    "pcie_frac": 0.37,
+    "experimental_speed_projection": true,
+    "one_model_server": true,
+    "sequential_workers": 1,
+    "tool_profile": {
+      "mode": "unload",
+      "ram_headroom_gib": 6,
+      "vram_headroom_mib": 250,
+      "ttl_seconds": 60
+    }
+  },
+  "actual_agent": {
+    "elapsed_s": 371.10728788375854,
+    "exit_code": 0,
+    "supervisor_model_calls": 5,
+    "worker_model_calls": 2,
+    "actual_main_requests_high_reasoning": 7,
+    "supervisor_resource_plan_accepted": true,
+    "worker_lineage_verified": true,
+    "sequential_worker_count": 1,
+    "extra_supervisor_read_only_log_commands": 1,
+    "exact_prompt_compliance": false,
+    "supervisor_compiler_executions": 0,
+    "worker_compiler_executions": 1,
+    "final_non_tool_assistant": true,
+    "final_matches_actual_tool_nonce_and_results": true,
+    "final_corroborated_by_completed_api_response": true
+  },
+  "lifecycle": {
+    "time_origin": "first successful acquire response; all times relative seconds",
+    "supervisor_plan_before_acquire_s": 81.51817631721497,
+    "first_ready_s": 3.3630545139312744,
+    "old_model_death_confirmed_by_samples_s": {
+      "vision": 3.3132669925689697,
+      "native": 3.3132669925689697
+    },
+    "death_time_note": "Upper bounds from owned process identity sampling, not exact OS exit timestamps.",
+    "tool_entry_s": 3.750170946121216,
+    "tool_entry_models_loaded": false,
+    "tool_entry_old_models_dead": true,
+    "tool_entry_model_children_count": 0,
+    "tool_entry_available_ram_gib": 51.42207336425781,
+    "ready_renewals_s": [
+      10.012311220169067,
+      20.02069354057312
+    ],
+    "ready_renewal_count": 2,
+    "compiler_wrapper_started_s": 3.785149335861206,
+    "compiler_wrapper_finished_s": 5.9037370681762695,
+    "compiler_wrapper_elapsed_s": 2.1185877323150635,
+    "declared_post_compile_foreground_hold_s": 15,
+    "tool_finish_s": 21.20260453224182,
+    "release_s": 21.48078179359436,
+    "new_model_identities": {
+      "vision": {
+        "creation_after_acquire_s": 31.75084662437439,
+        "first_observation_after_acquire_s": 32.13961601257324,
+        "different_process_identity": true
+      },
+      "native": {
+        "creation_after_acquire_s": 33.262590646743774,
+        "first_observation_after_acquire_s": 33.7468318939209,
+        "different_process_identity": true
+      }
+    },
+    "both_new_models_reported_loaded_s": 70.32060122489929,
+    "owned_process_survivors_after_cleanup": 0
+  },
+  "correctness": {
+    "real_build_passed": true,
+    "compiler_jobs": 4,
+    "observed_peak_compiler_jobs": 4,
+    "visible_cases": 2096,
+    "independent_cases": 104,
+    "independent_compiler_check_passed": true,
+    "known_correct_immutable_fixture": true,
+    "control_credential_absent_from_terminal_child": true,
+    "vision_same_runtime_passed": true,
+    "vision_request_elapsed_s": 12.977653741836548,
+    "same_runtime_function_result": "Skipped at original checker failure; passed separately in GPU component02 on the unchanged Strata runtime, not this boot."
+  },
+  "sampled_resources": {
+    "min_available_ram_gib": 11.05645751953125,
+    "min_native_cuda_dxgi_free_mib": 292,
+    "guards": {
+      "available_ram_gib": 3,
+      "fresh_native_free_mib": 250
+    },
+    "scope": "Sampled available RAM throughout; fresh native CUDA/DXGI headroom while loaded."
+  },
+  "verification_disclosures": [
+    "First preparatory attempt failed before model/Hermes start because the copied snapshot omitted the tokenizer module; the corrected snapshot included it.",
+    "The final run original harness recorded failure because it treated every supervisor terminal call as compilation. The sole extra supervisor terminal command read its worker delegation log; only one child compiler execution occurred.",
+    "The original failed result was preserved. Independent read-only checking verified exact grep-only root command and linked exit0, one child compiler execution, supervisor plan, real lifecycle and final result; all18 factual gates passed.",
+    "The task also said not to run other commands. The extra supervisor log read is disclosed as an instruction-following deviation; exact prompt compliance is not claimed.",
+    "No model rerun or implementation change was made for this checker correction. The same-boot function/result probe was skipped; separate GPU component02 qualifies that unchanged Strata runtime.",
+    "This final Hermes source includes the private-environment retention race fix; prior real02 evidence was collected before that final fix.",
+    "The C++ fixture was already correct. This tests handoff and compiler feedback, not generated-code repair or intelligence.",
+    "The declared 15-second post-build hold tests lease renewal; it is not compiler execution time.",
+    "No A/B baseline, causal speedup, full 64K occupancy, universal autonomy, OS memory reservation or no-OOM guarantee is claimed."
+  ],
+  "native_sha256": "9ec67fc32f0a0fae56947ba1f8064cfe85b62b62bd67a431b6c00150f68eb353",
+  "hermes_commit": "c09e4cacedd04733d94f3d3c7af341367bb6ac26",
+  "server_sha256": "dcf1c12c113932763e6030abb68d8d0eaf3e9c4c9a64855d7f5ae93b9887c3aa",
+  "lease_module_sha256": "024a44d82f1d926d25cdee5c8a808c253ffe8b43d8fa26d4f9cacb652242cf2d"
+}
