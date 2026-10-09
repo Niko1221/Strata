@@ -40,6 +40,9 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 .st-progress[data-tone="info"] .st-progress__bar{background:var(--st-info)}
 .st-progress[data-tone="warn"] .st-progress__bar{background:var(--st-warn)}
 .st-progress[data-tone="danger"] .st-progress__bar{background:var(--st-danger)}
+.st-progress[data-indeterminate="true"] .st-progress__bar{width:30%!important;animation:st-progress-indeterminate 1.4s ease-in-out infinite}
+@keyframes st-progress-indeterminate{from{transform:translateX(-110%)}to{transform:translateX(340%)}}
+@media(prefers-reduced-motion:reduce){.st-progress[data-indeterminate="true"] .st-progress__bar{animation:none;transform:none}}
 /* gauge: see README for SVG markup (stroke-dasharray on a 270° arc) */
 .st-gauge{position:relative;width:120px;height:120px}
 .st-gauge__track{stroke:var(--st-surface-2)} .st-gauge__fill{stroke:var(--st-accent)}
