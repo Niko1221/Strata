@@ -645,7 +645,9 @@ per step, so the upper rows are noisy).
 
 ## Using it
 
-The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or edit the run script).
+The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or edit the run script). It listens with a
+queue of 256 waiting connections, not socketserver's own 5: a burst of 30-40 clients at once used to reset the first of
+them (measured on 4 x R9700); `STRATA_HTTP_BACKLOG=<n>` sets the number, at least 5.
 
 | API | Endpoint |
 | --- | --- |
@@ -1708,6 +1710,57 @@ never changes a result.
   restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
   stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
   loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
+
+---
+
+## Experimental: residency-biased routing (0.1.41, off by default)
+
+**This is an experiment, not a finished feature, and it changes the answers.** It is written down so it can be measured
+on cards the maintainers do not have; nothing here is compared to a release.
+
+- **`STRATA_ROUTE_RESIDENT=<margin>`: replace the tail ranks' non-resident experts with resident ones** when a resident
+  expert is that close to them. The margin counts router logits, and the switch is off unless it is above 0.
+- **`STRATA_ROUTE_RESIDENT_RANKS=lo-hi` (default `6-9`)**: which of the ten routed experts it may replace - the tail
+  ranks, so the router's own top of the list stays as it routed it.
+
+It runs after the router and before the expert plan reads the ids and the weights, on the native 512-expert top-10
+router only, and only where the cache's residency table is on the GPU. For each rank in that range whose expert the
+cache does not hold, it looks for the best resident expert that the token has not already picked; when that one's logit
+is within the margin of the replaced expert's, it takes its place, and the ten weights become the softmax of the
+selected logits - the router's own renormalisation. A token with no swap keeps the router's exact bits.
+
+The margin is the whole trade: at 0 the router answers alone, and a large margin routes whatever it can to what the card
+already holds, at the price of answers that are not the routing the model chose. When the engine stops it says what it
+did, once for the prompt windows (more than 8 tokens) and once for the decode windows (8 or fewer), in this shape:
+
+    route-resident: margin=<margin> ranks=<lo>-<hi> windows T>8 (prompt reads): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+    route-resident: margin=<margin> ranks=<lo>-<hi> windows T<=8 (decode): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+
+`tail_nonres` counts the ranks in that range whose expert the cache lacked, `swaps` those it could replace, and
+`before` / `after` are the non-resident entries of the ten, summed over the window's tokens, before and after the
+swaps - the misses the cache would have taken.
+
+---
+
+## Research hooks: dump or replace the prompt's routing (off unless you set them)
+
+Four switches for reproducing one routing decision on a later run, so a wrong answer can be walked expert by expert.
+They act on the prompt (prefill) path only, are never on by default, and wait for the stream after each chunk, so a
+prompt run with them on is slower.
+
+- **`STRATA_DBG_FEAT=<file>`: write the routing of the prompt to a file.** One record per MoE layer and chunk: four
+  int32 (the layer, the first token's position within that layer, the token count, and 1 when the hidden state follows),
+  then the expert ids as uint16 and the weights as bf16, and for the layers below, the router's input: token count x
+  n_embd values in bf16.
+- **`STRATA_DBG_FEAT_LAYERS=3,4,15,16,27,28,39,40` (this is the default)**: which layers also write that hidden state.
+- **`STRATA_DBG_ROUTE_OVERRIDE=<file>`: route a layer's chunk from a file instead of from the router.** Records of three
+  int32 (layer, token position, count), then count x 10 int32 ids and count x 10 float32 weights; a record replaces its
+  chunk only while its count matches that chunk's token count. The file says how much it read
+  (`route override: N records`). This is what it is for - the answers follow the file, not the router. The two file
+  shapes differ on purpose: a `STRATA_DBG_FEAT` dump carries the extra header int32 and its ids and weights in 16 bits,
+  so a dump is not an override file as it stands.
+- **`STRATA_DBG_FORCE_SLOW_LAYER=1`: make layer 0 take the slow prompt path**, the way a layer the fused path does not
+  cover does. It is there to test that backstop; it is not a mode to run with.
 
 ---
 

@@ -130,6 +130,12 @@ products are wrong (relative error 0.5 to 1.0 in the tests) with 13.2 and right 
 with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nvcc build 13.2.86, fixes it; an older one can sit next to a newer: `STRATA_NVCC=<path to its nvcc>`);
 setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
 
+**Many clients at once, and the first of them get "connection reset by peer" (0.1.41).**
+Python's own request queue holds 5 waiting connections, so the clients that arrived while the server was still taking the
+first ones were refused before anyone read them (measured on 4 x R9700 with a burst of 30-40 clients, also when each
+client sent only one request at a time). 0.1.41 listens with a queue of 256, and 60 simultaneous requests then all get an
+answer. `STRATA_HTTP_BACKLOG=<n>` sets that number (at least 5).
+
 **Pictures are refused, or slow.**
 "this server was started without the vision encoder": the model was set up for text only - run setup again with
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
