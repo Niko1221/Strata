@@ -5151,7 +5151,10 @@ def main() -> int:
     # chosen here; with it loaded, the web app and the API switch it off per request
     esp = None
     esp_choice = (a.experimental_speed_projection or "").strip()
-    if family in ("qwen", "coder"):                   # the Coder: the same model's residual stream
+    # the Coder: the same model's residual stream.  Swift 1.5 (the pinned revision above): measured with the shipped
+    # vector - its residual writers are within 0.2-2.4% of the original's and its routed experts' down projections are
+    # byte-identical (BF16), and the projection removed refusals as on the original
+    if family in ("qwen", "coder", "swift"):
         if not esp_choice:
             say()
             say("  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).")
@@ -5165,8 +5168,7 @@ def main() -> int:
                 fail(f"the experimental speed projection's vector is missing: {esp}")
         ok("experimental speed projection: " + ("ON (experimental)" if esp else "off"))
     elif esp_choice.lower() not in ("", "off", "no", "n", "0"):
-        warn("the experimental speed projection is made for the original Qwen3.8-Flash-Next, not Swift 1.5: left off"
-             if family == "swift" else f"the experimental speed projection is not tested with {model}: left off")
+        warn(f"the experimental speed projection is not tested with {model}: left off")
     models_dir = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     shards = gguf_dir_shards(models_dir, fam, model) if a.gguf_dir else \
         [models_dir / model_file(fam, model, i) for i in range(1, model_shards(fam, model) + 1)]

@@ -18,4 +18,5 @@ request. See `docs/DETAILS.md`, "Experimental speed projection".
 
 **Origin and license.** A local package of the vector (the published original uses filenames containing "refusal";
 the bytes are the same), made from Qwen3.8-Flash-Next activations, so the Qwen Community License 1.0 of the model
-applies to it. Made for the original Qwen3.8-Flash-Next (not Swift 1.5).
+applies to it. Made for the original Qwen3.8-Flash-Next; setup also offers it for Swift 1.5, where it was measured
+to work the same way.
