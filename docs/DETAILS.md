@@ -73,7 +73,8 @@ IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
 ran IQ3_S at 256K on 64 GB with RAM to spare (#406). In the low-RAM mode the KV cache stays in VRAM and the context
-does not count against RAM. IQ3_S (engine 0.1.4 or newer) is only published for the original model, not for Swift 1.5.
+does not count against RAM. IQ3_S (engine 0.1.4 or newer) is published for the original model and for Swift 1.5
+(the same shard layout as Swift's other sizes).
 
 **KV streaming (engine 0.1.5):** at 64K and more, setup keeps the context's KV cache in RAM and only the part the
 attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Q2_0 at 262K: 50.9 -> 62.6 tokens/s
@@ -375,7 +376,8 @@ START-HERE.bat --setup --family coder
 
 The setup's first question also offers **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)**,
 UkisAI's fine-tune of Qwen3.8-Flash-Next, trained to reach the answer with much less thinking (its authors: 63% fewer
-thinking tokens, 1.8x sooner answers, under 1% accuracy loss). Same architecture, the same three sizes, its own
+thinking tokens, 1.8x sooner answers, under 1% accuracy loss). Same architecture, the original's sizes except Q2_0,
+its own
 vision encoder; Strata runs it at the same speed (4K, IQ2_XS: 465 prompt / 78.7 output tokens/s, vs 467 / 78.3 for
 the original). Its authors recommend **IQ2_XS** (their Q2_0 is marked experimental). Its license is the Swift Open
 License 1.0 - read it on the model page.
