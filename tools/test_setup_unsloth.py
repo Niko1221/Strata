@@ -542,6 +542,7 @@ class IQ4XS(Base):
         self.assertIn("does not stream experts from the SSD", lines[X])
         self.assertNotIn("untested", lines["Q2_0"])
         self.assertNotIn("untested", lines["IQ3_S"])
+        self.assertNotIn("untested", lines["IQ3_XXS"])
         self.assertIn("untested on a Mac", lines["IQ2_XS"])
 
     def test_check_below_every_floor(self):

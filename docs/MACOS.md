@@ -1,6 +1,6 @@
 # Strata on a Mac (Apple Silicon)
 
-**Experimental: tested on one Mac.** A MacBook Pro M5 Max (40-core GPU, 128 GB) on macOS 26.4, with the Q2_0 and
+**Experimental: tested on one Mac.** A MacBook Pro M5 Max (40-core GPU, 128 GB) on macOS 26.4, with the Q2_0, IQ3_XXS and
 IQ3_S models. Other Apple Silicon Macs and other model files are untested. Read
 [Limits and warnings](#limits-and-warnings) before you install.
 
@@ -39,7 +39,7 @@ make run                     # starts it; open http://127.0.0.1:8080 when it say
 ([ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF),
 pinned to one revision), plus the 0.9 GB image encoder if you answer yes to images. The files go to `Strata-data/`
 next to the `Strata` folder; each one's size is checked against the server's when it finishes. If the download stops,
-run the same command again: it continues where it stopped. Q2_0 and IQ3_S (`make pull MODEL=IQ3_S`, 83.6 GB) are the sizes tested on a Mac. Add
+run the same command again: it continues where it stopped. Q2_0, IQ3_XXS (`make pull MODEL=IQ3_XXS`, 75.8 GB) and IQ3_S (`make pull MODEL=IQ3_S`, 83.6 GB) are the sizes tested on a Mac. Add
 `SETUP_ARGS="--yes"` to skip the questions, and set `HF_ENDPOINT` to use a Hugging Face mirror.
 
 `make run` alone also works the first time: it asks the same questions, downloads, then starts.
@@ -65,7 +65,7 @@ If setup stops, it says what is missing and the command that fixes it.
   differs between Macs and macOS versions. Q2_0's weights take about 35 GB of it (IQ3_S's about 51 GB), plus the context's cache. Everything
   the Mac does shares the same memory, so close other large apps. Below 128 GB only the 64 GB floor applies: nobody
   has measured how close a 64 GB Mac gets.
-- **Only Q2_0 and IQ3_S were tested.** `make check` marks the other sizes "untested on a Mac". On a PC, the Unsloth sizes
+- **Only Q2_0, IQ3_XXS and IQ3_S were tested.** `make check` marks the other sizes "untested on a Mac". On a PC, the Unsloth sizes
   (UD-Q4_K_XL, UD-IQ4_XS) stream part of their experts from the SSD; the Mac engine cannot, so all of a model's experts
   must fit in Metal's limit. UD-Q4_K_XL (111 GB) is larger than the test Mac's default limit.
 - **Speed.** On the test Mac: 13-17 tokens/s for the answer and 225-270 tokens/s to read a prompt, with other programs
@@ -232,6 +232,24 @@ and Docker running (load average 10-40).
 - Q2_0's 18.6 tok/s run came when the load average reached 40; without it, the long-prompt range is 24.3-27.2.
 - So on this Mac IQ3_S costs about a tenth of the speed and 16 GB more memory; its quality was not measured here
   (the model card rates it closest to the full model).
+
+### IQ3_XXS compared with Q2_0
+
+IQ3_XXS (3-bit) has a 47.0 GB first file against Q2_0's 37.6 GB (the n-gram file is the same: setup can share it).
+Measured on the test Mac, 2026-10-08, *High Power*, the same settings for both (128K context, f16 cache, `--mtp on`, 2
+batch slots), thinking off, through the OpenAI API, each model loaded on its own, an hour apart:
+
+| | Q2_0 | IQ3_XXS |
+|---|---:|---:|
+| Writes the answer, 900-word answers | 63-69 tok/s | 46-48 tok/s |
+| Writes the answer, short answers | 97-102 tok/s | 73-92 tok/s |
+| MTP drafts accepted | 49-50% | 49% |
+| GPU clock during the long answers | 1,300-1,620 MHz | 930-1,120 MHz |
+| Engine memory | | 65.2 GB |
+
+- IQ3_XXS was about 30% slower here, but the GPU ran at a lower clock during its run, so part of that gap is the Mac's
+  state rather than the model: the interleaved IQ3_S/Q2_0 comparison above, with 46% more expert bytes, found 7-11%.
+  Read it as 10-30% slower, for better quality than Q2_0 (not measured here).
 
 ### Why the speed changes
 
