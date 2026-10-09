@@ -1503,10 +1503,13 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     constexpr int kBursts = 4;
     void* h = nullptr;
     void* d = nullptr;
-    if (DPCT_CHECK_ERROR(h = (void *)malloc(kBytes)) != 0) return -1.0;
+    // Pinned, as in the CUDA engine (cudaMallocHost) and as the expert mirror is: a pageable buffer measures the
+    // driver's staging copy instead of the link (an Arc Pro B70 at PCIe 5 x16 read 6.4 GB/s pageable, ~35 pinned).
+    if (DPCT_CHECK_ERROR(h = (void *)sycl::malloc_host(
+                             kBytes, dpct::get_in_order_queue())) != 0 || h == nullptr) return -1.0;
     if (DPCT_CHECK_ERROR(d = (void *)sycl::malloc_device(
                              kBytes, dpct::get_in_order_queue())) != 0) {
-        free(h);
+        sycl::free(h, dpct::get_in_order_queue());
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
@@ -1581,7 +1584,7 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     */
     if (!ok)(void) 0;
     sycl::free(d, dpct::get_in_order_queue());
-    free(h);
+    sycl::free(h, dpct::get_in_order_queue());
     return bw;
 }
 catch (sycl::exception const &exc) {
