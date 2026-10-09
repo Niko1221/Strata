@@ -81,6 +81,11 @@ public:
     /// it out of the cache - the arena is allocated after the cache.
     static uint64_t dense_attention_bytes(const ModelGeometry& g, const SessionState& ss, int max_t);
 
+    /// Quality mode (opt-in, before init): one staging blob per possible routed entry (round an odd T up
+    /// for split windows), so every miss can use the grouped GPU kernel. Default: 16 blobs. CPU-only sizing.
+    static int64_t pcie_staging_capacity(int max_t, int64_t k, bool all_misses);
+    void set_pcie_all_misses(bool enabled) { pcie_all_misses_ = enabled; }
+
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
@@ -465,7 +470,9 @@ private:
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
     static constexpr int64_t kStagingBlobs = 16;
-    static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
+    int64_t staging_blobs_ = kStagingBlobs;
+    bool pcie_all_misses_ = false;                              // quality only; default arena size is unchanged
+    static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side, striding the rest
     uint8_t* hit_xq_ = nullptr;
     uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
     float* hit_xs_ = nullptr;

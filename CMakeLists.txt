@@ -1043,6 +1043,10 @@ add_library(strata_spec STATIC src/spec/suffix_drafter.cpp src/spec/controller.c
             src/spec/draft_source.cpp)
 target_include_directories(strata_spec PUBLIC include)
 if(STRATA_BUILD_TESTS)
+  add_executable(vram_cap_test tests/core/vram_cap_test.cpp)
+  target_link_libraries(vram_cap_test PRIVATE strata_artifact)
+  add_test(NAME vram_cap_test COMMAND vram_cap_test)
+  set_tests_properties(vram_cap_test PROPERTIES LABELS "cpu;vram_cap" TIMEOUT 30)
   add_executable(arch_defaults_test src/core/arch_defaults_test.cpp src/core/arch_defaults.cpp)
   target_include_directories(arch_defaults_test PRIVATE include)
   add_test(NAME arch_defaults_test COMMAND arch_defaults_test)
@@ -1524,6 +1528,14 @@ endif()
 
 if(STRATA_BUILD_TESTS)
   enable_testing()
+  # STRATA_NATIVE_EXPERTS is declared above by now (including on the first configure without a -D override).
+  if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
+    # Cap quality routing: the real planner on synthetic host pointers/callbacks, no GPU API calls.
+    add_executable(vram_cap_quality_test tests/core/vram_cap_quality_test.cpp)
+    target_link_libraries(vram_cap_quality_test PRIVATE strata_engine)
+    add_test(NAME vram_cap_quality_test COMMAND vram_cap_quality_test)
+    set_tests_properties(vram_cap_quality_test PROPERTIES LABELS "cpu;vram_cap" TIMEOUT 60)
+  endif()
   # Model-level checks may be absent from source distributions.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tests)
