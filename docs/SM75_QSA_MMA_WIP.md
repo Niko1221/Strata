@@ -1,6 +1,6 @@
 # WIP: optional SM75 padded QSA decode MMA
 
-Latest October 9 evening status: final-code 16K T=4 captured-graph validation shows QSA prefix 537.22 to 472.22 us/layer and attention 137.50 to 72.22 us/layer. Both gains remain positive under the reported worst-case print-rounding sensitivity envelope. Pure-release vs flags-off complete logits parity and two 240-case fallback fault tests pass. Six further WikiText subset segments show pooled PPL changes -0.308% (T2) and -0.472% (T4), with exploratory intervals that do not prove quality equivalence. Full protocols, numbers and limitations are in the evening sections below. HIP/SYCL builds, actual older-CUDA low-PTX qualification, independent code review and production throughput qualification remain open. Keep Draft and default off.
+Latest October9 continuation: complete CUDA13/HIP7.0.2/SYCL2026.1 engine builds pass. Actual CUDA12 compute70 PTX-only fixture confirms byte-exact fallback on SM75. Layer timing still shows positive QSA acceleration, but real T<=3 MTP generation shows no production gain and code throughput regression; see continuation results below. WikiText subset results do not prove quality equivalence. WDDM Compute Sanitizer and independent review remain unqualified. Keep Draft/default off and disclose the real-generation results alongside layer gains.
 
 `STRATA_QSA_SM75_MMA=1` permits the padded FP16 QK/PV MMA candidate for explicitly marked main-model verification calls with 2-4 queries on SM75. FP32 accumulators are used. T=1, MTP, prompt processing, other architectures and HIP keep their native path. The query/head geometry and split-K scratch/merge layout remain the existing 256-dimension, 12-query-heads-per-KV-head, 64-cell design.
 
@@ -188,6 +188,8 @@ Forced-follow throughput has acceptance 100% by construction and is not producti
 
 Full HIP engine compile passed on exact head0eedc17 using the official ROCm7.0.2 container, with no AMD GPU runtime claim. CI: https://github.com/Unmaple/Strata/actions/runs/37923593706 (qsa-hip). SYCL qualification remains pending; its first environment initialization failed before a compile result was obtained.
 
+Subsequent full SYCL engine compile passed on the same production head using the official Intel oneAPI2026.1 compiler package: https://github.com/Unmaple/Strata/actions/runs/37939257903/job/113849122292 (8m50s). Initial basekit:latest actually supplied2025.3.3; both release baseline and candidate failed in unchanged DPCT helper APIs. Matching2026.1 resolved compilation with no production source edits. No Intel GPU runtime qualification is claimed. Documentation-only commits after0eedc17 do not change the tested code.
+
 Actual CUDA12.9.86 compute70 PTX-only fixture JIT on SM75 passed all240 cases with byte-exact native fallback, including graph capture/replay. cudaFuncAttributes confirmed PTX70/binary75 for all four KV formats. A compute75 PTX-only positive control passed240 cases with max_abs0.000244141 and worst NRMSE0.000308986. This closes the standalone low-target runtime fallback check, not a full-engine CUDA12 build gate.
 
 Free generation uses real MTP, greedy seed20261009,512 output tokens,14 CPU participants, default42 tasks,PCIe .14,actual6528 expert slots. Three balanced AB/BA independent process pairs per topic; no oracle/follow or logits export. CLI --spec4 --mtp-max-t3 actually limits verification to T<=3 (up to two drafts). CPU total is sampled every2 seconds over the whole process and includes external work; GPU clocks are unlocked.
@@ -199,3 +201,13 @@ Free generation uses real MTP, greedy seed20261009,512 output tokens,14 CPU part
 |long16k|44.272|43.427|-1.890|[-6.676,2.896]|
 
 Code shows an observed workload throughput regression; the other differences are inconclusive. Native/MMA output text differs in every pair. Draft acceptance falls3.372pp/code,1.111pp/systems,.233pp/long16k; acceptance/routes, external CPU work and clocks confound attribution. This does not establish identical-work kernel regression or an acceptance-driven causal explanation. There is no demonstrated production throughput benefit in this batch. Separate T<=4 (three-draft) testing is underway and will not be pooled with T<=3. Keep default off and Draft.
+
+Separate T<=4 (up to three drafts) batch is now complete:18 successful processes, same3topics x3balancedpairs and512tokens each. Same configuration except --mtp-max-t4, not pooled with T<=3.
+
+|Topic|Native tok/s|MMA tok/s|Paired change %|CI95 % (n3,df2)|
+|---|---:|---:|---:|---:|
+|code|30.615|32.371|+6.138|[-17.468,29.744]|
+|systems|37.831|36.790|-2.859|[-14.829,9.111]|
+|long16k|33.606|36.276|+7.934|[-8.385,24.253]|
+
+All intervals include zero: no demonstrated production gain at T<=4 either. Every pair has different text; acceptance changes+3.334pp/code,-4.625pp/systems,+6.018pp/long16k. CPU total differences range-2.700 to+2.909pp. Same6528cache slots and512token counts. Actual T mix, acceptance and generation workload remain confounds. These are separate time blocks, so T3/T4 absolute rates should not be used as a controlled selection benchmark for optimal MTP cap. Full commands/logs/CPU records are retained in production-qsa-T4.
