@@ -208,15 +208,26 @@ class Tokenizer:
                     heapq.heappush(heap, (r2, p, parts[p], parts[i]))
         return [s for s in parts if s is not None]
 
+    PIECE_CACHE_MAX = 200_000    # pre-tokenizer pieces remembered (an agent resends its whole history every turn)
+
     def _encode_plain(self, text: str) -> list[int]:
         out: list[int] = []
+        # A piece's ids depend on the piece alone, so repeated pieces (most of a resent conversation) are looked up
+        # instead of merged again.  The ids are the ones _bpe gives: this only skips the work.
+        cache = self.__dict__.setdefault("_piece_ids", {})
         for piece in self._re.findall(text):
-            mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
-            for tok in self._bpe(mapped):
-                i = self.ids.get(tok)
-                if i is None:
-                    raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
-                out.append(i)
+            got = cache.get(piece)
+            if got is None:
+                mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
+                got = []
+                for tok in self._bpe(mapped):
+                    i = self.ids.get(tok)
+                    if i is None:
+                        raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
+                    got.append(i)
+                if len(cache) < self.PIECE_CACHE_MAX:
+                    cache[piece] = got
+            out.extend(got)
         return out
 
     def _encode_matching(self, text: str, pat, plain=()) -> list[int]:

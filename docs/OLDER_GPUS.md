@@ -11,7 +11,7 @@ and their output stay exactly as they were. Numbers are the reporters' own, on o
 
 | Cards | Compute capability | How it runs | What is different on it | Reported |
 | --- | --- | --- | --- | --- |
-| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32 | not measured |
+| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32 | 2x P100, IQ3_S, engine 0.1.39: prompt 526-532 tok/s, decode 28-32 tok/s at 128K prompt tokens, 3 of 3 needle checks at 122K ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157) |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores (#655, #540); the prompt attention on `mma.m8n8k4` (#600); a leaner attention kernel (#540) | V100-PCIE-32GB, UD-IQ4_XS: prompt 1,123-1,251 tok/s (#600); V100 32GB, IQ2_XS: prompt +22% from #540 |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in: `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores | RTX 2080 Ti, Q2_0: prompt +15-18% (#655) |
@@ -98,6 +98,64 @@ product on an RTX 2080 Ti.
 A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
 (#540's kernel off; on gfx103x with HIP that kernel is the default, see the AMD table above, and `=1` turns it on for
 another wave32 AMD card). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
+
+### Quadro RTX 8000: measurements of existing switches
+
+The Quadro RTX 8000 is Turing (sm_75): it has FP16 tensor cores, but no native BF16 or TF32 tensor cores. Two
+**existing, opt-in** CUDA switches are worth comparing on your own workload:
+
+- `STRATA_BF16_TC=1` converts BF16 projection operands to FP16 and uses FP16 tensor cores with FP32 accumulation.
+  The default on sm_75 is off; `=0` restores the cuBLAS BF16 path. The switch applies to 7.x cards, not the native
+  BF16 path on sm_80 and newer. Conversion clamps finite values outside FP16's range to ±65504; small values and
+  differently ordered sums can round differently.
+- `STRATA_SELECT_SIMT=1` uses the tiled FP32 QSA block scorer on the pre-sm_80 CUDA path instead of the default
+  warp scorer. `=0` keeps the warp scorer. It does not enable TF32 on Turing, and its summation order differs.
+
+The existing paths are in [gemm.cu](../src/prefill/gemm.cu) and [qsa_select.cu](../src/kernels/cuda/qsa_select.cu).
+
+Set the environment before starting the engine, or set the switches in the model config's `env` object, then
+restart. For example, this config fragment opts into both (keep the config's other settings):
+
+```json
+"env": {
+  "STRATA_BF16_TC": "1",
+  "STRATA_SELECT_SIMT": "1"
+}
+```
+
+This section records an investigation, **not a new kernel or a change to defaults**. Measurements on 2026-10-07
+used one 48 GiB Quadro RTX 8000 (physical GPU 3), a 260 W power limit, a Xeon W-2295, CUDA 12.4 and GCC 13.
+The source-built engine was based on v0.1.40.3 with other local changes integrated; unrelated opt-in changes
+were disabled in these arms. These are not measurements of an otherwise clean documentation-only checkout,
+not results at the launcher's 200 W setting, and not a speed promise for every sm_75 card.
+
+The model was IQ3_S with MTP (`--spec 4`), `--max-context 262144`, INT8 KV with `--kv-resident 32768`,
+`--pcie-frac 0.20`, a fixed `--expert-cache 19000` request and `--prefill auto` (8,192-token ceiling).
+The engine reported 21,189 cache slots including the prompt loan. Prompt caching and adaptive swaps were off
+(`--prompt-cache 0 --adapt-swaps 0`). Each size used three fresh, seeded synthetic prompts and 128 output tokens
+per request; the table gives median engine-reported rates, not end-to-end server latency.
+
+| Existing switch settings | 537 tokens: prompt / decode tok/s | 4,057 tokens: prompt / decode tok/s | 32,057 tokens: prompt / decode tok/s |
+| --- | --- | --- | --- |
+| BF16_TC=0, SELECT_SIMT=0 | 493 / 86.8 | 1,055 / 79.9 | 1,135 / 70.6 |
+| BF16_TC=1, SELECT_SIMT=0 | 661 / 83.7 | 1,262 / 75.4 | 1,416 / 68.4 |
+| BF16_TC=1, SELECT_SIMT=1 | 679 / 87.1 | 1,290 / 78.2 | 1,501 / 71.6 |
+
+BF16_TC improved prompt throughput by about 20–34%, but did not improve decode in these comparisons. Adding
+SELECT_SIMT improved the 32K prompt rate by about 6% over BF16_TC alone; this is not a universal decode win.
+BF16_TC changed replies in 3 of the 9 paired requests, so use it only if different rounding is acceptable.
+All five basic arithmetic/JSON checks passed in each arm, which is a smoke check, **not a model-quality study**.
+A separate synthetic QSA scorer check at 131,072 context tokens matched selected IDs for all 256 queries and
+passed its FP64 accuracy gate. That check does not prove identical selections on arbitrary prompts or model quality.
+
+Two other existing tuning options did not justify a recommendation on this machine:
+
+- `--prefill auto:16384`, with BF16_TC on and SELECT_SIMT off, increased the prompt's cache loan from 4.38 to
+  7.38 GiB for only about 0.6% more 32K prompt throughput (1,425 versus 1,416 tok/s). Just 24 MiB of VRAM remained
+  at the last graph capture. Keep the 8,192 ceiling rather than spend that memory margin for this small gain.
+- `STRATA_PREFILL_CPU_SHARE=auto` gave no gain at the two tested sizes (537 and 4,057 tokens): prompt rates were
+  647 and 1,253 tok/s versus 661 and 1,262 with BF16_TC alone; decode was also lower. Larger prompts were not
+  tested for this setting.
 
 ## AMD: building gfx906 and gfx1012
 
