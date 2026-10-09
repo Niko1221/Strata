@@ -67,14 +67,6 @@ How to read the table:
 | [2026-10-05-community-2x-rx-6900xt](2026-10-05-community-2x-rx-6900xt/) | 2x RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB | IQ3_S, 131K | one card stock 457 / 474 / 459, with #835 + #849 + #854 868 / 1,100 / 1,023; layer split with them 853 / 1,616 / 1,823 | 40-43 one card, 57-61 layer split | 0.1.39 stock and with #835, #849, #854 | #927 |
 | [2026-10-05-community-gfx1151](2026-10-05-community-gfx1151/) | Radeon 8060S (gfx1151), Ryzen AI Max+ 395, 128 GB unified memory | Q2_0, UD-IQ4_XS | 250.9 to 528.9 with the hipBLASLt table (matched synthetic prompts) | 45.6 to 46.8 (shared-expert stream on) | 0.1.39 + #895, #820 | #917 |
 | [2026-10-05-community-arc-b65](2026-10-05-community-arc-b65/) | Intel Arc Pro B65 32 GB (SYCL), Core i5-12600K, 128 GB | IQ2_XS, 8K | 307-359 (512 and 7,000-token tasks) | 36-49 by task; medians of the five tasks 40.4-41.3 / 39.8-40.9 | 0.1.40 source + 6 local patches | #955 |
-
-Notes:
-
-- #927 ran seven configurations; the table shows the one-card stock and PR sets and the layer split with the PRs (#835 is opt-in in 0.1.40, so those are not the release default), and its README has the helper-mode rows. #917 is 0.1.39 plus then-unmerged #895 and #820, and 0.1.40 turned the shared-expert stream off on HIP (#826). #955's patches 3, 5 and 6 are source changes in 0.1.40.2.
-- #1016 ran its engine at the 0.1.35 commit and the table shows the numbers as submitted.
-- #995 also changed the canonical `2026-09-29-speed-0126` report (matrix.json rewritten, README extended with another host's rows); that part was not ported, only the two new folders.
-- #777 and #811 are the same machine on two quants, kept as two folders.
-- The earlier community folders (`2026-09-30-community-rtx-5090`, `2026-10-03-community-2x-mi50`, `2026-10-04-community-2x-arc-pro-b60`) are listed in `docs/COMMUNITY_BENCHMARKS.md`.
 | [2026-10-06-community-rtxpro-v0140](2026-10-06-community-rtxpro-v0140/) | RTX PRO 6000 | Q4 / Q8 (MTP and ngram runs) | see the README | see the README | 0.1.40 | #1137 |
 | [2026-10-06-community-2x-rx-7900-gre](2026-10-06-community-2x-rx-7900-gre/) | 2x RX 7900 GRE (gfx1100) | layer split, #848 / #854 | see the README | see the README | 0.1.40 | #1140 |
 | [2026-10-06-community-2x-p100](2026-10-06-community-2x-p100/) | 2x Tesla P100 16 GB | Flash-Next IQ3_S, 128K | see the README | see the README | 0.1.40 | #1157 |
@@ -102,3 +94,11 @@ Notes:
 | [2026-10-08-community-rtx4090-iq3xxs-200k-ru](2026-10-08-community-rtx4090-iq3xxs-200k-ru/) | RTX 4090, Ryzen 9 7950X (same PC) | Flash-Next IQ3_XXS, 204,800, Russian prompts | see the README | see the README | 0.1.40.3 | #1467 |
 | [2026-10-08-community-2x-titan-rtx-0.1.40.3](2026-10-08-community-2x-titan-rtx-0.1.40.3/) | 2x TITAN RTX 24 GB (NVLink, unused), Xeon E5-2696 v4, source build | Flash-Next IQ3_S, 262K | 869 / 1,549 / 1,627 (4K / 32K / 128K) | 70.9 / 77.3 / 71.1 | 0.1.40.3 | #1429 |
 | [2026-10-07-community-gfx1150](2026-10-07-community-gfx1150/) | Radeon 890M (gfx1150), Ryzen AI 9 HX PRO 370, 96 GB unified memory | IQ3_XXS | 153 / 216 / 226 (1K / 3.6K / 7K) with the gfx1150 hipBLASLt table, 99 / 124 / 130 without | 15.2-17.6 | 0.1.40.2 | - |
+
+Notes:
+
+- #927 ran seven configurations; the table shows the one-card stock and PR sets and the layer split with the PRs (#835 is opt-in in 0.1.40, so those are not the release default), and its README has the helper-mode rows. #917 is 0.1.39 plus then-unmerged #895 and #820, and 0.1.40 turned the shared-expert stream off on HIP (#826). #955's patches 3, 5 and 6 are source changes in 0.1.40.2.
+- #1016 ran its engine at the 0.1.35 commit and the table shows the numbers as submitted.
+- #995 also changed the canonical `2026-09-29-speed-0126` report (matrix.json rewritten, README extended with another host's rows); that part was not ported, only the two new folders.
+- #777 and #811 are the same machine on two quants, kept as two folders.
+- The earlier community folders (`2026-09-30-community-rtx-5090`, `2026-10-03-community-2x-mi50`, `2026-10-04-community-2x-arc-pro-b60`) are listed in `docs/COMMUNITY_BENCHMARKS.md`.
