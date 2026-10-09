@@ -329,7 +329,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
@@ -340,8 +340,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
+      // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
+      const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
+      const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
