@@ -1503,10 +1503,13 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     constexpr int kBursts = 4;
     void* h = nullptr;
     void* d = nullptr;
-    if (DPCT_CHECK_ERROR(h = (void *)malloc(kBytes)) != 0) return -1.0;
+    // pinned source: a pageable 256 MiB source made the copy engine (bcs) fault inside the driver's bounce
+    // path on a layer split (755 x VM_NOT_FOUND at a fixed pool VA, on a fresh boot), wedging the load.  The
+    // DPCT1124 note below this call says exactly that.
+    if (DPCT_CHECK_ERROR(h = (void *)sycl::malloc_host(kBytes, dpct::get_in_order_queue())) != 0) return -1.0;
     if (DPCT_CHECK_ERROR(d = (void *)sycl::malloc_device(
                              kBytes, dpct::get_in_order_queue())) != 0) {
-        free(h);
+        sycl::free(h, dpct::get_in_order_queue());
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
@@ -1581,7 +1584,7 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     */
     if (!ok)(void) 0;
     sycl::free(d, dpct::get_in_order_queue());
-    free(h);
+    sycl::free(h, dpct::get_in_order_queue());
     return bw;
 }
 catch (sycl::exception const &exc) {
