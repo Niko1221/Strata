@@ -1518,6 +1518,16 @@ layer was 0.28, so the bar sits in a 7.9× gap. `STRATA_GLM_GPU_CHECK=2` also pr
 One interaction worth knowing: with the tier on, `--expert-profile-save` counts only the experts the card did *not*
 hold, so the profile it writes is the misses' routing and not the router's.
 
+**On a chunk path the same check is no longer free, and its price follows the source rather than the sample.** It
+calls the CPU pool once per sampled entry — 16 entries a layer by default, `STRATA_GLM_GPU_CHECK_N` — and each of
+those calls reads a whole expert, 11.67 MB, from the source. That is 187 MB a layer, 7.8 GB over a 4,096-token
+chunk, read one entry at a time. Measured on the 5,304-token prompt, chunk 4,096, 4-way, T=0, the same
+configuration with the check on and off: **280.3 s / 18.9 tok/s against 80.7 s / 65.8 tok/s**, while the card's own
+time did not move (a 4,096-token chunk over layers 0..11 is 7.03 s of card in the slow arm and 7.83 s in the fast
+one). The disk read 126 MB/s while the slow arm ran, and the check's own pace was 2.4 s a layer, which is that
+rate against that read; with the source in registered memory the same check is cheap (85.2 s for a checked
+direct-feed run at chunk 4,096). Timing arms run it off — it is the correctness arm, and it is slow by design.
+
 **A prefill chunk is fed from the source's own bytes, on its own stream, two waves deep.** `run_chunk` asks the
 expert source to hand an expert's bytes over instead of a blob this process assembled — a GGUF-in-place pack gives
 three ranges (gate, up, down), a source whose experts live in registered memory gives one — and DMAs them straight
