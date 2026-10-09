@@ -6,13 +6,18 @@ network, no engine.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -86,6 +91,94 @@ class StoreTest(unittest.TestCase):
     def test_path_outside_data_dir(self):
         with self.assertRaises(ValueError):
             self.put("../evil", 0, 1, b"e", None)
+
+    def test_concurrent_puts_to_one_file(self):
+        # the shipper's pieces in flight: one file, other offsets, at once
+        n, k = 256 << 10, 8
+        total = n * k + 1000
+        datas = [os.urandom(n) for _ in range(k)]
+        go = threading.Barrier(k)
+        out = [None] * k
+
+        def put(i):
+            go.wait()
+            out[i] = self.put("models/m/c.gguf", i * n, total, datas[i], "fpc")
+
+        ts = [threading.Thread(target=put, args=(i,)) for i in reversed(range(k))]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        for i in range(k):
+            self.assertEqual(out[i]["sha256"], hashlib.sha256(datas[i]).hexdigest())
+        self.assertEqual((self.d / "models/m/c.gguf").read_bytes(), b"".join(datas) + b"\0" * 1000)
+        rg = self.st.ranges("models/m/c.gguf")
+        self.assertEqual((rg["ranges"], rg["fp"], rg["size"]), ([[0, n * k]], "fpc", total))
+
+    def test_put_streams_the_body(self):
+        # read in pieces of at most 4 MiB (not the whole body at once), hashed on the way; a short body is not
+        # recorded (what arrived of it is written, the next ship sends it again)
+        class Trickle(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.most = 0
+
+            def read(self, size=-1):
+                self.most = max(self.most, size)
+                return super().read(min(size, 100_000))
+
+        data = os.urandom((9 << 20) + 123)
+        body = Trickle(data)
+        r = self.st.put("models/m/s.gguf", 5, len(data) + 5, body, len(data), None, "fps")
+        self.assertEqual(r["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertLessEqual(body.most, 4 << 20)
+        self.assertEqual((self.d / "models/m/s.gguf").read_bytes()[5:], data)
+        r = self.st.put("models/m/s.gguf", 5, len(data) + 5, io.BytesIO(data[:10]), 20, None, "fps")
+        self.assertIn("10 bytes short", r["error"])
+        # the 10 bytes it wrote are no longer counted as shipped (what was there is gone); the rest stays recorded
+        self.assertEqual(self.st.ranges("models/m/s.gguf")["ranges"], [[15, len(data) - 10]])
+
+    def test_damaged_retry_drops_the_recorded_range(self):
+        # a piece recorded, its answer lost, the retry damaged on the way: the damaged bytes are on disk now, so the
+        # range is no longer recorded and a resume sends it again
+        good = os.urandom(1000)
+        self.assertTrue(self.st.put("models/m/r.gguf", 100, 3000, io.BytesIO(good), 1000, None, "fpr",
+                                    hashlib.sha256(good).hexdigest())["ok"])
+        self.put("models/m/r.gguf", 2000, 3000, b"k" * 500, "fpr")
+        bad = bytes([good[0] ^ 1]) + good[1:]
+        r = self.st.put("models/m/r.gguf", 100, 3000, io.BytesIO(bad), 1000, None, "fpr",
+                        hashlib.sha256(good).hexdigest())
+        self.assertIn("damaged", r["error"])
+        self.assertEqual(self.st.ranges("models/m/r.gguf")["ranges"], [[2000, 500]])
+
+    def test_started_anew_meanwhile_is_not_recorded(self):
+        # a put of one source still writing when a ship of another source starts the file anew: its bytes are not
+        # recorded in the new source's sidecar
+        st = self.st
+
+        class Late(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.once = True
+
+            def read(self, size=-1):
+                if self.once:
+                    self.once = False
+                    assert st.put("models/m/n.gguf", 0, 4000, io.BytesIO(b"n" * 10), 10, None, "fp-new")["ok"]
+                return super().read(size)
+
+        self.put("models/m/n.gguf", 0, 4000, b"o" * 10, "fp-old")
+        r = st.put("models/m/n.gguf", 1000, 4000, Late(b"o" * 100), 100, None, "fp-old")
+        self.assertIn("started anew", r["error"])
+        rg = st.ranges("models/m/n.gguf")
+        self.assertEqual((rg["ranges"], rg["fp"]), ([[0, 10]], "fp-new"))
+
+    def test_cut_range(self):
+        rs = [[0, 10], [20, 10], [40, 10]]
+        self.assertEqual(sn.cut_range(rs, 5, 20), [[0, 5], [25, 5], [40, 10]])
+        self.assertEqual(sn.cut_range(rs, 20, 10), [[0, 10], [40, 10]])
+        self.assertEqual(sn.cut_range(rs, 42, 2), [[0, 10], [20, 10], [40, 2], [44, 6]])
+        self.assertEqual(sn.cut_range(rs, 100, 5), rs)
 
     def test_new_file_is_sparse(self):
         total, n = 2 << 30, 1 << 20
@@ -278,6 +371,208 @@ class TunerPiecesTest(unittest.TestCase):
         self.assertEqual(t.node_notes(), [])
         t.clock_notes["w"] = "graphics 1500-1905 MHz: NOT locked (...)"
         self.assertIn("not applied", t.node_notes()[0])
+
+
+class ShipTest(unittest.TestCase):
+    """stage_ship's pipeline against an agent in this process on 127.0.0.1 (small pieces, so many are in flight)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = Path(self.tmp.name, "src")
+        self.dst = Path(self.tmp.name, "dst")
+        self.src.mkdir()
+        self.piece = mock.patch.object(ss, "PIECE", 64 << 10)
+        self.piece.start()
+        self.servers = []
+
+    def tearDown(self):
+        for srv in self.servers:
+            srv.shutdown()
+            srv.server_close()
+        self.piece.stop()
+        self.tmp.cleanup()
+
+    def agent(self, http10=False, idle=600) -> tuple[ss.Agent, set]:
+        cfg = {"_token": "tok", "bind": "127.0.0.1", "data_dir": str(self.dst), "drop_cache": False}
+        base = sn.make_handler(cfg, sn.Workers(cfg), sn.Store(cfg))
+        conns = set()   # the client ends the /puts came from
+
+        class H(base):
+            protocol_version = "HTTP/1.0" if http10 else base.protocol_version   # an agent from before keep-alive
+            timeout = idle
+
+            def log_message(self, fmt, *args):
+                pass
+
+            def do_POST(self):
+                conns.add(self.client_address)
+                super().do_POST()
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.servers.append(srv)
+        return ss.Agent(f"http://127.0.0.1:{srv.server_address[1]}", "tok"), conns
+
+    def items(self) -> list[ss.Item]:
+        a = self.src / "a.gguf"
+        a.write_bytes(os.urandom((64 << 10) * 20 + 777))
+        b = self.src / "b.bin"
+        b.write_bytes(os.urandom(300_000))
+        sparse = ss.Item(a, "models/m/a.gguf", [[0, 1000], [200_000, 500_000], [(64 << 10) * 20, 777]])
+        sparse.fp = "fpa"
+        return [sparse, ss.Item(b, "packs/p/b.bin")]
+
+    def check(self, items):
+        for it in items:
+            got = (self.dst / it.rel).read_bytes()
+            want = it.local.read_bytes()
+            self.assertEqual(len(got), len(want))
+            for off, n in it.ranges:
+                self.assertEqual(got[off:off + n], want[off:off + n], it.rel)
+            self.assertEqual(sn.Store({"data_dir": str(self.dst)}).ranges(it.rel)["ranges"], it.ranges)
+
+    def test_pipeline_and_resume(self):
+        agent, conns = self.agent()
+        items = self.items()
+        lines = []
+        sent = ss.ship(agent, items, say=lines.append, parallel=3)
+        self.assertEqual(sent, sum(it.nbytes for it in items))
+        self.check(items)
+        self.assertLessEqual(len(conns), 3, "the /puts did not keep their connections")
+        self.assertEqual(len([s for s in lines if s.startswith("  ")]), 4)   # one line a range, as before
+        self.assertEqual(ss.ship(agent, items, say=lines.append), 0)        # all there: nothing again
+
+    def test_empty_file(self):
+        agent, _ = self.agent()
+        e = self.src / "empty.txt"
+        e.write_bytes(b"")
+        it = ss.Item(e, "packs/p/empty.txt")
+        self.assertEqual(ss.ship(agent, [it], say=lambda m: None), 0)
+        self.assertEqual((self.dst / "packs/p/empty.txt").stat().st_size, 0)   # created (it never was before)
+        puts = []
+        put = ss.Agent.put
+        with mock.patch.object(ss.Agent, "put", lambda s, *a: (puts.append(1), put(s, *a))[1]):
+            ss.ship(agent, [it], say=lambda m: None)
+        self.assertEqual(puts, [])   # there now: not sent again
+
+    def test_no_proxy(self):
+        # an HTTP proxy in the environment (unreachable here) is not used for the agent: urllib takes the proxies
+        # when an opener is built, so a default opener built now would use it - the agent's opener has none
+        agent, _ = self.agent()
+        items = self.items()
+        def proxies(op):
+            return [h.proxies for h in op.handlers if isinstance(h, urllib.request.ProxyHandler)]
+        with mock.patch.dict(os.environ, {"http_proxy": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9",
+                                          "no_proxy": "", "NO_PROXY": ""}):
+            self.assertIn("http", proxies(urllib.request.build_opener())[0])
+            self.assertFalse(any(proxies(ss.Agent.direct)))   # (an empty ProxyHandler is not even installed)
+            self.assertEqual(ss.ship(agent, items, say=lambda m: None), sum(it.nbytes for it in items))
+        self.check(items)
+
+    def test_old_agent(self):
+        agent, conns = self.agent(http10=True)
+        items = self.items()
+        self.assertEqual(ss.ship(agent, items, say=lambda m: None, parallel=4), sum(it.nbytes for it in items))
+        self.check(items)
+        self.assertGreater(len(conns), 4)   # a connection a request
+
+    def test_old_shipper(self):
+        # urllib, one request a connection, as the shipper before keep-alive put
+        agent, _ = self.agent()
+        req = urllib.request.Request(agent.url + "/put?path=data/x.bin&offset=2&total=6", data=b"abcd", method="POST",
+                                     headers={"X-Stage-Token": "tok"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            self.assertEqual(json.load(r)["sha256"], hashlib.sha256(b"abcd").hexdigest())
+        self.assertEqual((self.dst / "data/x.bin").read_bytes(), b"\0\0abcd")
+
+    def test_kept_connection_closed_meanwhile(self):
+        # the agent closed an idle kept-alive connection: the next piece goes once more on a new one
+        agent, conns = self.agent(idle=0.3)
+        it = self.items()[1]
+        conn = agent.connect()
+        data = it.local.read_bytes()
+        self.assertTrue(agent.put(conn, it, 0, data[:1000])["ok"])
+        time.sleep(1)
+        r = agent.put(conn, it, 1000, data[1000:2000])
+        conn.close()
+        self.assertEqual(r.get("sha256"), hashlib.sha256(data[1000:2000]).hexdigest())
+        self.assertEqual(len(conns), 2)
+
+    def test_failing_piece_stops_the_run(self):
+        agent, _ = self.agent()
+        items = self.items()
+        before = threading.active_count()
+        real = sn.Store.put
+        bad = 200_000 + 3 * (64 << 10)
+
+        def put(store, rel, offset, *a):
+            r = real(store, rel, offset, *a)
+            return dict(r, sha256="0" * 64) if offset == bad else r
+
+        with mock.patch.object(sn.Store, "put", put):
+            with self.assertRaisesRegex(SystemExit, f"models/m/a.gguf at {bad}: sha256 differs"):
+                ss.ship(agent, items, say=lambda m: None, parallel=3)
+        time.sleep(0.2)   # (the agent's handler threads see their connections closed)
+        self.assertLessEqual(threading.active_count(), before, "the shipper's threads did not end")
+        with mock.patch.object(sn.Store, "put", lambda *a: {"ok": False, "error": "disk full"}):
+            with self.assertRaisesRegex(SystemExit, "HTTP 400: .*disk full"):
+                ss.ship(agent, items, say=lambda m: None, parallel=2)
+        sent = ss.ship(agent, items, say=lambda m: None)   # resumed: the rest only
+        self.assertLess(sent, sum(it.nbytes for it in items))
+        self.check(items)
+
+    def test_damaged_piece_is_not_recorded(self):
+        # a piece whose bytes change on the way: the agent (given its sha256) writes but does not record it, the run
+        # stops, and the next ship sends that piece again - a damaged piece is never taken for one that arrived
+        agent, _ = self.agent()
+        items = self.items()
+        real = sn.Store.put
+        bad = 200_000 + 3 * (64 << 10)
+
+        class Flip:
+            def __init__(self, body):
+                self.body, self.done = body, False
+
+            def read(self, n):
+                b = self.body.read(n)
+                if b and not self.done:
+                    self.done = True
+                    return bytes([b[0] ^ 1]) + b[1:]
+                return b
+
+        def put(store, rel, offset, total, body, *a):
+            return real(store, rel, offset, total, Flip(body) if offset == bad else body, *a)
+
+        with mock.patch.object(sn.Store, "put", put):
+            with self.assertRaisesRegex(SystemExit, f"models/m/a.gguf at {bad}: .*damaged"):
+                ss.ship(agent, items, say=lambda m: None, parallel=3)
+        recorded = sn.Store({"data_dir": str(self.dst)}).ranges("models/m/a.gguf")["ranges"]
+        self.assertFalse(any(o <= bad < o + n for o, n in recorded), "the damaged piece was recorded")
+        ss.ship(agent, items, say=lambda m: None)   # resumed: the damaged piece again
+        self.check(items)
+
+    def test_pieces_in_flight_at_once(self):
+        agent, _ = self.agent()
+        items = self.items()
+        real = sn.Store.put
+        lock = threading.Lock()
+        live = [0, 0]   # in flight now, most at once
+
+        def put(*a):
+            with lock:
+                live[0] += 1
+                live[1] = max(live[1], live[0])
+            time.sleep(0.05)
+            try:
+                return real(*a)
+            finally:
+                with lock:
+                    live[0] -= 1
+
+        with mock.patch.object(sn.Store, "put", put):
+            ss.ship(agent, items, say=lambda m: None, parallel=4)
+        self.check(items)
+        self.assertGreaterEqual(live[1], 3, "the pieces did not overlap")
 
 
 class NodePathsTest(unittest.TestCase):

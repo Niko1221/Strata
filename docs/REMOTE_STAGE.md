@@ -331,6 +331,20 @@ python3 tools/stage_ship.py --agent http://192.0.2.11:7840 --token-file /opt/str
     --profile /opt/strata/data/expert-profile.bin --layers 26-47
 ```
 
+- The pieces overlap: a reader thread reads and hashes them ahead, and `--parallel N` senders (default 4) put them,
+  each on its own keep-alive connection, so reading, the link and the node's writes run at once instead of in turn.
+  At most N + 3 pieces are in memory (448 MiB with 4). `--parallel 1` sends one piece at a time.
+- The first piece that fails (an HTTP error, a sha256 that differs) stops the run with its file and offset; the
+  pieces that arrived are in the node's `/ranges`, so the same command resumes.
+- The agent takes several `/put`s to one file at once (each at its own offsets) and keeps the connection open after
+  a `/put` answered ok; every other answer closes it. The shipper sends each piece's sha256, and the agent records
+  the piece only when the bytes that arrived match it (a damaged piece is sent again on resume).
+- An older agent (one request a connection) and an older shipper work with the new ones, but an older agent ignores
+  the sha256 it is sent: it records a damaged piece, and a resume skips it. Update the agent first.
+- Measured on one Windows PC through a link emulator (30 MB/s shared, 5 ms added each way, 1 GiB): the one-at-a-time
+  shipper 28.1 MB/s, the new one 29.4 (the link full). With a node that takes 1 s more per piece (a slow disk's
+  flush), 19.4 MB/s before, 25.3 with `--parallel 3` and 28.2 with `--parallel 4`. Not yet measured on a real WAN.
+
 Measured over 1 GbE: RVN IQ3_S layers 36-47 to a WSL2 node, 16.64 GiB in 217 s; RVN layers 40-47 and UD-Q4_K_XL
 layers 40-47 to a Windows node, 11.39 GiB in 211 s and 15.51 GiB in 184 s; UD-Q4_K_XL layers 24-39 to a Linux node,
 27.63 GiB in 342 s, and layers 40-47 more later (12.85 GiB in 162 s, the rest skipped). The UD-Q4_K_XL workers and
