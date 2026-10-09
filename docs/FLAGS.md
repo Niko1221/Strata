@@ -11,7 +11,7 @@ cache").
 
 ## How to read the "Since" column
 
-- **`layer/base`** — this tree's base: upstream `v0.1.40.1` plus PR #1271 (the disk tier) and PR #1269.
+- **`layer/base`** — this tree's base: upstream `v0.1.41` (`fb58e0d`) plus PR #1271 (the disk tier) and PR #1269, cherry-picked onto it.
 - **`layer/delta1`** — this tree's own work on top of that base (the spill tier as overflow).
 - **`layer/delta2`** — the mirror at the park, compaction detection and cancellation (on top of delta 1).
 - **`layer/delta3`** — the batch-MTP slots across a layer split, and the device that runs the head (on top of delta 2).
@@ -45,7 +45,7 @@ default **mirror** (`park`, when the tier is on) writes the conversation at the 
 
 | Flag | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
 | --- | --- | --- | --- | --- | --- |
-| `--conversation-cache-spill-dir DIR` | empty (off) | Turns the disk tier on and names its folder. A conversation the RAM cache evicts is written there as an ordinary session file (`.sess`) plus a small sidecar (`.meta`). | `--serve` only. Needs `--conversation-cache-mib > 0`, `--prompt-cache > 0`, `--conversation-cache-slots > 0` and a nonzero `--conversation-cache-disk-mib`; otherwise the engine warns and the tier stays off. Works with `--layer-split` (one file per stage). | No authentication: the files hold the conversation's token IDs and state, so the folder must stay private. A file from another model or another configuration (including another KV quant) is **rejected, not reused**. | `layer/base` (`v0.1.40.1` + PR #1271) |
+| `--conversation-cache-spill-dir DIR` | empty (off) | Turns the disk tier on and names its folder. A conversation the RAM cache evicts is written there as an ordinary session file (`.sess`) plus a small sidecar (`.meta`). | `--serve` only. Needs `--conversation-cache-mib > 0`, `--prompt-cache > 0`, `--conversation-cache-slots > 0` and a nonzero `--conversation-cache-disk-mib`; otherwise the engine warns and the tier stays off. Works with `--layer-split` (one file per stage). | No authentication: the files hold the conversation's token IDs and state, so the folder must stay private. A file from another model or another configuration (including another KV quant) is **rejected, not reused**. | `layer/base` (`v0.1.41` + PR #1271) |
 | `--conversation-cache-disk-mib N` | 8192 | The spill folder's byte budget, in MiB. The GC removes stored conversations over it, oldest first. | `--serve`; inside the disk tier. `0` disables the disk tier. This is the tier's own folder, not `--conversation-cache-mib`, which is the RAM budget. | A budget, not a disk reservation or a quota. A stored conversation larger than the whole budget is kept anyway (removing it could not bring the folder under the budget) and counted as `oversized`. | `layer/base` |
 | `--conversation-cache-spill-when-full MODE` | `evict-oldest` | What the GC does at the budget. `evict-oldest` drops the oldest stored conversation to make room (what the tier always did). `reject` stores nothing new and removes nothing. | `--serve`; only inside the disk tier. An unknown mode is refused at start. | `reject` does not bound the folder in any other way: a folder already over budget stops accepting spills and keeps what is there. The age lever below is independent of this. | `layer/delta1` |
 | `--conversation-cache-spill-max-age-days N` | 0 (off) | Optional age pruning. With a positive N, the GC removes stored conversations older than N days, oldest first, counted separately from the budget GC. | `--serve`; only inside the disk tier. `0` means **no deletion by time at all**: this lever is off unless set. | Off by default. Independent of `--conversation-cache-spill-when-full`: both can act, each with its own counter in the log. | `layer/delta1` |
@@ -93,3 +93,24 @@ placement of its own; the card **order** is what puts the head on another card.
 | `--kv-resident N` | 0 / setup | Where the context's K/V lives: keep N cells of each QSA layer in VRAM and the rest in host RAM (KV streaming, minimum 20480). | `--serve`; the KV cache, not any conversation cache. | **Not a cache and not part of this layer.** It changes the per-turn read cost and VRAM residency; the disk tier does not. | engine 0.1.5 (upstream) |
 | `--prompt-cache-root N` | 2048 | The minimum system-prompt length (tokens) at which the first turn boundary is checkpointed as the root, in RAM. | `--serve`; the RAM prefill checkpoints. The system-prompt cache persists this root. `0` = no system-prompt checkpoint. | RAM only by itself: it does not survive a restart. The system-prompt cache is what makes the root durable. | engine 0.1.39 (upstream) |
 | `slot_save_path` (config; `--slot-save-path DIR` on the server) | empty (off) | The folder for the manual `POST /slots/0?action=save` and `?action=restore` API. A saved file is the same session format a spill writes. | The server, not the engine. Needs the model loaded, a single slot, and no `--batch`. | An explicit client action, not a cache: nothing is written unless a client asks, and nothing deletes the files. | engine 0.1.40.1 (upstream server) |
+
+## E. Upstream mechanisms this layer lives beside (coexistence, not fusion)
+
+Three upstream things touch this layer without being part of it. Each keeps its own meaning here: no flag of this
+layer bends to it, and it does not bend to them.
+
+- **`pin=N` (the runtime pin) and `--system-prompt-cache*`.** `pin=N` retains a conversation in RAM - a runtime
+  mark upstream does not persist; the system-prompt cache writes a durable session file with its own
+  model/configuration identity. Both hook the same prompt boundary (the root position), and neither flag changes
+  the other's behaviour. The pin is runtime-only: **it does not survive a restart or a restore** - after either,
+  send `pin=N` again.
+- **`--peer-device` and `--head-device`.** The peer expert tier (upstream `v0.1.41`) takes the trailing cards for
+  expert streaming; `--head-device` reorders the split's stages so the chosen card runs the head. They are two
+  claims about the card order, validated independently on every start - with a split, with a peer tier, or with
+  neither - and neither moves for the other in this tree.
+- **`STRATA_KV_GROW_HOLD` and the disk tier.** The hold grows the KV pool from the longest conversation the RAM
+  cache still holds; the spill tier removes conversations from that cache, so it changes what the hold sees. The
+  interaction is **untested** - the host-only tests do not cover it.
+
+What has been verified against this base (build, flags, tests) and what has not (any live run):
+[SPILL_AND_PROMPT_CACHE.md](SPILL_AND_PROMPT_CACHE.md), "Validation environment" and "Non-claims".

@@ -164,6 +164,12 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
   [DETAILS.md](DETAILS.md#speed-measured) (KV streaming, engine 0.1.5; ~1.7 GB at 128K).
 - The layer's own host-only tests (conversation cache / memory / file / spill / prompt cache) build and pass with
   `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`. That is a correctness check, not a speed measurement.
+- Against this tree's base - upstream `v0.1.41` (`fb58e0d`) - what has been verified is: the CUDA build exits 0;
+  the `strata.exe` the verification ran against is sha256
+  `C1D54A4F5A405F076A0D5F1EB0384DECB5A5E422C3A109A7AD6CD7B86A26FB99`; its `--help` lists all 17 flags of this
+  layer; an unknown flag is fatal (`unknown argument`, exit 2); the full host-only battery passes **12/12**
+  (`ctest` exit 0); and the layer's own anchor/flag verifier (kept beside this series, not part of the diff)
+  reports 39 anchors and 17 flags OK, exit 0. None of that is a live run - see the first non-claim below.
 
 ## Measured benefit
 
@@ -202,6 +208,15 @@ Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the de
 
 ## Non-claims
 
+- **Not tested live against v0.1.41.** No inference instance of this tree was ever started against the `v0.1.41`
+  base: the live probe was blocked by VRAM capacity on the verification machine (both cards held by a production
+  instance), so the live test is **pending and blocked by capacity, not cancelled**. Every runtime statement in
+  this page - that the tier parks and restores against a real engine, that the prompt cache writes and reuses its
+  root in a live server, that `--head-device` orders the cards as described, that the layer is inert with the
+  flags off under load - is **unverified** until that run is made and recorded against the binary identified
+  above. What is verified is static and of compilation: the build, the flags in `--help`, the parser, and the
+  host-only tests, which exercise the pure classes (cache, spill, file, prompt cache, stage plan) - not the
+  `--serve` loop and not CUDA.
 - **Attention is causal.** A token's K/V was computed against the system prompt that was in front of it, so the
   tail of a conversation (its K/V) cannot be kept under a _different_ system prompt: everything after the
   divergence is **reprocessed**. If the change is at the **end** of the system prompt, only the tail is paid; if it
