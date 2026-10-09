@@ -790,6 +790,10 @@ struct Prefill::Impl {
     // layer split: the device, and the hand-off to the next stage (two pinned chunk buffers, used in turn)
     int device = -1;
     float* hand[2] = {};
+    // remote-stage: the worker's rows of the chunk in flight (pinned host, then device) and their upload stream
+    float* rx_host = nullptr;
+    float* rx_dev = nullptr;
+    cudaStream_t rx_stream = nullptr;
     // C-4: the chunk's token ids on the device, for one batched embedding gather
     int32_t* tok_dev = nullptr;
     std::vector<int32_t> tok_host;
@@ -858,6 +862,9 @@ void Prefill::release() {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
     }
+    if (impl_->rx_stream) cudaStreamSynchronize(impl_->rx_stream);
+    if (impl_->rx_host) cudaFreeHost(impl_->rx_host);
+    if (impl_->rx_stream) cudaStreamDestroy(impl_->rx_stream);
     for (int b = 0; b < 2; ++b) {
         if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);
         if (impl_->ple_copied[b]) cudaEventDestroy(impl_->ple_copied[b]);
@@ -998,17 +1005,31 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     cudaGetDevice(&m.device);
     if (stage_le_ < 0) stage_le_ = g.n_layers;
-    if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != (next_ != nullptr)) {
+    const bool hands_on = next_ != nullptr || (bool) remote_send;   // remote-stage: the worker takes the place of `next`
+    if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != hands_on ||
+        (next_ != nullptr && remote_send) || (remote_recv && !remote_send)) {
         err = "prefill: the stage's layer range is wrong";
         return false;
     }
     // the CPU share's staged-chunk limit, before the ring is sized below (a caller that sizes loans first armed it)
     arm_cpu_share(cpu_pool_ != nullptr);
-    for (int b = 0; next_ != nullptr && b < 2; ++b)
+    for (int b = 0; hands_on && b < 2; ++b)
         if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
             err = "prefill: the layer split's hand-off buffers";
             return false;
         }
+    if (remote_recv && m.rx_host == nullptr) {   // (a relay worker sends only: its reply goes back another way)
+        void* d = nullptr;
+        if (cudaHostAlloc((void**) &m.rx_host, (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess ||
+            cudaMalloc(&d, (size_t) chunk * D * 4) != cudaSuccess ||
+            cudaStreamCreateWithFlags(&m.rx_stream, cudaStreamNonBlocking) != cudaSuccess) {
+            if (d) cudaFree(d);
+            err = "prefill: the remote stage's row buffers";
+            return false;
+        }
+        m.rx_dev = (float*) d;
+        m.owned.push_back(d);
+    }
     if (m.tok_dev == nullptr) {
         if (const cudaError_t e = cudaMalloc((void**) &m.tok_dev, (size_t) chunk * sizeof(int32_t)); e != cudaSuccess) {
             err = std::string("prefill: the token id buffer (") + cudaGetErrorString(e) + ")";
@@ -3892,17 +3913,58 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         stats_.tokens += T;
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
-        if (next_ != nullptr) {
+        if (next_ != nullptr || remote_send) {
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
+            // remote-stage: the sends go out in order, one at a time - the last chunk's first (so the one two chunks
+            // ago, which used this slot, is out too)
+            const auto t_layers = Clock::now();
+            if (remote_send && send_run_.valid() && !send_run_.get()) { err = send_err_; return false; }
+            const auto t_sent = Clock::now();
             if (cudaMemcpyAsync(h, m.R, (size_t) T * D * 4, cudaMemcpyDeviceToHost, m.cs) != cudaSuccess ||
                 cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: the layer split's hand-off: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
+            // remote-stage, STRATA_REMOTE_TIMING=1: this stage's own time per chunk (the layer-split tuner reads it)
+            static const bool rt = [] { const char* v = std::getenv("STRATA_REMOTE_TIMING"); return v && v[0] == '1'; }();
+            if (remote_send && rt)
+                std::fprintf(stderr, "strata prefill: layers %lld-%lld, chunk T=%lld at %lld: own %.0f ms, waited %.0f ms "
+                                     "for the previous send\n",
+                             (long long) stage_lb_, (long long) stage_le_ - 1, (long long) T, (long long) p0,
+                             std::chrono::duration<double, std::milli>(t_layers - tsetup).count() +
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t_sent).count(),
+                             std::chrono::duration<double, std::milli>(t_sent - t_layers).count());
             // Wait only for the DIRECT successor's previous chunk. That successor
             // may already have forwarded its older chunk to later GPUs.
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
+            if (remote_send) {   // remote-stage: the worker reads the rest of the layers of this chunk
+                const int64_t flags = single_chunk ? 1 : 0;
+                const int64_t skip = std::max<int64_t>(0, std::min<int64_t>(remote_rows_from_ - p0, T));   // unread rows
+                send_err_.clear();
+                send_run_ = std::async(std::launch::async, [this, tokens, c0, T, p0, flags, h, skip] {
+                    return remote_send(tokens + c0, T, p0, flags, h, skip, send_err_);
+                });
+                if (!remote_recv) {   // a relay worker: the next stage's reply goes back to the main process directly
+                    hand_buf_ ^= 1;
+                    continue;
+                }
+                // its reply on the receiving thread, after the previous chunk's (the replies come in order)
+                auto prev = std::make_shared<std::future<bool>>(std::move(next_run_));
+                const int dev = m.device;
+                next_run_ = std::async(std::launch::async, [this, prev, T, p0, skip, dev] {
+                    if (prev->valid() && !prev->get()) {
+                        // an earlier chunk failed: still take this chunk's reply off the link, so the next
+                        // request's reset does not read it
+                        std::string ignored;
+                        (void) remote_recv(impl_->rx_host, T, skip, ignored);
+                        return false;
+                    }
+                    return remote_tail(T, p0, skip, dev, recv_err_);
+                });
+                hand_buf_ ^= 1;
+                continue;
+            }
             if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
             next_err_.clear();
             next_->hand_in_ = h;
@@ -4050,12 +4112,31 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     return true;
 }
 
+bool Prefill::remote_tail(int64_t T, int64_t pos0, int64_t skip, int device, std::string& err) {
+    Impl& m = *impl_;
+    if (device >= 0) cudaSetDevice(device);
+    if (!remote_recv(m.rx_host, T, skip, err)) return false;
+    if (skip < T &&
+        (cudaMemcpyAsync(m.rx_dev + skip * D, m.rx_host + skip * D, (size_t) (T - skip) * D * 4, cudaMemcpyHostToDevice,
+                         m.rx_stream) != cudaSuccess ||
+         cudaStreamSynchronize(m.rx_stream) != cudaSuccess)) {
+        err = std::string("prefill: the remote stage's rows upload: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    // the last stage's report of the chunk, on the worker's final rows (the drafter's pass is synchronous)
+    return !on_chunk || on_chunk(m.rx_dev, T, pos0, err);
+}
+
 bool Prefill::drain_pipeline(std::string& err) {
     bool ok = true;
 
+    if (send_run_.valid() && !send_run_.get()) {   // remote-stage: the last send
+        err = send_err_;
+        ok = false;
+    }
     if (next_run_.valid()) {
         if (!next_run_.get()) {
-            err = next_err_;
+            if (ok) err = remote_send ? recv_err_ : next_err_;
             ok = false;
         }
     }

@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <cstdint>
 #include <string>
@@ -137,6 +138,21 @@ public:
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
+
+    /// REMOTE STAGE, the worker's side: run the stage's layers up to the last one but no head -
+    /// the residual after the last layer (its pending write folded in, as the unsplit window folds it before the
+    /// head) goes to `handoff_out` like an earlier stage's.  Set before `init`.
+    void set_no_head(bool on) { no_head_ = on; }
+    /// REMOTE STAGE, the main side: the layers between this stage's predecessor and this stage run in another
+    /// process.  `run` first calls `remote_run(T, tokens, pos0, err)`, which must leave that process's hand-off rows
+    /// in this stage's `handoff_in`; `commit` calls `remote_commit(n_keep, err)`.  A stage set with
+    /// set_stage(n_layers, -1, in, nullptr) runs no layer, only the head (the worker ran the last layer).
+    void set_remote(std::function<bool(int T, const int32_t* tokens, int64_t pos0, std::string& err)> remote_run,
+                    std::function<bool(int n_keep, std::string& err)> remote_commit) {
+        remote_run_ = std::move(remote_run);
+        remote_commit_ = std::move(remote_commit);
+    }
+    bool remote() const { return (bool) remote_run_; }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
@@ -362,6 +378,10 @@ private:
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
+    bool no_head_ = false;                 ///< set_no_head: the remote worker's last stage (hand-off, no head)
+    std::function<bool(int, const int32_t*, int64_t, std::string&)> remote_run_;   ///< set_remote
+    std::function<bool(int, std::string&)> remote_commit_;
+    bool writes_handoff() const { return le_ < g_->n_layers || no_head_; }   ///< no head here: the residual goes on
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;

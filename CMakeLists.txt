@@ -546,9 +546,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
   endif()
 
-  add_executable(strata src/program/generate.cpp)
+  add_executable(strata src/program/generate.cpp src/net/stage_link.cpp)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+  if(WIN32)
+    target_link_libraries(strata PRIVATE ws2_32)   # the remote stage's sockets (src/net/stage_link.cpp)
+  endif()
 
   if(STRATA_ENABLE_HIP)
     enable_testing()
