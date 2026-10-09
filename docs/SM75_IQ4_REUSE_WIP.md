@@ -1,5 +1,7 @@
 # WIP: SM75 IQ4_XS four-row activation reuse and three-warps specialization
 
+Latest October 9 evening status: global B6 rows4 parity passes with NW3 off/on. An additional high-resolution three-pair T=4 final-code test gives GDN prefix reduction 0.196 +/- 0.591% and QSA prefix 0.241 +/- 0.454% (CI95), neither significant. The isolated targeted matrix increment of 8–10% below remains the performance evidence for this PR; no current-head layer or production tok/s speedup is claimed. The earlier coarse-printing pilot is not pooled. HIP compilation, #1418 dependency resolution and independent review remain open. Keep Draft and default off.
+
 ## Latest: October 9 B6 convergence (code c97e698)
 
 This implementation now uses the generic B6 framework from imanu86's PR #1418 (8cae814), preserving the original author in commit 4d547bb. Our separate row-reuse kernel has been removed. The additional contribution is the restricted SM75 IQ4_XS NW3 specialization. This branch explicitly depends on #1418 until that PR is merged; its generic reuse mechanism should not be credited to this increment. `STRATA_IQ4_ACT_REUSE=1` remains a compatibility selector for four rows through the shared B6 kernel; `STRATA_B6_MMVQ_ROWS=4` also selects it. All switches unset retains the native default. NW3 requires exact layout, TSUM off, T=2–4, K=2560 and R=6144/10240/12288; other shapes retain NW4 or native fallback. HIP does not compile the SM75 specialization.
@@ -79,3 +81,33 @@ A local patch against #1418 head 8cae814e6e819736e47c95f3b5e8b056c7528c0f parame
 ### October 9 complete-model numerical check
 
 A complete-kernel diagnostic build of code head ba2fe57 (logits export only, source restored) compared native, four-row NW4 and four-row NW3 in separate processes. Six runs: a 9-token prompt and an exact 16384-token prompt, each with 128 fixed continuation positions at T=4 (initial T=1). All CPU experts retained, six participants, PCIe=0; prefill=1024, dynamic prefill CPU sharing/residency adaptation/prompt caching/suffix drafts/lookup chain disabled. For each input, the complete logits files are byte-identical across all three variants (Top-1 100%, KL=0, target PPL unchanged on these samples). Diagnostic executable SHA256: 0d574c66612f8f33f7d0224b01f267f1365d3e267a566850a00539c7207300b4. These checks apply to the current published implementation, not the B6 integration prototype; no end-to-end performance or quality-equivalence CI is claimed.
+
+
+## October 9 evening: global B6 qualification
+
+Global STRATA_B6_MMVQ_ROWS=4 was tested with NW3 disabled and enabled. Both runs compare 980,113 exact outputs with zero bit differences/nonfinite values; the non-exact negative control still detects 290,059 differences. This complements the earlier IQ4-only compatibility-switch checks.
+
+## Final-head layer validation, October 9
+
+Three independent process pairs per feature: QSA order AB/BA/AB; primary high-resolution IQ4 order BA/AB/BA. T=4 fixed oracle/follow continuation, captured graphs, CPU experts enabled (six participants), PCIe=0; fixed nominal byte budget and actual resident expert counts validated equal. Prefill CPU sharing/adaptive cache/suffix and lookup disabled. The first four rounds are excluded from device profiles, so measured windows are T=4. There is no logits export or added device marker; a diagnostic-only patch prints existing stamps and resets their sums after warmup. Times are aggregate GDN/36 and QSA/12 per layer, not individual layer measurements. CI95 is paired Student-t, df=2. CPU load is observed over the entire process, including cache fill/prefill; it is not a decode-only utilization counter. All pairs are reported, with imbalance flagged separately.
+
+IQ4 compares global shared B6 ROWS=4 NW4 vs the restricted IQ4 NW3 increment on a short prompt; QSA compares native/MMA on an exact 16K prompt. Results from these different conditions must not be added.
+
+| Feature | Metric | Baseline us +/- CI95 | Candidate us +/- CI95 | Reduction % +/- CI95 | Worst-rounding CI95 envelope % |
+|---|---|---:|---:|---:|---:|
+|iq4|GDN_prefix_us|323.97 +/- 1.58|323.33 +/- 1.88|0.196 +/- 0.591|[-0.394, 0.787]|
+|iq4|QSA_prefix_us|384.09 +/- 1.67|383.17 +/- 2.26|0.241 +/- 0.454|[-0.214, 0.696]|
+|iq4|QSA_attention_us|53.66 +/- 0.16|53.70 +/- 0.46|-0.074 +/- 0.569|[-0.644, 0.496]|
+
+## CPU load and diagnostic throughput
+
+| Pair | CPU mean baseline/candidate % | Difference pp | Forced-follow tok/s baseline/candidate |
+|---|---:|---:|---:|
+|iq4-0|15.9/14.9|-1.0|64.64/65.00|
+|iq4-1|18.5/17.8|-0.7|60.08/62.28|
+|iq4-2|16.1/16.0|-0.1|63.48/64.24|
+
+IQ4 primary results use an additional BA/AB/BA set of three pairs with six-decimal ms profile output. The earlier two-decimal IQ4 set remains archived but is not pooled.
+QSA uses the original two-decimal ms stage output: each stage sum is rounded by at most 0.005 ms per window before division by layer count. The ordinary CI95 does not include print rounding. The separate worst-rounding envelope propagates all stage bounds into each paired percentage, then computes the most extreme Student-t interval endpoints over all eight endpoint combinations for the three pairs. It is a conservative sensitivity envelope, not a second independent confidence interval or a hardware-counter accuracy guarantee.
+
+Forced-follow throughput has acceptance 100% by construction and is not production MTP tok/s. CPU load, altered routing for numerically different MMA, and device clock differences limit end-to-end attribution. Stage timings include execution and inter-kernel gaps; they are not hardware-counter decompositions. Three pairs are a small sample. The run matrix covers the final integrated code but does not qualify every T/context/KV mode or backend.
