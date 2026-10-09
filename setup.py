@@ -4235,7 +4235,7 @@ def choose_drafter(method, path, quant, yes):
         say()
         say("  Speculative decoding = a small drafter proposes tokens which the target checks.")
         say("  1) MTP (default)")
-        say("  2) DFlash (experimental; greedy decoding, one request at a time)")
+        say("  2) DFlash (experimental; one request at a time)")
         say("  3) Off (no MTP/DFlash; prompt lookup stays on)")
         method = {"1": "mtp", "2": "dflash", "3": "none"}[ask("Drafter?", ["1", "2", "3"], "1", yes)]
     if method == "dflash" and quant is None:
@@ -5741,7 +5741,7 @@ def main() -> int:
             old_sampling = json.loads(source.read_text(encoding="utf-8-sig")).get("sampling", {}) if source else {}
         except (OSError, ValueError, AttributeError):
             old_sampling = {}
-        cfg["sampling"] = {**(old_sampling if isinstance(old_sampling, dict) else {}), "temperature": 0.0}
+        cfg["sampling"] = {"temperature": 0.0, **(old_sampling if isinstance(old_sampling, dict) else {})}
     cfg["drafter"] = a.drafter
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
@@ -5767,7 +5767,7 @@ def main() -> int:
         warn("--vision-tokens: images are off for this model, so it is not used")
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
     if dflash:
-        ok("DFlash server: greedy requests use the selected drafter; sampled requests use target-only decoding")
+        ok("DFlash server: greedy and sampled requests use the selected drafter; the target verifies every proposal")
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))

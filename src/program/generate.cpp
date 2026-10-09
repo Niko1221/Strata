@@ -4166,11 +4166,6 @@ int main(int argc, char** argv) {
                          (long long) effective_mask, (long long) dg.vocab);
             return 2;
         }
-        if (!o.greedy && !o.serve) {
-            std::fprintf(stderr, "strata generate: --dflash drafts greedy-only (docs/DFLASH.md); this run samples, "
-                                 "so the drafter would never be used - drop --dflash or run greedy\n");
-            return 2;
-        }
         std::string taps;
         for (size_t i = 0; i < dg.target_layers.size(); ++i) taps += (i ? "," : "") + std::to_string(dg.target_layers[i]);
         std::fprintf(stderr,
@@ -6414,7 +6409,7 @@ int main(int argc, char** argv) {
         const bool use_mtp = !o.mtp.empty();
         const bool has_dflash = !o.dflash.empty();
         strata::prefill::Prefill sp;
-        bool df_request = false;   // set before prefill; sampled requests never inject draft KV
+        bool df_request = false;   // set before prefill for both greedy and sampled requests
         if (has_dflash) {
             sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
@@ -9224,7 +9219,10 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
-            const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            // DFlash proposes point masses (argmax tokens). The verifier samples the target with
+            // this request's chain and position-keyed RNG; exact-match acceptance is valid at any
+            // temperature. No draft distribution is passed to the rejection sampler.
+            const bool req_dflash = has_dflash;
             df_request = req_dflash;
             if (req_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n - 8)) {
                 std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
@@ -10039,8 +10037,6 @@ int main(int argc, char** argv) {
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
             req_sp.greedy = req_temperature <= 0.0f;
-            if (has_dflash && !req_dflash)
-                std::fprintf(stderr, "dflash: sampled request decoded without the drafter\n");
             req_sp.temperature = req_temperature;
             req_sp.top_p = req_top_p;
             req_sp.top_k = req_top_k;
@@ -11429,11 +11425,9 @@ int main(int argc, char** argv) {
     int64_t pos_start = 0;
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
     strata::prefill::Prefill prefill;
-    // DFlash runs greedy only: a sampled run decodes without the drafter, said out loud.  The
-    // prompt path's context cells and the verifier's taps hang off this flag below.
-    const bool use_dflash = !o.dflash.empty() && sp.greedy;
-    if (!o.dflash.empty() && !use_dflash)
-        std::fprintf(stderr, "dflash: sampled run decoded WITHOUT the drafter (greedy only for now)\n");
+    // Keep the same DFlash argmax proposals for sampling. Verifier::run draws from the target
+    // at each position and only the matching prefix survives, just as for point-mass lookup drafts.
+    const bool use_dflash = !o.dflash.empty();
     strata::prefill::Prefill::arm_cpu_share(!multi_gpu && !o.no_pool, !multi_gpu && !o.no_pool && o.batch <= 0);   // before the chunk below sizes the loan
     bool kvg_started = false;   // the elastic K/V took this run's cells
     double prefill_batched_ms = 0;
@@ -12139,7 +12133,7 @@ int main(int argc, char** argv) {
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
                 window[(size_t) i] = d;
             }
-            if (use_dflash) {   // candidate[i] from the drafter MUST be verify_window[i+1]: the window
+            if (use_dflash && !from_sfx && o.spec_corrupt <= 0) {   // candidate[i] MUST be verify_window[i+1]: the window
                                 // once filled with token 0 here and accepted nothing, silently
                 for (int i = 1; i < T; ++i)
                     if (window[(size_t) i] != drafts[(size_t) i - 1]) {
