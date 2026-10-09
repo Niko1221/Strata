@@ -84,21 +84,23 @@ class VideoPolicyTests(unittest.TestCase):
         # points, and the one at 0.5 s takes the frame nearest 0.5 s (0.650 is nearer than 0.319).
         pts = [0.000, 0.034, 0.068, 0.101, 0.285, 0.319, 0.650]
         self.assertEqual(sample_times(pts, 2.0, 128), ((0, 6), (0.0, 0.65)))
-        # A long irregular clip: every 0.5 s point takes the nearest frame, and a point that
-        # would repeat the previous frame is dropped rather than decoded twice.
-        # A long irregular clip on the fixed 2 FPS grid: each point takes the nearest frame, and
-        # points inside the 2.3 s -> 5.0 s gap collapse to one frame instead of repeating it.
         pts = [0.0, 0.1, 0.2, 0.3, 0.4, 0.45, 1.6, 2.0, 2.05, 2.1, 2.15, 2.2, 2.25, 2.3,
                    5.0, 5.05, 5.1, 5.15, 5.2, 5.25]
         self.assertEqual(sample_times(pts, 2.0, 128), ((0, 5, 6, 7, 13, 14), (0.0, 0.45, 1.6, 2.0, 2.3, 5.0)))
         # Constant-rate input keeps the pinned count and lands on every other frame.
         self.assertEqual(sample_times([i / 30 for i in range(300)], 2.0, 128)[0],
                          (0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285))
-        # Fewer frames than grid points spreads the grid instead of repeating a frame.
-        self.assertEqual(sample_times([0.0, 1.0, 2.0], 2.0, 128), ((0, 1, 2), (0.0, 1.0, 2.0)))
-        self.assertEqual(sample_times([0.0], 2.0, 128), ((0,), (0.0,)))
-        with self.assertRaises(VideoError):
-            sample_times([i / 2 for i in range(300)], 2.0, 128)   # 300 points over the 128-frame cap
+        self.assertEqual(sample_times([0.0, 1.0, 2.0], 2.0, 3), ((0, 1, 2), (0.0, 1.0, 2.0)))
+        self.assertEqual(sample_times([0.0, 1.4, 1.6], 2.0, 2), ((0, 1), (0.0, 1.4)))
+        self.assertEqual(sample_times([0.0, 300.0, 600.0], 2.0, 3),
+                         ((0, 1, 2), (0.0, 300.0, 600.0)))
+        self.assertEqual(sample_times([0.0], 2.0, 1), ((0,), (0.0,)))
+        with self.assertRaisesRegex(VideoLimitError, "selected frames"):
+            sample_times([i / 2 for i in range(300)], 2.0, 128)
+        with self.assertRaisesRegex(VideoLimitError, "selected frames"):
+            sample_times([0.0, 300.0, 600.0], 2.0, 2)
+        with self.assertRaisesRegex(VideoLimitError, "sampling grid"):
+            sample_times([0.0, 3601.0], 10.0, 2)
         with self.assertRaises(VideoError):
             sample_times([0.0, 0.5, 0.5], 2.0, 128)
         with self.assertRaises(VideoError):

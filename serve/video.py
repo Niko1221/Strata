@@ -33,7 +33,7 @@ class VideoLimitError(VideoError):
 FRAME_HEADER = struct.Struct("<4sIIIIdQ")
 FRAME_TIME = struct.Struct("<d")
 VIDEO_PROFILE = "qwen4_exp_16x2x2_2560_v1"
-PREPROCESS_VERSION = 3
+PREPROCESS_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -164,22 +164,17 @@ def sample_times(times: list, target_fps: float, max_frames: int) -> tuple[tuple
     if isinstance(target_fps, bool) or not isinstance(target_fps, (int, float)) or \
             not math.isfinite(target_fps) or target_fps <= 0:
         raise VideoError("video has no finite positive FPS")
-    if not times or any(b <= a for a, b in zip(times, times[1:])):
-        raise VideoError("video frame timestamps must be strictly increasing")
+    if isinstance(max_frames, bool) or not isinstance(max_frames, int) or max_frames < 1:
+        raise VideoError("video frame limit must be a positive integer")
+    if not times or any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) for t in times) or \
+            any(b <= a for a, b in zip(times, times[1:])):
+        raise VideoError("video frame timestamps must be finite and strictly increasing")
     start, span = times[0], times[-1] - times[0]
-    count = int(span * target_fps) + 1
-    if count < 1:
-        raise VideoError("video sampling produced no frames")
-    if count > max_frames:
-        raise VideoError("video sampling exceeds the frame budget; no frames were silently dropped")
-    if count == 1:
-        step = 0.0
-    elif count > len(times):
-        # Fewer source frames than grid points: spread the points over the span instead of
-        # emitting the same frame several times.
-        step = span / (count - 1)
-    else:
-        step = 1 / target_fps
+    grid = span * target_fps
+    if not math.isfinite(grid) or grid > 36000:
+        raise VideoLimitError("video sampling grid exceeds the supported duration/FPS ceiling")
+    count = int(grid) + 1
+    step = 1 / target_fps
     indices, seconds, chosen = [], [], 0
     for i in range(count):
         t = start + i * step
@@ -188,6 +183,8 @@ def sample_times(times: list, target_fps: float, max_frames: int) -> tuple[tuple
         if indices and indices[-1] == chosen:
             continue
         indices.append(chosen)
+        if len(indices) > max_frames:
+            raise VideoLimitError("video selected frames exceed the frame budget; lower FPS or raise max_frames")
         seconds.append(round(times[chosen] - start, 6))
     return tuple(indices), tuple(seconds)
 
