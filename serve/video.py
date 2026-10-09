@@ -89,12 +89,12 @@ class VideoPolicy:
             raise VideoError("video FPS/duration/deadline exceeds the supported ceiling")
         if not (max(8, image_min or 0) <= p.min_group_tokens <= p.max_group_tokens <= min(1024, image_max or 4096)):
             raise VideoError("video group tokens must fit the existing image encoder's min/max token policy (8..1024)")
-        if p.max_frames > 4096 or p.max_tokens > 65536 or p.max_source_frames > 65536:
-            raise VideoError("video frames/tokens exceed the supported transport ceiling")
-        if p.max_rgb_bytes > 1 << 30 or p.max_embedding_bytes > 768 << 20 or p.max_decoded_bytes > 16 << 30:
-            raise VideoError("video RGB/embedding/decode budgets exceed the supported ceiling")
-        if p.max_source_bytes > 1 << 30 or p.max_disk_bytes > 8 << 30 or p.cache_bytes > 1 << 30:
-            raise VideoError("video source/disk/cache budgets exceed the supported ceiling")
+        for name, ceiling in (("max_frames", 4096), ("max_tokens", 65536), ("max_source_frames", 65536),
+                              ("max_rgb_bytes", 1 << 30), ("max_embedding_bytes", 768 << 20),
+                              ("max_decoded_bytes", 16 << 30), ("max_source_bytes", 1 << 30),
+                              ("max_disk_bytes", 8 << 30), ("cache_bytes", 1 << 30)):
+            if getattr(p, name) > ceiling:
+                raise VideoError(f"vision.video.{name} exceeds the supported ceiling ({ceiling})")
         if p.cache_bytes > p.max_disk_bytes or p.max_source_bytes > p.max_disk_bytes:
             raise VideoError("video source/cache budget exceeds the disk budget")
         if p.max_source_side > 16384 or p.max_source_pixels > 64 << 20 or p.decoder_memory_bytes > 8 << 30:
@@ -337,9 +337,12 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
         indices, seconds = sample_times(times, policy.fps, policy.max_frames)
         rh, rw = resize_shape(h, w, len(indices), policy)
         info = ClipInfo(len(times), fps, w, h, duration, indices, seconds, rw, rh, rotation)
-        if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes or \
-                info.decoded_bytes > policy.max_decoded_bytes or info.max_wire_bytes > policy.max_embedding_bytes:
-            raise VideoLimitError("video exceeds its visual row, RGB, decoder-output or wire budget")
+        for name, cost, ceiling in (("visual rows", info.rows, policy.max_tokens),
+                                    ("RGB", info.rgb_bytes, policy.max_rgb_bytes),
+                                    ("decoder-output", info.decoded_bytes, policy.max_decoded_bytes),
+                                    ("wire", info.max_wire_bytes, policy.max_embedding_bytes)):
+            if cost > ceiling:
+                raise VideoLimitError(f"video {name} budget exceeded ({cost} > {ceiling})")
         return info
     except VideoError:
         raise

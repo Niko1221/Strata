@@ -1,4 +1,5 @@
 #include "strata/program/media_embeddings.hpp"
+#include "strata/program/video_limits.hpp"
 
 #include <cctype>
 #include <cstdio>
@@ -211,6 +212,21 @@ int main(int argc, char** argv) {
             std::vector<int32_t> ids = {11};
             for (const auto& im : images) { ids.insert(ids.end(), size_t(im.nx) * im.ny, pad); ids.push_back(12); }
             write_media(std::cout, adapt_legacy_images(images, ids, pad));
+            return 0;
+        }
+        if (mode == "--video-check" && argc == 3) {
+            MediaLimits limits;
+            limits.max_rows = video_limits::max_rows;
+            limits.max_spans = limits.max_rows;
+            limits.max_bytes = video_limits::max_wire_bytes;
+            limits.expected_width = 2560;
+            limits.allowed_pad_ids = {248057};
+            const auto bundle = read_media(in, limits, true);
+            const auto plan = media_positions(bundle, bundle.tokens.size() + 8, limits);
+            uint64_t rows = 0;
+            for (const auto& span : bundle.spans) rows += span.positions.size();
+            check(plan.rows.size() == bundle.tokens.size() + 8, "long-video position plan");
+            std::cout << "video groups=" << bundle.spans.size() << " rows=" << rows << '\n';
             return 0;
         }
         auto bundle = read_media(in);
