@@ -29,7 +29,7 @@ answers, no questions), --setup (install another model / change settings instead
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto.
+--kv-streaming on|off|auto, --sm86-prefill off|VARIANT (experimental CUDA build, choices in --help).
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -882,8 +882,9 @@ def engine_dir(toolkit=13) -> Path:
 
 
 def config_toolkit(cfg: dict) -> int:
-    """12 when a model config runs the experimental CUDA 12 engine (its exe is in engine-cuda12/), else 13."""
-    return 12 if cfg.get("cuda") == 12 or Path(str(cfg.get("exe", ""))).parent.name == ENGINE12_DIR else 13
+    """12 for engine-cuda12/ or one of its SM86 variants, else 13."""
+    folder = Path(str(cfg.get("exe", ""))).parent.name
+    return 12 if cfg.get("cuda") == 12 or folder == ENGINE12_DIR or folder.startswith(ENGINE12_DIR + "-sm86-") else 13
 
 
 def gpu_problem(g, together=False):
@@ -3166,6 +3167,106 @@ def engine_defs(archs, toolkit=13) -> list:
     return ["-DSTRATA_EXPERIMENTAL_SM60=ON"] if min(int(x) for x in archs) < 75 or int(toolkit) == 12 else []
 
 
+# Each experimental PR contributes one choice; the installer selects exactly one.
+SM86_PREFILL = {"iq3-stage2": ("STRATA_CUDA_SM86_IQ3_STAGE2", "STRATA_PF_IQ3_STAGE2")}
+SM86_BUILD_FLAGS = ("STRATA_CUDA_SM86_PREFETCH_ONE", "STRATA_CUDA_SM86_IQ3_STAGE2")
+SM86_RUN_FLAGS = ("STRATA_PF_PREFETCH_ONE", "STRATA_PF_IQ3_STAGE2")
+
+
+def sm86_engine_dir(toolkit, choice):
+    if choice not in SM86_PREFILL:
+        fail(f"this checkout has no SM86 prefill variant {choice!r}", "use --sm86-prefill off or the matching checkout")
+    eng = engine_dir(toolkit)
+    return eng.with_name(eng.name + "-sm86-" + choice)
+
+
+def sm86_build_defs(choice):
+    if choice is None:
+        return []                                      # the normal build invocation stays unchanged
+    selected = SM86_PREFILL[choice][0]
+    return [f"-D{flag}={'ON' if flag == selected else 'OFF'}" for flag in SM86_BUILD_FLAGS]
+
+
+def sm86_prefill_choice(asked, chosen, hip, yes, previous=None):
+    previous = previous if isinstance(previous, dict) else {}
+    saved = previous.get("sm86_prefill")
+    if saved is None:                                  # adopt a manually enabled runtime opt-in at setup
+        env = previous.get("env") or {}
+        if isinstance(env, dict) and str(env.get("STRATA_PF_FUSED", "1")) != "0":
+            saved = next((key for key, (_, flag) in SM86_PREFILL.items() if str(env.get(flag)) == "1"), None)
+    choice = asked if asked is not None else saved
+    eligible = not hip and any(str(g.get("arch")) == "86" for g in chosen)
+    if choice not in (None, "off") and choice not in SM86_PREFILL:
+        fail(f"this checkout has no SM86 prefill variant {choice!r}", "use --sm86-prefill off")
+    if asked is None and not yes and eligible:
+        say("  Experimental SM86 native fused prefill: off by default; requires a local CUDA build.")
+        say("  Native fused prefill can round differently from MMQ. Measurements: docs/DETAILS.md.")
+        choice = ask("SM86 prefill variant?", ["off", *SM86_PREFILL], saved or "off", yes)
+        if choice == "off" and saved is None:
+            choice = None                              # Enter keeps a new install's config byte-identical
+    if choice not in (None, "off") and not eligible:
+        fail("SM86 prefill needs a selected NVIDIA compute-capability 8.6 GPU", "use --sm86-prefill off")
+    return choice
+
+
+def apply_sm86_prefill(cfg, old=None):
+    """Apply after carry_over, preserving unrelated env and the previous fused-path choice."""
+    choice = cfg.get("sm86_prefill")
+    if choice is None:
+        return
+    old = old or {}
+    env = cfg.setdefault("env", {})
+    if choice == "off":
+        if old.get("sm86_prefill") not in (None, "off") and "sm86_prefill_previous_fused" in old:
+            if str(env.get("STRATA_PF_FUSED")) == "1":
+                previous = old["sm86_prefill_previous_fused"]
+                if previous is None:
+                    env.pop("STRATA_PF_FUSED", None)
+                else:
+                    env["STRATA_PF_FUSED"] = previous
+        cfg.pop("sm86_prefill_previous_fused", None)
+        env.update({flag: "0" for flag in SM86_RUN_FLAGS})
+        return
+    if choice not in SM86_PREFILL or cfg.get("backend", "cuda") != "cuda":
+        fail("the saved SM86 prefill variant is not supported by this checkout/backend", "use --sm86-prefill off")
+    cfg["sm86_prefill_previous_fused"] = old.get("sm86_prefill_previous_fused", env.get("STRATA_PF_FUSED"))
+    env.update({flag: "0" for flag in SM86_RUN_FLAGS})
+    env.update({"STRATA_PF_FUSED": "1", SM86_PREFILL[choice][1]: "1"})
+
+
+def ensure_sm86_engine(cfg_path, cfg, yes=False, cards=None):
+    """Keep this model's opt-in in its own engine/cache, including starts and updates."""
+    choice = cfg.get("sm86_prefill")
+    if choice in (None, "off"):
+        return cfg
+    if choice not in SM86_PREFILL or cfg.get("backend", "cuda") != "cuda":
+        fail("the saved SM86 prefill choice requires its CUDA checkout", "use --setup --sm86-prefill off")
+    if cards is None:
+        found = gpus()
+        use = cfg.get("gpu")
+        ids = use if isinstance(use, list) else [use] if use is not None else []
+        cards = [g for g in found if g["index"] in ids] if ids else sorted(found, key=lambda g: -g["vram_gb"])[:1]
+        if ids and len(cards) != len(ids):
+            fail("a selected GPU for the SM86 prefill model is missing")
+    if not cards:
+        fail("no NVIDIA GPU is available for the SM86 prefill model")
+    toolkit = config_toolkit(cfg)
+    if toolkit == 13 and any(int(g["arch"]) < CUDA13_MIN_ARCH for g in cards):
+        toolkit = 12
+    # A saved opt-in can still start on a replacement non-SM86 card via the kernel fallback.
+    gpu = {**cards[0], "archs": sorted({86, *(int(g["arch"]) for g in cards)})}
+    vision = "gpu" if (cfg.get("vision") or {}).get("gpu") else "cpu" if cfg.get("vision") else "none"
+    eng = build_engine(gpu, vision, yes, None, toolkit=toolkit, sm86_prefill=choice)
+    dirs = engine_lib_dirs(eng, toolkit)
+    updated = {**cfg, "exe": str(eng / EXE), "cuda": toolkit,
+               "lib_dirs": dirs + [d for d in cfg.get("lib_dirs") or [] if d not in dirs]}
+    if cfg.get("vision"):
+        updated["vision"] = {**cfg["vision"], "exe": str(eng / VEXE)}
+    if updated != cfg:
+        write_config(cfg_path, updated)
+    return updated
+
+
 def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     """The image encoder to use with a ready-made engine (`meta`: its BUILD.json).  The encoder can cover fewer cards
     than the engine (0.1.30/0.1.31: no RTX 20 code, #331): such a card gets the CPU encoder - the same program - instead
@@ -3180,7 +3281,7 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
-def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
+def build_engine(gpu, vision, yes, llama, toolkit=None, sm86_prefill=None) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
     toolkit 12 (default: 12 for a card older than CUDA 13 supports): the experimental CUDA 12 engine, in
@@ -3188,7 +3289,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     if toolkit is None:
         toolkit = 12 if min(int(x) for x in gpu.get("archs", [gpu["arch"]])) < CUDA13_MIN_ARCH else 13
     t12 = int(toolkit) == 12
-    eng = engine_dir(toolkit)
+    if sm86_prefill is not None and not any(str(x) == "86" for x in gpu.get("archs", [gpu["arch"]])):
+        fail("the SM86 prefill build needs architecture 86")
+    eng = sm86_engine_dir(toolkit, sm86_prefill) if sm86_prefill is not None else engine_dir(toolkit)
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
@@ -3202,16 +3305,22 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     new_arch = local and not set(archs) <= built
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
-        (meta.get("isa_floor") or "") == floor
+        (meta.get("isa_floor") or "") == floor and meta.get("sm86_prefill") == sm86_prefill
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
     if local:
         archs = sorted(built | set(archs))
+    if llama is None:
+        llama = get_llama_cpp()
     nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": toolkit}, yes)
     cuda_archs = ";".join(str(x) for x in archs)
     bdir, vdir = (ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else (ROOT / "build", ROOT / "build-vision")
+    if sm86_prefill is not None:
+        bdir = bdir.with_name(bdir.name + "-sm86-" + sm86_prefill)
+        vdir = vdir.with_name(vdir.name + "-sm86-" + sm86_prefill)
+    script_suffix = "-sm86-" + sm86_prefill if sm86_prefill is not None else ""
     if not engine_ok:
         say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
             "10-20 minutes, once) ..." if new_arch else
@@ -3221,8 +3330,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
                      *engine_defs(archs, toolkit),
+                     *sm86_build_defs(sm86_prefill),
                      *isa_floor_defs(floor, bdir, meta)],
-                    vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
+                    vcvars, ("build-strata-cuda12" if t12 else "build-strata") + script_suffix + ".bat")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
@@ -3232,13 +3342,14 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
                      *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
-                    "build-vision-cuda12.bat" if t12 else "build-vision.bat")
+                    ("build-vision-cuda12" if t12 else "build-vision") + script_suffix + ".bat")
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
                                  "vision": vision, **({"toolkit": 12} if t12 else {}),
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None,
+                                 **({"sm86_prefill": sm86_prefill} if sm86_prefill is not None else {}),
                                  **({"isa_floor": floor} if floor else {})}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
     return eng
@@ -3650,7 +3761,8 @@ def write_config(path: Path, cfg: dict):
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision",
+                        "sm86_prefill", "sm86_prefill_previous_fused"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
@@ -3738,6 +3850,10 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) ->
         if not isinstance(old, dict):
             old = None
     kept = carry_over(old, cfg) if old is not None else []
+    apply_sm86_prefill(cfg, old)
+    if cfg.get("sm86_prefill") is not None:
+        managed = {"env " + k for k in (*SM86_RUN_FLAGS, "STRATA_PF_FUSED")}
+        kept = [k for k in kept if k not in managed]
     bak = None
     if cfg_path.is_file() and old != cfg:
         bak = cfg_path.with_name(cfg_path.name + ".bak")
@@ -4019,6 +4135,11 @@ def update_install(have: list, a) -> int:
         update_installed_engine(a.prebuilt)
     for cfg_path in have:
         cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
+        if cfg.get("sm86_prefill") not in (None, "off"):
+            try:
+                cfg = ensure_sm86_engine(cfg_path, cfg, yes=True)
+            except (Exception, SystemExit) as e:
+                warn(f"could not update the SM86 prefill engine ({e}); keeping the installed model config")
         if "--mtp" in cfg["args"][:-1]:
             refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
         if cfg.get("backend") == "hip" and WIN:
@@ -4049,7 +4170,7 @@ def settings_summary(cfg: dict, port=None) -> str:
         srv.append("api key set")
     if cfg.get("open_browser") is False:               # #609
         srv.append("no browser")
-    for k in ("gpu", "layer_split", "draft_vocab", "fit_max_tokens", "reasoning_budget_tokens", "anthropic_thinking"):
+    for k in ("gpu", "layer_split", "draft_vocab", "fit_max_tokens", "reasoning_budget_tokens", "anthropic_thinking", "sm86_prefill"):
         if cfg.get(k) is not None:
             v = cfg[k]
             srv.append(f"{k} {','.join(map(str, v)) if isinstance(v, list) else str(v).lower() if isinstance(v, bool) else v}")
@@ -4061,7 +4182,10 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
     --vram-reserve-mib)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
-    missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
+    if cfg.get("sm86_prefill") not in (None, "off") and cfg.get("backend", "cuda") != "cuda":
+        fail("the saved SM86 prefill choice requires CUDA", "use --setup --sm86-prefill off")
+    engine_files = [] if cfg.get("sm86_prefill") not in (None, "off") else [cfg["exe"]]
+    missing = [p for p in [*engine_files, *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
     keep = {k: v for k, v in (keep or {}).items() if v is not None}
@@ -4429,6 +4553,8 @@ def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
     card gets the engine compiled for all of them, before the start.  A Pascal / Volta card added to a model on the
     CUDA 13 engine moves the model to the experimental CUDA 12 engine (CUDA 13 has no code for it)."""
+    if cfg.get("sm86_prefill") not in (None, "off"):
+        return ensure_sm86_engine(cfg_path, cfg, yes, cards)
     tk = config_toolkit(cfg)
     if tk == 13 and any(int(g["arch"]) < CUDA13_MIN_ARCH for g in cards):
         return use_cuda12(cards, cfg_path, cfg, yes)
@@ -4626,6 +4752,9 @@ def main() -> int:
     ap.add_argument("--rollback-engine", action="store_true",
                     help="put back the engine an update replaced (kept in engine/.previous), and keep the current one there")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
+    ap.add_argument("--sm86-prefill", choices=["off", *SM86_PREFILL],
+                    help="experimental NVIDIA SM86 native fused prefill; off by default. An enabled choice builds "
+                         "a dedicated local engine and saves the runtime opt-in for this model")
     ap.add_argument("--source", choices=SOURCES, default=None,
                     help="where the model files come from: auto (default: Hugging Face), huggingface or modelscope "
                          "(mainland China: the same files, checked against ModelScope's published SHA-256; "
@@ -4670,6 +4799,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.sm86_prefill not in (None, "off") and a.backend in ("hip", "sycl"):
+        ap.error("--sm86-prefill requires the CUDA backend")
+    if a.sm86_prefill is not None and (a.update or a.rollback_engine or a.calibrate or a.inspect):
+        ap.error("change --sm86-prefill with --setup, separately from --update, --rollback-engine, --calibrate or --inspect")
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -4702,7 +4835,7 @@ def main() -> int:
     have = installed_configs()
     if a.update:                                       # #475: UPDATE.bat / update.sh - never starts the model
         return update_install(have, a)
-    explicit = a.setup or a.model or a.family or a.check or a.no_start
+    explicit = a.setup or a.model or a.family or a.check or a.no_start or a.sm86_prefill is not None
     adopted = None                                     # #629: the earlier install this copy is set up like
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
@@ -4734,7 +4867,7 @@ def main() -> int:
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = start_gpus(a.gpus) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
-    if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
+    if have and a.calibrate and not (a.setup or a.model or a.family or a.check or a.sm86_prefill is not None):
         if not a.build:
             update_installed_engine(a.prebuilt)
         pick_cfg = have[0]
@@ -4750,7 +4883,7 @@ def main() -> int:
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
-    if have and not (a.setup or a.model or a.family or a.check or a.no_start):
+    if have and not (a.setup or a.model or a.family or a.check or a.no_start or a.sm86_prefill is not None):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
@@ -4872,6 +5005,8 @@ def main() -> int:
                  "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again" +
                  ("" if cuda_tk == 12 else f" (or --cuda 12: the experimental CUDA 12 engine runs with driver "
                                            f"{CUDA12_MIN_DRIVER} or newer, docs/OLDER_GPUS.md)"))
+    if a.sm86_prefill not in (None, "off"):
+        sm86_prefill_choice(a.sm86_prefill, chosen, hip, True)
     if gpu["vram_gb"] < 11:
         warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
              + ": Strata will run, but most experts stay on the CPU and it will be slow")
@@ -5032,6 +5167,16 @@ def main() -> int:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
+    previous_path = ROOT / f"strata-{tag.lower()}.json"
+    if not previous_path.exists() and adopted is not None and adopted.name == previous_path.name:
+        previous_path = adopted
+    try:
+        previous = json.loads(previous_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        previous = {}
+    sm86_choice = sm86_prefill_choice(a.sm86_prefill, chosen, hip, a.yes, previous)
+    if sm86_choice is not None:
+        ok("experimental SM86 prefill: " + sm86_choice)
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -5214,7 +5359,9 @@ def main() -> int:
     step(4, "the Strata engine")
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
-    if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
+    if sm86_choice not in (None, "off"):
+        eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk, sm86_prefill=sm86_choice)
+    elif hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
             fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
@@ -5453,6 +5600,10 @@ def main() -> int:
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
+    if sm86_choice is not None:
+        cfg["sm86_prefill"] = sm86_choice
+        if not hip:
+            cfg["cuda"] = cuda_tk
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
     if hip:
