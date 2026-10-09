@@ -346,37 +346,6 @@ Measured on this box the same day; none of these changed the configuration:
 - Two-lane pipelining: my model predicted 1.25-1.33x, under the 1.5x bar I set (`docs/TWO_LANE_MODEL.md` on branch `w3-twolane`). Pipelined verify windows: per my session notes the speculative window was on the path in only 10-27% of windows. Neither was kept.
 - `STRATA_SPLIT_RING=384` with 8,192-token chunks: no gain.
 
-## Why I run this setup (my experience, not a measurement)
-
-*This paragraph is my experience. I did not measure it.*
-
-An old used server can now run the latest open-weight Qwen model. I use this setup every day as the backend for coding agents: long tool-using sessions, 100K+ token contexts, two sessions at a time. I wanted to show that a high-quality 4-bit quant is practical on this kind of box, not only the very small quants. In my experience the small ones hallucinate more and loop. This report measures speed only. I did not measure quality.
-
-## Correctness and limitations
-
-- I did not run a quality, needle or agentic benchmark; this report measures speed only. It says nothing about answer
-  quality of UD-Q4_K_XL against other quants. Output text is kept in `data/results.json` and is the only correctness
-  evidence (finish reason `length` in all runs, 256 tokens each).
-- **One machine, one person, one day.** Three runs per length, two engine restarts' worth of history behind the
-  progression table, and no repeat of the whole report on another day.
-- **Power-capped:** both cards at a 220 W limit (stock 320 W); they sit at the software cap in most busy samples.
-  A 280 W test gave +2% prefill.
-- **Shared storage:** the model volume is a thin volume on a host shared with other containers. Start-up time, and
-  any read from the model file, depend on that. File reads during the long requests were not examined here.
-- **AVX2 only:** the Xeon has no AVX-512; the CPU expert kernels run on AVX2. Results on a newer CPU may differ.
-- **Fork build, not reproducible from upstream `main`** (see above; the source is branch `repro/w7`, the sha256 of my
-  binary is from a build of the earlier ids). I did not run the binary of this report without the pool, without
-  `--batch-mtp` on the split, without `--adapt-async` beside slots or without #1190, so I make no claim about what each
-  of those adds on it; the `strata-w10` comparisons above are on the 0.1.41 stack and for two slots on two stages.
-- I did not hash the GGUF files against the Hugging Face revision. I did not hash the pack or the expert profile either.
-- **Prompt type:** the harness prompts are repeated synthetic code lines; decode and draft acceptance on real agent
-  sessions differ. My own `ab.py` prompts are also synthetic.
-- **The `ab.py` numbers** come from my script, not the harness; the two arms are identical, so they are one sample of
-  24 values, not an A/B.
-- **Front end:** the python front end is my merged tree. The harness sends single serial requests, so it does not test
-  how the front end schedules concurrent requests.
-- **The numbers in the screenshots are peak instantaneous readings** (above).
-
 ## Files
 
 - [README.md](README.md), [TRIMMED.md](TRIMMED.md), [BUILD.json](BUILD.json), [machine.txt](machine.txt),
