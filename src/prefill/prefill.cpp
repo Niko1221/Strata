@@ -681,6 +681,10 @@ struct Prefill::Impl {
     core::ExpertSource* src = nullptr;
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
+    // Temporary per-layer weights, owned by run_layer_cached; the decode cache is untouched.
+    int64_t active_layer = -1;
+    std::vector<const uint8_t*> active_experts;
+
     int64_t T = 0, T_max = 0;
     bool borrowed = false;
     cudaStream_t cs = nullptr, copy = nullptr;
@@ -1970,6 +1974,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
+    auto resident_blob = [&](int64_t l, int64_t e) -> const uint8_t* {
+        if (m.active_layer == l && m.active_experts[(size_t) e]) return m.active_experts[(size_t) e];
+        return m.host_res && m.cache && m.host_res[(size_t) l * g.n_expert + e] >= 0
+            ? m.cache->device_slot(m.host_res[(size_t) l * g.n_expert + e]) : nullptr;
+    };
+
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
@@ -2195,7 +2205,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // k lands in ring slot k % ring); a copy is issued once the entry `ring` before it is consumed (its slot's
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const strata::kernels::cpu::ExpertLayout& lay0 = strata::kernels::cpu::expert_layout();
-        const bool stream_all = m.ring > STAGE && T >= stream_all_min() && m.src != nullptr;
+        const bool stream_all = m.active_layer < 0 && m.ring > STAGE && T >= stream_all_min() && m.src != nullptr;
         // the CPU share: this chunk takes the pool if no other stage of a layer split has it now (released at the end
         // of the chunk, after the last layer's CPU thread is joined)
         struct PoolHold {
@@ -2249,7 +2259,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 seq_start[(size_t) l] = seq.size();
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
-                    if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
+                    if (resident_blob(l, e) != nullptr) continue;
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
                     int job = -1;
                     const uint8_t* b = nullptr;
@@ -2306,6 +2316,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 m.stage_live[sl] = true;
                 stats_.ms_experts_host += ms_since(th);
                 ++stats_.experts_streamed;
+                stats_.expert_h2d_bytes += bytes;
                 ++issued;
             }
         };
@@ -2353,6 +2364,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
+                    stats_.expert_h2d_bytes += bytes;
                     a_issued.store(idx + 1, std::memory_order_release);
                 }
             });
@@ -2932,7 +2944,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     b.blob[e - b.e0] = m.stage_dev[k % (size_t) m.ring];
                                     ++k;
                                 } else {                  // not streamed: resident (the walk streams all others)
-                                    b.blob[e - b.e0] = m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
+                                    b.blob[e - b.e0] = resident_blob(l, e);
                                     // counted whether routed or not (the routing stays on the GPU): at a streamed
                                     // chunk's size (>= 1024 tokens x 10 of 512) nearly every expert is routed
                                     ++stats_.experts_resident;
@@ -2974,7 +2986,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         int32_t* src_h = grp_mapped ? m.grp_host + 2 * m.grp_tk : m.src_host.data();
                         if (grp_mapped) copy_i32(m.grp_dev, m.ids, T * K, m.cs);
                         else cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
-                        const bool cpu_maybe = pool_hold.held && !stream_all && m.src != nullptr &&
+                        const bool cpu_maybe = m.active_layer < 0 && pool_hold.held && !stream_all && m.src != nullptr &&
                                                lay.native && !m.pp && !lay.fmt.empty();
                         // auto shares only while the layers that share cost less per non-resident expert than their
                         // neighbours that do not.  #1282 (RX 7900 GRE + 5700X3D): every share lost, auto's 0.47 by
@@ -3071,7 +3083,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             int64_t nstream = 0;
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                 const int32_t c = m.cnt[(size_t) e];
-                                if (c == 0 || (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0))
+                                if (c == 0 || (resident_blob(l, e) != nullptr))
                                     continue;
                                 ++nstream;
                                 // a blob the CPU reads from RAM: page-locked, or any other that is not assembled into a
@@ -3113,7 +3125,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     rows_peer += c;
                                     continue;
                                 }
-                                if (c == 0 || (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) ||
+                                if (c == 0 || (resident_blob(l, e) != nullptr) ||
                                     !m.pp->peer || !m.pp->peer->has(l, e))
                                     continue;
                                 if (rows_peer + c > m.pp->cap_rows) { ++m.pp->over_cap; continue; }
@@ -3539,7 +3551,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             std::vector<Stager::Job> js;
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
-                                if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
+                                if (resident_blob(l, e) != nullptr) continue;
                                 if (m.src->pinned(l, e)) continue;
                                 job_of[j] = (int) js.size();
                                 if (m.src->transient(l, e)) {   // CS-T: copied by the source
@@ -3555,7 +3567,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         StagerDone stager_done{stream_all ? nullptr : m.stager.get()};
                         auto stage_one = [&](size_t j) -> bool {
                             const int32_t e = order[j];
-                            const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
+                            const bool resident = resident_blob(l, e) != nullptr;
                             if (resident) return true;
                             const int sl = stage_next;
                             stage_next = (stage_next + 1) % STAGE;
@@ -3580,6 +3592,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             stage_of[j] = sl;
                             stats_.ms_experts_host += ms_since(th);
                             ++stats_.experts_streamed;
+                            stats_.expert_h2d_bytes += (size_t) lay.blob_bytes(l);
                             return true;
                         };
                         // In the streamed walk an MMQ group is gathered in ONE launch, after ONE wait on its last
@@ -3707,7 +3720,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 const int32_t e = order[j];
                                 if (stage_of[j] < 0) {
                                     ++stats_.experts_resident;
-                                    if (!compute(j, m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]), -1)) return false;
+                                    if (!compute(j, resident_blob(l, e), -1)) return false;
                                 } else {
                                     pt.mark(kPfWaitCopy, cs);
                                     cudaStreamWaitEvent(m.cs, m.copied[stage_of[j]], 0);
@@ -3744,8 +3757,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     consumed = ++k;
                                     if (!group_gather || gg_nslots == 0) give_back(consumed);   // its group was gathered
                                 } else {
-                                    const bool r0 = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
-                                    const uint8_t* bp = r0 ? m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e])
+                                    const bool r0 = resident_blob(l, e) != nullptr;
+                                    const uint8_t* bp = r0 ? resident_blob(l, e)
                                                            : (m.pp && m.pp->peer ? m.pp->peer->slot_ptr(l, e) : nullptr);   // over the cap: P2P
                                     if (bp == nullptr) { err = "prefill: an expert is neither resident, streamed nor on the peer"; return false; }
                                     ++stats_.experts_resident;
@@ -4071,7 +4084,155 @@ bool Prefill::drain_pipeline(std::string& err) {
     return ok;
 }
 
+
+// Experimental scheduling only: reuse the existing per-chunk math and hold one layer's weights.
+// Returning false with err empty is a preflight decline; no session state has changed then.
+bool Prefill::run_layer_cached(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    Impl& m = *impl_;
+    const core::OnDevice on_device(m.device);
+    const core::ModelGeometry& g = *m.g;
+    if (n <= m.T || stage_lb_ != 0 || stage_le_ != g.n_layers || next_ || helper_ || hand_in_ ||
+        m.pp || core::peer_portable() || embd_rows || m.fused_bufs || !m.src) return false;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    if (!lay.native || !mmq_plan().any) return false;
+    for (int64_t l = 0; l < g.n_layers; ++l) if (!mmq_plan().layer[(size_t) l]) return false;
+    auto setting = [](const char* key, int64_t fallback, int64_t lo, int64_t hi) {
+        const char* v = std::getenv(key);
+        return std::clamp<int64_t>(v ? std::atoll(v) : fallback, lo, hi);
+    };
+    const int64_t window = std::max<int64_t>(2 * m.T,
+        setting("STRATA_PREFILL_LAYER_CACHE_TOKENS", 8192, 1, 32768) / m.T * m.T);
+    const size_t rows_bytes = (size_t) std::min(n, window) * D * sizeof(float);
+    size_t max_blob = 0, max_layer = 0;
+    for (int64_t l = 0; l < g.n_layers; ++l) {
+        max_blob = std::max(max_blob, (size_t) lay.blob_bytes(l));
+        max_layer = std::max(max_layer, (size_t) lay.blob_bytes(l) * (size_t) g.n_expert);
+    }
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) { cudaGetLastError(); return false; }
+    const size_t margin = (size_t) setting("STRATA_PREFILL_LAYER_CACHE_MARGIN_MIB", 256, 64, 16384) << 20;
+    const size_t requested = (size_t) setting("STRATA_PREFILL_LAYER_CACHE_MIB", 1536, 0, 65536) << 20;
+    const size_t capacity = std::min({max_layer, requested, free_bytes > margin ? free_bytes - margin : 0});
+    if (capacity < max_blob) return false;
+    uint8_t* weights = nullptr;
+    float* rows = nullptr;
+    uint8_t* staging = nullptr;
+    struct Cleanup {
+        std::function<void()> f;
+        ~Cleanup() { f(); }
+    } allocation{[&] {
+        cudaStreamSynchronize(m.cs);
+        cudaStreamSynchronize(m.copy);
+        if (weights) cudaFree(weights);
+        if (rows) cudaFreeHost(rows);
+        if (staging) cudaFreeHost(staging);
+    }};
+    constexpr size_t batch = 32;
+    if (cudaMalloc((void**) &weights, capacity) != cudaSuccess ||
+        cudaMallocHost((void**) &rows, rows_bytes) != cudaSuccess ||
+        cudaMallocHost((void**) &staging, batch * max_blob) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata layer cache: allocation declined; using ordinary prefill\n");
+        return false;
+    }
+    const auto saved_callback = on_chunk;
+    const auto saved_stage_callback = on_stage_chunk;
+    const int64_t saved_lb = stage_lb_, saved_le = stage_le_;
+    Cleanup restore{[&] {
+        on_chunk = saved_callback;
+        on_stage_chunk = saved_stage_callback;
+        stage_lb_ = saved_lb;
+        stage_le_ = saved_le;
+        hand_in_ = nullptr;
+        m.active_layer = -1;
+        m.active_experts.clear();
+        checkpoint_end_ = -1;
+    }};
+    const auto started = Clock::now();
+    const double before_ms = stats_.ms_total;
+    uint64_t copied = 0;
+    std::fprintf(stderr, "strata layer cache: window %lld, chunk %lld, weight capacity %.1f MiB, residuals %.1f MiB pinned host\n",
+        (long long) window, (long long) m.T, capacity / 1048576.0, rows_bytes / 1048576.0);
+    for (int64_t start = 0; start < n; start += window) {
+        const int64_t count = std::min(window, n - start), position = pos0 + start;
+        const int32_t prev[2] = {m.ss->ple_prev[0], m.ss->ple_prev[1]};
+        const int64_t before_tokens = stats_.tokens, before_chunks = stats_.chunks;
+        checkpoint_end_ = position + count;
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            if (should_stop && should_stop()) { err = "cancelled"; return false; }
+            m.active_layer = l;
+            m.active_experts.assign((size_t) g.n_expert, nullptr);
+            const size_t bytes = (size_t) lay.blob_bytes(l);
+            size_t used = 0, pending = 0;
+            for (int64_t e = 0; e < g.n_expert && used + bytes <= capacity; ++e) {
+                if (m.host_res && m.cache && m.host_res[(size_t) l * g.n_expert + e] >= 0) continue;
+                uint8_t* host = staging + pending * max_blob;
+                if (!m.src->copy_blob(l, e, host)) { err = "layer cache: expert read failed"; return false; }
+                if (cudaMemcpyAsync(weights + used, host, bytes, cudaMemcpyHostToDevice, m.copy) != cudaSuccess) {
+                    err = "layer cache: weight upload failed"; return false;
+                }
+                m.active_experts[(size_t) e] = weights + used;
+                used += bytes;
+                copied += bytes;
+                stats_.expert_h2d_bytes += bytes;
+                ++stats_.experts_streamed;
+                if (++pending == batch) {
+                    if (cudaStreamSynchronize(m.copy) != cudaSuccess) { err = "layer cache: upload completion failed"; return false; }
+                    pending = 0;
+                    if (should_stop && should_stop()) { err = "cancelled"; return false; }
+                }
+            }
+            if (cudaStreamSynchronize(m.copy) != cudaSuccess) { err = "layer cache: upload completion failed"; return false; }
+            stage_lb_ = l;
+            stage_le_ = l + 1;
+            hand_in_ = l == 0 ? nullptr : rows;
+            m.ss->ple_prev[0] = prev[0];
+            m.ss->ple_prev[1] = prev[1];
+            on_stage_chunk = nullptr;
+            on_chunk = [&](const float* residual, int64_t t, int64_t p, std::string& why) {
+                if (l + 1 < g.n_layers) {
+                    if (cudaMemcpy(rows + (size_t) (p - position) * D, residual, (size_t) t * D * 4,
+                                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+                        why = "layer cache: residual download failed"; return false;
+                    }
+                    return true;
+                }
+                if (saved_stage_callback && p + t == checkpoint_end_ && !saved_stage_callback(p + t, why)) return false;
+                return !saved_callback || saved_callback(residual, t, p, why);
+            };
+            if (!run_impl(tokens + start, count, position, err)) {
+                if (err.empty()) err = "layer cache: prefill failed after state advancement";
+                return false;
+            }
+        }
+        stats_.tokens = before_tokens + count;
+        stats_.chunks = before_chunks + (count + m.T - 1) / m.T;
+    }
+    stats_.ms_total = before_ms + ms_since(started);
+    std::fprintf(stderr, "strata layer cache: prefetched %llu bytes; %.1f ms total\n",
+        (unsigned long long) copied, stats_.ms_total - before_ms);
+    return true;
+}
+
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    err.clear();
+    const uint64_t prior_bytes = stats_.expert_h2d_bytes;
+    struct TrafficReport {
+        std::function<void()> f;
+        ~TrafficReport() { f(); }
+    } report{[&] {
+        if (std::getenv("STRATA_PREFILL_ROOFLINE"))
+            std::fprintf(stderr, "strata prefill traffic: H2D_bytes %llu\n",
+                (unsigned long long) (stats_.expert_h2d_bytes - prior_bytes));
+    }};
+    if (const char* option = std::getenv("STRATA_PREFILL_LAYER_CACHE")) {
+        if (std::atoi(option) != 0) {
+            if (run_layer_cached(tokens, n, pos0, err)) return true;
+            if (!err.empty()) return false;
+            std::fprintf(stderr, "strata layer cache: unsupported or insufficient space; ordinary prefill\n");
+        }
+    }
+
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;

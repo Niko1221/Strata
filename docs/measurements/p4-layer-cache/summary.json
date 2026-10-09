@@ -1,0 +1,156 @@
+{
+  "base": "378f3f58",
+  "scope": "one Tesla P4, IQ3_XXS, CUDA; local extension of PR #1667",
+  "steady_state_4k": {
+    "off": {
+      "rates": [
+        107.88174096266543,
+        108.38530765180163
+      ],
+      "median_tps": 108.13352430723353,
+      "prompt_ms": [
+        37967.5,
+        37791.1
+      ]
+    },
+    "on": {
+      "rates": [
+        115.44727362920455,
+        116.18473827231934
+      ],
+      "median_tps": 115.81600595076193,
+      "prompt_ms": [
+        35479.4,
+        35254.2
+      ]
+    },
+    "throughput_gain_percent": 7.104625223996774
+  },
+  "initial_auto": [
+    {
+      "tokens": 4096,
+      "off": {
+        "tps": 108.03739106581418,
+        "prompt_ms": 37912.8,
+        "h2d_bytes": 105829222400
+      },
+      "on": {
+        "tps": 114.70465511592283,
+        "prompt_ms": 35709.1,
+        "h2d_bytes": 53896192000
+      },
+      "throughput_gain_percent": 6.171256066380848
+    },
+    {
+      "tokens": 8192,
+      "off": {
+        "tps": 115.07929261073502,
+        "prompt_ms": 71185.7,
+        "h2d_bytes": 193275468800
+      },
+      "on": {
+        "tps": 122.61068562901586,
+        "prompt_ms": 66813.1,
+        "h2d_bytes": 98652032000
+      },
+      "throughput_gain_percent": 6.544524950945241
+    }
+  ],
+  "checkpoint_rows": [
+    {
+      "label": "fresh-0",
+      "correct": true,
+      "cached_tokens": 0,
+      "disk_restores": 0,
+      "ttft_s": 54.98561882111244,
+      "total_s": 64.54473874811083,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300"
+    },
+    {
+      "label": "switch-0",
+      "correct": true,
+      "cached_tokens": 0,
+      "disk_restores": 0,
+      "ttft_s": 3.1704570869915187,
+      "total_s": 8.20523269707337,
+      "text": "ready"
+    },
+    {
+      "label": "reuse-0",
+      "correct": true,
+      "cached_tokens": 4089,
+      "disk_restores": 1,
+      "ttft_s": 28.577883719000965,
+      "total_s": 38.737012312049046,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300"
+    },
+    {
+      "label": "switch-before-branch",
+      "correct": true,
+      "cached_tokens": 0,
+      "disk_restores": 0,
+      "ttft_s": 3.136467190925032,
+      "total_s": 7.828412285074592,
+      "text": "ready"
+    },
+    {
+      "label": "branch-before-answer",
+      "correct": true,
+      "cached_tokens": 4089,
+      "disk_restores": 1,
+      "ttft_s": 4.40792102413252,
+      "total_s": 13.977635553106666,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300"
+    },
+    {
+      "label": "ordinary-before-stop",
+      "correct": true,
+      "cached_tokens": 10,
+      "disk_restores": 1,
+      "ttft_s": 4.004681742051616,
+      "total_s": 9.29612474096939,
+      "text": "ready"
+    },
+    {
+      "label": "protected-restart",
+      "correct": true,
+      "cached_tokens": 4089,
+      "disk_restores": 1,
+      "ttft_s": 29.554187305038795,
+      "total_s": 39.56138050206937,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300"
+    },
+    {
+      "label": "deleted-cache-replay",
+      "correct": true,
+      "cached_tokens": 0,
+      "disk_restores": 0,
+      "ttft_s": 78.67343152104877,
+      "total_s": 88.50702914316207,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300"
+    }
+  ],
+  "cancellation": {
+    "output": [],
+    "timing": {
+      "generated": 0,
+      "prompt_tokens": 4096,
+      "prompt_ms": 2403.9,
+      "decode_ms": 0.0,
+      "finish": "cancel",
+      "drafts_accepted": 0,
+      "drafts_offered": 0,
+      "reused": 0,
+      "hits": 0,
+      "lookups": 0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0,
+      "prompt_read": 0,
+      "offloaded": 0
+    },
+    "wall_s": 2.406459402060136,
+    "recovery_output": [27775]
+  },
+  "local_commit": "2d2096c11b84d0570073c6d7ef11557005a0fd33"
+}

@@ -7313,7 +7313,7 @@ int main(int argc, char** argv) {
             const bool tail_checkpoint = o.prompt_cache_tail && o.prompt_cache > 0 && o.prompt_cache_every > 0 &&
                 !multi_gpu && !pp_tail_saved && pp_total - done > std::max<int64_t>(1, o.short_read) &&
                 pp_total - done <= T;   // this chunk's real size (--prefill auto chunks differ from o.prefill_chunk)
-            if (periodic_checkpoint || tail_checkpoint) {
+            if (sp.checkpoint_ready(done) && (periodic_checkpoint || tail_checkpoint)) {
                 bool saved = false;
                 if (multi_gpu) {   // the stages' parts, saved when each of them read this chunk
                     std::vector<ConvCheckpoint> parts;
