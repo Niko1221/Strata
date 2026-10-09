@@ -813,3 +813,9 @@ the IQ-quant experts, and were not ported.
 | decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle |
 | prefill | 149 tok/s on a 2,701-token prompt; 424 tok/s on a 104,798-token prompt at 131k context |
 | quality | correct code on every test; matches the NVIDIA path token for token in spirit, not measured |
+
+## Arc A770 (DG2, 16 GB)
+
+The port also runs on an Arc A770 (an older, 16 GB Alchemist card on the `xe` driver). What differs from the B70, how it was
+brought up, the measurements and the bugs found are in [INTEL_A770.md](INTEL_A770.md); the driver, runtime and compiler issues are
+catalogued in [INTEL_A770_ISSUES.md](INTEL_A770_ISSUES.md).

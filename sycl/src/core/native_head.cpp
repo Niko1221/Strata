@@ -1,5 +1,6 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include <vector>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/native_head.hpp"
@@ -42,9 +43,11 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
             err = "native head: expected a natively supported output.weight with the canonical head dimensions";
             return false;
         }
-        const uint64_t bytes = strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
+        const uint64_t file_bytes = strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
+        const int serving = strata::kernels::native_mmvq_serving_type((int) tensor->type);   // may be a repacked layout
+        const uint64_t bytes = strata::kernels::native_mmvq_weight_bytes(serving, (int) n_in, (int) n_out);
         const uint64_t payload = gguf.file_size() - gguf.data_start();
-        if (tensor->offset > payload || bytes > payload - tensor->offset) {
+        if (tensor->offset > payload || file_bytes > payload - tensor->offset) {
             err = "native head: truncated output.weight payload";
             return false;
         }
@@ -59,11 +62,16 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
                     strata::kernels::native_q8_1_bytes((int)n_in, 1),
                     dpct::get_in_order_queue()));
         strata::platform::advise_willneed(gguf.tensor_data(*tensor), bytes);
-        if (status == 0)
-            status = DPCT_CHECK_ERROR(
-                dpct::get_in_order_queue()
-                    .memcpy(weights, gguf.tensor_data(*tensor), bytes)
-                    .wait());
+        if (status == 0) {
+            std::vector<uint8_t> packed;
+            const void* source = gguf.tensor_data(*tensor);
+            if (serving != (int) tensor->type) {
+                packed.resize(bytes);
+                strata::kernels::native_mmvq_pack(serving, source, (int) n_in, (int) n_out, packed.data());
+                source = packed.data();
+            }
+            status = DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(weights, source, bytes).wait());
+        }
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
@@ -88,7 +96,7 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         bytes_ = bytes;
         n_in_ = (int) n_in;
         n_out_ = (int) n_out;
-        type_ = (int) tensor->type;
+        type_ = serving;
         if (type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
             strata::kernels::native_q6_k_pack(weights_, n_in_, n_out_, "output head");
         return true;

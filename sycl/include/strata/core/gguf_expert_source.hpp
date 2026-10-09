@@ -69,10 +69,10 @@ private:
     std::mutex mu_;
     int64_t n_layers_ = 0, n_expert_ = 0;
     int64_t reads_ = 0;
-    uint8_t* mirror_ = nullptr;                    ///< USM host (pinned, device-readable)
+    std::vector<uint8_t*> mirror_chunks_;          ///< USM host (pinned, device-readable); one allocation each, a driver caps those
     uint64_t mirror_bytes_ = 0;
-    std::vector<int64_t> mirror_off_;              ///< per (layer, expert): offset in mirror_, -1 = not mirrored
-    std::vector<int64_t> layer_first_;             ///< per layer: offset of its first mirrored blob, -1 = none
+    std::vector<const uint8_t*> mirror_ptr_;       ///< per (layer, expert): its blob in a chunk, nullptr = not mirrored
+    std::vector<const uint8_t*> layer_first_;      ///< per layer: its first mirrored blob, nullptr = none
 };
 
 }  // namespace strata::core

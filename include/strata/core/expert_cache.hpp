@@ -22,6 +22,8 @@
 // (Written when nothing consumed the slots yet and `--expert-cache` defaulted to 0; setup's configs use `auto`.)
 #pragma once
 
+#include "strata/core/expert_cache_layout.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -93,8 +95,20 @@ public:
     /// Plan v0.3 P6: slots of the given sizes, back to back (a native pack's blobs differ per layer, and a
     /// profile-filled tier never moves an expert to another layer's slot, so each slot keeps its first size).
     bool open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
-    /// Byte offset of each slot in the arena (null for uniform slots).
+    /// Byte offset of each slot; the final entry is the total (null for forward uniform slots).
     const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
+    const uint64_t* device_slot_offsets() const { return off_device_; }
+    bool reversed() const { return reversed_; }
+    uint8_t* device_base() { return base_; }
+    const uint8_t* device_base() const { return base_; }
+    /// The coldest slot suffix; tail_slots returns slots() + 1 when the reversed loan exceeds 3.9 GiB.
+    uint64_t tail_bytes(int64_t first) const {
+        return detail::cache_tail_bytes(slots(), (uint64_t) blob_, slot_offsets(), reversed_, first);
+    }
+    int64_t tail_slots(uint64_t need) const {
+        return detail::cache_tail_slots(slots(), (uint64_t) blob_, slot_offsets(), reversed_, need);
+    }
+    uint8_t* tail_base(int32_t first) { return device_slot(reversed_ ? (int32_t) (slots() - 1) : first); }
     void close();
 
     bool valid() const { return base_ != nullptr; }
@@ -210,12 +224,19 @@ public:
     uint64_t slot_offset(int64_t s) const { return off_.empty() ? (uint64_t) s * (uint64_t) blob_ : off_[(size_t) s]; }
 
 private:
+    bool open_storage(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes, std::string& err);
+    bool upload_offsets(std::string& err);
+    uint64_t* off_device_ = nullptr;
+    bool reversed_ = false;
 #if defined(STRATA_USE_HIP)
     bool ensure_blocking_staging(std::size_t bytes, std::string& err);
     uint8_t* blocking_staging_ = nullptr;
     std::size_t blocking_staging_bytes_ = 0;
 #endif
-    int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
+    int64_t slot_end(int64_t n) const {
+        if (off_.empty()) return n * blob_;
+        return (int64_t) detail::cache_prefix_bytes(slots_, off_.data(), reversed_, n);
+    }
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();
     uint8_t* base_ = nullptr;
@@ -238,7 +259,7 @@ private:
     /// pre-existing path is untouched.
     bool per_layer_ = false;
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
-    std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
+    std::vector<uint64_t> off_;         ///< slot offsets and total (slots + 1 entries) when sized or reversed
     int64_t admitted_ = 0;
 };
 

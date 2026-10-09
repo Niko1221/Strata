@@ -420,7 +420,8 @@ struct TokenGraph {
 struct TokenHits {
     const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert]
     int64_t n_expert = 0;
-    const uint8_t* cache_base = nullptr; ///< slot 0 of the VRAM expert arena
+    const uint8_t* cache_base = nullptr; ///< allocation base of the VRAM expert arena
+    const uint64_t* slot_off = nullptr;  ///< device offsets, null for uniform forward slots
     int64_t blob = 0;                    ///< bytes per slot
     int32_t* d_slot = nullptr;           ///< device, k entries
     int32_t* d_dst = nullptr;            ///< device, k entries

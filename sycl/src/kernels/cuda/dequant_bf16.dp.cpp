@@ -153,8 +153,8 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             const int nib = hi ? (ql[l] >> 4) : (ql[l] & 0xF);
             put(out, l, d1 * (float) (nib + ((qh[l] & u) ? 16 : 0)) - m1);
         }
-    } else if constexpr (TYPE == 14) {                             // Q6_K: ql[128] qh[64] scales[16] d
-        const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 210;
+    } else if constexpr (TYPE == 14 || TYPE == 114) {              // Q6_K: ql[128] qh[64] scales[16] d (114: blocks padded to 224)
+        const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * (TYPE == 14 ? 210 : 224);
         const int gi = gi_in_row % 8, n = gi / 4, qu = gi % 4;
         const uint8_t* ql = b + 64 * n;
         const uint8_t* qh = b + 128 + 32 * n;
@@ -210,6 +210,7 @@ bool geometry(int type, int& block_elems, int& block_bytes) {
     case 12: block_elems = 256; block_bytes = 144; return true;
     case 13: block_elems = 256; block_bytes = 176; return true;
     case 14: block_elems = 256; block_bytes = 210; return true;
+    case 114: block_elems = 256; block_bytes = 224; return true;
     case 23: block_elems = 256; block_bytes = 136; return true;
     case 42: block_elems = 64; block_bytes = 18; return true;
     default: return false;
@@ -264,6 +265,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     case 12: STRATA_DQ(12);
     case 13: STRATA_DQ(13);
     case 14: STRATA_DQ(14);
+    case 114: STRATA_DQ(114);
     case 20: STRATA_DQ(20);
     case 23: STRATA_DQ(23);
     case 42: STRATA_DQ(42);

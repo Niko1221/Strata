@@ -21,6 +21,8 @@
 #include <sstream>
 #include <stack>
 #include <sycl/sycl.hpp>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
+#include <level_zero/zes_api.h>
 #include <thread>
 #include <vector>
 #if defined(__linux__)
@@ -527,14 +529,39 @@ public:
 
   int get_max_pitch() const { return INT_MAX; }
 
+  bool sysman_free_memory(size_t &free_memory) {
+    if (get_backend() != sycl::backend::ext_oneapi_level_zero) return false;
+    static const bool sysman_up = zesInit(0) == ZE_RESULT_SUCCESS;
+    if (!sysman_up) return false;
+    auto sysman_dev = reinterpret_cast<zes_device_handle_t>(
+        sycl::get_native<sycl::backend::ext_oneapi_level_zero>(static_cast<const sycl::device &>(*this)));
+    uint32_t n_modules = 0;
+    if (zesDeviceEnumMemoryModules(sysman_dev, &n_modules, nullptr) != ZE_RESULT_SUCCESS || n_modules == 0) return false;
+    std::vector<zes_mem_handle_t> modules(n_modules);
+    if (zesDeviceEnumMemoryModules(sysman_dev, &n_modules, modules.data()) != ZE_RESULT_SUCCESS) return false;
+    for (auto module : modules) {
+      zes_mem_properties_t props{ZES_STRUCTURE_TYPE_MEM_PROPERTIES};
+      zes_mem_state_t state{ZES_STRUCTURE_TYPE_MEM_STATE};
+      if (zesMemoryGetProperties(module, &props) != ZE_RESULT_SUCCESS || props.location != ZES_MEM_LOC_DEVICE) continue;
+      if (zesMemoryGetState(module, &state) != ZE_RESULT_SUCCESS) continue;
+      free_memory = state.free;
+      return true;
+    }
+    return false;
+  }
+
   /// Get the number of bytes of free and total memory on the SYCL device.
   /// \param [out] free_memory The number of bytes of free memory on the SYCL device.
   /// \param [out] total_memory The number of bytes of total memory on the SYCL device.
   void get_memory_info(size_t &free_memory, size_t &total_memory) {
 #if (defined(__SYCL_COMPILER_VERSION) && __SYCL_COMPILER_VERSION >= 20221105)
     if (!has(sycl::aspect::ext_intel_free_memory)) {
-      std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;
-      free_memory = 0;
+      // The oneAPI Level Zero adapter reports UR_RESULT_ERROR_UNINITIALIZED for free memory on the xe driver (Arc A-series)
+      // although Sysman itself answers: ask it directly.
+      if (!sysman_free_memory(free_memory)) {
+        std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;
+        free_memory = 0;
+      }
     } else {
       free_memory = get_info<sycl::ext::intel::info::device::free_memory>();
     }

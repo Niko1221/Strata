@@ -13,6 +13,7 @@
 #include "strata/platform/memory.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
+#include "strata/kernels/cache_hit.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
@@ -2920,10 +2921,11 @@ void expert_hit_run(void *user, void *stream, HitPhase phase,
                                               cs);
         if (d.hit_cpu_order)
             strata::kernels::moe_hit_grouped_s2_cpu_order(d.cache_base, d.d_slot, d.d_dst, d.n_hits,
-                d.cache_blob, d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
+                d.cache_blob, d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale,
+                nullptr, d.cache->device_slot_offsets());
         else
             strata::kernels::moe_hit_grouped_s2(d.cache_base, d.d_slot, d.d_dst, d.n_hits, d.cache_blob,
-                d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale);
+                d.x_q8_0_hit, d.hit_scratch, d.hit_out, cs, d.x_q8_0_hit_scale, d.cache->device_slot_offsets());
         d.hit_pending = true;
         if (d.hit_done != nullptr)
             dpct::sync_barrier((dpct::event_ptr)d.hit_done, cs);

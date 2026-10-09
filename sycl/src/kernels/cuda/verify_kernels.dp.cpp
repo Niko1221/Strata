@@ -6,6 +6,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_wait_timeouts.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/resident_plan_mirror.hpp"
@@ -2045,8 +2046,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __dpct_inline__ void wait_flag_ge_kernel(const volatile uint32_t *flag,
-                                         uint32_t value, uint32_t spin_max) {
-    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+                                         uint32_t value, uint32_t *timeouts, uint32_t spin_max) {
+    uint32_t spin = 0;
+    for (; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (spin == spin_max && strata::sys_load(flag) < value) strata::sys_atomic_u32(*timeouts).fetch_add(1u);
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2077,7 +2080,7 @@ resident_plan_kernel(const int32_t *__restrict__ ids, int n, int k,
                      const unsigned long long *slot_off, long long blob,
                      int32_t *__restrict__ pl, long long capx, uint32_t *skip,
                      uint32_t ring, const unsigned long long *__restrict__ mir,
-                     volatile uint32_t *plan_err) {
+                     volatile uint32_t *plan_err, uint32_t *use) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t[kResidentPlanMax]>(
@@ -2101,6 +2104,9 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         eid = ids[tid];
         s_ids[tid] = eid;
         slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
+        if (use != nullptr && eid >= 0 && eid < n_expert)   // how often each expert is routed to: the adaptive tier's input without a host pool
+            sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>(use[eid]).fetch_add(1u);
         if (slot < 0 && eid >= 0 && eid < n_expert && mir != nullptr) maddr = mir[eid];
         if (slot < 0 && maddr == 0)
             dpct::atomic_fetch_or<sycl::access::address_space::generic_space>(
@@ -2309,9 +2315,11 @@ auto &s_id = *sycl::ext::oneapi::group_local_memory_for_overwrite<int32_t[128]>(
 }
 __dpct_inline__ void wait_flag_ge_or_kernel(const volatile uint32_t *flag,
                                             uint32_t value,
-                                            const volatile uint32_t *skip, uint32_t spin_max) {
+                                            const volatile uint32_t *skip, uint32_t *timeouts, uint32_t spin_max) {
     if (strata::sys_load(skip) == value) return;
-    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    uint32_t spin = 0;
+    for (; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (spin == spin_max && strata::sys_load(flag) < value) strata::sys_atomic_u32(*timeouts).fetch_add(1u);
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2353,7 +2361,9 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+uint32_t* g_usage_table = nullptr;
 }
+void resident_plan_set_usage(uint32_t* usage_table) { g_usage_table = usage_table; }
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
@@ -2364,6 +2374,9 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
     if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
         mir = g_mirror_table + (res_layer - g_mirror_res);
+    uint32_t* use = nullptr;   // SYCL port: the layer's slice of the usage counters, if they are on
+    if (g_usage_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
+        use = g_usage_table + (res_layer - g_mirror_res);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2377,12 +2390,13 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                     [[sycl::reqd_sub_group_size(32)]] {
                         resident_plan_kernel(
                             ids, n_entries, k, res_layer, n_expert, cache_base,
-                            slot_off, blob, plan, capx, skip, ring, mir, plan_err);
+                            slot_off, blob, plan, capx, skip, ring, mir, plan_err, use);
                     });
     }
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
+    uint32_t* const timeouts = strata::wait_timeout_registry().counter(flag);
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2393,7 +2407,7 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
                 dpct_kernel_name<class wait_flag_ge_or_kernel_2b2de3>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_or_kernel(flag, value, skip, spin_max);
+                    wait_flag_ge_or_kernel(flag, value, skip, timeouts, spin_max);
                 });
     }
     check("wait_flag_ge_or");
@@ -2441,6 +2455,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 }
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
+    uint32_t* const timeouts = strata::wait_timeout_registry().counter(flag);
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2450,7 +2465,7 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
             ->parallel_for<dpct_kernel_name<class wait_flag_ge_kernel_d7debf>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_kernel(flag, value, spin_max);
+                    wait_flag_ge_kernel(flag, value, timeouts, spin_max);
                 });
     }
     check("wait_flag_ge");

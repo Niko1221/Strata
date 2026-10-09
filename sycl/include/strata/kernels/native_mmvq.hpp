@@ -130,6 +130,12 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 // capability query returns false.
 bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
+
+// STRATA_Q6K_REPACK=1 opts into tag 114: Q6_K blocks padded from 210 to 224 bytes.
+// The serving tag controls allocation and dispatch; packing converts GGUF bytes on the host.
+inline constexpr int kNativeQ6KStride224 = 114;
+int native_mmvq_serving_type(int ggml_type);
+void native_mmvq_pack(int serving_type, const void* gguf_bytes, int n_in, int n_out, void* packed);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
 /// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,

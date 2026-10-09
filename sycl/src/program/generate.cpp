@@ -4460,7 +4460,7 @@ int main(int argc, char **argv) try {
                 return 1;
             }
             if (!auto_cache || attempt - failed >= 6) break;
-            if (uint8_t* slot0 = xcache.device_slot(0)) strata::big_fill_zero(dpct::get_in_order_queue(), slot0, (size_t)xcache.bytes());
+            if (uint8_t* base = xcache.device_base()) strata::big_fill_zero(dpct::get_in_order_queue(), base, (size_t)xcache.bytes());
             dpct::get_current_device().queues_wait_and_throw();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
@@ -4485,6 +4485,8 @@ int main(int argc, char **argv) try {
     if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
                      (long long) xcache.slots(), xcache.gib());
+        if (xcache.reversed())
+            std::fprintf(stderr, "strata generate: reversed cache layout: coldest slots at offset zero, prompt loans capped at 3.9 GiB\n");
         mem_mark("opening the expert cache");
         xcache.set_per_layer_admission(o.expert_cache_per_layer);
         // Round 328 warned here that the GPU hit path was wrong (tokens diverged from a cache-off run from
@@ -4708,6 +4710,17 @@ int main(int argc, char **argv) try {
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+        // An adaptive swap evicts a resident expert into the "missing" set. An evicted expert that is not mirrored cannot be
+        // reached by the GPU on its own, the device plan then waits for the host to compute it, and on the A770 the
+        // device-to-host handshake does not hold: the GPU's bounded wait gives up and the window carries on with garbage
+        // that the recurrent state keeps for good. So when swaps are on, mirror the resident experts too, after the
+        // misses and within the same cap (STRATA_MIRROR_ALL=1 forces it; STRATA_MIRROR_ALL=0 leaves it off).
+        const size_t n_miss = miss.size();
+        const char* mirror_all = std::getenv("STRATA_MIRROR_ALL");
+        if (mirror_all != nullptr ? mirror_all[0] != '0' : (o.adapt_every > 0 && o.adapt_swaps > 0)) {
+            for (const auto& pr : profile)
+                if (xcache.slot_of(pr.first, pr.second) != strata::core::kNotResident) miss.push_back({pr.first, pr.second});
+        }
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -4732,6 +4745,7 @@ int main(int argc, char **argv) try {
                 dpct::get_in_order_queue().memcpy(mirror_table_d, tab.data(), tab.size() * sizeof(unsigned long long)).wait();
             }
         }
+        miss.resize(n_miss);   // the tally below is of the experts that really are missing from VRAM
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
         if (unmirrored_misses > 0 && [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }()) {
@@ -4739,6 +4753,23 @@ int main(int argc, char **argv) try {
                                  "the device plan cannot run them and generation would lack a safe host fallback - raise "
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
             return 2;
+        }
+    }
+
+    const bool verify_no_host = std::getenv("STRATA_VERIFY_NO_HOST") != nullptr;
+    auto swap_victim_eligible = [&](int64_t layer, int64_t expert) {
+        return !verify_no_host || (srcp->pinned(layer, expert) && srcp->device_alias(layer, expert) != nullptr);
+    };
+    if (verify_no_host && o.adapt_every > 0 && o.adapt_swaps > 0) {
+        int64_t mirrored = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                if (swap_victim_eligible(l, e)) ++mirrored;
+        if (mirrored != g.n_layers * g.n_expert) {
+            std::fprintf(stderr, "strata generate: STRATA_VERIFY_NO_HOST: only %lld of %lld experts have GPU-readable "
+                                 "host mirrors; disabling adaptive swaps to keep evicted experts readable\n",
+                         (long long) mirrored, (long long) (g.n_layers * g.n_expert));
+            o.adapt_swaps = 0;
         }
     }
 
@@ -5021,7 +5052,7 @@ int main(int argc, char **argv) try {
         }
         drive.d.cache = &xcache;
         drive.d.cache_stream = main_cs;
-        drive.d.cache_base = (const uint8_t*) xcache.device_slot(0);
+        drive.d.cache_base = (const uint8_t*) xcache.device_base();
         drive.d.cache_blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         drive.d.cache_slot_off = xcache.slot_offsets();
         drive.d.hit_scratch = hit_scratch;
@@ -5702,6 +5733,7 @@ int main(int argc, char **argv) try {
             }
         }
         thits.cache_base = drive.d.cache_base;
+        thits.slot_off = xcache.device_slot_offsets();
         thits.blob = drive.d.cache_blob;
         thits.d_slot = drive.d.d_slot;
         thits.d_dst = drive.d.d_dst;
@@ -5775,26 +5807,15 @@ int main(int argc, char **argv) try {
         for (const int32_t r : host_res) nonres += r < 0;
         strata::prefill::set_nonresident_share(host_res.empty() ? 1.0 : (double) nonres / (double) host_res.size());
     }
-    // bytes -> slots for CUDA0's cache: exact when it knows its per-slot offsets (a native pack's blobs differ
-    // per layer), otherwise max_blob each.
     auto slots_from_bytes = [&](uint64_t need) -> int64_t {
-        const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-        int64_t k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
-        if (xcache.slot_offsets() != nullptr) {   // sized slots: take slots from the end until they hold `need`
-            k = 0;
-            while (k < xcache.slots() &&
-                   (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]) < need) ++k;
-        }
-        return k;
+        return xcache.tail_slots(need);
     };
     // ...and its inverse, for the ring's room: the bytes the cache's last `k` slots hold.  k can arrive <= 0: the
     // caller's lend budget is `min(slots - 128, pct * slots / 100)` and goes negative on a cache smaller than 128
     // slots, where `slots - k` would index slot_offsets() past its end.  Such a cache lends nothing, so say so.
     auto bytes_from_slots = [&](int64_t k) -> uint64_t {
         if (k <= 0) return 0;
-        if (xcache.slot_offsets() != nullptr)
-            return (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[xcache.slots() - k]);
-        return (uint64_t) k * (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+        return xcache.tail_bytes((int32_t) (xcache.slots() - k));
     };
     auto lend_slots = [&](int64_t c) -> int64_t {
         return slots_from_bytes(strata::prefill::Prefill::bytes_needed(g, ss, c));
@@ -6367,26 +6388,14 @@ int main(int argc, char **argv) try {
             int64_t lent_chunk = 0;
             std::vector<std::pair<int32_t, int32_t>> lent;
         };
-        // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
-        // per layer), otherwise max_blob each.
         auto cache_slots_for = [&](const strata::core::ExpertCache& xc, uint64_t need) -> int64_t {
-            if (xc.slot_offsets() != nullptr) {   // sized slots: from the end until they hold `need`
-                int64_t k = 0;
-                while (k < xc.slots() &&
-                       (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[xc.slots() - k]) < need) ++k;
-                return k;
-            }
-            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-            return (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
+            return xc.tail_slots(need);
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
             return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c));
         };
         auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
-            strata::core::ExpertCache& xc = *p.cache;
-            return xc.slot_offsets() ? (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[first])
-                                     : (uint64_t) (xc.slots() - first) *
-                                           (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+            return p.cache->tail_bytes(first);
         };
         // #340: a layer split whose caches already hold most experts streams few of them through the prompt path, so
         // the 384-slot ring (sized for a card that streams nearly every expert of a chunk) only makes every stage's
@@ -6605,7 +6614,7 @@ int main(int argc, char **argv) try {
                     }
                 }
                 lend_first = pf_parts[0].first;
-                borrow = lend_first >= 0 ? xcache.device_slot(lend_first) : nullptr;
+                borrow = lend_first >= 0 ? xcache.tail_base(lend_first) : nullptr;
                 borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             } else if (o.prefill_auto) {
                 o.prefill_chunk = 1024;   // nothing lendable: small buffers of its own
@@ -6631,6 +6640,14 @@ int main(int argc, char **argv) try {
             if (borrow != nullptr)
                 std::fprintf(stderr, "strata serve: the prompt path borrows %lld CUDA0 cache slots (%.2f GiB)\n",
                              (long long) (xcache.slots() - lend_first), (double) borrow_bytes / 1073741824.0);
+            for (const PfPart& p : pf_parts) {
+                if (p.first < 0) continue;
+                const uint64_t offset = (uint64_t) (p.cache->tail_base(p.first) - p.cache->device_base());
+                if (offset + part_bytes(p, p.first) > strata::core::detail::kCacheGemmLimit)
+                    std::fprintf(stderr, "strata serve: WARNING: CUDA%d borrowed prompt region extends past 4 GiB "
+                                         "in the expert allocation; oneMKL bf16/f16 inputs there return zeros. "
+                                         "Use STRATA_CACHE_REVERSE=1 or --no-prefill-borrow\n", p.dev < 0 ? 0 : p.dev);
+            }
             for (size_t i = 1; i < pf_parts.size(); ++i)   // one loan per stage, from that stage's own cache
                 if (pf_parts[i].first >= 0) std::fprintf(stderr, "strata serve:   CUDA%d prompt path borrows %lld of its %lld slots (%.2f GiB)\n",
                              pf_parts[i].dev, (long long) (pf_parts[i].cache->slots() - pf_parts[i].first),
@@ -6654,7 +6671,7 @@ int main(int argc, char **argv) try {
                 uint64_t sbb = 0;
                 // `first < 0`: no loan was taken (nothing was lendable), so this stage allocates its own buffers
                 if (i + 1 < pf_parts.size() && pf_parts[i + 1].first >= 0) {
-                    sb = st.cache.device_slot(pf_parts[i + 1].first);
+                    sb = st.cache.tail_base(pf_parts[i + 1].first);
                     sbb = part_bytes(pf_parts[i + 1], pf_parts[i + 1].first);
                 }
                 if (!st.sp.init(st.wt, g, st.ss, srcp, &st.cache, host_res.data(), o.prefill_chunk, (void*) st.stream,
@@ -6756,7 +6773,7 @@ int main(int argc, char **argv) try {
                             p.first_now = p.first;
                         }
                     lend_first = pf_parts[0].first;
-                    borrow = lend_first >= 0 ? xcache.device_slot(lend_first) : nullptr;
+                    borrow = lend_first >= 0 ? xcache.tail_base(lend_first) : nullptr;
                     borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
                 }
                 err.clear();
@@ -6849,6 +6866,25 @@ int main(int argc, char **argv) try {
         vh.d_res = thits.d_res;
         if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
+        // GPU-only runs (STRATA_VERIFY_NO_HOST) have no host pool to see the routing, so the adaptive tier would never
+        // have anything to rank: the plan kernel counts the routed experts on the device instead
+        uint32_t* usage_d = nullptr;
+        const size_t usage_n = (size_t) (g.n_layers * g.n_expert);
+        if (mirror_table_d && o.adapt_every > 0 && o.adapt_swaps > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr &&
+            std::getenv("STRATA_VERIFY_DEVICE_PLAN") != nullptr) {
+            usage_d = sycl::malloc_device<uint32_t>(usage_n, dpct::get_in_order_queue());
+            if (usage_d != nullptr) {
+                dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+                strata::kernels::resident_plan_set_usage(usage_d);
+            }
+        }
+        auto fold_device_usage = [&]() {   // the counters since the last call, into the adaptive tier's usage
+            if (usage_d == nullptr || drive.d.usage.size() != usage_n) return;
+            std::vector<uint32_t> cnt(usage_n);
+            dpct::get_in_order_queue().memcpy(cnt.data(), usage_d, usage_n * 4).wait();
+            dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+            for (size_t i = 0; i < usage_n; ++i) drive.d.usage[i] += (float) cnt[i];
+        };
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
@@ -6947,13 +6983,13 @@ int main(int argc, char **argv) try {
                     strata::core::VerifyHits vs;
                     vs.d_res = gs.d_res;
                     vs.h_res = host_res.empty() ? nullptr : host_res.data();
-                    vs.cache_base = gs.cache.device_slot(0);
+                    vs.cache_base = gs.cache.device_base();
                     vs.blob = thits.blob;
                     vs.slot_off = gs.cache.slot_offsets();
                     vs.n_slots = gs.cache.slots();
                     gs.ver.set_remote_expert_opt(remote_opt.get());
                     ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, std::max(o.spec, o.batch), err);
-                    split_drive.cache_base[st] = gs.cache.device_slot(0);
+                    split_drive.cache_base[st] = gs.cache.device_base();
                     split_drive.cache_slot_off[st] = gs.cache.slot_offsets();
                     split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
                 }
@@ -7717,7 +7753,7 @@ int main(int argc, char **argv) try {
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else if (swap_victim_eligible(l, e)) vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -9998,7 +10034,7 @@ int main(int argc, char **argv) try {
                     const strata::core::OnDevice on(p.dev);
                     const int32_t first = std::max<int32_t>(p.first, (int32_t) (p.cache->slots() - part_slots(p, want)));
                     if (want != p.sp->chunk() || first != p.first_now) {
-                        if (!p.sp->relayout(want, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
+                        if (!p.sp->relayout(want, p.cache->tail_base(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
@@ -11084,8 +11120,10 @@ int main(int argc, char **argv) try {
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
-                if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
+                if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0) {
+                    fold_device_usage();
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+                }
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
@@ -11537,7 +11575,6 @@ int main(int argc, char **argv) try {
             } else if (chunk != o.prefill_chunk) {
                 k = 0;                                 // a fixed chunk that does not fit: its own buffers, as before
             }
-            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
             if (k > 0) {   // the lent slots are refilled after the prompt
                 const int32_t first = (int32_t) (xcache.slots() - k);
                 // the elastic K/V first: its hot experts move into slots of the loan, which are refilled after it
@@ -11551,9 +11588,8 @@ int main(int argc, char **argv) try {
                         host_res[i] = strata::core::kNotResident;
                     }
                 res_put(d_res);
-                borrow = xcache.device_slot(first);
-                borrow_bytes = xcache.slot_offsets() ? (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[first])
-                                                     : (uint64_t) k * (uint64_t) blob;
+                borrow = xcache.tail_base(first);
+                borrow_bytes = xcache.tail_bytes(first);
                 std::fprintf(stderr, "strata generate: prompt path borrows %lld cache slots (%.2f GiB)\n", (long long) k,
                              (double) borrow_bytes / 1073741824.0);
             }
@@ -11948,6 +11984,25 @@ int main(int argc, char **argv) try {
         vh.d_res = thits.d_res;
         if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
+        // GPU-only runs (STRATA_VERIFY_NO_HOST) have no host pool to see the routing, so the adaptive tier would never
+        // have anything to rank: the plan kernel counts the routed experts on the device instead
+        uint32_t* usage_d = nullptr;
+        const size_t usage_n = (size_t) (g.n_layers * g.n_expert);
+        if (mirror_table_d && o.adapt_every > 0 && o.adapt_swaps > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr &&
+            std::getenv("STRATA_VERIFY_DEVICE_PLAN") != nullptr) {
+            usage_d = sycl::malloc_device<uint32_t>(usage_n, dpct::get_in_order_queue());
+            if (usage_d != nullptr) {
+                dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+                strata::kernels::resident_plan_set_usage(usage_d);
+            }
+        }
+        auto fold_device_usage = [&]() {   // the counters since the last call, into the adaptive tier's usage
+            if (usage_d == nullptr || drive.d.usage.size() != usage_n) return;
+            std::vector<uint32_t> cnt(usage_n);
+            dpct::get_in_order_queue().memcpy(cnt.data(), usage_d, usage_n * 4).wait();
+            dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+            for (size_t i = 0; i < usage_n; ++i) drive.d.usage[i] += (float) cnt[i];
+        };
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
@@ -12061,7 +12116,7 @@ int main(int argc, char **argv) try {
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else if (swap_victim_eligible(l, e)) vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -12304,8 +12359,10 @@ int main(int argc, char **argv) try {
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
             std::thread adapt_thr;
             bool adapt_ok = true;
-            if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
+            if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0) {
+                fold_device_usage();
                 adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+            }
             if (!ver.commit(a + 1, err)) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());

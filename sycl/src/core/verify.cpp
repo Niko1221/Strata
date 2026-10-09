@@ -1,6 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/sycl_wait_timeouts.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/verify.hpp"
@@ -360,6 +361,9 @@ Verifier::~Verifier() try {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
+    strata::wait_timeout_registry().remove(m_flagA_);
+    strata::wait_timeout_registry().remove(m_flagB_);
+    strata::wait_timeout_registry().remove(m_flag_);
     if (cs_) cs_->wait();
     if (sh_cs_) sh_cs_->wait();
     for (auto& e : exec_)
@@ -367,6 +371,7 @@ Verifier::~Verifier() try {
     for (auto& e : exec_nr_)
         if (e) delete (e);
     if (commit_exec_) delete (commit_exec_);
+    if (wait_timeouts_) sycl::free(wait_timeouts_, *cs_);
     for (auto& kv : exec_bm_)
         if (kv.second) delete (kv.second);
     for (auto& kv : commit_bm_)
@@ -622,6 +627,16 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: stream create failed";
         return false;
     }
+    wait_timeouts_ = sycl::malloc_host<uint32_t>(strata::kWaitKinds, *cs_);
+    if (wait_timeouts_ == nullptr) {
+        err = "verify: timeout counter allocation failed; refusing to capture unmonitored device waits";
+        std::fprintf(stderr, "strata %s\n", err.c_str());
+        return false;
+    }
+    std::fill_n(wait_timeouts_, strata::kWaitKinds, 0u);
+    strata::wait_timeout_registry().add(m_flagA_, wait_timeouts_ + 1);
+    strata::wait_timeout_registry().add(m_flagB_, wait_timeouts_ + 2);
+    strata::wait_timeout_registry().add(m_flag_, wait_timeouts_ + 3);
     if (DPCT_CHECK_ERROR(commit_done_ = new sycl::event()) != 0 ||
         DPCT_CHECK_ERROR(ev_fork_ = new sycl::event()) != 0 ||
         DPCT_CHECK_ERROR(ev_join_ = new sycl::event()) != 0) {
@@ -2055,6 +2070,22 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     const dpct::err0 se = DPCT_CHECK_ERROR(cs_->wait());
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     const Clock::time_point t_done = Clock::now();
+    // a device wait that gave up (kSpinMax) let the window go on without what the host was to write: refuse the window
+    // rather than return its output (STRATA_WAIT_TIMEOUT=warn only reports it)
+    uint32_t gave_up_by[strata::kWaitKinds];
+    if (const uint32_t gave_up = strata::wait_timeouts_take(wait_timeouts_, gave_up_by); gave_up != 0) {
+        static const bool warn_only = [] { const char* v = std::getenv("STRATA_WAIT_TIMEOUT"); return v != nullptr && std::string(v) == "warn"; }();
+        std::fprintf(stderr, "strata verify: %u device wait(s) gave up after %u polls before the host's flag arrived (window T=%d at "
+                             "position %lld); the window's output is not valid%s\n",
+                     (unsigned) gave_up, (unsigned) strata::spin_max(*cs_), T, (long long) pos0, warn_only ? " (STRATA_WAIT_TIMEOUT=warn: continuing)" : "");
+        for (int k = 0; k < strata::kWaitKinds; ++k)
+            if (gave_up_by[k]) std::fprintf(stderr, "  waits on %s gave up: %u\n", strata::kWaitNames[k], (unsigned) gave_up_by[k]);
+        diag(stderr);   // the host's own view: how far it got, how many times it saw the GPU ring, which flags it raised
+        if (!warn_only) {
+            err = "verify: " + std::to_string(gave_up) + " device wait(s) gave up before the host's flag arrived";
+            return false;
+        }
+    }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {
         std::fprintf(stderr, "verify dbg: T=%d window: since previous window %.1f ms, staging %.1f ms, gpu %.1f ms\n", T,
                      t_prev_end.time_since_epoch().count() ? std::chrono::duration<double, std::milli>(t0 - t_prev_end).count() : 0.0,
@@ -2359,7 +2390,15 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
 }
 
 namespace { bool g_commit_async = false; }
-void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
+// SYCL port: the commit graph is waited for by default. With the asynchronous commit (the default of the other backends) a
+// decode on the A770 stopped for good after 100 to 600 windows: the compute engine sat in a semaphore wait that nothing
+// signalled, the card busy at full clock, the copy engine idle, the kernel log silent, the process unkillable until the
+// pod was deleted. The synchronous commit finished both 3,000-token runs (the asynchronous one hung every time), and
+// was not slower on a 128-token decode (19.1 against 18.4 tok/s). STRATA_COMMIT_ASYNC=1 turns the asynchronous commit back on;
+// with UR_L0_USE_DRIVER_INORDER_LISTS=1 (or SYCL_UR_USE_LEVEL_ZERO_V2=1) it finished the same decodes (docs/INTEL_A770_ISSUES.md, item 19).
+void Verifier::set_commit_async(bool on) {
+    g_commit_async = on && std::getenv("STRATA_COMMIT_ASYNC") != nullptr && std::getenv("STRATA_COMMIT_SYNC") == nullptr;
+}
 
 bool Verifier::commit(int n_keep, std::string &err) try {
     const OnDevice on_device(device_);
