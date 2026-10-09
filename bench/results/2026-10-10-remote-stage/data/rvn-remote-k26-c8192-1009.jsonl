@@ -1,0 +1,34 @@
+# start 12:23:37
+{"label": "rvn-remote-k26-c8192-1009", "case": "code-256#1", "prompt_n": 41, "cache_n": 0, "prefill_tps": 58.7, "gen_n": 201, "decode_tps": 50.1, "draft": "142/174", "wall_s": 4.7, "head": "```python from collections import OrderedDict  class LRUCache:     \"\"\"Least Recently Used (LRU) cache with O(1) get and put operations.\"\"\"      def __init__(sel"}
+{"label": "rvn-remote-k26-c8192-1009", "case": "code-256#2", "prompt_n": 41, "cache_n": 0, "prefill_tps": 81.0, "gen_n": 201, "decode_tps": 64.1, "draft": "142/170", "wall_s": 3.6, "head": "```python from collections import OrderedDict  class LRUCache:     \"\"\"Least Recently Used (LRU) cache with O(1) get and put operations.\"\"\"      def __init__(sel"}
+{"label": "rvn-remote-k26-c8192-1009", "case": "code-256#3", "prompt_n": 41, "cache_n": 0, "prefill_tps": 71.0, "gen_n": 201, "decode_tps": 61.1, "draft": "142/169", "wall_s": 3.9, "head": "```python from collections import OrderedDict  class LRUCache:     \"\"\"Least Recently Used (LRU) cache with O(1) get and put operations.\"\"\"      def __init__(sel"}
+Traceback (most recent call last):
+  File "bench.py", line 44, in <module>
+    row(f"{name}#{i}", *chat(tmpl.format(i=i), n, effort))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "bench.py", line 19, in chat
+    r = json.load(urllib.request.urlopen(req, timeout=3600))
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Bad Request
+{"label": "rvn-remote-k26-c8192-1009", "target": 8000, "error": "{\"error\": {\"type\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 1); the next request restarts it\"}}", "wall_s": 1.2}
+{"label": "rvn-remote-k26-c8192-1009", "target": 32000, "error": "{\"error\": {\"type\": \"invalid_request_error\", \"message\": \"verify: instantiate: out of memory\"}}", "wall_s": 35.2}
+{"label": "rvn-remote-k26-c8192-1009", "target": 64000, "error": "{\"error\": {\"type\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 1); the next request restarts it\"}}", "wall_s": 1.3}
+{"label": "rvn-remote-k26-c8192-1009", "target": 100000, "error": "{\"error\": {\"type\": \"invalid_request_error\", \"message\": \"verify: instantiate: out of memory\"}}", "wall_s": 66.1}
+# end 12:25:34

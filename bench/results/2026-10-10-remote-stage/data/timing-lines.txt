@@ -1,0 +1,201 @@
+===== 3070 under WSL2 (layers 40-47); the 2080 Ti attempt after it failed to start and was rerun (ab.log)
+=== ab-3070wsl-k40-1009 14:04:50
+worker ok True 21.2
+READY after 20s
+{"label": "ab-3070wsl-k40-1009", "target": 32000, "prompt_n": 29802, "cache_n": 0, "prefill_tps": 1033.2, "prefill_s": 28.8, "gen_n": 320, "decode_tps": 30.6, "draft": "165/255", "wall_s": 39.4, "head
+short decode mean 33.0
+strata remote: 1344 windows: mean 25.66 ms a round trip = worker 21.63 + link 4.02 (last: T=2 at 30037, 12.66 = 10.43 + 2.23)
+strata remote: main process between windows 45.64 ms each (64 windows: head, drafter, layers 0-K)
+strata stage worker: windows: own layers 29.44 ms each (64 windows; wait for the GPU 25.69, pool + plan 1.86, host staging 0.00)
+strata stage worker: windows: own layers 16.36 ms each (64 windows; wait for the GPU 13.87, pool + plan 1.56, host staging 0.00)
+strata stage worker: windows: own layers 25.39 ms each (64 windows; wait for the GPU 21.16, pool + plan 1.04, host staging 0.00)
+strata stage worker: windows: own layers 18.57 ms each (64 windows; wait for the GPU 15.19, pool + plan 0.80, host staging 0.00)
+strata stage worker: windows: own layers 25.26 ms each (64 windows; wait for the GPU 21.46, pool + plan 0.70, host staging 0.00)
+strata stage worker: windows: own layers 11.64 ms each (64 windows; wait for the GPU 10.57, pool + plan 0.42, host staging 0.00)
+strata stage worker: chunk T=5888 at 17664: read in 1130 ms
+strata stage worker: chunk T=5888 at 23552: read in 887 ms
+=== ab-2080ti-k40-1009 14:08:09
+worker ok False None
+SERVER EXITED
+short decode mean None
+strata remote: 1344 windows: mean 25.66 ms a round trip = worker 21.63 + link 4.02 (last: T=2 at 30037, 12.66 = 10.43 + 2.23)
+strata remote: main process between windows 45.64 ms each (64 windows: head, drafter, layers 0-K)
+=== done 14:08:46
+
+===== 3070 native Windows (layers 40-47) (ab-win.log)
+=== ab-3070win-k40-1009 15:05:00
+worker ok True 6.1
+READY after 20s
+{"label": "ab-3070win-k40-1009", "target": 32000, "prompt_n": 29802, "cache_n": 0, "prefill_tps": 995.0, "prefill_s": 30.0, "gen_n": 320, "decode_tps": 31.7, "draft": "163/255", "wall_s": 40.1, "head"
+short decode mean 33.8
+strata remote: 1344 windows: mean 23.82 ms a round trip = worker 19.42 + link 4.41 (last: T=1 at 30076, 5.71 = 4.48 + 1.23)
+strata remote: main process between windows 41.19 ms each (64 windows: head, drafter, layers 0-K)
+strata stage worker: windows: own layers 21.54 ms each (64 windows; wait for the GPU 18.36, pool + plan 1.92, host staging 0.00)
+strata stage worker: windows: own layers 18.63 ms each (64 windows; wait for the GPU 16.77, pool + plan 0.67, host staging 0.00)
+strata stage worker: windows: own layers 22.59 ms each (64 windows; wait for the GPU 18.61, pool + plan 0.94, host staging 0.00)
+strata stage worker: windows: own layers 19.70 ms each (64 windows; wait for the GPU 14.70, pool + plan 0.50, host staging 0.00)
+strata stage worker: windows: own layers 13.09 ms each (64 windows; wait for the GPU 11.91, pool + plan 0.50, host staging 0.00)
+strata stage worker: windows: own layers 23.85 ms each (64 windows; wait for the GPU 22.18, pool + plan 0.24, host staging 0.00)
+strata stage worker: chunk T=5888 at 17664: read in 877 ms
+strata stage worker: chunk T=5888 at 23552: read in 855 ms
+=== done 15:08:35
+
+===== 3070 native Windows, clocks locked (layers 40-47) (ab-win-lock.log)
+=== ab-3070win-k40-1009lock 15:26:33
+worker ok True 6.1
+READY after 20s
+{"label": "ab-3070win-k40-1009lock", "target": 32000, "prompt_n": 29802, "cache_n": 0, "prefill_tps": 1000.4, "prefill_s": 29.8, "gen_n": 320, "decode_tps": 35.7, "draft": "165/267", "wall_s": 38.8, "
+short decode mean 41.8
+strata remote: 1344 windows: mean 9.41 ms a round trip = worker 5.32 + link 4.09 (last: T=2 at 30037, 11.35 = 3.74 + 7.61)
+strata remote: main process between windows 47.49 ms each (64 windows: head, drafter, layers 0-K)
+strata stage worker: windows: own layers 5.44 ms each (64 windows; wait for the GPU 3.83, pool + plan 1.32, host staging 0.00)
+strata stage worker: windows: own layers 5.26 ms each (64 windows; wait for the GPU 3.65, pool + plan 1.29, host staging 0.00)
+strata stage worker: windows: own layers 6.36 ms each (64 windows; wait for the GPU 3.65, pool + plan 0.70, host staging 0.00)
+strata stage worker: windows: own layers 6.81 ms each (64 windows; wait for the GPU 4.13, pool + plan 0.64, host staging 0.00)
+strata stage worker: windows: own layers 6.46 ms each (64 windows; wait for the GPU 4.10, pool + plan 0.28, host staging 0.00)
+strata stage worker: windows: own layers 4.95 ms each (64 windows; wait for the GPU 3.86, pool + plan 0.30, host staging 0.00)
+strata stage worker: chunk T=5888 at 17664: read in 711 ms
+strata stage worker: chunk T=5888 at 23552: read in 709 ms
+=== done 15:29:19
+
+===== 2080 Ti Linux (layers 40-47), run 1 (ab2.log)
+=== ab-2080ti-k40-1009 14:36:59
+worker ok True 18.1
+READY after 20s
+{"label": "ab-2080ti-k40-1009", "target": 32000, "prompt_n": 29802, "cache_n": 0, "prefill_tps": 1041.5, "prefill_s": 28.6, "gen_n": 320, "decode_tps": 37.7, "draft": "163/249", "wall_s": 37.2, "head"
+short decode mean 41.8
+strata remote: 1344 windows: mean 9.59 ms a round trip = worker 6.38 + link 3.21 (last: T=2 at 30008, 6.82 = 4.79 + 2.02)
+strata remote: main process between windows 43.44 ms each (64 windows: head, drafter, layers 0-K)
+strata stage worker: windows: own layers 6.46 ms each (64 windows; wait for the GPU 5.38, pool + plan 0.75, host staging 0.00)
+strata stage worker: windows: own layers 6.50 ms each (64 windows; wait for the GPU 5.13, pool + plan 1.06, host staging 0.00)
+strata stage worker: windows: own layers 9.08 ms each (64 windows; wait for the GPU 4.93, pool + plan 0.43, host staging 0.00)
+strata stage worker: windows: own layers 8.80 ms each (64 windows; wait for the GPU 4.59, pool + plan 0.53, host staging 0.00)
+strata stage worker: windows: own layers 8.55 ms each (64 windows; wait for the GPU 4.63, pool + plan 0.21, host staging 0.00)
+strata stage worker: windows: own layers 5.39 ms each (64 windows; wait for the GPU 4.92, pool + plan 0.18, host staging 0.00)
+strata stage worker: chunk T=5888 at 17664: read in 1080 ms
+strata stage worker: chunk T=5888 at 23552: read in 1143 ms
+=== done 14:39:58
+
+===== 2080 Ti Linux (layers 40-47), run 2 with the clock sampling (ab-2080-clk.log)
+=== ab-2080ti-k40-1009b 15:14:48
+worker ok True 17.1
+READY after 20s
+{"label": "ab-2080ti-k40-1009b", "target": 32000, "prompt_n": 29802, "cache_n": 0, "prefill_tps": 1041.1, "prefill_s": 28.6, "gen_n": 320, "decode_tps": 39.0, "draft": "167/246", "wall_s": 36.9, "head
+short decode mean 41.6
+strata remote: 1344 windows: mean 9.82 ms a round trip = worker 6.56 + link 3.26 (last: T=2 at 30056, 7.01 = 5.00 + 2.02)
+strata remote: main process between windows 45.76 ms each (64 windows: head, drafter, layers 0-K)
+strata stage worker: windows: own layers 7.43 ms each (64 windows; wait for the GPU 5.88, pool + plan 1.20, host staging 0.00)
+strata stage worker: windows: own layers 5.89 ms each (64 windows; wait for the GPU 4.86, pool + plan 0.74, host staging 0.00)
+strata stage worker: windows: own layers 8.79 ms each (64 windows; wait for the GPU 4.59, pool + plan 0.52, host staging 0.00)
+strata stage worker: windows: own layers 8.90 ms each (64 windows; wait for the GPU 4.84, pool + plan 0.36, host staging 0.00)
+strata stage worker: windows: own layers 8.63 ms each (64 windows; wait for the GPU 4.70, pool + plan 0.24, host staging 0.00)
+strata stage worker: windows: own layers 5.79 ms each (64 windows; wait for the GPU 5.23, pool + plan 0.26, host staging 0.00)
+strata stage worker: chunk T=5888 at 17664: read in 1118 ms
+strata stage worker: chunk T=5888 at 23552: read in 1044 ms
+=== done 15:17:42
+
+===== RVN IQ3_S, three PCs 24/16/8, A-B 10 GbE, 3070 locked (3stage-lock.log)
+3070 worker True 6.1 
+2080ti relay True 31.0 
+READY after 15s
+ctx   8000: prompt   7521, prefill   657.5 tok/s, decode 47.8 tok/s, wall 18.2 s
+ctx  32000: prompt  30167, prefill  1109.7 tok/s, decode 46.5 tok/s, wall 34.1 s
+ctx  64000: prompt  57383, prefill  1450.9 tok/s, decode 44.1 tok/s, wall 46.9 s
+ctx 100000: prompt  90921, prefill  1640.4 tok/s, decode 44.7 tok/s, wall 62.7 s
+short decode mean 51.3 min 45.8 max 61.0
+strata remote: 1792 windows: mean 23.04 ms a round trip = worker 21.87 + link 1.17 (last: T=4 at 91182, 25.79 = 24.68 + 1.11)
+strata remote: main process between windows 25.32 ms each (64 windows: head, drafter, layers 0-K)
+-- PC-B
+strata stage worker: windows: own layers 11.08 ms, next worker 8.586788 ms each (64 windows; wait for the GPU 10.42, pool + plan 0.41, host staging 0.00)
+strata stage worker: windows: own layers 10.71 ms, next worker 7.248536 ms each (64 windows; wait for the GPU 10.12, pool + plan 0.34, host staging 0.00)
+strata stage worker: windows: own layers 13.58 ms, next worker 11.563358 ms each (64 windows; wait for the GPU 9.46, pool + plan 0.44, host staging 0.00)
+strata stage worker: windows: own layers 12.14 ms, next worker 8.033551 ms each (64 windows; wait for the GPU 11.51, pool + plan 0.35, host staging 0.00)
+strata stage worker: chunk T=5888 at 76544: read in 2336 ms
+strata stage worker: chunk T=5888 at 82432: read in 2472 ms
+-- PC-C
+strata stage worker: windows: own layers 4.62 ms each (64 windows; wait for the GPU 4.01, pool + plan 0.28, host staging 0.00)
+strata stage worker: windows: own layers 4.34 ms each (64 windows; wait for the GPU 3.89, pool + plan 0.16, host staging 0.00)
+strata stage worker: windows: own layers 6.16 ms each (64 windows; wait for the GPU 3.95, pool + plan 0.17, host staging 0.00)
+strata stage worker: windows: own layers 4.91 ms each (64 windows; wait for the GPU 4.46, pool + plan 0.16, host staging 0.00)
+strata stage worker: chunk T=5888 at 76544: read in 761 ms
+strata stage worker: chunk T=5888 at 82432: read in 760 ms
+
+===== UD-Q4_K_XL, 3080 alone, --resident-budget-gib 70 (q4xl-single.log)
+READY after 105s
+ctx   8000: prompt   7521, prefill   302.2 tok/s, decode 22.2 tok/s, wall 39.3 s
+ctx  32000: prompt  30167, prefill   324.1 tok/s, decode 21.8 tok/s, wall 107.8 s
+ctx  64000: prompt  57383, prefill   327.7 tok/s, decode 20.9 tok/s, wall 190.5 s
+ctx 100000: prompt  90921, prefill   326.4 tok/s, decode 21.8 tok/s, wall 293.3 s
+short decode mean 23.9 min 20.5 max 27.2
+strata serve: resident RAM: 69.93 GiB of experts in RAM, 26438 exchanged with the VRAM tier, 1401 blob reads from the file
+strata serve: resident RAM: 69.93 GiB of experts in RAM, 29272 exchanged with the VRAM tier, 1868 blob reads from the file
+strata serve: resident RAM: 69.93 GiB of experts in RAM, 32416 exchanged with the VRAM tier, 2335 blob reads from the file
+strata serve: resident RAM: 69.93 GiB of experts in RAM, 35369 exchanged with the VRAM tier, 2802 blob reads from the file
+
+===== UD-Q4_K_XL, 3080 alone, no RAM budget (q4xl-single-nob.log)
+READY after 75s
+ctx   8000: prompt   7521, prefill   206.2 tok/s, decode 25.4 tok/s, wall 49.1 s
+ctx  32000: prompt  30167, prefill   211.7 tok/s, decode 24.5 tok/s, wall 155.6 s
+ctx  64000: prompt  57383, prefill   209.1 tok/s, decode 25.3 tok/s, wall 287.1 s
+ctx 100000: prompt  90921, prefill   208.8 tok/s, decode 23.7 tok/s, wall 449.1 s
+short decode mean 27.3 min 24.0 max 31.3
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 571 resident experts, decided on the device
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1280 tokens, a 132-slot ring
+
+===== UD-Q4_K_XL, two PCs, K=26, A-B 10 GbE (q4xl-2stage.log)
+2080ti worker True 51.6  
+READY after 20s
+ctx   8000: prompt   7521, prefill   659.1 tok/s, decode 34.4 tok/s, wall 20.7 s
+ctx  32000: prompt  30167, prefill  1146.5 tok/s, decode 36.9 tok/s, wall 35.0 s
+ctx  64000: prompt  57383, prefill  1191.6 tok/s, decode 37.5 tok/s, wall 56.8 s
+ctx 100000: prompt  90921, prefill  1164.2 tok/s, decode 33.6 tok/s, wall 87.7 s
+short decode mean 38.8 min 32.1 max 43.7
+strata remote: main process between windows 41.94 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1728 windows: mean 22.71 ms a round trip = worker 21.31 + link 1.41 (last: T=2 at 91078, 11.28 = 10.64 + 0.64)
+strata remote: main process between windows 43.39 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1792 windows: mean 22.46 ms a round trip = worker 21.08 + link 1.38 (last: T=1 at 91204, 9.71 = 9.36 + 0.35)
+strata remote: main process between windows 41.57 ms each (64 windows: head, drafter, layers 0-K)
+-- PC-B
+strata stage worker: windows: own layers 15.72 ms each (64 windows; wait for the GPU 10.02, pool + plan 5.39, host staging 0.00)
+strata stage worker: windows: own layers 21.35 ms each (64 windows; wait for the GPU 11.50, pool + plan 6.08, host staging 0.00)
+strata stage worker: windows: own layers 17.46 ms each (64 windows; wait for the GPU 10.68, pool + plan 6.52, host staging 0.00)
+strata stage worker: windows: own layers 15.01 ms each (64 windows; wait for the GPU 10.51, pool + plan 4.16, host staging 0.00)
+strata stage worker: chunk T=5888 at 76544: read in 5206 ms
+strata stage worker: chunk T=5888 at 82432: read in 4737 ms
+strata generate: expert cache 2456 slots, 7.18 GiB of VRAM; policy is
+strata serve: 458 MiB of VRAM free with everything loaded
+
+===== UD-Q4_K_XL, three PCs 24/16/8, 3070 locked (q4xl-3stage.log)
+3070 worker True 9.1  graphics 1500-1905 MHz: locked; memory 7001-7001 MHz: locked
+2080ti relay True 39.5  
+READY after 25s
+ctx   8000: prompt   7521, prefill   548.9 tok/s, decode 35.3 tok/s, wall 22.8 s
+ctx  32000: prompt  30167, prefill   944.7 tok/s, decode 36.6 tok/s, wall 40.7 s
+ctx  64000: prompt  57383, prefill  1210.1 tok/s, decode 33.2 tok/s, wall 57.1 s
+ctx 100000: prompt  90921, prefill  1334.0 tok/s, decode 35.2 tok/s, wall 77.3 s
+short decode mean 38.4 min 30.0 max 43.8
+strata remote: 1664 windows: mean 27.14 ms a round trip = worker 26.11 + link 1.03 (last: T=4 at 90960, 22.46 = 21.33 + 1.13)
+strata remote: main process between windows 38.70 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1728 windows: mean 26.93 ms a round trip = worker 25.91 + link 1.02 (last: T=2 at 91096, 18.01 = 17.39 + 0.61)
+strata remote: main process between windows 37.29 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1792 windows: mean 26.77 ms a round trip = worker 25.76 + link 1.01 (last: T=1 at 91231, 15.93 = 15.59 + 0.34)
+-- PC-B
+strata stage worker: windows: own layers 12.50 ms, next worker 10.273137 ms each (64 windows; wait for the GPU 9.90, pool + plan 2.35, host staging 0.00)
+strata stage worker: windows: own layers 15.17 ms, next worker 11.295108 ms each (64 windows; wait for the GPU 9.25, pool + plan 2.13, host staging 0.00)
+strata stage worker: windows: own layers 11.30 ms, next worker 9.285776 ms each (64 windows; wait for the GPU 9.58, pool + plan 1.45, host staging 0.00)
+strata stage worker: windows: own layers 11.35 ms, next worker 10.376514 ms each (64 windows; wait for the GPU 10.00, pool + plan 1.09, host staging 0.00)
+strata stage worker: chunk T=5888 at 76544: read in 2893 ms
+strata stage worker: chunk T=5888 at 82432: read in 2844 ms
+strata generate: expert cache 2717 slots, 7.85 GiB of VRAM; policy is
+strata serve: 458 MiB of VRAM free with everything loaded
+-- PC-C
+strata stage worker: windows: own layers 6.71 ms each (64 windows; wait for the GPU 5.88, pool + plan 0.41, host staging 0.00)
+strata stage worker: windows: own layers 8.11 ms each (64 windows; wait for the GPU 5.52, pool + plan 0.32, host staging 0.00)
+strata stage worker: windows: own layers 6.17 ms each (64 windows; wait for the GPU 5.32, pool + plan 0.44, host staging 0.00)
+strata stage worker: windows: own layers 6.43 ms each (64 windows; wait for the GPU 5.87, pool + plan 0.18, host staging 0.00)
+strata stage worker: chunk T=5888 at 76544: read in 1463 ms
+strata stage worker: chunk T=5888 at 82432: read in 1712 ms
+strata serve: 183 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 1029 to the config's args (or lower --max-context)
+strata serve: the expert cache was set with --expert-cache (1766 slots): a smaller one - or --expert-cache auto, which checks the free VRAM once the slots are written - leaves room; decode can be several times slower with the card this full

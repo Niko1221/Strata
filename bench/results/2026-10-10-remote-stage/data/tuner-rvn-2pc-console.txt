@@ -1,0 +1,33 @@
+[12:51:44] nodes:
+[12:51:44]   2080ti: NVIDIA GeForce RTX 2080 Ti 11264 MiB, PCIe gen 3 x16, RAM 64220 MiB, 24 CPUs
+[12:51:44] links:
+[12:51:45]   main -> 2080ti: 117 MB/s, agent round trip 19.8 ms
+[12:51:45] measure: splits [22] (stages [(0, 22), (22, 48)]), chunk 4096 
+[12:52:08]   2080ti: layers 22-47 up in 23.0 s
+[12:53:12]   prefill 1035 tok/s, decode 49.9 (short 51.6), request 40.9 s; stages: 22L pf 1964 ms win 23.3 ms, 26L pf 3132 ms win 20.1 ms
+[12:53:14] measure: splits [28] (stages [(0, 28), (28, 48)]), chunk 4096 
+[12:53:34]   2080ti: layers 28-47 up in 16.0 s
+[12:54:39]   prefill 1174 tok/s, decode 41.5 (short 46.1), request 39.3 s; stages: 28L pf 2686 ms win 32.0 ms, 20L pf 2123 ms win 15.1 ms
+[12:54:41] measure: splits [28] (stages [(0, 28), (28, 48)]), chunk 5888 
+[12:54:59]   2080ti: layers 28-47 up in 15.0 s
+[12:56:04]   prefill 1221 tok/s, decode 43.7 (short 49.1), request 37.6 s; stages: 28L pf 3031 ms win 31.7 ms, 20L pf 2630 ms win 15.3 ms
+[12:56:05] measure: splits [28] (stages [(0, 28), (28, 48)]), chunk 8192 
+[12:56:23]   2080ti: layers 28-47 up in 15.0 s
+[12:57:03]   failed: {"error": {"type": "invalid_request_error", "message": "verify: instantiate: out of memory"}}
+[12:57:05]   the engine asks for more VRAM headroom: once more with --vram-reserve-mib 1247
+[12:57:05] measure: splits [28] (stages [(0, 28), (28, 48)]), chunk 8192 --vram-reserve-mib 1247
+[12:57:23]   2080ti: layers 28-47 up in 15.0 s
+[12:58:27]   prefill 1235 tok/s, decode 42.2 (short 46.2), request 37.8 s; stages: 28L pf 3495 ms win 36.5 ms, 20L pf 3195 ms win 16.4 ms
+[12:58:29] measure: splits [26] (stages [(0, 26), (26, 48)]), chunk 5888 
+[12:58:48]   2080ti: layers 26-47 up in 16.0 s
+[12:59:51]   prefill 1230 tok/s, decode 48.7 (short 49.3), request 36.3 s; stages: 26L pf 2753 ms win 28.6 ms, 22L pf 2857 ms win 15.3 ms
+[12:59:53] measure: splits [24] (stages [(0, 24), (24, 48)]), chunk 5888 
+[13:00:13]   2080ti: layers 24-47 up in 17.0 s
+[13:01:14]   prefill 1230 tok/s, decode 44.0 (short 49.7), request 37.4 s; stages: 24L pf 2533 ms win 26.4 ms, 24L pf 3200 ms win 17.1 ms
+[13:01:16] measure: splits [25] (stages [(0, 25), (25, 48)]), chunk 5888 
+[13:01:35]   2080ti: layers 25-47 up in 16.0 s
+[13:02:36]   prefill 1199 tok/s, decode 47.8 (short 50.4), request 37.2 s; stages: 25L pf 2657 ms win 28.5 ms, 23L pf 3235 ms win 16.1 ms
+[13:02:38] measure: splits [27] (stages [(0, 27), (27, 48)]), chunk 5888 
+[13:02:56]   2080ti: layers 27-47 up in 15.0 s
+[13:04:00]   prefill 1239 tok/s, decode 45.9 (short 50.2), request 36.7 s; stages: 27L pf 2862 ms win 31.2 ms, 21L pf 2813 ms win 15.1 ms
+[13:04:01] best: stages [(0, 26), (26, 48)], chunk 5888: prefill 1230, decode 48.7, request 36.3 s -> OUTDIR/main.json, nodes.json, report.md
