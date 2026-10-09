@@ -2603,6 +2603,7 @@ class Service:
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.galahad_sessions = None                  # optional durable store for the same slot API
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -2667,7 +2668,7 @@ class Service:
         def error(code, message):
             return code, {"error": {"code": code, "message": message,
                                     "type": "invalid_request_error" if code < 500 else "server_error"}}
-        if not self.slot_save_path or not hasattr(self.engine, "session_file"):
+        if (not self.slot_save_path and self.galahad_sessions is None) or not hasattr(self.engine, "session_file"):
             return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
         if getattr(self.engine, "batch", 0):
             # #465 parallel requests do not hold the FIFO and share the engine's control lines: a session file
@@ -2680,8 +2681,8 @@ class Service:
         why = slot_filename_problem(filename)
         if why:
             return error(400, f"filename {why}")
-        path = os.path.join(self.slot_save_path, filename)
-        if action == "restore":
+        path = os.path.join(self.slot_save_path, filename) if self.slot_save_path else None
+        if action == "restore" and self.galahad_sessions is None:
             try:
                 os.lstat(path)                              # the engine opens it without following a link
             except OSError:
@@ -2702,7 +2703,16 @@ class Service:
                                        else "restoring a session", started=time.time(), first_token=None,
                                        prompt_tokens=None, generated=None, max_tokens=None)
                 try:
-                    r = self.engine.session_file(action, path)
+                    if self.galahad_sessions is None:
+                        r = self.engine.session_file(action, path)
+                    else:
+                        from serve.galahad import GalahadError
+                        try:
+                            r = self.galahad_sessions.session_file(self.engine, action, filename)
+                        except GalahadError as e:
+                            return error(e.status, str(e))
+                        except OSError as e:
+                            return error(507 if e.errno in (28, 122) else 500, f"Galahad session I/O: {e}")
                 except SessionRefused as e:
                     body = error(e.status, str(e))
                     body[1]["error"]["kind"] = e.kind
@@ -5650,8 +5660,30 @@ def main() -> int:
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
+    ap.add_argument("--galahad-cache-dir", metavar="DIR",
+                    help="store named sessions with optional Galahad instead of --slot-save-path (Linux/NVIDIA)")
+    ap.add_argument("--galahad-model-fingerprint", type=int,
+                    help="positive 64-bit identity of the model, tokenizer and quantisation for Galahad")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    galahad_cfg = cfg.get("galahad", {})
+    if not isinstance(galahad_cfg, dict):
+        ap.error("galahad must be an object with cache_dir and model_fingerprint")
+    if a.galahad_cache_dir is not None:
+        galahad_cfg = dict(galahad_cfg, cache_dir=os.path.abspath(a.galahad_cache_dir))
+    if a.galahad_model_fingerprint is not None:
+        galahad_cfg = dict(galahad_cfg, model_fingerprint=a.galahad_model_fingerprint)
+    if galahad_cfg:
+        from serve.galahad import validate_config
+        try:
+            validate_config(galahad_cfg.get("cache_dir"), galahad_cfg.get("model_fingerprint"),
+                            galahad_cfg.get("max_session_mib", 2048))
+        except ValueError as e:
+            ap.error(str(e))
+        if a.slot_save_path or cfg.get("slot_save_path"):
+            ap.error("choose galahad or slot_save_path for session storage")
+        if a.engine != "strata":
+            ap.error("Galahad session storage requires --engine strata")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -5780,6 +5812,25 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    if galahad_cfg:
+        if getattr(engine, "batch", 0):
+            raise SystemExit("[strata] Galahad session storage is not available with parallel requests")
+        from serve.galahad import GalahadSessions
+        directory = galahad_cfg["cache_dir"]
+        if not os.path.isabs(directory):
+            directory = os.path.join(cfg.get("cwd") or ".", directory)
+        try:
+            svc.galahad_sessions = GalahadSessions(directory, galahad_cfg["model_fingerprint"],
+                                                   galahad_cfg.get("max_session_mib", 2048))
+        except Exception as e:
+            raise SystemExit(f"[strata] cannot start Galahad session storage: {e}") from e
+        import atexit
+        def close_galahad():
+            with svc.fifo:
+                svc.galahad_sessions.close()
+        atexit.register(close_galahad)                 # also release counters after a later startup error
+        print(f"[strata] Galahad session storage on: {svc.galahad_sessions.directory} "
+              "(POST /slots/0?action=save|restore; session names are immutable)", flush=True)
     # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
     # to the config's "cwd" (the engine's folder) when it has one.  Either way the engine gets an absolute path.
     if a.slot_save_path or cfg.get("slot_save_path"):
@@ -5881,6 +5932,8 @@ def main() -> int:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
                    hub.close if hub is not None else None]
+        if svc.galahad_sessions is not None:
+            closers.insert(1, close_galahad)
         for close in filter(None, closers):
             try:
                 close()

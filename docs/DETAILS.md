@@ -952,7 +952,13 @@ persisted across restarts; the session files below are.
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
 requests of llama-server's slot API, for its single slot 0, when started with `--slot-save-path DIR` (also
 `"slot_save_path"` in the config); NAME must be a plain file name inside DIR. There is no erase action and the file
-format is Strata's own, not llama.cpp's:
+format is Strata's own, not llama.cpp's.
+
+An optional [Galahad backend](GALAHAD.md) stores complete named sessions through the same API on Linux with a
+licensed NVIDIA GPU. It is enabled separately, cannot be combined with `slot_save_path` or parallel requests,
+and does not automatically save or look up request prefixes. The ordinary file backend remains the default.
+
+For the ordinary file backend:
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/slots/0?action=save"    -H "Content-Type: application/json" -d '{"filename": "chat1.bin"}'
