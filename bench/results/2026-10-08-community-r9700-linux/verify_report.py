@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Recompute the published measurements without a GPU or model downloads."""
 import argparse
+import csv
 import gzip
 import hashlib
 import io
@@ -13,13 +14,62 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
+BUNDLE = json.loads(gzip.decompress((ROOT / "data/measurements.json.gz").read_bytes()))
 WORK = ("input_ids_sha256", "output_ids", "generated", "finish", "reused",
         "prompt_read", "drafts_accepted", "drafts_offered")
 METRICS = ("prompt_ms", "decode_ms", "ttft_s", "wall_s")
 
 
 def read(path):
-    return json.loads((ROOT / path).read_text())
+    path = str(path)
+    local = ROOT / path
+    return json.loads(local.read_text()) if local.exists() else BUNDLE["json"][path]
+
+
+def check_csv(path, expected):
+    with (ROOT / path).open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    normalized = [{key: "" if value is None else str(value) for key, value in row.items()}
+                  for row in expected]
+    assert rows == normalized, f"{path}: CSV differs from the complete measurement records"
+
+
+def check_tables():
+    rows = []
+    for path, result in BUNDLE["json"].items():
+        if not path.endswith("/results.json"):
+            continue
+        source, session = path.split("/")[-3:-1]
+        entry = {"pair": "", "arm": "candidate"}
+        if source != "current-speed":
+            matrix = read(f"evidence/{source}/matrix.json")
+            entry = next(item for item in matrix["sessions"] if item["name"] == session)
+        for record in result["records"]:
+            keys = ("phase", "repeat", "input_tokens", "base_tokens", "increment", "prompt_read",
+                    "reused", "generated", "prompt_ms", "decode_ms", "ttft_s", "wall_s",
+                    "drafts_accepted", "drafts_offered", "input_ids_sha256")
+            rows.append({"source": source, "session": session, "pair": entry["pair"], "arm": entry["arm"],
+                         **{key: record.get(key, "") for key in keys},
+                         "output_ids_sha256": hashlib.sha256(json.dumps(record["output_ids"]).encode()).hexdigest()})
+    # The fresh-speed session is listed first; paired sessions retain their recorded order.
+    rows.sort(key=lambda row: row["source"] != "current-speed")
+    check_csv("data/requests.csv", rows)
+    rows = []
+    for name in ("pr1107-incremental-five-pairs-iq3s", "pr1107-incremental-screen-iq2xs",
+                 "pr1107-fresh-screen-iq3s", "pr1107-fresh-screen-iq2xs"):
+        for row in read(f"evidence/{name}/summary.json")["rows"]:
+            for metric in METRICS:
+                rows.append({"comparison": name, "history_or_input_tokens": row["history_or_input_tokens"],
+                             "increment": row["increment"], "pairs": len(row["pairs"]),
+                             "metric": metric, **row[metric]})
+    check_csv("data/comparisons.csv", rows)
+    rows = []
+    for row in read("current-speed/summary.json")["rows"]:
+        rows.append({**{key: row[key] for key in ("input_tokens", "output_tokens", "repeats")},
+                     **{metric + "_" + stat: row[metric][stat]
+                        for metric in ("prefill_tokens_per_s", "decode_tokens_per_s", "ttft_s", "wall_s")
+                        for stat in ("median", "min", "max")}})
+    check_csv("data/fresh-speed.csv", rows)
 
 
 def same(a, b):
@@ -120,17 +170,32 @@ def check_sources():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-sources", action="store_true", help="also reconstruct source in a temporary directory using the local git object database")
+    parser.add_argument("--extract", type=Path, help="after verification, unpack complete JSON records and engine logs into a new directory")
     args = parser.parse_args()
-    exports = read("export-manifest.json")
-    for item in exports["files"]:
-        assert hashlib.sha256((ROOT / item["file"]).read_bytes()).hexdigest() == item["published_sha256"], item["file"]
+    assert BUNDLE["schema"] == 1
+    assert BUNDLE["source_commit"] == "17006083063b4443458f6f0b3f5c8325cf9cca2a"
+    exports = {}
+    for line in (ROOT / "SHA256SUMS").read_text().splitlines():
+        expected, name = line.split("  ", 1)
+        assert name not in exports
+        exports[name] = expected
+        assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == expected, name
+    actual = {p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*")
+              if p.is_file() and "__pycache__" not in p.parts and p.name != "SHA256SUMS"}
+    assert set(exports) == actual, "SHA256SUMS does not cover the report files"
     current = read("current-speed/iq3_s-session/results.json")
     summary = read("current-speed/summary.json")
     formal = [r for r in current["records"] if r["phase"] == "measurement"]
     assert len(formal) == 12
     assert len([r for r in current["records"] if r["phase"] == "shape_warmup"]) == 4
     fixtures = json.loads(gzip.decompress((ROOT / "current-speed/fixtures.json.gz").read_bytes()))
+    for fixture in fixtures["fixtures"]:
+        assert len(fixture["ids"]) == fixture["tokens"]
+        assert hashlib.sha256(json.dumps(fixture["ids"]).encode()).hexdigest() == fixture["ids_sha256"]
     hashes = {f["tokens"]: f["ids_sha256"] for f in fixtures["fixtures"]}
+    device = read("current-speed/iq3_s-launch.json")["device"]
+    assert device["hip_device_count"] == 1 and device["bdf"] == "0000:63:00.0"
+    assert current["binary_sha256"] == read("source-layout.json")["binary_sha256"]["candidate"]
     for row in summary["rows"]:
         records = [r for r in formal if r["input_tokens"] == row["input_tokens"]]
         assert sorted(r["repeat"] for r in records) == [0, 1, 2]
@@ -152,25 +217,30 @@ def main():
     _, n3 = check_matrix("pr1107-incremental-screen-iq2xs", 2, 20)
     _, n4 = check_matrix("pr1107-fresh-screen-iq3s", 2, 12)
     _, n5 = check_matrix("pr1107-fresh-screen-iq2xs", 2, 12)
-    checks = 0
-    for quant in ("iq3s", "iq2xs"):
-        for arm in ("baseline", "candidate"):
-            result = read(f"evidence/pr1107-product-http-{quant}/{arm}/results.json")
-            assert result["passed"] and result["complete"] and len(result["records"]) == 8
-            assert all(r["passed"] for r in result["records"])
-            checks += len(result["records"])
+    results = [value for name, value in BUNDLE["json"].items() if name.endswith("/results.json")]
+    log_names = {name.removesuffix("results.json") + "engine.log"
+                 for name in BUNDLE["json"] if name.endswith("/results.json")}
+    assert set(BUNDLE["logs"]) == log_names and len(log_names) == 23
+    check_tables()
     coverage = {"scope": "Recomputed archived evidence, not new GPU measurements or automatic performance acceptance",
                 "paired_formal_requests": n1+n2+n3+n4+n5, "current_speed_formal_requests": len(formal),
-                "http_task_checks_passed": checks, "exported_artifact_hashes_verified": len(exports["files"]),
+                "retained_records_including_warmups": sum(len(result["records"]) for result in results),
+                "engine_logs_verified": len(log_names), "exported_artifact_hashes_verified": len(exports),
                 "all_workload_performance_acceptance": False}
-    assert coverage["paired_formal_requests"] == 94 and checks == 32
+    assert coverage["paired_formal_requests"] == 94 and coverage["retained_records_including_warmups"] == 213
     if args.check_sources:
         check_sources()
-    saved = ROOT / "coverage.json"
-    if saved.exists():
-        assert json.loads(saved.read_text()) == coverage
-    else:
-        saved.write_text(json.dumps(coverage, indent=2) + "\n")
+    assert read("coverage.json") == coverage
+    if args.extract:
+        args.extract.mkdir(parents=True, exist_ok=False)
+        for kind in ("json", "logs"):
+            for name, value in BUNDLE[kind].items():
+                relative = Path(name)
+                assert not relative.is_absolute() and ".." not in relative.parts
+                path = args.extract / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n" if kind == "json" else value)
+        print(f"Complete measurement records and engine logs extracted to {args.extract}")
     print(json.dumps(coverage, indent=2))
 
 

@@ -15,7 +15,7 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: one AMD Radeon AI PRO R9700 32 GB, two EPYC 9334 CPUs, 503 GiB RAM](../bench/results/2026-10-08-community-r9700-linux/README.md):
   Linux/ROCm 7.2.3, frozen experimental 0.1.40.3 source, original Flash-Next IQ3_S fresh 1K/4K/32K/128K
   at three repeats each; separate IQ3_S five-pair and IQ2_XS two-pair short-increment comparisons for #1107.
-  Includes regressions and rejected settings; no all-workload performance recommendation or newer-main measurement.
+  Includes per-request data and regressions; no all-workload recommendation or newer-main measurement.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

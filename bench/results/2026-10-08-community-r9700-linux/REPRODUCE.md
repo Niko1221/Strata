@@ -118,16 +118,23 @@ once per engine. It sets prompt cache to 6 for the incremental path. For the arc
 comparison, use `--mode fresh --lengths 4096 32768 131072 --pairs 2` and a new output directory.
 Use IQ2_XS templates separately; its recorded incremental contrast was two pairs.
 
-For local HTTP regression, `run_http_matrix.py` and `http_quality.py` are included with
-`evidence/quality-fixtures.json.gz` and the product configs. Materialize those configs in a new
-directory, restore the quality fixture, and use `--configs DIR --quant iq3_s --arms baseline candidate
---fixtures FILE --out NEW_DIR --port 8097`. The runner binds `127.0.0.1` and closes its servers.
-Repeat separately for IQ2_XS. These are task checks, not HTTP performance measurements.
-
 ## Archive scope
 
 Paths containing `${MEASURED_REPO}` and `${ASSETS}` are placeholders, not directly executable configs.
 The configuration helper replaces them with explicit local paths. The copied result/config hashes
-describe the original records; `export-manifest.json` records the exported hashes separately.
+describe the original records; `SHA256SUMS` records the published file hashes separately.
 Raw tensor/logit captures, resource timelines, model files and binaries remain outside this compact
 report. `verify_report.py` audits the included evidence, not the omitted captures or a fresh GPU run.
+
+All performance results, warmups, launch records and complete engine logs are consolidated in
+`data/measurements.json.gz`. Its `json` and `logs` maps use their original report-relative paths.
+The three CSVs in `data/` expose per-request timings and the published summaries. To check and unpack
+complete records without running inference, choose a destination that does not exist:
+
+```sh
+python3 "$r9700_report/verify_report.py" --check-sources --extract /tmp/r9700-records
+```
+
+Historical diagnostics and HTTP regression scripts/results are available in the
+[original full archive](https://github.com/zihaomu/Strata/tree/17006083063b4443458f6f0b3f5c8325cf9cca2a/bench/results/2026-10-08-community-r9700-linux).
+They are outside this report's performance reproduction commands.
