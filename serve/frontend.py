@@ -112,13 +112,17 @@ class ChatTemplate:
 
 
 # ------------------------------------------------------------------------------------------------ requests
+# The content-part types the readers take as text (a part with no type that has a "text" field reads as text too)
+TEXT_PARTS = ("text", "input_text", None)
+
+
 def _text_of(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") in
-                   ("text", "input_text", None))
+                   TEXT_PARTS)
 
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
@@ -182,9 +186,40 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
-        elif part.get("type") in ("text", "input_text", None) and "text" in part:
+        elif part.get("type") in TEXT_PARTS and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
+
+
+# The blocks a messages request may carry: text, the image parts, thinking, tool_use and tool_result.
+# redacted_thinking is allowed only to be dropped without an error: another server's encrypted reasoning, which
+# carries nothing this server can read - the same reason responses.py's _reasoning_text gives for another server's
+# encrypted_content.
+ANTHROPIC_BLOCKS = ("text",) + IMAGE_PARTS + ("thinking", "tool_use", "tool_result", "redacted_thinking")
+
+
+def _check_parts(content, path: str, kinds):
+    """A request's content parts (on chat) or content blocks (on messages), checked while the request is converted:
+    a part whose type this server does not read - a file, audio, a document - raises a ValueError naming the type
+    and where it sits, which the server answers with a 400, as /v1/responses does; these two paths used to drop the
+    part without a word, and the model answered about a file it had never seen.  `kinds` is the types the place
+    reads.  A "refusal" part is read as its text, as /v1/responses does.  Content that is not a list, and a part
+    that is not an object, passes through: the readers skip it as they always did."""
+    if not isinstance(content, list):
+        return content
+    out = content
+    for j, part in enumerate(content):
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "refusal":
+            if out is content:
+                out = list(content)
+            out[j] = {"type": "text", "text": part.get("refusal") or ""}
+        elif kind not in kinds:
+            read = "text and images are" if set(kinds) & set(IMAGE_PARTS) else "text is"
+            raise ValueError(f"{path}[{j}].type: content parts of type {kind!r} are not supported ({read})")
+    return out
 
 
 def images_of(messages: list[dict]) -> list[str]:
@@ -365,11 +400,15 @@ def tool_arguments(raw) -> dict:
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
-    for m in _object_list(req.get("messages"), "messages"):
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
         role = m.get("role")
         if role == "developer":
             role = "system"
-        out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
+        # an image is read in a user, tool or assistant message; the system prompt takes text only, as _text_of reads
+        images = role in ("user", "tool", "assistant")
+        content = _check_parts(m.get("content"), f"messages[{i}].content",
+                               TEXT_PARTS + IMAGE_PARTS if images else TEXT_PARTS)
+        out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -432,9 +471,10 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     messages = []
     system = req.get("system")
     if system:
-        messages.append({"role": "system", "content": pin_billing_stamp(_text_of(system))})
-    for m in _object_list(req.get("messages"), "messages"):
-        content = m.get("content")
+        messages.append({"role": "system",
+                         "content": pin_billing_stamp(_text_of(_check_parts(system, "system", TEXT_PARTS)))})
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
+        content = _check_parts(m.get("content"), f"messages[{i}].content", ANTHROPIC_BLOCKS)
         if isinstance(content, str):
             messages.append({"role": m["role"], "content": content})
             continue
@@ -443,7 +483,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
         text, reasoning, calls, parts = [], [], [], []
-        for block in content or []:
+        for j, block in enumerate(content or []):
             kind = block.get("type")
             if kind == "text":
                 text.append(block.get("text", ""))
@@ -457,7 +497,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "tool_result":
                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
                 # path's tool messages already do; a text-only result is one string, as before.
-                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+                messages.append({"role": "tool", "content": _parts_of(_check_parts(
+                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}

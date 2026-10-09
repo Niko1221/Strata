@@ -77,6 +77,107 @@ class EmptyAssistantHistory(unittest.TestCase):
         self.assertIn("<tool_response>\n\n</tool_response>", prompt)
 
 
+class UnreadContentParts(unittest.TestCase):
+    """A content part the server does not read is refused naming it and where it sits, as /v1/responses does; chat
+    and messages used to drop it without a word, and the model answered about a file it had never seen."""
+
+    def setUp(self):
+        self.template = ChatTemplate(Path(__file__).with_name("chat_template.jinja"))
+        tok = ByteTokenizer()
+        self.service = Service(MockEngine(tok, "ok"), tok, self.template)
+
+    def test_chat_file_and_audio_parts_are_refused(self):
+        parts = ({"type": "file", "file": {"filename": "a.pdf", "file_data": "data:application/pdf;base64,AA"}},
+                 {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}})
+        for part in parts:
+            with self.subTest(kind=part["type"]):
+                with self.assertRaises(ValueError) as raised:
+                    openai_to_messages({"messages": [
+                        {"role": "user", "content": "summarize the attached file"},
+                        {"role": "assistant", "content": "which file?"},
+                        {"role": "user", "content": [{"type": "text", "text": "this one"}, part]}]})
+                self.assertEqual(str(raised.exception),
+                                 f"messages[2].content[1].type: content parts of type {part['type']!r} are not "
+                                 "supported (text and images are)")
+
+    def test_messages_document_block_is_refused(self):
+        with self.assertRaises(ValueError) as raised:
+            anthropic_to_messages({"messages": [
+                {"role": "user", "content": "summarize the attached file"},
+                {"role": "assistant", "content": "which file?"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "this one"},
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                    "data": "AA"}}]}]})
+        self.assertEqual(str(raised.exception),
+                         "messages[2].content[1].type: content parts of type 'document' are not supported "
+                         "(text and images are)")
+
+    def test_messages_document_in_a_tool_result_is_refused(self):
+        with self.assertRaises(ValueError) as raised:
+            anthropic_to_messages({"messages": [
+                {"role": "user", "content": "read the pdf"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": [
+                        {"type": "text", "text": "page 1"},
+                        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                        "data": "AA"}}]}]}]})
+        self.assertEqual(str(raised.exception),
+                         "messages[2].content[0].content[1].type: content parts of type 'document' are not "
+                         "supported (text and images are)")
+
+    def test_a_system_prompt_takes_text_only(self):
+        with self.assertRaises(ValueError) as raised:
+            openai_to_messages({"messages": [
+                {"role": "system", "content": [{"type": "text", "text": "be brief"},
+                                               {"type": "image_url", "image_url": "image.png"}]},
+                {"role": "user", "content": "hi"}]})
+        self.assertEqual(str(raised.exception),
+                         "messages[0].content[1].type: content parts of type 'image_url' are not supported (text is)")
+
+    def test_messages_redacted_thinking_is_dropped(self):
+        msgs = {"messages": [
+            {"role": "user", "content": "haz un ls"},
+            {"role": "assistant", "content": [{"type": "redacted_thinking", "data": "ZW50cnk="},
+                                              {"type": "text", "text": "Running ls."}]},
+            {"role": "user", "content": "thanks"}]}
+        without = copy.deepcopy(msgs)
+        del without["messages"][1]["content"][0]
+        with_block = anthropic_to_messages(msgs)
+        without_block = anthropic_to_messages(without)
+        self.assertEqual(with_block[0], without_block[0])
+        self.assertEqual(self.service.encode_prompt(with_block[0], with_block[1], with_block[2]),
+                         self.service.encode_prompt(without_block[0], without_block[1], without_block[2]))
+
+    def test_chat_refusal_part_is_read_as_its_text(self):
+        messages, tools, kwargs = openai_to_messages({"messages": [
+            {"role": "user", "content": "do a thing"},
+            {"role": "assistant", "content": [{"type": "refusal", "refusal": "I cannot do that."}]},
+            {"role": "user", "content": "ok"}]})
+        self.assertEqual(messages[1]["content"], "I cannot do that.")
+        self.assertIn("I cannot do that.", self.template.render(messages, tools=tools, **kwargs))
+
+    def test_text_and_image_requests_render_as_before(self):
+        parts = [{"role": "user", "content": [{"type": "text", "text": "haz un ls"}]},
+                 {"role": "assistant", "content": [{"type": "text", "text": "file.txt"}]}]
+        plain = [{"role": "user", "content": "haz un ls"}, {"role": "assistant", "content": "file.txt"}]
+        for convert in (openai_to_messages, anthropic_to_messages):
+            with self.subTest(convert=convert.__name__):
+                self.assertEqual(self.service.encode_prompt(*convert({"messages": parts})),
+                                 self.service.encode_prompt(*convert({"messages": plain})))
+        chat = openai_to_messages({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "describe"},
+                                         {"type": "image_url", "image_url": "image.png"}]}]})
+        self.assertIn("<|vision_start|><|image_pad|><|vision_end|>",
+                      self.template.render(chat[0], tools=chat[1], **chat[2]))
+        msgs = anthropic_to_messages({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "describe"},
+                                         {"type": "image", "source": {"type": "url", "url": "image.png"}}]}]})
+        self.assertIn("<|vision_start|><|image_pad|><|vision_end|>",
+                      self.template.render(msgs[0], tools=msgs[1], **msgs[2]))
+
+
 if __name__ == "__main__":
     unittest.main()
 
