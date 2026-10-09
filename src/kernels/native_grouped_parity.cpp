@@ -63,10 +63,11 @@ const char* name_of(int t) {
         case 14: return "Q6_K";
         case 7: return "Q5_1";
         case 8: return "Q8_0";
+        case 39: return "MXFP4";
         default: return "?";
     }
 }
-int block_values(int t) { return t == 20 || t == 7 || t == 8 ? 32 : t == 42 ? 64 : 256; }
+int block_values(int t) { return t == 20 || t == 7 || t == 8 || t == 39 ? 32 : t == 42 ? 64 : 256; }
 
 // `rows` rows of `n` values of format t: random bytes, then a finite fp16 scale in every block
 std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& rng) {
@@ -80,6 +81,8 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
             // exponent's top bits in the last: 0x1 / 0x2 there (0x9 / 0xA negative) keeps it in 2^-11 .. 2^-3
             const uint8_t nib = (uint8_t) ((sgn(rng) ? 0x8 : 0x0) | (1 + (byte(rng) & 1)));
             w[o + 55] = (uint8_t) ((w[o + 55] & 0x0F) | (nib << 4));
+        } else if (t == 39) {   // MXFP4: an E8M0 exponent byte, 2^(e - 128): 2^-13 .. 2^-6 like the fp16 scales
+            w[o] = (uint8_t) (126 - ex(rng));
         } else {   // the other formats start their block with the fp16 scale: 2^-13 .. 2^-6
             // (Q4_K / Q5_K: 2^-14 .. 2^-11, their 6-bit sub-scales multiply it by up to 63)
             const int e = (t == 12 || t == 13) ? 1 + ex(rng) % 4 : ex(rng);
@@ -231,6 +234,37 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
     g_fail += bad;
 }
 
+// The default kernels (the split formats' multi-entry and sub-warp row dots) against the one-row kernels
+// (iq_set_old_kernels: row_dot per entry), the model's shapes.  A sub-warp path that covers only part of a row
+// (row_dot_80_sub16 taken for a format whose rows are not 80 dot calls long) differs here, not against v1.
+void check_old(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& rng) {
+    Setup S(gu, dt, H, FF, 6, 4, 9, rng, s);
+    int bad = 0;
+    double worst = 0.0;
+    for (const int groups : {1, 3, 8, 24}) {
+        S.plan(groups, 0, rng);
+        k::iq_set_old_kernels(true);
+        const auto ref = S.result(false, 0, 0x00, s);
+        k::iq_set_old_kernels(false);
+        const auto got = S.result(false, 0, 0x00, s);
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < ref.size(); ++i) {
+            if (ref[i] == 0xFFFFFFFFu && got[i] == 0xFFFFFFFFu) continue;   // rows the call does not write
+            float a, b;
+            std::memcpy(&a, &ref[i], 4);
+            std::memcpy(&b, &got[i], 4);
+            num += std::fabs((double) a - b);
+            den += std::fabs((double) a);
+        }
+        const double rel = num / (den + 1e-30);
+        worst = std::max(worst, rel);
+        if (!(rel < 1e-5)) ++bad;   // the same values summed in another order at most
+    }
+    std::printf("%-8s/%-7s %5lld x %4lld  against the one-row kernels: rel %.2e  %s\n", name_of(gu), name_of(dt),
+                (long long) H, (long long) FF, worst, bad ? "FAIL" : "ok");
+    g_fail += bad;
+}
+
 // ------------------------------------------------------------------------------------------------ --bench
 // A window's 48 calls, one per layer, each with ITS OWN experts as the layers have: copies of the Setup's blobs in one
 // arena, so the weights stream from DRAM as in the engine.  (48 calls re-reading the same 28 experts - 73 MB, about an
@@ -345,10 +379,14 @@ int main(int argc, char** argv) {
 #ifdef STRATA_Q6K_EXPERTS
                    14,
 #endif
-                   8})        // STRATA_GU_FMTS
-        for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
+                   8, 39})    // STRATA_GU_FMTS
+        for (int dt : {20, 23, 42, 7, 8, 39}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     check(21, 23, 2560, 768, s, rng);
+    check(39, 39, 2560, 640, s, rng);                                   // MXFP4_MOE
+    check_old(18, 20, 2560, 640, s, rng);                               // UD-Q3_K_XL's IQ3_XXS / IQ4_NL
+    check_old(21, 20, 2560, 640, s, rng);
+    check_old(39, 39, 2560, 640, s, rng);
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);
     cudaStreamDestroy(s);
