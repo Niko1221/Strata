@@ -27,6 +27,11 @@ and their limits. Report what you actually measured and label estimates separate
   Strata 0.1.38, Swift-Qwen3.8-Flash-Next IQ2_XS, 131,072-token context, layer split across dual GPUs with RAM-tiered expert cache;
   measured deep-context prompt ingestion (73k–74k tokens at 100–250 tok/s, 18–23 tok/s decode) and production pipeline comparison against a 12B model.
 
+- [2026-10-09: Radeon 8060S / Ryzen AI Max+ 395 Strix Halo laptop (HP ZBook Ultra G1a, 70 W), 128 GB unified memory](../bench/results/2026-10-09-community-strix-halo-laptop-70w/README.md):
+  Strata v0.1.41 source build, ROCm 7.14.1, Unsloth UD-IQ4_XS, `docs/STRIX_HALO.md` §5 fast config with `--spec 5 --mtp-window 8192`;
+  4–6 fresh-process runs at 8,192 / 32,768 / 131,072 prompt tokens: prompt 969 / 1,067 / 1,031 tok/s, decode 59.2 / 57.8 / 42.0 tok/s
+  (medians). Prompt is power-limited (70 W package limit); needle 15/15, agentic 5/5.
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
