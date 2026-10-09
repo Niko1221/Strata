@@ -29,7 +29,7 @@ int main() {
                 auto& c=checks[i]; c.ids={1,2,(int)i+3};c.gdn={1,2,3};c.ple={4};c.used=i;
                 if(i==2) continue;   // incomplete: no stage parts
                 c.stage_parts.resize(stages);
-                for(size_t k=0;k<stages;++k) { c.stage_parts[k].gdn={5,6,(int)(7+k)}; c.stage_parts[k].tails={(int)k}; }
+                for(size_t k=0;k<stages;++k) { c.stage_parts[k].gdn={5,6,static_cast<uint8_t>(7+k)}; c.stage_parts[k].tails={static_cast<uint8_t>(k)}; }
             }
             const auto backup=checks;
             fail_after=n;
