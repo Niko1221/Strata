@@ -2590,7 +2590,7 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, eog_ids: set[int] | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
@@ -2654,9 +2654,20 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
+        # **THE IDS A REPLY ENDS ON COME FROM THE MODEL'S OWN TOKENIZER, NOT FROM LITERALS BPE'd WITH IT.**
+        # `main` works them out from the pack (`eog_ids`); the literals below are the fallback for a tokenizer
+        # with no pack metadata behind it.
+        #
+        # WHY THE LITERALS ALONE ARE WRONG.  `encode("<|im_end|>")` is ONE id only where that string is a real
+        # special of the vocabulary.  On qwen35 it is (248046), so the old line was right for the family it was
+        # written for - and on glm4 it is SIX ORDINARY TOKENS, `['<','|','im','_end','|','>']`.  A stop set
+        # holding `'<'` = 27 ends a GLM reply at the first less-than sign.  Measured: with that set, a reply cut
+        # at 44 tokens reported `length` while the engine had in fact stopped on `<|user|>` - the wrong answer
+        # twice over, since GLM's end-of-turn token was not in the set at all.
+        self.stop_ids = set(eog_ids) if eog_ids is not None else set(
+            tokenizer.encode(IM_END, parse_special=True) +
+            tokenizer.encode("<|endoftext|>", parse_special=True))
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -3172,6 +3183,23 @@ class Service:
         the control tokens the template writes are control tokens."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
+        if kwargs.get("enable_thinking") is False and prompt.endswith("<think>"):
+            # A TEMPLATE THAT OPENS THE THINKING BLOCK WHATEVER IT IS TOLD, so thinking off has to close it here.
+            # glm5-next is the one, and every number below comes from the template its pack carries
+            # (glm-packs/*/tokenizer/chat_template.jinja - not the serve/chat_template.jinja the default model
+            # ships): its generation prompt is always `<|assistant|><think>` (line 256), it tests no
+            # `enable_thinking` at all, and an effort it does not know - `none`, and also `medium`/`xhigh` -
+            # becomes `max` (line 2).  So `reasoning_effort: "none"` thought at full length.  The empty block is
+            # that template's own shape for a past turn that did not think (`{{ '<think></think>' }}`, line 152),
+            # so this asks for what the model already writes itself.
+            # The trailing-tag test is what keeps this to that template: a prompt ending in a bare `<think>` with
+            # thinking off IS that generation prompt.  Every other family closes its own block there, so its
+            # prompt does not end on the open tag - the default template's thinking-off tail is the closed block
+            # `<think>\n\n</think>\n\n` (serve/chat_template.jinja:179) - and its render is left exactly as it was.
+            # Appended before `unmark_think_literals` on purpose: the appended tag holds no mark, so it is not one
+            # of the spans that are encoded as ordinary text, and appending at the end cannot move the spans
+            # before it.
+            prompt += "</think>"
         if not changed:
             return self.tok.encode(prompt, parse_special=True)
         prompt, plain = unmark_think_literals(prompt, self.literals)
@@ -5662,6 +5690,7 @@ def main() -> int:
     if cfg.get("tokenizer"):
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()
+    eog_ids: set[int] | None = None
     tpath = Path(a.tokenizer)
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
@@ -5673,7 +5702,34 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        # **THE MODEL'S OWN PRE-TOKENIZER, NOT THE DEFAULT.**  The split before BPE decides the ids for a given
+        # text, and it is not the same for every family Strata runs: glm5-next declares `glm4`, whose digit rule
+        # is `\p{N}{1,3}` against qwen35's `\p{N}`.  The pack records it (tools/strata_tokenizer.py's `extract`
+        # writes it), so read it - a GLM prompt tokenized with the qwen35 split round-trips perfectly and reaches
+        # the model as the wrong tokens.
+        cfgjson = tpath / "tokenizer.json"
+        tcfg = json.loads(cfgjson.read_text(encoding="utf-8")) if cfgjson.exists() else {}
+        tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre", "qwen35"))
+
+        # **THE IDS A REPLY ENDS ON, FROM THE MODEL ITSELF.**  Every family declares them in the GGUF and the pack
+        # keeps them: `eos_token_id` is the obvious one, and `eot_token_id` / `eom_token_id` are the ones a chat
+        # turn actually ends on for some models - glm5-next's is `<|user|>` (154827), NOT its eos 154820.  Without
+        # these the server only learns a reply is over when the engine stops sending tokens, and reports `length`
+        # for a turn that ended on its own end-of-turn token.
+        #
+        # A literal like `<|im_end|>` is added ONLY when this vocabulary tokenizes it as one token, which is the
+        # test for "it is a real special here".  On qwen35 both literals pass and the set is exactly the two it
+        # has always been; on glm4 `<|im_end|>` splits into six ordinary tokens and is correctly dropped.
+        eog_ids = {int(v) for k, v in (tcfg.get("special_ids") or {}).items()
+                   if k in ("tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id",
+                            "tokenizer.ggml.eom_token_id")}
+        for lit in (IM_END, "<|endoftext|>"):
+            try:
+                one = tok.encode(lit, parse_special=True)
+            except (KeyError, ValueError):
+                one = []
+            if len(one) == 1:
+                eog_ids.add(one[0])
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:
@@ -5733,7 +5789,7 @@ def main() -> int:
     tpl = tpath / "chat_template.jinja"
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
-                  sampling_defaults=sampling_defaults,
+                  sampling_defaults=sampling_defaults, eog_ids=eog_ids,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default

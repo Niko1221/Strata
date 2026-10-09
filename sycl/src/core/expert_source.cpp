@@ -468,8 +468,11 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
         for (int64_t layer = 0; layer < n_layers; ++layer) {
             const size_t i = (size_t) layer;
             const uint64_t bytes = (uint64_t) layout.fmt[i].bytes;
-            if (layout.offset[i] != at || bytes == 0 || layout.bytes[i] != bytes ||
-                bytes > std::numeric_limits<uint64_t>::max() / (uint64_t) n_expert) {
+            // The twin of the CUDA file's check: a zero blob in both places is a layer with NO routed experts
+            // (glm5-next's dense-lead blocks), kept by `expert_layout_load` so a layer index stays a block index.
+            const bool no_experts = bytes == 0 && layout.bytes[i] == 0;
+            if (layout.offset[i] != at || (!no_experts && (bytes == 0 || layout.bytes[i] != bytes ||
+                bytes > std::numeric_limits<uint64_t>::max() / (uint64_t) n_expert))) {
                 err = "FileExpertSource: the native expert layout is invalid at layer " + std::to_string(layer);
                 return false;
             }

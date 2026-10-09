@@ -1,6 +1,8 @@
 
 // src/core/layer.cpp - the GDN layer, composed.  See the header for the operation order and its traps.
 #include "strata/core/layer.hpp"
+
+#include "gemv_util.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -42,137 +44,13 @@
 #include <vector>
 namespace strata::core {
 namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; }
-namespace {constexpr int Q8K_BYTES_PER_BLOCK = 292;
-constexpr int Q8K_ELEMS_PER_BLOCK = 256;
-constexpr float RMS_EPS = 1e-6f;
+// ---- the quantized-projection plumbing, now shared with the second architecture's layer file.
+// `plane_ptrs`, `sform_of`, `gemv_quantized`, `project_bf16` and the switches they read live in
+// `src/core/gemv_util.{hpp,cpp}`; this file keeps the embedding name, which is its own.
+namespace {
 const std::string EMBEDDING_NAME = "token_embd.weight";
-// qwen4exp.attention.layer_norm_rms_epsilon, used for BOTH norms here
-/// A Q8_K buffer needs `n` a multiple of 256 and `n/256` blocks of 292 bytes.
-uint64_t q8k_bytes(int64_t n) { return (uint64_t) (n / Q8K_ELEMS_PER_BLOCK) * Q8K_BYTES_PER_BLOCK; }
-/// `s_gemv_q8k` takes the canonical-form attributes; a `WeightRef` carries them, and a tensor that is NOT
-/// quantized has none.  Returns false and names the tensor rather than building a form out of zeroes - which
-/// would decode every code as `0 + bias` and produce a perfectly finite wrong answer.
-bool sform_of(const WeightRef& r, strata::kernels::SForm& f, const std::string& name, std::string& err) {    if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? strata::kernels::Codebook::Iq4Nl : strata::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
-// carried, not derived - see the note on `SForm::act_kind`
-return true;}
-/// The three canonical planes of a quantized tensor, located INSIDE the loaded region.
-//
-//
-// **THIS FUNCTION USED TO RE-DERIVE THE LAYOUT, AND THAT IS HOW A WIDTH BUG SURVIVED A ROUND.**  It computed
-/// `n_groups = n_in / group_elems` and then `scales_bytes = n_out * n_groups * sizeof(float)` - 4 bytes per
-/// scale for every tensor.  90 of the 303 quantized tensors hold fp16 scales in the pack (all 58 Q2_0 expert
-/// tensors, plus Q4_0, Q5_0, Q8_0 and IQ4_NL), so for those the computed plane was TWICE the real one and the
-/// three planes did not add up to the tensor.  The first diagnosis was "the manifest's `group_elems` must be
-/// wrong, the real group is 64"; it is not, and an audit of all 303 tensors against `scales_fp16` found zero
-/// inconsistencies.  **The unexamined input was the scale WIDTH, not the group COUNT.**
-//
-//
-// The loader now widens fp16 scales to f32 on the way into the arena and records the resulting plane sizes in
-/// the `WeightRef`, so this function has nothing left to derive - it reads what was loaded.  The redundancy is
-/// deliberate: the sizes come from ONE place (the index, checked against the manifest by `pack_index.py` and
-/// against the span by the loader), and this function only checks that they describe the tensor it was given.
-//
-//
-// **THE PLANE KEY IS `offsets`, NOT `mins`, AND THAT COST 136 MiB.**  `tools/pack_index.py` and
-/// `tools/pack_budget.py` both looked for `mins` and both therefore omitted the offset plane of 54 Q4_K/Q5_K
-/// tensors - so the arena was sized without it AND the bytes were never copied.  Two tools agreeing is only
-/// evidence when they do not share the assumption that is wrong.  This function refuses rather than guessing,
-/// which is what caught it.
-struct Planes {    const uint8_t* codes = nullptr;    const float* scales = nullptr;    const float* offset = nullptr;
-///< null when the form has none
-};
-bool plane_ptrs(const WeightRef& r, const std::string& name, Planes& out, std::string& err) {
-// S2, S4 AND S8 ALL SPLIT THE SAME WAY.  The plane LOCATION does not depend on the code width - the three
-// sizes come from the index and are checked against the tensor below - so the guard is here to catch a
-// tensor that is not quantized at all, not to pick a decoder.  WHICH KERNEL reads the planes is the
-// caller's choice and the two differ: an S2 tensor's activation contract is Q8_0 (`s2_gemv_q8`) while a
-// K-quant's is Q8_K (`s_gemv_q8k`).  This used to accept only 4 and 8, which refused `attn_q` - a Q2_0
-// tensor and the reason the QSA layer could not be composed at all.
-if (r.code_bits != 2 && r.code_bits != 4 && r.code_bits != 8) {        err = name + ": code_bits " + std::to_string(r.code_bits) + " is not an S2/S4/S8 form";        return false;    }    const uint64_t end = r.codes_bytes + r.scales_bytes + r.offset_bytes;    if (r.codes_bytes == 0 || r.scales_bytes == 0 || end != r.bytes) {        char buf[320];        std::snprintf(buf, sizeof buf,                      "%s: the planes add up to %llu B but the tensor is %llu B (codes %llu, scales %llu, "                      "offsets %llu) - what the loader recorded is not the layout that was loaded",                      name.c_str(), (unsigned long long) end, (unsigned long long) r.bytes,                      (unsigned long long) r.codes_bytes, (unsigned long long) r.scales_bytes,                      (unsigned long long) r.offset_bytes);        err = buf;        return false;    }    if (r.has_offset != (r.offset_bytes != 0)) {        err = name + ": has_offset is " + std::to_string(r.has_offset ? 1 : 0) + " but the offset plane is " +              std::to_string(r.offset_bytes) + " B";        return false;    }    const uint8_t* base = (const uint8_t*) r.data;    out.codes = base;    out.scales = (const float*) (base + r.codes_bytes);    out.offset = r.offset_bytes ? (const float*) (base + r.codes_bytes + r.scales_bytes) : nullptr;    return true;}
-constexpr int TPR = 32;
-bool native_bf16_projections = false;
-bool native_flash_attn_short = false;
-
-void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weights, float* out,
-                  int64_t n_in, int64_t n_out, bool split, void* stream) {
-    using namespace strata::kernels;
-    if (native_bf16_projections) bf16_gemv_fp32_mmvf(x, weights, out, n_in, n_out, stream);
-    else if (split) bf16_gemv_split(x_bf16, weights, out, n_in, n_out, TPR, stream);
-    else bf16_gemv(x_bf16, weights, out, n_in, n_out, stream);
-}
-///< threads per row for the row-split GEMVs.
-/// **MEASURED, NOT ASSUMED, AND 64 IS NOT BETTER.**  `dense_pass.exe` drives the same split kernels at
-/// threads_per_row 64 and reports 248.5 GB/s, so matching it looked like free performance.  It is not:
-/// TPR=64 gives 11.75 tok/s against 32's 11.99 with experts, and 20.19 against 20.26 without - identical
-/// inside noise and marginally worse on both.  That is also what the stage table predicts, because the GEMVs
-/// are only ~16% of a token, so a few percent there cannot move the total.  Kept at 32; the sweep that would
-/// actually settle it is per-tensor, not global, and belongs with the fusion work rather than before it.
-///< threads per row for the row-split GEMVs
-/// Writes the sequence number into MAPPED PINNED memory.  A KERNEL, not cudaEventRecord - round 199 found
-/// that an event record inside a capture is silently dropped, while this is captured normally and the host can
-/// read its result MID-GRAPH.  One thread: it is a store.
-// (the ring kernel lives in src/kernels/cuda/elementwise.cu; this file is HOST code)
-/// WHICH ACTIVATION A QUANTIZED WEIGHT WANTS, AND IT IS A PROPERTY OF THE **TENSOR**, NOT OF ITS ROLE.
-//
-//
-// Rounds 205-215 ran `gdn_layer` and `qsa_layer` on the assumption that a name implies a family: `attn_qkv` is
-/// a K-quant, `attn_q` is Q2_0, and so on.  **The pack does not work that way.**  The same name is quantized
-/// per LAYER, and the spread is wide:
-//
-//
-//     attn_qkv     IQ4_XS x13, Q3_K x18, Q2_0 x1,  Q4_K x4      (36 GDN layers)
-///     attn_gate    Q3_K x25,  IQ4_XS x4, Q4_K x3,  Q2_0 x4
-///     attn_q       Q3_K x6,   IQ4_XS x4, Q2_0 x2                (12 QSA layers)
-//
-//
-// `docs/activation-contract.md` fixes the rule per TYPE, and it is short:
-//
-//
-//     code_bits == 2           ->  Q8_0,  via `quantize_q8_0` + `s2_gemv_q8`
-///     anything else quantized  ->  Q8_K,  via `quantize_q8_K` + `s_gemv_q8k_split`
-//
-//
-// Getting it wrong is worth 0.6-1.4% on the GEMV - a plausible vector, not a broken one - which is exactly
-/// what Gate C1 exists to find and what nothing before C1 would have.  `s_gemv_q8k`'s own guard is what caught
-/// it here (`code_bits 2 has no Q8_K contract`).
-//
-//
-// `x80` and `xq8k` are the two quantized images of the SAME activation; a caller produces both once and this
-/// picks.  Producing only the one it thinks it needs is how the assumption gets baked in again.
-bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::SForm& f, const uint8_t* x80, const uint8_t* xq8k,                    float* y, int64_t n_in, int64_t n_out, const std::string& name, void* stream,                    std::string& err, const float* x_f32 = nullptr, bool x_q8_1_ready = false) {
-    using namespace strata::kernels;
-    if (w.native_data) {
-        if (!x_f32 || !w.native_q8_1 || !stream || n_in != w.ne0 || n_out != w.ne1) {
-            err = name + ": native projection requires matching FP32 input and session scratch";
-            return false;
-        }
-        try {
-            // Plan v0.3 P3: a caller whose previous native projection quantized the SAME x into the shared
-            // scratch, with no native projection in between, passes x_q8_1_ready and the quantize is skipped.
-            if (!x_q8_1_ready) native_quantize_q8_1(x_f32, w.native_q8_1, (int) n_in, 1, stream);
-            native_mmvq(w.native_type, w.native_data, w.native_q8_1, y,
-                        (int) n_in, (int) n_out, 1, stream);
-        } catch (const std::exception& error) {
-            err = name + ": " + error.what();
-            return false;
-        }
-        return true;
-    }
-    if ((w.code_bits == 2 || !w.wants_q8k()) ? !x80 : !xq8k) {
-        err = name + ": missing canonical quantized activation";
-        return false;
-    }
-    if (w.code_bits == 2) {
-// S2 carries no offset plane and no SForm: its attributes are fixed (2 bits, group 64, bias -1), which
-// is why `s2_gemv_q8` takes neither.
-if (w.has_offset || p.offset != nullptr) {            err = name + ": an S2 form must have no offset plane";            return false;        }        if (w.group_elems != 64 || w.code_bias != -1) {            err = name + ": an S2 form must be group 64 with bias -1, this one is group " +                  std::to_string(w.group_elems) + " with bias " + std::to_string(w.code_bias);            return false;        }        s2_gemv_q8(x80, p.codes, p.scales, y, n_in, n_out, TPR, stream);        return true;    }
-// **A LEGACY 4/8-BIT FORM WANTS Q8_0, NOT Q8_K, AND `code_bits` CANNOT TELL YOU WHICH.**  This used to be
-// `code_bits == 2 ? Q8_0 : Q8_K`, which is CORRECT ONLY BY LUCK: every legacy tensor in this pack apart
-// from `ffn_down_shexp` is Q2_0, whose attributes happen to be S2's.  Q5_0 and Q5_K are both 8-bit with
-// bias -16 and differ only in `has_offset`; IQ4_NL and IQ4_XS differ in NOTHING the S-form carries.  The
-// kind therefore comes from the manifest's `source_type`, through the index (LEDGER L54/L55).
-if (!w.wants_q8k()) {        s_gemv_q8_0_split(x80, p.codes, p.scales, p.offset, y, n_in, n_out, f, stream);        return true;    }    s_gemv_q8k_split(xq8k, p.codes, p.scales, p.offset, y, n_in, n_out, f, stream);    return true;}}
-// namespace
+using namespace strata::core::gemv;
+}  // namespace
 void layer_set_native_bf16(bool enabled) { native_bf16_projections = enabled; }
 void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short = enabled; }
 namespace { bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false; }
@@ -1267,8 +1145,8 @@ bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockB
     return true;
 }
 
-bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
-             float* logits, void* stream, std::string& err) {
+bool lm_head_project(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb, float* logits,
+                     void* stream, std::string& err) {
     const WeightRef* wo = tables.find("output.weight");
     if (!wo) { err = "output.weight is missing"; return false; }
     strata::kernels::SForm form;
@@ -1279,10 +1157,15 @@ bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffe
         err = "lm_head: n_embd is not a multiple of 256";
         return false;
     }
-    if (!lm_head_mix(tables, g, bb, stream, err)) return false;
     strata::kernels::quantize_q8_K(bb.mixed, bb.head_q8k, g.n_embd, stream);
     return gemv_quantized(*wo, planes, form, bb.head_q8k, bb.head_q8k, logits,
                           g.n_embd, wo->ne1, "output.weight", stream, err);
+}
+
+bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
+             float* logits, void* stream, std::string& err) {
+    if (!lm_head_mix(tables, g, bb, stream, err)) return false;
+    return lm_head_project(tables, g, bb, logits, stream, err);
 }
 // ================================ ONE WHOLE BLOCK ================================
 uint64_t block_buffers_bytes(const ModelGeometry& g) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    uint64_t n = 0;    n += (uint64_t) g.hc * g.n_embd * 4;

@@ -61,6 +61,27 @@ private:
     void* ctx_ = nullptr;
 };
 
+/// A DENSE product: ONE matrix against ALL of `T` activation rows in one GEMM.
+///
+/// `Product` above is shaped for a group of experts - `bounds` says which activation rows each one owns and
+/// `ids` remaps the output rows.  A dense matrix is the degenerate case (one matrix, every row) and it is the
+/// case that decides glm5-next's prompt path: its pre-section is entered once per EIGHT tokens, so a 4,096-token
+/// chunk reads each dense weight matrix 512 times - 722 GB of reads on one stage whose weights are 1.4 GB - while
+/// the fold that the eight columns exist to pay for only ever divides the read by eight.  One MMQ over all the
+/// rows reads each of them once, which is the whole difference between a GEMV repeated T/8 times and a GEMM.
+///
+/// `w` is the native `ggml_type` blocks of an [N, K] matrix (GGUF's own layout: K the contiguous dimension,
+/// `matrix_bytes(type, N, K)` bytes).  `x` is fp32 with `ldx` floats to a row (< 0 means K), `y` fp32 with `ldy`
+/// floats to a row (< 0 means N).  Rows of `x` map to rows of `y` one for one.
+///
+/// Returns false - having written nothing - when this build has no MMQ, when `ggml_type` is not covered, when
+/// `K` is not a whole number of 256-value chunks (llama.cpp's MMQ loads the weights in those, and the chunk past
+/// a partial row would read the next row's bytes), when `fits` has no tile for an [N, K] matrix, or when the
+/// allocation fails.  The caller falls back to its own path.  The state (the q8_1 activation image, the identity
+/// row map, the bounds of one matrix) is per DEVICE and grown to the largest product asked of it.
+bool dense(const void* w, int ggml_type, float* y, int64_t ldy, const float* x, int64_t ldx, int64_t T, int64_t N,
+           int64_t K, void* stream);
+
 /// A GGUF-native expert (gate at `gate`, up at `up`, down at `down`, each its GGUF rows) into a group buffer's
 /// slot: gate rows then up rows at `gu_dst`, down at `d_dst`.
 void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const void* down, size_t d_bytes,

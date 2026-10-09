@@ -135,9 +135,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 const int it = 50;
                 const auto gu = is512 ? cpu::iq512_gu_rows : cpu::iq256_gu_rows;
                 auto t0 = std::chrono::steady_clock::now();
-                for (int i = 0; i < it; ++i) gu(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a, 1, f1, 0, (int) FF);
+                for (int i = 0; i < it; ++i) gu(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a, 1, f1, 0, (int) FF, 0.0f);
                 auto t1 = std::chrono::steady_clock::now();
-                for (int i = 0; i < it; ++i) gu(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a, NT, ffp, 0, (int) FF);
+                for (int i = 0; i < it; ++i) gu(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a, NT, ffp, 0, (int) FF, 0.0f);
                 auto t2 = std::chrono::steady_clock::now();
                 const double us1 = std::chrono::duration<double, std::micro>(t1 - t0).count() / it;
                 const double usn = std::chrono::duration<double, std::micro>(t2 - t1).count() / it;
@@ -275,6 +275,143 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                         NT, usn, (double) (f.bytes - f.down_off) / usn / 1e3, usg,
                         (double) (f.bytes - f.down_off) / usg / 1e3);
         }
+        // (b4) THE SWIGLU CLAMP, which glm5-next's routed experts carry (`swiglu_clamp_exp` 10.0 on every
+        // layer) and the reference applies: `out = min(silu(gate), limit) * clamp(up, -limit, +limit)`.  The
+        // fixture above is N(0,1) and its gates land wherever the quantized weights put them, which is fine
+        // for the arithmetic and useless here, because a clamp that never binds is not tested - that is how
+        // the missing clamp survived a 30/32 ladder match.  So this pass scales the activation until the
+        // gates are past the limit, ASSERTS that they are, and checks the clamped form against a double
+        // reference built from the same dequantized weights - independent of the five kernel files that now
+        // carry the same three lines.  It runs twice: at the model's own limit, and at one small enough to
+        // separate the clamp's two readings (the note at the rival check below says why 10.0 cannot).
+        auto swiglu_arm = [&](double kLim) {
+            double gsum = 0;
+            for (int k = 0; k < NT; ++k)
+                for (int64_t r = 0; r < FF; ++r) {
+                    double gv = 0;
+                    for (int64_t i = 0; i < H; ++i) gv += (double) G[r * H + i] * x[k * H + i];
+                    gsum += std::fabs(gv);
+                }
+            // The dots are linear in the activation, so scaling `x` by `sc` scales every gate (and every up)
+            // by `sc`: this picks the scale, and needs no second sweep over the weights.  The mean |gate| is
+            // what it is aimed at, NOT the largest one - a fixture scaled so that only its extreme gate clears
+            // the limit has a handful of clamped pairs, and their contribution to the down projection is then
+            // smaller than the Q8_K activation rounding the check has to tolerate, so the rival readings come
+            // out the same distance away as the reference and the case proves nothing.  That is exactly what
+            // aiming at the maximum produced here first: 159 of 1920 pairs bound and every reading 1.29e-02
+            // from the kernel's output.  At 1.5x the limit on the MEAN, half of them bind.
+            const double sc = gsum > 0 ? 1.5 * kLim * (double) (NT * FF) / gsum : 1.0;
+            std::vector<float> xs((size_t) NT * H);
+            for (size_t i = 0; i < xs.size(); ++i) xs[i] = (float) (x[i] * sc);
+            std::vector<float> want_c((size_t) NT * H), want_r((size_t) NT * H), want_n((size_t) NT * H);
+            size_t n_gate = 0, n_up = 0, n_dn = 0;   // the silu above / the up above / the up below
+            for (int k = 0; k < NT; ++k) {
+                std::vector<double> hc(FF), hr(FF), hn(FF);
+                for (int64_t r = 0; r < FF; ++r) {
+                    double gv = 0, uv = 0;
+                    for (int64_t i = 0; i < H; ++i) {
+                        gv += (double) G[r * H + i] * xs[k * H + i];
+                        uv += (double) U[r * H + i] * xs[k * H + i];
+                    }
+                    const double s = gv / (1.0 + std::exp(-gv));                  // ggml_silu, f32's form
+                    const double uc = (std::min)((std::max)(uv, -kLim), kLim);    // the up: BOTH sides
+                    const double gc = (std::min)(gv, kLim);                       // the rival's raw gate
+                    hc[r] = (std::min)(s, kLim) * uc;                             // the reference
+                    hr[r] = gc / (1.0 + std::exp(-gc)) * uc;                      // rival: the raw gate clamped
+                    hn[r] = s * uv;                                               // rival: no clamp
+                    n_gate += s > kLim;
+                    n_up += uv > kLim;
+                    n_dn += uv < -kLim;
+                }
+                for (int64_t r = 0; r < H; ++r) {
+                    double oc = 0, orr = 0, on = 0;
+                    for (int64_t i = 0; i < FF; ++i) {
+                        oc += (double) D[r * FF + i] * hc[i];
+                        orr += (double) D[r * FF + i] * hr[i];
+                        on += (double) D[r * FF + i] * hn[i];
+                    }
+                    want_c[k * H + r] = (float) oc;
+                    want_r[k * H + r] = (float) orr;
+                    want_n[k * H + r] = (float) on;
+                }
+            }
+            cpu::NativeFmt fc = f;
+            fc.swiglu_limit = (float) kLim;
+            cpu::NativeFmt fz = f;   // the same activation with no clamp: what the kernel did before the field
+            fz.swiglu_limit = 0.0f;
+            std::vector<std::vector<uint8_t>> act2(NT, std::vector<uint8_t>(cpu::kNativeActBytes));
+            std::vector<std::vector<uint8_t>> hq2(NT, std::vector<uint8_t>(cpu::kNativeHBytes));
+            std::vector<std::vector<float>> ff2(NT, std::vector<float>(FF));
+            std::vector<float> got_c2((size_t) NT * H), got_z2((size_t) NT * H);
+            const void* a2[NT];
+            float* f2[NT];
+            const void* h2[NT];
+            float* o2[NT];
+            for (int k = 0; k < NT; ++k) {
+                cpu::native_quant_act(fc, xs.data() + k * H, act2[k].data());
+                a2[k] = act2[k].data();
+                f2[k] = ff2[k].data();
+            }
+            cpu::native_gu_rows(fc, blob.data(), a2, NT, f2, 0, (int) FF);
+            for (int k = 0; k < NT; ++k) {
+                cpu::native_quant_h(fc, ff2[k].data(), hq2[k].data());
+                h2[k] = hq2[k].data();
+                o2[k] = got_c2.data() + k * H;
+            }
+            cpu::native_down_rows(fc, blob.data(), h2, NT, o2, 0, (int) H);
+            cpu::native_gu_rows(fz, blob.data(), a2, NT, f2, 0, (int) FF);
+            for (int k = 0; k < NT; ++k) {
+                cpu::native_quant_h(fz, ff2[k].data(), hq2[k].data());
+                o2[k] = got_z2.data() + k * H;
+            }
+            cpu::native_down_rows(fz, blob.data(), h2, NT, o2, 0, (int) H);
+            const double rc = rel(got_c2, want_c);   // the clamped form against its own transcription
+            const double rz = rel(got_c2, got_z2);   // clamped against the same activation unclamped
+            const double rr = rel(got_c2, want_r);   // against the rival: the raw gate clamped
+            const double rn = rel(got_c2, want_n);   // against the rival: no clamp
+            std::printf("          swiglu clamp (limit %.0f): of %d gate/up pairs, silu(gate) above %.0f: %zu, "
+                        "up above: %zu, up below: %zu; vs reference rel %.2e, vs the same activation unclamped "
+                        "%.2e, vs the raw-gate reading %.2e, vs no clamp %.2e\n",
+                        kLim, NT * (int) FF, kLim, n_gate, n_up, n_dn, rc, rz, rr, rn);
+            // Every way this case could prove nothing is named rather than passed silently.  The three counts
+            // are the fixture's: both sides of the up clamp and the silu's own clamp each have to be reached,
+            // or the arm that is not reached is not tested.
+            if (n_gate == 0 || n_up == 0 || n_dn == 0) {
+                std::printf("          swiglu clamp: THE FIXTURE DID NOT REACH EVERY SIDE (gate %zu, up + %zu, "
+                            "up - %zu) - the case proves nothing\n", n_gate, n_up, n_dn);
+                ++failures;
+            }
+            if (!(rc < 3e-2)) {   // the same bar as the unclamped reference above (Q8_K activation rounding)
+                std::printf("          swiglu clamp MISMATCH (rel %.2e)\n", rc);
+                ++failures;
+            }
+            if (rz < 1e-2) {   // if the clamp bound, this cannot be small: the two kernels are the same code
+                std::printf("          swiglu clamp DID NOT BIND in the kernel (clamped vs unclamped %.2e)\n", rz);
+                ++failures;
+            }
+            if (rn < 1e-2) {   // no clamp at all has to be far, whatever the limit
+                std::printf("          swiglu clamp: the no-clamp rival is too close (%.2e)\n", rn);
+                ++failures;
+            }
+            // The raw-gate reading is separable only when the limit is small.  On a gate the clamp catches, the
+            // two readings are `limit` and `silu(limit)`, which differ by limit*e^-limit/(1+e^-limit): 4.5e-4 at
+            // the model's own 10.0 and 2.7e-1 at 1.0.  This path's Q8_K activation rounding is 1.5e-2 (measured
+            // above: rc), so a limit of 10 CANNOT tell the readings apart and this case must not claim it did -
+            // that is what the second arm is for.
+            const double sep = kLim * std::exp(-kLim) / (1.0 + std::exp(-kLim));
+            if (sep > 1e-2) {
+                if (rr < 1e-2) {
+                    std::printf("          swiglu clamp: the raw-gate rival is too close (%.2e)\n", rr);
+                    ++failures;
+                }
+            } else {
+                std::printf("            the raw-gate reading lands %.1e from the reference at limit %.0f, under "
+                            "this path's rounding: indistinguishable here, which is what the limit-1.0 arm is for\n",
+                            sep, kLim);
+            }
+        };
+        swiglu_arm(10.0);   // the model's own swiglu_clamp_exp, on every layer
+        swiglu_arm(1.0);    // small enough that the two readings of the clamp separate
     }
     // (c) the GPU: one group holding the NT entries
     {

@@ -624,9 +624,41 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
+        } else if (mode_ >= 7) {
+            // The same two row splits as modes 5 and 6, over a job that carries an expert's three roles as the
+            // separate slices the GGUF holds them in, so no blob is ever assembled.  Same kernels, same bits:
+            // `native_rows_sliceable` is what the caller checked to get here, and at a group size it passes the
+            // blob path would have reached these same per-token dots.  `per` is the layer's own row count, as in
+            // mode 5 - glm5-next's expert is 2048 rows of gate and 4096 of down.
+            const int per = mode_ == 7 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
+            const int64_t g0 = mrows_ * (int64_t) i / mtasks_, g1 = mrows_ * (int64_t) (i + 1) / mtasks_;
+            for (int64_t r = g0; r < g1;) {
+                const int e = (int) (r / per), r0 = (int) (r % per);
+                const int r1 = (int) std::min<int64_t>(per, r0 + (g1 - r));
+                SplitBufMulti& sb = split_multi_[(size_t) e];
+                if (mode_ == 7) {
+                    float* ff[MAXT];
+                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                    // `native_gu_rows_slice` may reach the multi-token kernel THROUGH the slices, which is what a
+                    // chunk is paying for; `STRATA_NO_SLICE_MT` puts it back to `native_gu_rows_ptrs`.  See the
+                    // note in native_expert.cpp for why the blob was never the point.
+                    native_gu_rows_slice(*nfmt_, mjobs_[e].gate, mjobs_[e].up, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
+                } else {
+                    const void* hq[MAXT];
+                    for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                    native_down_rows_slice(*nfmt_, mjobs_[e].down, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
+                }
+                r += r1 - r0;
+            }
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows
-            const int per = mode_ == 5 ? FF : H;
+            //
+            // **THE ROW COUNT PER EXPERT IS THE LAYER'S OWN, NOT `FF`/`H`.**  Those two are qwen4exp's 640 and
+            // 2560; glm5-next's expert is 2048 rows of gate and 4096 of down.  `nfmt_` is set for exactly these
+            // two modes, so this reads the same geometry the kernels below are handed - a row count taken from
+            // the first family would have split each expert's rows at the wrong multiple, which does not fault,
+            // it computes.
+            const int per = mode_ == 5 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
             const int64_t g0 = mrows_ * (int64_t) i / mtasks_, g1 = mrows_ * (int64_t) (i + 1) / mtasks_;
             for (int64_t r = g0; r < g1;) {
                 const int e = (int) (r / per), r0 = (int) (r % per);
@@ -634,16 +666,25 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 SplitBufMulti& sb = split_multi_[(size_t) e];
                 if (mode_ == 5 && q2_native_kernels(nfmt_->gu_type)) {
                     // a native Q2_0 pack: gate and up rows on the Q2_0 kernels, then SwiGLU
-                    thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
+                    thread_local float gbuf[MAXT][kMaxExpertFF], ubuf[MAXT][kMaxExpertFF];
                     float* gp[MAXT];
                     float* up[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
                     const int nbk = (int) (nfmt_->n_embd / 64);
                     q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
                     q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                    // The models that reach a native Q2_0 layer carry no `swiglu_clamp_*` key, so this is 0 and the
+                    // line computes what it always did; the clamp is here so that the one place in this file that
+                    // writes a gate/up activation cannot be the one that ignores the geometry.  As everywhere else
+                    // it is the SILU'S OUTPUT that is clamped (above only, see native_expert.cpp), not the gate.
+                    const float lim = nfmt_->swiglu_limit;
+                    const bool cl = lim > 1e-6f;
                     for (int t = 0; t < mjobs_[e].nt; ++t)
-                        for (int r = r0; r < r1; ++r)
-                            sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+                        for (int r = r0; r < r1; ++r) {
+                            const float h = gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]));
+                            const float u = cl ? std::fmin(std::fmax(ubuf[t][r], -lim), lim) : ubuf[t][r];
+                            sb.ff[t][r] = (cl ? std::fmin(h, lim) : h) * u;
+                        }
                 } else if (mode_ == 5) {
                     float* ff[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
@@ -764,19 +805,22 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
         mjobs_ = jobs + b0;
         nfmt_ = &f;
-        mrows_ = (int64_t) nb * FF;
-        mtasks_ = phase_tasks(mrows_);
+        const int threads = n_ + (host_works_ ? 1 : 0);
+        mtasks_ = 3 * threads;
+        // Slices or an assembled blob: the caller set `gate` on every job or on none, and modes 7/8 are the same
+        // two row splits reading the slices instead.  They compute the same rows; see `native_rows_sliceable`.
+        const bool sliced = mjobs_[0].gate != nullptr;
+        mrows_ = (int64_t) nb * f.n_ff;   // the layer's own width - see the note on `per` in the worker
         const auto a = std::chrono::steady_clock::now();
-        run_phase(5, mtasks_);
+        run_phase(sliced ? 7 : 5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
+                if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
                 else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
         const auto c = std::chrono::steady_clock::now();
-        mrows_ = (int64_t) nb * H;
-        mtasks_ = phase_tasks(mrows_);
-        run_phase(6, mtasks_);
+        mrows_ = (int64_t) nb * f.n_embd;
+        run_phase(sliced ? 8 : 6, mtasks_);
         const auto d = std::chrono::steady_clock::now();
         ms_multi_gu += std::chrono::duration<double, std::milli>(b - a).count();
         ms_multi_q += std::chrono::duration<double, std::milli>(c - b).count();

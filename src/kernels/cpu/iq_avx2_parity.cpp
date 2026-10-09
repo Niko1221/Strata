@@ -67,7 +67,7 @@ int gu_variants() { return 0; }
 int down_variants() { return 0; }
 void gu_rows_v(int, int type, const uint8_t* blob, size_t gu_row, size_t up_off, const void* const* act, int nt,
                float* const* ff) {
-    cpu::iq256_gu_rows(type, blob, gu_row, up_off, (int) kH, act, nt, ff, 0, (int) kFF);
+    cpu::iq256_gu_rows(type, blob, gu_row, up_off, (int) kH, act, nt, ff, 0, (int) kFF, 0.0f);
 }
 void gate_rows_v(int, int type, const uint8_t* w, size_t row_bytes, const void* const* act, int nt, float* const* out) {
     cpu::iq256_rows(type, w, row_bytes, (int) kH, act, nt, out, 0, (int) kFF);
@@ -85,7 +85,7 @@ int gu_variants() { return cpu::iq256_variants(); }
 int down_variants() { return cpu::iq256_variants() & cpu::kIq256Vnni; }
 void gu_rows_v(int v, int type, const uint8_t* blob, size_t gu_row, size_t up_off, const void* const* act, int nt,
                float* const* ff) {
-    cpu::iq256_gu_rows_v(v, type, blob, gu_row, up_off, (int) kH, act, nt, ff, 0, (int) kFF);
+    cpu::iq256_gu_rows_v(v, type, blob, gu_row, up_off, (int) kH, act, nt, ff, 0, (int) kFF, 0.0f);
 }
 void gate_rows_v(int v, int type, const uint8_t* w, size_t row_bytes, const void* const* act, int nt, float* const* out) {
     cpu::iq256_rows_v(v, type, w, row_bytes, (int) kH, act, nt, out, 0, (int) kFF);
@@ -427,7 +427,7 @@ int bench(const std::vector<std::string>& pairs, const std::vector<int>& nts, in
         } else {
             ms.push_back({"kernels",
                           [&, gt](const uint8_t* blob, int nt) {
-                              cpu::iq256_gu_rows(gt, blob, f.gu_row, f.up_off, (int) kH, a.gup, nt, ff, 0, (int) kFF);
+                              cpu::iq256_gu_rows(gt, blob, f.gu_row, f.up_off, (int) kH, a.gup, nt, ff, 0, (int) kFF, 0.0f);
                           },
                           [&, dt](const uint8_t* blob, int nt) {
                               if (dt == 20) cpu::iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) kFF, a.dnp, nt, out, 0, (int) kH);

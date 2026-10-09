@@ -90,8 +90,30 @@ NATIVE_PLE_KEY = {"Q2_0", "Q8_0", "IQ3_XXS", "IQ4_XS"}
 KIND = {"BF16": "4", "F16": "5", "F32": "2"}
 
 
+# glm5-next's own forms.  The table above is keyed by Qwen4Exp's tensor NAMES, and the two families share a few
+# (`ssm_beta`, `ssm_norm`, `attn_norm`) that they do NOT store alike - GLM's ssm_beta is Q8_0 where Qwen's is a
+# BF16 projection, and `ssm_conv1d` is one tensor there and three (`_q`/`_k`/`_v`) here.  So the family picks the
+# table, and a shared name cannot pick up the other family's form and be silently dequantized into the wrong one.
+#
+# GLM keeps almost everything in its GGUF form and is served natively by the engine (--native): every attention
+# and KDA projection, the MLA weights, the expert routers and the indexer's quantized parts.  Only the tensors a
+# float kernel reads are named here, and the only one the GGUF does not already store in that form is the
+# hyper-connection map (Q8_0 -> BF16, which needs --compat-bf16 and is recorded in conversions.json).  The rest
+# of what the mHC and norm kernels read - the bases, the scales, every norm, ssm_a, ssm_dt.bias - is F32 in the
+# file and goes to dense.bin unchanged, which is why they are absent rather than listed.
+FORM_GLM = {
+    "hc_attn_fn.weight": "BF16", "hc_ffn_fn.weight": "BF16",
+}
+
+# The family being packed, set by main() from the file's own general.architecture.  It selects the FORM table:
+# a module-level variable because every caller of form_of() is a per-tensor helper that has no model in hand,
+# and this script packs exactly one model per run.
+ARCH = ""
+
+
 def form_of(name: str):
-    return FORM.get(re.sub(r"^blk\.\d+\.", "", name))
+    table = FORM_GLM if ARCH in ("glm5-next", "glm5next") else FORM
+    return table.get(re.sub(r"^blk\.\d+\.", "", name))
 
 
 def needs_bf16(name: str, type_name: str) -> bool:
@@ -271,16 +293,35 @@ def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool):
     return "2", data, len(data), rec
 
 
-def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
+def index_standalone(src, out, model: Model, compat_bf16: bool = False, mtp: bool = False) -> int:
     """Every non-expert tensor of the model: the floats the engine reads from the pack into dense.bin in the form it
     reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF."""
     todo, problems = [], []
+    # A block past the trunk is not packed by DEFAULT.  glm5-next's MTP block carries a full set of quantized
+    # tensors, and a row for one of them would either be served natively - loaded into VRAM for a block no code
+    # runs - or, if it were left as a shape-only row the engine does not expect, refused by the dense loader.
+    # The engine excludes the same blocks (native_dense.cpp `family_of`), so the two agree on where the trunk
+    # ends.  `--mtp` is the other half of that agreement: the engine only reads `blk.<n_trunk>.*` when the draft
+    # layer was asked for, so a pack that holds the block is only correct for a run that asks for it.
+    n_layers = trunk_layers(model, mtp)
     for name, (g, t, mm, p) in model.where.items():
         if is_expert(t.name) or t.name in NOT_IN_PACK:
             continue
-        if len(t.shape) > 2:
-            print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
-            return 1
+        if t.name.startswith("blk.") and int(t.name.split(".")[1]) >= n_layers:
+            continue
+        # The index holds TWO dimensions, and a tensor with more is written with its trailing ones folded into
+        # ne1 - which is what they are: ggml makes ne0 the row length and everything after it the row count, so
+        # the bytes, the element count and the row size are unchanged.  glm5-next needs this on both counts -
+        # its MLA weights are [256, 512, 64] (a 256x512 map per head, 64 heads) and its KDA convs [4, 1, 8192]
+        # (kernel, in_channels/groups = 1 depthwise, out_channels).  Refusing them, as this did, made the model
+        # unpackable for no reason a reader of the file could act on.
+        shape = t.shape
+        if len(shape) > 2:
+            rest = 1
+            for d in shape[1:]:
+                rest *= int(d)
+            shape = (shape[0], rest)
+            print("tensor %s is %s: ne1 is the trailing dims folded (%s)" % (t.name, list(t.shape), list(shape)))
         # quantized: served from the GGUF unless the engine reads it from the pack (FORM), which takes
         # --compat-bf16 to dequantize - except the native PLE key encodings
         form = form_of(name)
@@ -288,7 +329,7 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
             name == "blk.1.ple_key.weight" and t.type_name in NATIVE_PLE_KEY))
         if t.type_name not in FLOAT and not native and not compat_bf16:
             problems.append(f"{name} is {t.type_name}, but the engine requires {form}; use --compat-bf16")
-        todo.append((name, g, t, mm, p, native))
+        todo.append((name, g, t, mm, p, native, shape))
     # refused before anything is written: the previous pack stays as it was
     if problems:
         for m in problems[:8]:
@@ -300,9 +341,9 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
     served = 0
     converted, records = [], []
     with open(out / "dense.bin.tmp", "wb") as fo:
-        for name, g, t, mm, p, native in todo:
-            ne0 = int(t.shape[0])
-            ne1 = int(t.shape[1]) if len(t.shape) > 1 else 0
+        for name, g, t, mm, p, native, shape in todo:
+            ne0 = int(shape[0])
+            ne1 = int(shape[1]) if len(shape) > 1 else 0
             if native:
                 served += 1
                 rows.append([t.name, "0", "0", "0", "0", "0", "0", str(ne0), str(ne1), "8", "0", "32"] + ["0"] * 7)
@@ -426,7 +467,27 @@ def index_from_base(a, src, base, out, g, T, mm) -> int:
     return 0
 
 
-def expert_layout(model: Model, src: pathlib.Path):
+def trunk_layers(model: Model, mtp: bool = False) -> int:
+    """How many blocks of the model the engine runs - the trunk.  `block_count` counts the model's LAST block,
+    which on glm5-next is the MTP block (`nextn_predict_layers`), so by default a pack holds the trunk only and
+    every layer index in it stays a BLOCK index.  A file with neither key (every Qwen4Exp one) gets
+    `block_count - 0`, i.e. the old answer; a file with no block_count at all falls back to the highest layer
+    that HAS experts, which is what this did before either key was read.
+
+    `mtp=True` is `--mtp`: the pack ALSO carries the blocks past the trunk, so the draft layer can read its
+    weights from the pack like any other layer.  The count stays a BLOCK count - the return value is the first
+    block that is NOT packed - which is why this returns `blocks` and not `blocks + 1`."""
+    md = model.files[0].metadata
+    arch = md.get("general.architecture", "")
+    blocks = int(md.get("%s.block_count" % arch, 0)) if arch else 0
+    nextn = int(md.get("%s.nextn_predict_layers" % arch, 0)) if arch else 0
+    if blocks > nextn:
+        return blocks if mtp else blocks - nextn
+    exps = [n for n in model.where if n.startswith("blk.") and n.endswith("_exps.weight")]
+    return 1 + max(int(n.split(".")[1]) for n in exps)
+
+
+def expert_layout(model: Model, src: pathlib.Path, mtp: bool = False):
     """The pack's expert table: (layout rows, native_experts.txt text, n_expert, total bytes), or an error string.
     Each role is resolved by name in whichever shard holds it, and its offset is absolute in THAT shard: two
     shards do not start their data section at the same byte, so one role's data_start must not be used for
@@ -435,15 +496,31 @@ def expert_layout(model: Model, src: pathlib.Path):
     exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
-    n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
-    n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
-    if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
+    md = model.files[0].metadata
+    arch = md.get("general.architecture", "")
+    lead = int(md.get("%s.leading_dense_block_count" % arch, 0)) if arch else 0
+    n_layers = trunk_layers(model, mtp)
+    # Router rows = experts kept (pruned models ship < 512).  Read from the first layer that HAS a router: on
+    # glm5-next the leading `leading_dense_block_count` blocks run a dense SwiGLU and carry no router at all, so
+    # `blk.0.ffn_gate_inp.weight` does not exist and indexing it is a KeyError, not a diagnosis.
+    routers = [l for l in range(n_layers) if "blk.%d.ffn_gate_inp.weight" % l in T]
+    if not routers:
+        return "the model has no router tensor (blk.N.ffn_gate_inp.weight) on any of its %d layers" % n_layers
+    n_expert = int(T["blk.%d.ffn_gate_inp.weight" % routers[0]].shape[1])
+    if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in routers):
         return "the routers disagree on the expert count; a per-layer pruned model cannot be packed"
     layout, lines, offset, n_split = [], [], 0, 0
     for l in range(n_layers):
         names = ["blk.%d.ffn_%s_exps.weight" % (l, r) for r in ROLES]
         if any(n not in T for n in names):
-            return "layer %d: missing %s" % (l, ", ".join(n for n in names if n not in T))
+            # A layer with no routed experts at all: the dense-lead blocks of glm5-next (0-2).  It keeps its
+            # LINE so that a layer index in this table is a block index, with a zero blob (`l 0 0 <off> 0 0 0 0`)
+            # - the engine reads a zero blob as "this layer has none", and nothing else about it is checked.
+            # Anywhere else a missing role is still the error it was.
+            if any(n in T for n in names) or l >= lead:
+                return "layer %d: missing %s" % (l, ", ".join(n for n in names if n not in T))
+            lines.append("%d 0 0 %d 0 0 0 0" % (l, offset))
+            continue
         ts = [T[n] for n in names]
         if any(t.expected_bytes() is None or len(t.shape) != 3 or int(t.shape[2]) != n_expert for t in ts):
             return "layer %d: an expert tensor is not [*, *, %d] of whole blocks" % (l, n_expert)
@@ -501,6 +578,9 @@ def main() -> int:
                          "(rounds weights; leaves experts and the PLE table unchanged)")
     ap.add_argument("--experts-bin", action="store_true",
                     help="also write experts.bin (the engine otherwise reads the experts from the GGUF itself)")
+    ap.add_argument("--mtp", action="store_true",
+                    help="also pack the blocks past the trunk (glm5-next's next-token-prediction block), which "
+                         "the engine reads only when the draft layer was asked for")
     a = ap.parse_args()
     if a.compat_bf16 and a.base:
         ap.error("--compat-bf16 cannot reuse --base dense weights")
@@ -514,10 +594,14 @@ def main() -> int:
     g = G.GGUFFile(src)
     mm = np.memmap(src, dtype=np.uint8, mode="r")
     model = Model(src)
+    globals()["ARCH"] = str(g.metadata.get("general.architecture", ""))
+    if ARCH not in ("qwen4exp", "glm5-next", "glm5next"):
+        print("general.architecture is '%s'; the packer knows qwen4exp and glm5-next" % ARCH)
+        return 1
     if len(model.paths) > 1:
         print("model shards: " + ", ".join(p.name for p in model.paths))
     # ---- the expert table first: a model that cannot be packed is refused before any file of the pack changes
-    got = expert_layout(model, src)
+    got = expert_layout(model, src, a.mtp)
     if isinstance(got, str):
         print(got)
         return 1
@@ -559,7 +643,7 @@ def main() -> int:
         (out / "native_experts.txt").unlink(missing_ok=True)
         rc = index_from_base(a, src, base, out, g, {t.name: t for t in g.tensors}, mm)
     else:
-        rc = index_standalone(src, out, model, a.compat_bf16)
+        rc = index_standalone(src, out, model, a.compat_bf16, a.mtp)
     if rc:
         return rc
     if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():

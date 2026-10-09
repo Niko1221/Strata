@@ -777,8 +777,15 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
         for (int64_t layer = 0; layer < n_layers; ++layer) {
             const size_t i = (size_t) layer;
             const uint64_t bytes = (uint64_t) layout.fmt[i].bytes;
-            if (layout.offset[i] != at || bytes == 0 || layout.bytes[i] != bytes ||
-                bytes > std::numeric_limits<uint64_t>::max() / (uint64_t) n_expert) {
+            // A zero blob in BOTH places is a layer with NO routed experts - glm5-next's dense-lead blocks, which
+            // carry no ffn_{gate,up,down}_exps.weight at all.  Such a layer keeps its offset at the running total
+            // (so the contiguity walk here agrees with the loader's own) and contributes no bytes; its
+            // `layer_blob_bytes_` entry is 0.  `expert_layout_load` keeps the line for exactly this, and treating
+            // it as invalid here made a whole pack unopenable at its first layer.  A blob of 0 that the layout's
+            // own table calls something else is still refused.
+            const bool no_experts = bytes == 0 && layout.bytes[i] == 0;
+            if (layout.offset[i] != at || (!no_experts && (bytes == 0 || layout.bytes[i] != bytes ||
+                bytes > std::numeric_limits<uint64_t>::max() / (uint64_t) n_expert))) {
                 err = "FileExpertSource: the native expert layout is invalid at layer " + std::to_string(layer);
                 return false;
             }
@@ -1146,6 +1153,30 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
     const uint8_t* b = mapped_blob(layer, expert);
     if (b == nullptr) return false;
     std::memcpy(dst, b, (size_t) layer_blob_bytes_[(size_t) layer]);
+    return true;
+}
+
+bool FileExpertSource::slices(int64_t layer, int64_t expert, const uint8_t** gate, const uint8_t** up,
+                              const uint8_t** down) {
+    // The GGUF in place, and nothing else.  `role_ptr_[3l + r]` is the layer's expert 0 of role r and
+    // `role_bytes_[3l + r]` is one expert of it, so expert e of that role is one run from there - the same three
+    // ranges `copy_from_files` above memcpys into a blob, minus the memcpy.  An `experts.bin` pack leaves
+    // `role_ptr_` empty: its blob really is one contiguous range (`mapped_blob`) and there is nothing to slice.
+    // The unbuffered mode reads from the drive and has no mapping to point into either.
+    if (role_ptr_.empty() || !direct_.empty()) return false;
+    if (gate == nullptr || up == nullptr || down == nullptr) return false;
+    if (layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
+    const size_t i = (size_t) (3 * layer);
+    const uint8_t* out[3];
+    for (int r = 0; r < 3; ++r) {
+        const uint64_t per = role_bytes_[i + (size_t) r];
+        const uint8_t* base = role_ptr_[i + (size_t) r];
+        if (base == nullptr || per == 0) return false;
+        out[r] = base + (size_t) ((uint64_t) expert * per);
+    }
+    *gate = out[0];
+    *up = out[1];
+    *down = out[2];
     return true;
 }
 
@@ -3630,6 +3661,10 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
         for (int64_t l = 0; l < lay.n_layers; ++l) {
             const auto& fm = lay.fmt[(size_t) l];
             const uint64_t blob = lay.bytes[(size_t) l];
+            // A layer with NO routed experts has nothing to check against the model: glm5-next runs a dense SwiGLU
+            // on its first `leading_dense_block_count` blocks, which carry no ffn_{gate,up,down}_exps.weight, and
+            // the table keeps a zero-blob line for them so a layer index stays a block index.
+            if (blob == 0) continue;
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
             for (int r = 0; r < 3; ++r) {
                 const std::string path = expert_gguf_file(gguf, lay, l, r);

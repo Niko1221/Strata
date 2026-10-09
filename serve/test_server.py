@@ -21,7 +21,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
+from serve.frontend import (ChatTemplate, effort_kwargs, literal_tags, mark_think_literals,  # noqa: E402
+                            unmark_think_literals)
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
@@ -636,6 +637,71 @@ class LiteralThinkTags(unittest.TestCase):
         start = text.index("</think>")
         plain = tok.encode(text, parse_special=True, plain=[(start, start + len("</think>"))])
         self.assertEqual(plain, [*b"say </think> now", 258])               # the tag as text, im_end still special
+
+
+GLM_TEMPLATE = (
+    "{% for m in messages %}"
+    "{{ '<|im_start|>' + m['role'] + '\\n' + (m['content']|string) + '<|im_end|>\\n' }}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n<think>' }}{% endif %}"
+)
+
+
+class ThinkingOffClosesTheBlock(unittest.TestCase):
+    """glm5-next's template opens the thinking block whatever it is told - its generation prompt is always
+    `<|assistant|><think>`, it tests no `enable_thinking`, and an effort it does not know (none, medium, xhigh)
+    becomes `max` - so thinking off has to close the block in encode_prompt.  The form used is the same
+    template's own for a past turn that did not think, the empty block.  A template that ends elsewhere with
+    thinking off (the repo's own: Qwen closes its block itself) is not touched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp()
+        path = Path(cls.dir) / "glm.jinja"
+        path.write_text(GLM_TEMPLATE, encoding="utf-8")
+        cls.tok = ThinkTokenizer()
+        cls.svc = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok, ChatTemplate(path))
+        cls.qwen = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok,
+                           ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.open, cls.close = (cls.tok.encode(t)[0] for t in ("<think>", "</think>"))
+        cls.msgs = [{"role": "user", "content": "hi"}]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_thinking_off_closes_it_empty(self):
+        ids = self.svc.encode_prompt(self.msgs, None, {"enable_thinking": False})
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (1, 1))
+        self.assertEqual(ids[-1], self.close)
+
+    def test_thinking_on_is_unchanged(self):
+        ids = self.svc.encode_prompt(self.msgs, None, {})
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (1, 0))
+        self.assertEqual(ids, self.tok.encode(self.svc.template.render(self.msgs), parse_special=True))
+
+    def test_the_efforts_a_client_sends(self):
+        for level in ("none", "off", "minimal", "disabled", "false"):        # frontend.effort_kwargs
+            with self.subTest(level=level):
+                self.assertEqual(self.svc.encode_prompt(self.msgs, None, effort_kwargs(level))[-1], self.close)
+        for level in ("low", "medium", "high", "max"):                      # low and high still think
+            with self.subTest(level=level):
+                self.assertEqual(self.svc.encode_prompt(self.msgs, None, effort_kwargs(level))[-1], self.open)
+
+    def test_along_the_literal_tags_path(self):
+        """#537's path (a quoted tag in a message) encodes the tags' spans as text; the close appended for thinking
+        off must still be the model's marker, not one of those spans.  (1, 1) says the quoted pair went as text."""
+        msgs = [{"role": "user", "content": "quote </think> and <think> exactly"}]
+        ids = self.svc.encode_prompt(msgs, None, {"enable_thinking": False})
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (1, 1))
+        self.assertEqual(ids[-1], self.close)
+        self.assertIn("quote </think> and <think> exactly", self.tok.decode(ids))
+
+    def test_another_family_is_left_alone(self):
+        full = self.qwen.template.render(self.msgs, add_generation_prompt=True, enable_thinking=False)
+        self.assertFalse(full.endswith("<think>"))
+        self.assertEqual(self.qwen.encode_prompt(self.msgs, None, {"enable_thinking": False}),
+                         self.tok.encode(full, parse_special=True))
 
 
 class LiteralControlTokens(unittest.TestCase):

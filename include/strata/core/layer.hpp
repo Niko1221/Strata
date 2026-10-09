@@ -527,6 +527,12 @@ bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffe
 bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
                  void* stream, std::string& err);
 
+/// The output projection, from a `bb.mixed` that is ALREADY the normed single vector.  `lm_head` is
+/// `lm_head_mix` followed by this; a second family whose collapse is not `gr_read` still ends the same way, and
+/// splitting it here is what lets that family reuse the projection instead of copying it.
+bool lm_head_project(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb, float* logits,
+                     void* stream, std::string& err);
+
 /// THE PER-LAYER OP ORDER of `phases/phase-2-correct-engine.md` P2.S5, architecture Ă„â€šĂ˘â‚¬ĹľÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ‹ÂÄ‚ËĂ˘â‚¬ĹˇĂ‚Â¬Ă„Ä…Ă‹â€ˇÄ‚â€žĂ˘â‚¬ĹˇÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ˘â‚¬ĹˇÄ‚â€šĂ‚Â§6.1, for ONE layer:
 ///
 ///     gr_read (attn)  ->  mixer  ->  gr_write (attn)

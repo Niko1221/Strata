@@ -30,6 +30,8 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/glm_layer.hpp"
+#include "strata/core/glm_gpu_experts.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -49,6 +51,7 @@
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/glm_dsa.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -368,6 +371,10 @@ struct Options {
     /// combination recorded in bench/results/2026-09-23-attention-ple plus the native indexer, and never the
     /// <=256-token attention adapter. It becomes the default once P0 shows it is not slower.
     std::string native_preset;
+    /// Which family the model file declares, resolved from its metadata shard as soon as the shards are known.
+    /// Several decisions have to be made before the geometry is built - whether a PLE table is required at all
+    /// is the first - and they need the family, not the whole geometry.
+    strata::core::Arch arch = strata::core::Arch::Unknown;
     /// The token embedding from this GGUF instead of --native's (tools/embd_bf16_pack.py: BF16 as shipped)
     std::string embd_gguf;
     /// Plan v0.3 P2: how the n-gram table is read. Direct (default) = unbuffered SSD reads, table never in RAM.
@@ -399,6 +406,22 @@ struct Options {
     std::string dump_routing;
     bool no_capture = false;          // run the layers directly instead of replaying graphs
     bool no_pool = false;             // skip the CPU expert pool: the GPU-only floor
+    /// glm5-next only: run the DSA k-pool indexer in the MLA layers, attending the `idx_top_k` cells it
+    /// selects instead of the whole cache.  The two agree exactly while everything is selected, so this is a
+    /// feature above ~2048 cells and not a correctness fix; off is the reference's own default (`cparams.dsa`).
+    /// Refused on any other arch, which has its own indexer behind `--native-qsa-indexer`.
+    bool dsa = false;
+    /// glm5-next only, and **NOT the first family's `--mtp`** (that one names a separate drafter GGUF): this is
+    /// the DRAFT BLOCK THE MODEL ITSELF CARRIES past its trunk - `blk.45` on the shipped 46-block artifact,
+    /// `nextn_predict_layers` 1, every tensor of it prefixed `nextn.`.  One MLA+MoE block fed the trunk's last
+    /// hidden state, whose argmax is the reference's draft token.  The pack has to carry the block
+    /// (`tools/iq_pack.py --mtp`).  **ON ITS OWN IT DRAFTS TOKENS NOBODY VERIFIES** - this arch still has no
+    /// verify window - so today it exists to be measured against the oracle, which is what `--mtp-probe` does.
+    bool mtp_block = false;
+    /// glm5-next only, and a MEASUREMENT: read the prompt, run the head at its last position, run ONE step of the
+    /// draft block on that hidden state, print `MTP <draft id>` and the target's own argmax, and exit.  Nothing
+    /// is decoded, so it is a direct comparison against the oracle's `mtp_ref` draft and not a throughput number.
+    bool mtp_probe = false;
     bool sync_every_layer = false;
     /// Per-stage CUDA-event timings inside the layer halves.  `--no-capture` only: an event recorded inside a
     /// stream capture is silently dropped, so the captured path cannot carry this.
@@ -420,6 +443,9 @@ struct Options {
     bool no_host_worker = false;
     bool coupled_draft = strata::core::coupled_draft_env(); ///< Coupled draft sampling for MTP drafter under sampling
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    /// glm5-next: MiB of VRAM for the routed experts' tier (glm_gpu_experts.hpp).  -1 = off, 0 = all free less
+    /// STRATA_GLM_GPU_RESERVE_MIB.  A first-family run never reads it, and off is the default.
+    int64_t glm_gpu_mib = -1;
     std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
     /// `--resident-experts` (the low-RAM PC's resident mode, chosen by setup): `--resident-cpu-experts` with the copy
@@ -567,7 +593,12 @@ struct Options {
     double spec_min_p = 0.0;
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
+    /// **THE DEFAULT IS THE FIRST FAMILY'S, AND IT IS ARCH-DEPENDENT.**  These two ids are Qwen's end-of-turn
+    /// tokens; glm5-next's is 154820 (`tokenizer.ggml.eos_token_id`), so a GLM run left on this default stops only
+    /// at --max-new and runs straight past every turn end.  `eos_ids_set` records that the operator chose, so the
+    /// arch default below only fills a default rather than overriding an answer.
     std::vector<int64_t> eos_ids = {248044, 248046};
+    bool eos_ids_set = false;
     bool spec_split = false;   ///< opt-in split verify window (the overlap study: exact, ~7% slower)
     /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
     /// from each GPU's free VRAM); empty = one GPU
@@ -781,7 +812,24 @@ void usage() {
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
                  "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
+                 "                       glm5-next has no expert-cache buffers to lend, so no flag and auto both\n"
+                 "                       mean 512, and any CHUNK is capped at 4096 (the pool's own limit);\n"
+                 "                       --prefill 1 reads a prompt one token at a time (the A/B control arm)\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
+                 "  --glm-gpu-experts N  glm5-next: keep N MiB of the routed experts in VRAM and compute their\n"
+                 "                       hits on the card; -1 (default) is off, 0 is every free byte less\n"
+                 "                       STRATA_GLM_GPU_RESERVE_MIB (512).  Each stage sizes its own share, so\n"
+                 "                       a layer split multiplies what a card can hold.  Measured +43%% decode on a\n"
+                 "                       4-way rig; not bit-identical to the CPU pool (see docs/DETAILS.md)\n"
+                 "  --dsa                glm5-next: attend the 2048 cells the DSA k-pool indexer selects instead\n"
+                 "                       of the whole cache.  Identical below ~2048 cells; above, it is the model's\n"
+                 "                       own attention\n"
+                 "  --mtp-block          glm5-next: load the model's own draft block (the next-token-prediction\n"
+                 "                       block PAST the trunk, `nextn.*`) and run it.  Needs a pack built with\n"
+                 "                       iq_pack --mtp; on its own it drafts tokens nobody verifies (no verify\n"
+                 "                       window on this arch yet).  Not the first family's --mtp drafter\n"
+                 "  --mtp-probe          MEASURE: read the prompt, run the head, run ONE draft step, print\n"
+                 "                       `MTP <draft id>` against the oracle's, and exit.  Implies --serve\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
                  "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
                  "                       which changes every number downstream - pass it for any real run\n"
@@ -907,6 +955,182 @@ bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) 
         out.push_back(id);
     }
     if (out.empty()) { err = "token list was empty"; return false; }
+    return true;
+}
+
+// ================================ the serve protocol's two shared pieces ================================
+//
+// Both are used by the FIRST FAMILY'S serve loop and by glm5-next's, and the protocol has to mean the same thing
+// on both - a `GEN` line the server can build and a `STOP` that reaches a running request are the contract, not an
+// implementation detail of one arch.  One definition each, then, rather than two that drift.
+
+/// The serve loop's stdin: whole lines queued by a detached reader thread, and a STOP flag that reaches a request
+/// that is still running (the client went away, or the user cancelled).
+///
+/// **THE READER USES `read(2)` ON THE DESCRIPTOR, NOT `std::cin`.**  glibc's `exit()` flushes every stdio stream
+/// and waits for stdin's lock, which `getline` holds while it waits for input - so an engine ending on an error
+/// (every `std::exit`) would hang in `exit()` on Linux, and the server would wait for it forever.
+struct ServeStdin {
+    std::atomic<bool> stop{false};
+
+    void start() {
+        std::thread([this] {
+            std::string l, buf;
+            char chunk[4096];
+            auto getline_fd = [&](std::string& out) -> bool {
+                for (;;) {
+                    const size_t nlpos = buf.find('\n');
+                    if (nlpos != std::string::npos) {
+                        out.assign(buf, 0, nlpos);
+                        buf.erase(0, nlpos + 1);
+                        return true;
+                    }
+#if defined(_WIN32)
+                    const int n = _read(0, chunk, (unsigned) sizeof chunk);
+#else
+                    const ssize_t n = ::read(0, chunk, sizeof chunk);
+                    if (n < 0 && errno == EINTR) continue;
+#endif
+                    if (n <= 0) {
+                        if (buf.empty()) return false;
+                        out.swap(buf);
+                        buf.clear();
+                        return true;
+                    }
+                    buf.append(chunk, (size_t) n);
+                }
+            };
+            while (getline_fd(l)) {
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                if (l == "STOP") { stop.store(true); continue; }
+                std::lock_guard<std::mutex> lk(mu_);
+                lines_.push_back(l);
+                cv_.notify_one();
+            }
+            std::lock_guard<std::mutex> lk(mu_);
+            eof_ = true;
+            cv_.notify_one();
+        }).detach();
+    }
+
+    /// The next line if one is already queued, without waiting.  The batch path asks this between chunks: a
+    /// `BGEN` that arrived while another slot was mid-read has to be picked up before that read finishes.
+    bool try_next(std::string& out) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (lines_.empty()) return false;
+        out = std::move(lines_.front());
+        lines_.pop_front();
+        return true;
+    }
+
+    /// The queue itself, under its lock, for the one caller that has to reach INTO it: the batch read pulls
+    /// `BSTOP <slot>` / `BYIELD <slot>` lines out of the middle while every other line keeps its order.  `fn` gets
+    /// the deque and may erase from it.
+    template <typename Fn>
+    void peek(Fn&& fn) {
+        std::lock_guard<std::mutex> lk(mu_);
+        fn(lines_);
+    }
+
+    /// The next line, or false when stdin closed with nothing left queued.
+    bool next(std::string& out) {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [this] { return !lines_.empty() || eof_; });
+        if (lines_.empty()) return false;
+        out = std::move(lines_.front());
+        lines_.pop_front();
+        return true;
+    }
+
+  private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<std::string> lines_;
+    bool eof_ = false;
+};
+
+/// One `GEN` / `GENI` request, as the wire spells it (see the `--serve` block for the field-by-field contract).
+struct GenKeys {
+    bool geni = false;                  ///< GENI: an image request (the first family's vision path; glm5-next has none)
+    int64_t max_new = 0;
+    float temperature = 0.0f;           ///< <= 0 is greedy
+    float top_p = 1.0f;
+    int top_k = 20;                     ///< the sampler's own default; the sampled path REQUIRES top_k in 1..64
+    float min_p = 0.0f;
+    float penalty_repeat = 1.0f, penalty_freq = 0.0f, penalty_present = 0.0f;
+    int penalty_last_n = 0;
+    unsigned long long seed = 0;
+    int cvec = 1;                       ///< cvec=0|1: a loaded control vector for this request (on when absent)
+    /// ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary (so no
+    /// split there) nor every --prompt-cache-every tokens, and its session is neither continued nor parked after
+    /// it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root when that reaches
+    /// --prompt-cache-root.  Absent = checkpointed as before.
+    bool ckpt = true;
+    /// pin=N: the first N prompt tokens are a shared read-only prefix (a long document that many short queries
+    /// follow).  See the serve loop's own note where it is used.  Absent = as before.
+    int64_t pin = 0;
+    /// tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of the
+    /// missed experts and the draft-probability floor, for this request only.  They start at the engine's own.
+    double pcie_frac = -1.0, spec_min_p = 0.0;
+    std::string emb_path;               ///< GENI only: the image's embedding file, the first token without an '='
+    std::vector<int64_t> ids;
+};
+
+/// `GEN <max_new> [key=value ...] <id,id,...>` or `GENI <max_new> [key=value ...] <emb file> <ids...>`.
+///
+/// The keys run from `max_new` to the first token with no '='; an UNKNOWN key is skipped rather than refused, which
+/// is what lets a newer server drive an older engine.  `err` comes back in the shape the wire wants: the caller
+/// prints `ERR <err>`.
+bool parse_gen_line(const std::string& line, double def_pcie_frac, double def_spec_min_p, GenKeys& k,
+                    std::string& err) {
+    k = GenKeys();
+    k.pcie_frac = def_pcie_frac;
+    k.spec_min_p = def_spec_min_p;
+    k.geni = line.rfind("GENI ", 0) == 0;
+    if (!k.geni && line.rfind("GEN ", 0) != 0) {
+        err = "expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>";
+        return false;
+    }
+    char* endp = nullptr;
+    k.max_new = std::strtoll(line.c_str() + (k.geni ? 5 : 4), &endp, 10);
+    if (endp != nullptr) {
+        for (;;) {
+            while (*endp == ' ') ++endp;
+            const char* start = endp;
+            while (*endp != '\0' && *endp != ' ') ++endp;
+            if (endp == start) break;
+            const std::string tok(start, (size_t) (endp - start));
+            const size_t eq = tok.find('=');
+            if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
+            const std::string key = tok.substr(0, eq);
+            const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
+            if (key == "cvec") k.cvec = std::atoi(tok.c_str() + eq + 1);
+            else if (key == "ckpt") k.ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
+            else if (key == "pin") k.pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
+            else if (key == "temperature") k.temperature = fv;
+            else if (key == "top_p") k.top_p = fv;
+            else if (key == "top_k") k.top_k = std::atoi(tok.c_str() + eq + 1);
+            else if (key == "min_p") k.min_p = fv;
+            else if (key == "penalty_last_n") k.penalty_last_n = std::atoi(tok.c_str() + eq + 1);
+            else if (key == "penalty_repeat") k.penalty_repeat = fv;
+            else if (key == "penalty_freq") k.penalty_freq = fv;
+            else if (key == "penalty_present") k.penalty_present = fv;
+            else if (key == "seed") k.seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
+            else if (key == "pcie_frac") k.pcie_frac = std::clamp((double) fv, 0.0, 1.0);
+            else if (key == "spec_min_p") k.spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+            // unknown keys are skipped: the ids start at the first token without '='
+        }
+    }
+    if (k.geni && endp != nullptr) {
+        while (*endp == ' ') ++endp;
+        char* gap = std::strchr(endp, ' ');
+        if (gap != nullptr) { k.emb_path.assign(endp, (size_t) (gap - endp)); endp = gap; }
+    }
+    std::string pe;
+    if (k.max_new < 1 || endp == nullptr || (k.geni && k.emb_path.empty()) || !parse_i64_list(endp, k.ids, pe)) {
+        err = "bad request: " + (pe.empty() ? std::string("max_new") : pe);
+        return false;
+    }
     return true;
 }
 
@@ -1241,6 +1465,69 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
         }
     }
 #endif
+}
+
+/// glm5-next, `--glm-gpu-experts`: build the VRAM tier of the routed experts for layers [layer_lo, layer_hi) of
+/// the CURRENT device (glm_gpu_experts.hpp).  Shared by the single-card path and by each stage of a layer
+/// split, so both size it the same way and neither can drift from the other.
+///
+/// The budget is what the card has FREE, read here and not at startup: `device_free_bytes()` counts what is
+/// left after everything this process has already allocated, and on a split that is this stage's share, since
+/// the caller has made this stage's device current.  0 means all of it less the reserve.
+bool glm_gpu_tier_init(std::unique_ptr<strata::core::GlmGpuExperts>& out, const Options& o,
+                       const strata::core::ModelGeometry& g, strata::core::ExpertSource* src, int64_t lay_n,
+                       int64_t k, int64_t layer_lo, int64_t layer_hi, std::string& err) {
+    const auto& glay = strata::kernels::cpu::expert_layout();
+    if (!glay.native) {
+        err = "--glm-gpu-experts needs a NATIVE pack: without native_experts.txt there is no per-expert blob "
+              "size for the card to hold";
+        return false;
+    }
+    std::vector<int> gu((size_t) lay_n, -1), dt((size_t) lay_n, -1);
+    std::vector<uint64_t> bb((size_t) lay_n, 0);
+    // The routed experts' SwiGLU limit, read from the SAME `expert_layout()` the CPU pool is built from
+    // (generate.cpp's `expert_layout_load` above), so the card and the pool cannot be handed two readings of
+    // `swiglu_clamp_exp` - which is exactly what happened while the GPU kernels carried no limit at all.
+    std::vector<float> lim((size_t) lay_n, 0.0f);
+    for (int64_t l = layer_lo; l < layer_hi && l < lay_n; ++l) {
+        if (g.is_dense_ffn_layer(l) || (size_t) l >= glay.fmt.size()) continue;
+        gu[(size_t) l] = glay.fmt[(size_t) l].gu_type;
+        dt[(size_t) l] = glay.fmt[(size_t) l].d_type;
+        bb[(size_t) l] = glay.blob_bytes(l);
+        lim[(size_t) l] = glay.fmt[(size_t) l].swiglu_limit;
+    }
+    // **WHAT THE RESERVE IS FOR, AND WHAT IT COSTS.**  It is the VRAM left for everything allocated AFTER this
+    // point - the session's attention and KV buffers, a longer context, whatever the driver wants - and it is
+    // spent directly out of the expert tier, because the slots are sized to `free - reserve`.  Sampling all
+    // four cards once a second through a whole run (5,304-token prompt, chunk 4096, 4-way layer split) measured
+    // what actually moved: every card ended with 2473-2580 MiB free, of which 2048 MiB was this reserve and the
+    // rest the rounding of the budget into whole slots, and the ENTIRE chunk path - plan, activations,
+    // scratch - moved the card by 2 MiB peak to peak.  So 512 MiB is 250x the largest excursion a real run
+    // showed, and the 1.5 GiB it hands back is what pays for the second half of the chunk's slots
+    // (`run_chunk`), which is what lets a wave's copies run under the previous wave's kernel.  Raise it with
+    // STRATA_GLM_GPU_RESERVE_MIB on a card whose context buffers are bigger than this one's.
+    const char* rv = std::getenv("STRATA_GLM_GPU_RESERVE_MIB");
+    const int64_t reserve = (int64_t) (rv != nullptr ? std::atoll(rv) : 512) << 20;
+    const int64_t avail = (int64_t) strata::core::device_free_bytes() - reserve;
+    if (avail < (1 << 20)) {
+        err = "there is no VRAM free for --glm-gpu-experts (a run with no tier is the answer on this card)";
+        return false;
+    }
+    const int64_t budget = o.glm_gpu_mib > 0 ? std::min<int64_t>(o.glm_gpu_mib << 20, avail) : avail;
+    // **HOW BIG A CHUNK THIS MUST BE ABLE TO SERVE.**  The same expression the carve uses a few hundred lines
+    // down, spelled here because the tier's buffers are sized at startup and the carve happens after: `--prefill
+    // N`, or the auto default.  A chunk of 1 (`--prefill 1`, which is decode spelled as a chunk) gets 0 - the
+    // tier is decode-only and pays nothing for a prefill path it can never be asked to use.
+    constexpr int64_t kGlmAutoChunk = 512;
+    int64_t chunk_tokens = (o.prefill_chunk <= 0 || o.prefill_auto) ? kGlmAutoChunk : o.prefill_chunk;
+    chunk_tokens = std::clamp<int64_t>(chunk_tokens, 1, strata::core::GlmExpertPool::kMaxChunk);
+    if (chunk_tokens <= 1 || std::getenv("STRATA_GLM_GPU_NO_PREFILL") != nullptr) chunk_tokens = 0;
+    auto tier = std::make_unique<strata::core::GlmGpuExperts>();
+    if (!tier->init(src, gu, dt, bb, lim, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, chunk_tokens,
+                    err))
+        return false;
+    out = std::move(tier);
+    return true;
 }
 
 /// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)
@@ -1710,6 +1997,9 @@ int main(int argc, char** argv) {
         else if (a == "--native-dense-gguf") o.native_dense_gguf.push_back(next("--native-dense-gguf"));
         else if (a == "--no-capture") o.no_capture = true;
         else if (a == "--no-pool") o.no_pool = true;
+        else if (a == "--dsa") o.dsa = true;
+        else if (a == "--mtp-block") o.mtp_block = true;
+        else if (a == "--mtp-probe") o.mtp_probe = true;
         else if (a == "--sync-every-layer") o.sync_every_layer = true;
         else if (a == "--stage-timing") o.stage_timing = true;
         else if (a == "--graph-only") o.graph_only = true;
@@ -1892,6 +2182,7 @@ int main(int argc, char** argv) {
             std::string e;
             if (!parse_i64_list(next("--eos-ids"), o.eos_ids, e)) { std::fprintf(stderr, "--eos-ids: %s\n", e.c_str()); return 2; }
             o.stop_eos = true;
+            o.eos_ids_set = true;
         }
         else if (a == "--adapt-swaps") o.adapt_swaps = std::atoi(next("--adapt-swaps"));
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
@@ -1908,6 +2199,7 @@ int main(int argc, char** argv) {
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--glm-gpu-experts") o.glm_gpu_mib = std::atoll(next("--glm-gpu-experts"));
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
         else if (a == "--resident-experts") {
@@ -1957,6 +2249,14 @@ int main(int argc, char** argv) {
         else (void) cudaGetLastError();
     }
 #endif
+    // `--mtp-probe` is a measurement of the DRAFT BLOCK, and the block is run from the serve loop's prompt path
+    // (that is where the trunk's last hidden state and the head's logits are both live).  Saying so here rather
+    // than making the caller remember two flags.
+    if (o.mtp_probe) o.mtp_block = true;
+    if (o.mtp_probe && !o.serve) {
+        o.serve = true;
+        std::fprintf(stderr, "strata generate: --mtp-probe runs the serve loop's prompt path, so --serve is implied\n");
+    }
     strata::core::set_coupled_draft(o.coupled_draft);
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
@@ -2051,7 +2351,13 @@ int main(int argc, char** argv) {
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
     if (multi_gpu) {
-        if (o.expert_profile.empty()) {
+        // THE PROFILE REQUIREMENT IS THE FIRST FAMILY'S.  `auto` prices each stage's expert cache from the
+        // profile, its prompt path lends from that cache, and its helper GPUs cache pairs no stage holds - none
+        // of which exists on glm5-next, whose routed experts are computed on the CPU and never enter VRAM.  The
+        // arch is not read until `--native`'s family check below, so the requirement is deferred to there
+        // rather than fired here, where a GLM split would be refused by a rule that does not apply to it.  When
+        // there is no model file to ask, there is nothing to defer to and the error is the same one.
+        if (o.expert_profile.empty() && o.native_preset.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
             return 2;
         }
@@ -2204,9 +2510,34 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
+            // WHICH FAMILY IS THIS?  Asked of the metadata shard and answered before anything is sized, because
+            // the requirements below differ per family and a requirement that does not apply must not be able
+            // to refuse the file.
+            {
+                const strata::GgufFile meta(o.native_shards.front());
+                const strata::MetaValue* a = meta.get("general.architecture");
+                if (a == nullptr) {
+                    std::fprintf(stderr, "strata generate: --native %s: %s has no general.architecture\n",
+                                 o.native_preset.c_str(), o.native_shards.front().c_str());
+                    return 2;
+                }
+                if (!strata::core::arch_from_string(a->s, o.arch)) {
+                    std::fprintf(stderr, "strata generate: --native %s: architecture is '%s', this engine runs %s\n",
+                                 o.native_preset.c_str(), a->s.c_str(), strata::core::arch_list());
+                    return 2;
+                }
+                // A family with no PLE table runs with the PLE layer absent, which is exactly what `--no-ple`
+                // already selects.  Here it is not an ablation, it is the model, so every downstream PLE check
+                // that asks "is the key there" is answered by the family rather than by the user.
+                if (!strata::core::arch_has_ple(o.arch) && !o.no_ple) {
+                    o.no_ple = true;
+                    std::fprintf(stderr, "strata generate: %s has no per-layer embedding table; running without "
+                                         "the PLE layer\n", strata::core::arch_name(o.arch));
+                }
+            }
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
-            if (o.ple_gguf.empty() && !o.no_ple) {
+            if (o.ple_gguf.empty() && !o.no_ple && strata::core::arch_has_ple(o.arch)) {
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
                 if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
@@ -2215,16 +2546,59 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), e.what());
             return 2;
         }
-        if (o.no_ple || o.ple_gguf.empty()) {
+        // The PLE table is native too, so a family that HAS one must supply it.  A family without one - GLM-5.3
+        // -Flash carries no per_layer_token_embd.weight at all - is not asked for it.
+        if ((o.no_ple || o.ple_gguf.empty()) && strata::core::arch_has_ple(o.arch)) {
             std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
                                  "shard of the model holds per_layer_token_embd.weight\n");
+            return 2;
+        }
+        // THE FAMILY IS KNOWN HERE, so this is where the split's per-family rules land.  The first family's
+        // profile requirement was deferred from the split parse (see `multi_gpu` above) to this point.
+        if (multi_gpu && o.arch != strata::core::Arch::Glm5Next && o.expert_profile.empty()) {
+            std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
+            return 2;
+        }
+        // glm5-next asks the opposite questions.  Its helper caches are the first family's: an expert that lands
+        // in VRAM here lands in the tier this stage sizes for itself (`--glm-gpu-experts`, which needs no
+        // profile), so `--expert-cache-remote` and the `auto` profile between them have nothing to hold and
+        // nothing to price - both are refused by name rather than silently given devices or an empty profile.
+        if (multi_gpu && o.arch == strata::core::Arch::Glm5Next) {
+            if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0) {
+                std::fprintf(stderr, "strata generate: --expert-cache-remote is the first family's helper cache; "
+                                     "glm5-next's own tier is --glm-gpu-experts N\n");
+                return 2;
+            }
+            if (split_same) {
+                // `--split-device 0` shares one card between two stages.  On the first family that is the
+                // bit-exact check of the hand-off; here it builds no stage at all (`multi_gpu` is false for it),
+                // so accepting it would run one card and say nothing about it.
+                std::fprintf(stderr, "strata generate: --layer-split on one GPU (--split-device 0) is not wired "
+                                     "for glm5-next: name a second card in --split-device\n");
+                return 2;
+            }
+        }
+        // --batch IS REFUSED HERE AND NOT ONLY IN THE SERVE LOOP BELOW, which is where it used to be.  The slot
+        // sessions are allocated long before that (`bslot_ss`, one per slot per stage), so a GLM run with
+        // `--batch N --layer-split ...` would carve `N x (stages + 1)` sessions first - several GiB a card - and
+        // only then be told the flag means nothing here.  Same words, earlier.
+        if (o.batch > 0 && o.arch == strata::core::Arch::Glm5Next) {
+            std::fprintf(stderr, "strata serve: glm5-next runs one request at a time - its KDA layers are a "
+                                 "recurrence over tokens and its MLA cache is one linear array indexed by "
+                                 "absolute position, so there is no slot form two requests could share. "
+                                 "Drop --batch.\n");
             return 2;
         }
         o.stream_token = true;
         o.gr_native_mmvf = true;
         o.native_bf16 = o.native_bf16_extra = true;
-        o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
-        o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
+        o.native_moe_combine = o.native_gdn = o.native_router = true;
+        o.native_qsa = o.native_qsa_indexer = o.native_rope = true;
+        // These two switch on arithmetic INSIDE the PLE layer.  A family with no per-layer embedding table
+        // (glm5-next) has no such layer, so there is nothing to pin - and the checks below, which ask for the
+        // table's key and shard, must not be reached for it.  Forced here rather than exempted there, because
+        // "the model has no PLE" is the reason and it is known in exactly one place.
+        if (strata::core::arch_has_ple(o.arch)) o.native_ple_key = o.native_ple_postops = true;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
         if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
@@ -2236,7 +2610,10 @@ int main(int argc, char** argv) {
                 strata::GgufFile pg(o.ple_gguf);
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
             } catch (const std::exception&) {}
-            if (!ple_only &&
+            // An EMPTY --ple-gguf is not a missing file to append: it is a family with no PLE table at all
+            // (glm5-next), and appending it put the empty string in the dense-shard list, which then failed to
+            // open as "" before anything had been read.
+            if (!o.ple_gguf.empty() && !ple_only &&
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
@@ -2409,27 +2786,117 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--native-head-gguf requires --stream-token\n");
         return 2;
     }
+    // THE MODEL'S OWN GEOMETRY, READ BEFORE ANYTHING IS SIZED FROM IT.  It is read HERE - not where the rope
+    // config resolves below - because the first thing that needs it is the expert table: a native blob's size
+    // comes from n_embd and the expert width, and those are the model's numbers (4096 / 2048 on glm5-next,
+    // 2560 / 640 on qwen4exp), not this build's constants.  Reading it first is also what lets the loader check
+    // a layer's formats against the width they will actually be run at.
+    strata::core::ModelGeometry g;   // canonical defaults; every key the model file carries overrides them
+    int64_t K = 10;
+    std::string gguf_rope_type;
+    double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
+    if (!o.native_preset.empty()) {
+        // THE MODEL FILE IS THE AUTHORITY ON ITS OWN GEOMETRY.  The file names its family, the geometry is
+        // seeded from that family's shape, and then every key the file carries is read - so a pruned variant
+        // (GSQ-RCO Coder ships fewer experts than the canonical 512x10) and a different family (GLM-5.3-Flash)
+        // are both read rather than assumed, and a key that disagrees with the family's shape is refused by
+        // name instead of run.
+        try {
+            strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
+            if (const std::string e = strata::core::apply_model_geometry(model_gguf, g, K); !e.empty()) {
+                std::fprintf(stderr, "strata generate: %s: %s\n", o.native_preset.c_str(), e.c_str());
+                return 1;
+            }
+            const std::string rp = std::string(strata::core::arch_meta_prefix(g.arch)) + ".";
+            if (const strata::MetaValue* v = model_gguf.get(rp + "rope.freq_base")) gguf_rope_base = v->num();
+            if (const strata::MetaValue* v = model_gguf.get(rp + "rope.scaling.type")) gguf_rope_type = v->s;
+            if (const strata::MetaValue* v = model_gguf.get(rp + "rope.scaling.factor")) gguf_rope_factor = v->num();
+            if (const strata::MetaValue* v = model_gguf.get(rp + "rope.scaling.original_context_length"))
+                gguf_rope_orig_ctx = v->num();
+            std::fprintf(stderr,
+                         "strata generate: %s: %s, %lld layers (%lld full attention, %lld linear), %lld experts "
+                         "top-%lld, hidden %lld\n",
+                         o.native_preset.c_str(), strata::core::arch_name(g.arch), (long long) g.n_layers,
+                         (long long) g.n_qsa_layers(), (long long) g.n_gdn_layers(), (long long) g.n_expert,
+                         (long long) K, (long long) g.n_embd);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata generate: reading the model's geometry from %s: %s\n",
+                         o.native_preset.c_str(), e.what());
+            return 1;
+        }
+    }
+    // **THE END-OF-TURN TOKEN IS PER FAMILY, AND THE DEFAULT ABOVE IS THE FIRST FAMILY'S.**  Left alone, a
+    // glm5-next run would only ever stop at --max-new: Qwen's 248044 and 248046 never come out of a GLM head, so
+    // `--stop-eos` never fires and a chat turn runs to the length limit.
+    //
+    // WHICH IDS, MEASURED.  llama.cpp's rule is `special_eog_ids` (`src/llama-vocab.cpp:2565`): the fim ids, a
+    // list of literal token names, and then eos, eot and eom unconditionally.  Of that name list only
+    // `<|endoftext|>` exists in this vocabulary, so glm5-next's set is exactly the three the GGUF declares:
+    //
+    //   eos 154820 `<|endoftext|>`   eot 154827 `<|user|>`   eom 154829 `<|observation|>`
+    //
+    // **154827 IS THE ONE THAT MATTERS FOR CHAT, AND IT IS NOT THE eos id.**  Measured over the server, stopping
+    // on 154820 alone: the model never emitted it, ran to `max_tokens` every turn, and wrote `<|user|>` itself
+    // and then carried on inventing the user's next line.  A GLM turn ends at `<|user|>`, which is why the GGUF
+    // calls it `eot_token_id` rather than folding it into eos.  An explicit --eos-ids still replaces all of this.
+    if (!o.eos_ids_set && g.arch == strata::core::Arch::Glm5Next) {
+        o.eos_ids = {154820, 154827, 154829};
+        o.stop_eos = true;
+        std::fprintf(stderr, "strata generate: glm5-next: stopping at <|endoftext|> 154820, <|user|> 154827 and "
+                             "<|observation|> 154829 (--eos-ids replaces them)\n");
+    }
+    // **ONE EXTRA LAYER WHEN THE MODEL DECLARES A DRAFT BLOCK**, and it is not conditional on `--mtp`: a pack
+    // built with `tools/iq_pack.py --mtp` carries a row for that block, and a loader handed a row at index
+    // `n_layers` refuses the file as malformed.  Asking for the row unconditionally costs a `NativeFmt` and
+    // one entry in each per-layer table; on a pack WITHOUT it the slot is simply empty (`bytes == 0`), which
+    // is exactly what a dense-lead layer looks like, so the accounting is unchanged for every artifact that
+    // existed before the block was packed.  The layer index stays the BLOCK index, which is the whole point
+    // of the dense-lead zero rows, and which also makes `layer == g.n_layers` addressable by the draft block.
+    //
+    // **EVERYTHING THAT IS HANDED A LAYER COUNT MUST BE HANDED THIS ONE.**  `FileExpertSource::open` refuses a
+    // count that disagrees with the loaded layout, so the expert source below reads it too - and its `blob()`
+    // has to be able to address the draft block, which is the only layer whose index is `g.n_layers`.
+    const int64_t lay_n = g.n_layers + (g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0 ? 1 : 0);
     // Plan v0.3 P6: where the experts live.  A native pack (tools/iq_pack.py: the IQ2_XS / IQ3_XXS files) keeps
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
-        const strata::core::ModelGeometry g0;
-        if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err)) {
+        if (!strata::kernels::cpu::expert_layout_load(o.pack, lay_n, g.n_expert, g.n_embd, g.n_ff,
+                                                      g.swiglu_limit_or_off(), err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
         // Every layer's formats must have GPU expert kernels and a prompt-path dequantizer, checked here, before
         // anything is allocated: an unsupported down type used to exit from inside the first verify window, and
         // an unsupported dequant type left the prompt path's fp16 buffer unwritten.
-        const auto& lay = strata::kernels::cpu::expert_layout();
-        for (int64_t l = 0; lay.native && l < (int64_t) lay.fmt.size(); ++l) {
-            const auto& f = lay.fmt[(size_t) l];
-            if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
-                std::fprintf(stderr, "strata generate: layer %lld's experts are %s/%s (ggml types %d/%d), which this "
-                                     "engine has no GPU kernels for\n", (long long) l,
-                             strata::ggml_type_name((uint32_t) f.gu_type), strata::ggml_type_name((uint32_t) f.d_type),
-                             f.gu_type, f.d_type);
-                return 1;
+        //
+        // **glm5-next IS EXEMPT, AND IT HAS TO BE.**  Everything this loop asks about is GPU work - the kernel
+        // that dequantizes an expert into the prompt path's fp16 buffer, and the kernels that dot it.  On
+        // glm5-next every routed expert is computed on the CPU and there is nowhere else for one to run (see the
+        // `--no-capture` refusal above, and `glm_experts.hpp`), so the CPU side's own gate - `native_fmt`, which
+        // asks ggml-cpu for the type's dot product - is the only one that can be answered, and it already has
+        // been, inside `expert_layout_load`.
+        //
+        // It is not a formality.  MEASURED on the shipped artifact: the draft block's experts are Q3_K gate/up
+        // and Q4_K down (ggml types 11/12 - `/mnt/nvme/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf`, blk.45,
+        // against IQ3_S/Q6_K on the trunk), and neither is in `STRATA_GU_FMTS`/`STRATA_D_FMTS`.  So this loop
+        // refused the entire model over a block whose experts no GPU kernel ever sees.
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            for (int64_t l = 0; lay.native && l < (int64_t) lay.fmt.size(); ++l) {
+                // A layer with no routed experts at all has nothing to check: glm5-next's first three blocks are
+                // a dense SwiGLU (`leading_dense_block_count`), written into the table with a zero blob so that a
+                // layer index stays a block index.  Its formats are the default -1/-1, which no type check takes.
+                if (lay.bytes[(size_t) l] == 0) continue;
+                const auto& f = lay.fmt[(size_t) l];
+                if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                    std::fprintf(stderr,
+                                 "strata generate: layer %lld's experts are %s/%s (ggml types %d/%d), which this "
+                                 "engine has no GPU kernels for\n", (long long) l,
+                                 strata::ggml_type_name((uint32_t) f.gu_type),
+                                 strata::ggml_type_name((uint32_t) f.d_type), f.gu_type, f.d_type);
+                    return 1;
+                }
             }
         }
     }
@@ -2477,8 +2944,6 @@ int main(int argc, char** argv) {
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok() ? "ggml-cpu vec_dot (no AVX2: the older-CPU build)"
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
     // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats
@@ -2486,28 +2951,9 @@ int main(int argc, char** argv) {
     // the struct defaults.  The empty --rope-scaling and the 0 --rope-scale mean the flag is absent, so the
     // model file decides; an explicit value - `none` and `1` included, the opt-outs - wins over the model file.
     {
-        // The model file's rope keys (llama.cpp's names under the arch prefix), when it carries any - the
-        // artifact today ships none, so this is a no-op defaults channel for future fine-tunes.
-        std::string gguf_rope_type;
-        double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
-        if (!o.native_preset.empty()) {
-            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-            // is the authority on its own MoE shape - everything else in the geometry is unchanged
-            try {
-                strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
-                    gguf_rope_orig_ctx = v->num();
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
-                             o.native_preset.c_str(), e.what());
-                return 1;
-            }
-        }
+        // `gguf_rope_*` was read above, when the model file's geometry was: the rope keys (llama.cpp's names
+        // under the arch prefix) are the model file's, and the artifact the first family ships carries none, so
+        // this is a no-op defaults channel for future fine-tunes.
         using RST = strata::kernels::RopeScalingType;
         if (!o.rope_scaling.empty()) {
             // the early validation pinned the spelling; `none` here is the CLI opting OUT of the model file's keys
@@ -2580,18 +3026,75 @@ int main(int argc, char** argv) {
                              rope_cfg.type == RST::YaRN ? "YaRN" : "--yarn-attn-factor", rope_cfg.mscale());
         }
     }
+    // ================================ glm5-next's chunked prefill ================================
+    //
+    // **EVERY SESSION CARVES THE SAME CHUNK, AND THIS IS THE ONE PLACE THAT DECIDES IT.**  The whole model and
+    // every stage of a layer split read a prompt in the same batches of this size: a stage used to carve none,
+    // because the inter-stage hand-off carried one token's residual, and `hand` carries a chunk's worth now.
+    // ONE answer for every range is what lets a stage's chunk line up with its neighbours' - a stage chunking at
+    // a different size would hand over a row count nobody asked for.
+    //
+    // Both the price and the carve ask this, and they have to agree: `session_bytes` that omits the rows and a
+    // `session_init` that allocates them is a heap overrun 30 MiB past the end, and the layer-split search prices
+    // ranges through the same function.
+    //
+    // `--prefill auto` has no meaning on this arch: the first family's rule scans for the largest chunk the
+    // expert cache can lend buffers for, and a glm5-next chunk lives in the session's own carve, so the only
+    // question is how much amortization the CPU pool gets.
+    //
+    // **512, MEASURED END TO END, AND IT SUPERSEDES THE MODELLED 128 THAT WAS HERE.**  That number came off a
+    // 516-token router trace (`glm-analysis/prefill_amortize.py`) as "5.6x fewer expert bytes read a token at
+    // 128, 9.3x at 256, and past 128 the curve flattens because `MAXT` (8) starts splitting one expert's tokens
+    // into several jobs".  The per-token BYTES do flatten there, but a chunk also pays a FIXED cost - it must
+    // read every expert its tokens touch before it can serve any of them, and 88 tokens already touch 263 of
+    // the 288 experts - so the thing that scales with chunk size is the number of times that fixed cost is
+    // paid, not the bytes a token.  On the four-card rig (UD-IQ4_XS, 16K context) a 1334-token prompt reads in
+    // 80.2 s at 128 (11 chunks), 71.8 s at 512 (3), 67.7 s at 2048 (1), 67.5 s at 4096 (1, the prompt fits one
+    // either way) - and a 344-token prompt in 20.0 / 18.6 / 18.6 s, where 512 already covers it.
+    //
+    // The price is the session carve, which is linear in the chunk: 30.2 MiB of rows at 128, 120.6 at 512,
+    // 482.5 at 2048.  512 buys 12% of a long prompt's read for +90 MiB, which is under 2% of what the smallest
+    // card in that rig has free after its weights; 2048 buys another 6% for +362 MiB more, and that memory is
+    // the expert tier's, which is the decode lever.
+    //
+    // **ON BY DEFAULT, BECAUSE THE ALTERNATIVE IS A PROMPT AT DECODE SPEED.**  `--prefill CHUNK` has always been
+    // the first family's flag and it has always been refused here, so no glm5-next run has ever been started
+    // with one - which means "no flag" has to mean the chunk and not "off", or nothing changes.  `--prefill 1`
+    // (or 0) is the way back to the one-token-at-a-time path, and it is the control arm of the verification: at
+    // chunk 1 this and the decode step are the same call.
+    constexpr int64_t kGlmAutoChunkTokens = 512;
+    auto glm_chunk_for = [&](int64_t lo, int64_t hi) -> int64_t {
+        if (g.arch != strata::core::Arch::Glm5Next) return 1;
+        // **A STAGE OF A LAYER SPLIT CARVES LIKE ANY OTHER RANGE NOW.**  This used to answer 1 for any strict
+        // sub-range - and for `hi < 0`, where "-1 means THE WHOLE MODEL" was the caller asking "is a chunk on at
+        // all" - because the inter-stage hand-off carried ONE token's residual and `session_token_chunk`
+        // refused a layer range outright.  The hand-off carries `T` rows now (`hand`, `hand_bytes`), so a split
+        // reads its prompt in the same batches a single card does, and both spellings of the question answer the
+        // same thing.  `lo`/`hi` are kept in the signature because the carve sites still pass a real range; the
+        // answer no longer depends on it, which is what makes ONE chunk size mean the same thing on every stage.
+        (void) lo;
+        (void) hi;
+        if (o.prefill_chunk == 1) return 1;
+        const int64_t want = (o.prefill_chunk <= 0 || o.prefill_auto) ? kGlmAutoChunkTokens : o.prefill_chunk;
+        return std::clamp<int64_t>(want, 1, strata::core::GlmExpertPool::kMaxChunk);
+    };
+
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
-        if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
-            (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
+        // glm5-next is exempt from `--spec T (T >= 2)`: the verify window it names is the first family's, and a
+        // GLM run reaches `session_token` through the plain token loop instead.  It refuses `--spec` by name
+        // further down, so the exemption cannot be used to smuggle one in.
+        if (o.native_preset.empty() || (g.arch != strata::core::Arch::Glm5Next && o.spec < 2) || o.keep_canonical ||
+            (g.arch != strata::core::Arch::Glm5Next && o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
         }
-        const strata::core::ModelGeometry g0;
+        // The table is checked against the SHAPE THE MODEL DECLARES, not against the first family's constants:
+        // a 4096x154880 table (glm5-next) is not a wrong table, and asking for 2560x248320 refuses it by name.
         const auto embed_t0 = std::chrono::steady_clock::now();
-        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g0.n_embd,
-                               248320, err)) {
+        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g.n_embd,
+                               g.n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -2606,11 +3109,21 @@ int main(int argc, char** argv) {
     // to the expert cache with --native).  `--keep-canonical` loads both, as before.
     std::set<std::string> skip;
     if (!o.keep_canonical) {
+        // **THE DRAFT BLOCK'S ROWS ARE IN THE PACK WHETHER OR NOT THIS RUN USES THE BLOCK.**  A pack built with
+        // `tools/iq_pack.py --mtp` writes every quantized `blk.<n_layers>.` tensor as a row that carries a shape
+        // and no bytes at all, and `WeightTable::load` REFUSES such a row (`weights.cpp`: "this pack holds the
+        // tensor only in its GGUF form") unless its name is in this set.  So the set is built with the model's
+        // draft block admitted whenever the model declares one - which is a property of the PACK, not of this
+        // run - and the switch that decides whether the block is uploaded and run, `--mtp-block`, is applied
+        // immediately after, before anything asks `eligible` for its BYTES.  Leaving the block out here costs no
+        // VRAM either way (a name with no row in the index is inert); it refuses an `--mtp` pack outright.
+        strata::core::NativeDense::set_draft_block(g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0);
         if (!o.native_dense_gguf.empty() &&
             !strata::core::NativeDense::served_names(o.native_dense_gguf, o.native_ple_key, skip, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        strata::core::NativeDense::set_draft_block(o.mtp_block);
         if (!o.native_head_gguf.empty()) skip.insert("output.weight");
         // the PLE module validates its canonical key at construction (8 MB); a native pack has none to load
         if (!native_pack) skip.erase("blk.1.ple_key.weight");
@@ -2626,27 +3139,11 @@ int main(int argc, char** argv) {
     // expert cache wants.  Opt-in, STRATA_STAGE_TRIM=1, on HIP and CUDA alike: measured on 2x MI50 (PR #639),
     // and the default waits for its author's re-run of the release branch on his cards.
     const std::set<std::string> skip_base = skip;
-    // --trim-stage-weights (PR #559) is the same switch as STRATA_STAGE_TRIM=1 (PR #639)
-    const bool trim_asked = o.trim_stage_weights || [] {
-        const char* v = std::getenv("STRATA_STAGE_TRIM");
-        return v != nullptr && v[0] != 0 && std::string(v) != "0";
-    }();
-    // CUDA0'S ARENA IS BUILT BEFORE THE SPLIT IS KNOWN.  The prompt path's PLE tables are read out of it, here,
-    // and `auto` does not choose its split points until 590 lines below - so CUDA0 can still only trim an
-    // explicit --layer-split.  It is also the cheapest card to leave alone: it runs layers 0..split_at[0] on
-    // the device with the most room, and on the 4-way IQ3_S rig the trim buys it 4598 -> 4608 slots.  The VRAM
-    // is on the later cards (CUDA2 1241 -> 2485, CUDA3 533 -> 1772), and THEIR weights load after the search,
-    // so they trim under `auto` too - see the block past it.
-    const bool stage_trim = trim_asked && multi_gpu && !split_auto && !split_at.empty();
-    if (o.trim_stage_weights && !multi_gpu)
-        std::fprintf(stderr, "strata generate: --trim-stage-weights needs a layer split across GPUs (ignored)\n");
-    // Only `--layer-split auto` WITH the trim asked loads the later stages' weights after the split search (they can
-    // only be trimmed once the split is known).  Every other run keeps the 0.1.39 order: weights first, then the
-    // search - so without the trim nothing about a split moves.
-    const bool late_weights = trim_asked && multi_gpu && split_auto;
     // keep_routers: CUDA0 with --mmap-experts keeps every layer's router (ffn_gate_inp, ~2.5 MiB a layer) - the file
     // tier's routing-aware prefetch (RouterLookahead, below) copies all of them from CUDA0's arena, and would
     // otherwise turn itself off
+    // DEFINED HERE, ABOVE `trim_asked`, because glm5-next's `--layer-split auto` prices a candidate split with it
+    // before `stage_trim` is decided (see the block below).  It reads nothing but `o`.
     auto add_foreign = [&](int64_t lb, int64_t le, std::set<std::string>& out, bool keep_routers) {
         std::FILE* f = std::fopen((o.pack + "/index.txt").c_str(), "rb");
         if (!f) return;
@@ -2657,12 +3154,297 @@ int main(int argc, char** argv) {
             if (n.rfind("blk.", 0) != 0 || n.find("ple") != std::string::npos) continue;
             if (keep_routers && n.ends_with(".ffn_gate_inp.weight")) continue;
             const int64_t l = std::atoll(name + 4);
+            // **THE DRAFT BLOCK BELONGS TO THE LAST STAGE AND IS NOT A TRUNK LAYER.**  Its index is `n_layers`,
+            // so `[lb, le)` with `le == g.n_layers` excludes it and every stage would skip its weights - the
+            // block would load nothing and `glm_mtp_step` would fail on a missing `nextn.eh_proj.weight`.  The
+            // guard is `le >= g.n_layers`, which is true only for the stage holding the trunk's end; on the
+            // earlier stages the block is still foreign and still skipped.
+            if (g.arch == strata::core::Arch::Glm5Next && g.n_nextn > 0 && l >= g.n_layers && le >= g.n_layers)
+                continue;
             if (l < lb || l >= le) out.insert(n);
         }
         std::fclose(f);
     };
+    // ---- glm5-next's `--layer-split auto`: WHERE THE LAYERS GO, DECIDED HERE AND NOT BY THE SEARCH BELOW.
+    //
+    // The first family's search (`if (multi_gpu && split_auto)` further down) scores a placement by how much of
+    // the EXPERT PROFILE each card's cache would hold.  glm5-next has no expert profile: its routed experts are
+    // computed on the CPU unless the run's own tier holds them (`--glm-gpu-experts`), and that tier is sized per
+    // stage against that card's own free memory rather than from a profile - so there is nothing for that search
+    // to score, and it must not run for this arch at all.
+    //
+    // What a stage's VRAM is spent on here is three things, and all three are known before anything loads:
+    //   * its layers' dense weights, in two places.  The canonical arena is `WeightTable::pool_bytes` with the
+    //     base skip set plus every other layer's `blk.` names (`add_foreign`, exactly as `stage_trim` will build
+    //     it) - 277 MiB for the whole model.  The projections that matter are NOT in it: they are uploaded by
+    //     `NativeDense` from the model's own GGUF, all 540 of them, 7,662 MiB, ~170 MiB a layer.  Nothing in
+    //     this file could see that half before `served_bytes_per_layer`; on this arch it is the whole of it.
+    //   * its session, carved by its layer range (`session_bytes`): the KDA delta/conv state at 4.28 MiB a
+    //     layer and the MLA latent cache at 16 MiB a layer at a 16K context.
+    //   * its prefix snapshot, `kda_layers * 4.28 MiB + 64 KiB`, plus the logits, `parts` and the penalty window.
+    //
+    // So the search is exact, not proportional, and short: 45 layers and at most three split points.  Every
+    // rising tuple where each stage gets at least two layers is tried, a tuple is kept only if EVERY stage fits
+    // its own card's free VRAM less its reserve, and among those the one kept is the one that leaves the
+    // fullest card the most room.  A tuple that cannot fit is named rather than accepted and OOM'd later.
+    if (multi_gpu && split_auto && g.arch == strata::core::Arch::Glm5Next) {
+        // glm5-next is the one arch whose dense weights come from the GGUF alone; without it there is nothing
+        // to price and the placement would be a guess.
+        if (o.native_dense_gguf.empty()) {
+            std::fprintf(stderr, "strata generate: --layer-split auto for glm5-next needs --native (its dense "
+                                 "weights are the model file's): pass --layer-split K or name the model file\n");
+            return 2;
+        }
+        // **THE DRAFT BLOCK IS PRICED AS THE LAST STAGE'S EXTRA LAYER.**  With `--mtp-block` the block is a real
+        // layer this run uploads, and it is the only one whose name is `blk.<g.n_layers>`; a search that stopped
+        // at `g.n_layers` would both miss its weights and (because `served_bytes_per_layer` refuses an eligible
+        // tensor outside every layer) refuse to run at all.  It belongs to whichever stage holds the trunk's end,
+        // which is also the stage `session_bytes` already charges the block's MLA cache to.
+        const bool draft = o.mtp_block && g.n_nextn > 0;
+        std::vector<uint64_t> native_l;
+        if (!strata::core::NativeDense::served_bytes_per_layer(o.native_dense_gguf, o.native_ple_key,
+                                                               g.n_layers + (draft ? 1 : 0), native_l, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        // The canonical arena, per layer, in one pass over the pack index.  `pool_bytes` sums each kept row's
+        // `dst_bytes` rounded up to the index's own alignment, one row at a time - so the sum over a layer range
+        // is the sum of its rows, and one pass gives every range.  `align` is read from the header the same way
+        // `pool_bytes` reads it.
+        std::vector<uint64_t> canon_l((size_t) g.n_layers, 0);
+        uint64_t canon_common = 0;
+        // the draft block's canonical rows (its norms, its router, its indexer's F32 matrices - 5.3 MiB on this
+        // model).  Charged to the last stage alone, which is where `add_foreign` leaves them.
+        uint64_t canon_draft = 0;
+        {
+            std::FILE* f = std::fopen((o.pack + "/index.txt").c_str(), "rb");
+            if (f == nullptr) {
+                std::fprintf(stderr, "strata generate: cannot open %s/index.txt\n", o.pack.c_str());
+                return 1;
+            }
+            uint64_t align = 256;
+            char line[1024], name[256] = {0};
+            while (std::fgets(line, sizeof line, f)) {
+                if (line[0] == '#') {
+                    unsigned long long p = 0;
+                    int a = 0, tensors = 0;
+                    if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3 && a > 0)
+                        align = (uint64_t) a;
+                    continue;
+                }
+                // the first seven of the row's nineteen fields - kind, file, src_off, src_bytes, dst_off, dst_bytes
+                // - which are the ones `pool_bytes` reads and the ones the arena's placement depends on
+                int kind = 0, file = 0;
+                unsigned long long dummy = 0, dst_bytes = 0;
+                if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &file, &kind, &dummy, &dummy,
+                                &dummy, &dst_bytes) != 7)
+                    continue;
+                const std::string n = name;
+                if (skip_base.count(n)) continue;
+                const uint64_t rounded = (dst_bytes + align - 1) / align * align;
+                if (n.rfind("blk.", 0) != 0 || n.find("ple") != std::string::npos) { canon_common += rounded; continue; }
+                const long l = std::strtol(name + 4, nullptr, 10);
+                if (draft && l == g.n_layers) { canon_draft += rounded; continue; }
+                if (l < 0 || l >= g.n_layers) { canon_common += rounded; continue; }
+                canon_l[(size_t) l] += rounded;
+            }
+            std::fclose(f);
+        }
+        const uint64_t kda_bytes = strata::core::glm_kda_state_floats(g) * 4;
+        // THE HEAD IS THE LAST STAGE'S ALONE, and it is not in either of the two sums above: `output.weight` is
+        // not a `blk.` name (`served_bytes_per_layer` cannot see it) and its pack row carries no bytes (it is
+        // served from the model file), so this is the only place it can be priced.  496.3 MiB on this file.
+        uint64_t head_bytes = 0;
+        if (!o.native_head_shards.empty()) {
+            std::string herr;
+            if (!strata::core::NativeHead::served_bytes(o.native_head_shards, g.n_embd, g.n_vocab, head_bytes, herr)) {
+                std::fprintf(stderr, "strata generate: %s\n", herr.c_str());
+                return 1;
+            }
+        }
+        // weights + session + snapshot + the head, the logits, `parts` and the penalty window a stage holds.
+        // The last few are small (0.6 MiB, 0.2 MiB, 16 KiB) but they are not nothing on an 8 GB card.
+        //
+        // `session_bytes` above carries the stage's own chunk arena (`glm_chunk_for` is asked for THIS range),
+        // and that is the term a bigger `--prefill` moves: 4096 rows of `parts` alone are 512 MiB on a card with
+        // 6830 MiB of room, and the resident hand-off rows are another 256 MiB.  So the chunk is priced here,
+        // before it is allocated, which is the only place it can be.
+        //
+        // **THE HAND-OFF ROWS ARE NOT IN THIS SUM.**  A boundary's buffer is `cudaHostAlloc` - pinned HOST memory,
+        // read and written over PCIe - so it costs the machine's RAM and not the card's VRAM.  The old `res_bytes`
+        // term was one token's 64 KiB, which was noise either way; at 4096 rows it would be 256 MiB of phantom
+        // VRAM per stage and would push the search off placements that fit perfectly well.
+        auto stage_need = [&](int64_t lb, int64_t le, bool is_last) -> uint64_t {
+            uint64_t need = canon_common + (uint64_t) strata::core::session_bytes(g, o.max_context, K, lb, le, glm_chunk_for(lb, le));
+            for (int64_t l = lb; l < le; ++l) {
+                need += native_l[(size_t) l] + canon_l[(size_t) l];
+                if (strata::core::glm_is_kda_layer(g, l)) need += kda_bytes;
+            }
+            if (is_last && draft) need += native_l[(size_t) g.n_layers] + canon_draft;
+            return need + (is_last ? head_bytes : 0) +
+                   ((uint64_t) g.n_vocab * 4 + (uint64_t) K * g.n_embd * 4 + 4096 * 4);
+        };
+        // each card's free VRAM less its own reserve - CUDA0 the one the display may be on, the later cards
+        // their own (--vram-reserve-later-mib, defaulting to --vram-reserve-mib)
+        const int ns = (int) split_devs.size() + 1;
+        std::vector<uint64_t> room((size_t) ns, 0);
+        for (int i = 0; i < ns; ++i) {
+            const int dev = i == 0 ? 0 : split_devs[(size_t) i - 1];
+            const strata::core::OnDevice on(dev);
+            size_t fb = 0, tb = 0;
+            if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: layer split auto: CUDA%d free memory: %s\n", dev,
+                             cudaGetErrorString(cudaGetLastError()));
+                return 1;
+            }
+            // THE CAST IS BEFORE THE SHIFT, AND IT HAS TO BE: `o.vram_reserve_mib` is an `int`, and `6000 << 20`
+            // overflows a 32-bit int to 1904 MiB - so a generous reserve would have made the search think the
+            // card had 3.6 GiB more than it does and accept a placement that OOMs during the upload.  The first
+            // family's own `stage_room` casts first for the same reason.
+            const int64_t reserve = (int64_t) (i > 0 && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib
+                                                                                     : o.vram_reserve_mib) << 20;
+            room[(size_t) i] = fb > (size_t) reserve ? (uint64_t) fb - (uint64_t) reserve : 0;
+        }
+        // ================================ THE OBJECTIVE: BALANCE FIRST, HEADROOM SECOND ================================
+        //
+        // **THE OLD ONE MAXIMISED THE WRONG THING.**  It kept the placement whose TIGHTEST card had the most room
+        // left - a safety margin, not a schedule - and on this box that is a badly lopsided split: the two 12 GB
+        // 3060s have the most room to spare, so they take the most layers, and the two 8 GB 5060s were handed 3
+        // and 1 of the 45.  Every stage runs its whole range before the next one starts, so what a stage costs is
+        // how many layers it owns; a placement that gives one card 25 and another 1 makes the 25 fatter for no
+        // gain, and it puts the whole 45-layer token behind the slowest stage.
+        //
+        // So: among the placements that FIT, keep the one whose BUSIEST stage is smallest, and break a tie on the
+        // old margin - which is what still governs whether a placement is accepted at all (`need > room` makes the
+        // margin negative, and that is the miss the message below reports).  `peak` counts the LAST stage's head
+        // as one layer's worth of work, because it runs `output.weight` (496.3 MiB) and a projection per token
+        // that no other stage does.
+        std::vector<int64_t> best;
+        uint64_t best_margin = 0;
+        int64_t best_peak = INT64_MAX;
+        std::vector<int64_t> worst;      // the closest miss, for the message when nothing fits
+        int64_t worst_margin = INT64_MIN;
+        int64_t worst_short = 0;
+        bool have_worst = false;
+        std::vector<int64_t> at((size_t) split_devs.size(), 0);
+        std::function<void(size_t)> walk = [&](size_t i) {
+            if (i == at.size()) {
+                int64_t margin = INT64_MAX;
+                int64_t short_by = 0;
+                int64_t peak = 0;        // the most layers any one stage was given, the head counting as one
+                int64_t lb = 0;
+                for (int s = 0; s < ns; ++s) {
+                    const int64_t le = s + 1 == ns ? g.n_layers : at[(size_t) s];
+                    const int64_t need = (int64_t) stage_need(lb, le, s + 1 == ns);
+                    const int64_t left = (int64_t) room[(size_t) s] - need;
+                    if (left < 0 && -left > short_by) short_by = -left;
+                    margin = std::min(margin, left);
+                    peak = std::max(peak, (le - lb) + (s + 1 == ns ? 1 : 0));
+                    lb = le;
+                }
+                if (margin > 0 && (peak < best_peak || (peak == best_peak && (uint64_t) margin > best_margin))) {
+                    best_peak = peak;
+                    best_margin = (uint64_t) margin;
+                    best = at;
+                }
+                if (!have_worst || margin > worst_margin) {
+                    worst_margin = margin;
+                    worst = at;
+                    worst_short = short_by;
+                    have_worst = true;
+                }
+                return;
+            }
+            // at least two layers on the first card, one on each later one, and one left for the last
+            const int64_t lo = (i == 0 ? 2 : at[i - 1] + 1);
+            const int64_t hi = g.n_layers - (int64_t) (at.size() - i);
+            for (int64_t k = lo; k <= hi; ++k) { at[i] = k; walk(i + 1); }
+        };
+        walk(0);
+        if (best.empty()) {
+            uint64_t dense = canon_common + (draft ? native_l[(size_t) g.n_layers] + canon_draft : 0);
+            for (int64_t l = 0; l < g.n_layers; ++l) dense += native_l[(size_t) l] + canon_l[(size_t) l];
+            std::fprintf(stderr, "strata generate: layer split auto: no placement fits - the closest leaves a "
+                                 "card %lld MiB short. glm5-next's dense weights are %.2f GiB for the whole "
+                                 "model and every stage needs its own share of them plus its session: name "
+                                 "fewer cards in --split-device\n",
+                         (long long) (worst_short >> 20), (double) dense / 1073741824.0);
+            return 2;
+        }
+        split_at = best;
+        split_auto = false;
+        std::string layers;
+        int64_t lb = 0;
+        for (int i = 0; i < ns; ++i) {
+            const int64_t le = i + 1 == ns ? g.n_layers : split_at[(size_t) i];
+            layers += std::string(layers.empty() ? "" : ", ") + std::to_string(lb) + "-" + std::to_string(le - 1) +
+                      " (CUDA" + std::to_string(i == 0 ? 0 : split_devs[(size_t) i - 1]) + ", " +
+                      std::to_string((stage_need(lb, le, i + 1 == ns) + 1048575) >> 20) + " MiB of " +
+                      std::to_string((room[(size_t) i] + 1048575) >> 20) + ")";
+            lb = le;
+        }
+        std::fprintf(stderr, "strata generate: layer split auto: layers %s - the weights, sessions and snapshots "
+                             "fit every card\n", layers.c_str());
+        // --split-skip-if-fits asks the same question here as it does for the first family: would CUDA0 alone
+        // hold the whole thing?  That family's version answers it from an expert profile this arch cannot run
+        // without (and it is gated on `split_auto`, which is false by now), so glm5-next answers it from the same
+        // three terms the search uses, over the whole layer range.  Asked AFTER the placement because it needs
+        // CUDA0's room either way and the answer does not depend on where the split points fell.
+        if (o.split_skip_if_fits) {
+            const uint64_t whole = stage_need(0, g.n_layers, true);   // one card is also the last stage
+            if (whole <= room[0]) {
+                cudaDeviceProp dp{};
+                cudaGetDeviceProperties(&dp, 0);
+                std::fprintf(stderr, "strata generate: layer split skipped (--split-skip-if-fits): CUDA0 (%s) "
+                                     "holds the whole model (%.2f GiB of weights, sessions and snapshots) with "
+                                     "%.2f GiB to spare - one GPU\n",
+                             dp.name, (double) whole / 1073741824.0,
+                             (double) (room[0] - whole) / 1073741824.0);
+                multi_gpu = false;
+                split_devs.clear();
+                split_at.clear();
+                o.layer_split.clear();
+            } else {
+                std::fprintf(stderr, "strata generate: --split-skip-if-fits: CUDA0 would need %.2f GiB for the "
+                                     "whole model and has %.2f: the split stays\n",
+                             (double) whole / 1073741824.0, (double) room[0] / 1073741824.0);
+            }
+        }
+    }
+    // --trim-stage-weights (PR #559) is the same switch as STRATA_STAGE_TRIM=1 (PR #639)
+    // **FORCED ON FOR GLM5-NEXT, WHICH IS A DIFFERENT ARGUMENT FROM THE FIRST FAMILY'S.**  There the carve buys
+    // a stage VRAM for its expert cache and is opt-in because a card holding more experts can run different
+    // ones.  Here it is not a choice: a stage's weights ARE the dense half, all 7,662 MiB of projections for the
+    // whole model, and without the carve every stage loads all of it.  That is 7,662 MiB per card against
+    // 8,151 MiB on an RTX 5060 - the split would be impossible on the very cards it is for, and pointless
+    // everywhere else.  What the carve frees on this arch is what the run's own tier gets, when it asks for one
+    // (`--glm-gpu-experts`, sized after every weight, session and per-token buffer).  Nothing about it can change
+    // the output: every stage still runs its own layers in the same order with the same weights.
+    const bool trim_asked = o.trim_stage_weights || (multi_gpu && g.arch == strata::core::Arch::Glm5Next) || [] {
+        const char* v = std::getenv("STRATA_STAGE_TRIM");
+        return v != nullptr && v[0] != 0 && std::string(v) != "0";
+    }();
+    // CUDA0'S ARENA IS BUILT BEFORE THE FIRST FAMILY'S SPLIT IS KNOWN.  The prompt path's PLE tables are read
+    // out of it, here, and that family's `auto` does not choose its split points until 590 lines below - so
+    // CUDA0 can still only trim an explicit --layer-split.  It is also the cheapest card to leave alone: it
+    // runs layers 0..split_at[0] on the device with the most room, and on the 4-way IQ3_S rig the trim buys it
+    // 4598 -> 4608 slots.  The VRAM is on the later cards (CUDA2 1241 -> 2485, CUDA3 533 -> 1772), and THEIR
+    // weights load after the search, so they trim under `auto` too - see the block past it.
+    // **glm5-next's `auto` IS placed above, so it reaches this line with `split_at` filled and `split_auto`
+    // false: CUDA0 is carved with everyone else, which is the whole point - a CUDA0 holding all 7,662 MiB
+    // could not run on an 8 GB card at all.**
+    const bool stage_trim = trim_asked && multi_gpu && !split_auto && !split_at.empty();
+    if (o.trim_stage_weights && !multi_gpu)
+        std::fprintf(stderr, "strata generate: --trim-stage-weights needs a layer split across GPUs (ignored)\n");
+    // Only `--layer-split auto` WITH the trim asked loads the later stages' weights after the split search (they can
+    // only be trimmed once the split is known).  Every other run keeps the 0.1.39 order: weights first, then the
+    // search - so without the trim nothing about a split moves.
+    const bool late_weights = trim_asked && multi_gpu && split_auto;
     if (stage_trim) {
-        add_foreign(0, split_at[0], skip, o.mmap_experts);
+        // `keep_routers` is for the first family's file-tier routing-aware prefetch, which copies every layer's
+        // `ffn_gate_inp` from CUDA0's arena.  glm5-next has no such tier - its routed experts are read from the
+        // mmap'd GGUF by the CPU pool - so a foreign layer's router is dead weight on CUDA0 there.
+        add_foreign(0, split_at[0], skip, o.mmap_experts && g.arch != strata::core::Arch::Glm5Next);
         strata::core::NativeDense::set_layer_range(0, (int) split_at[0]);
         std::fprintf(stderr, "strata generate: layer split: CUDA0 loads the dense weights of layers 0-%lld only\n",
                      (long long) split_at[0] - 1);
@@ -2720,6 +3502,10 @@ int main(int argc, char** argv) {
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
 
     strata::core::NativeDense native_dense;
+    // `--mtp`: the model's block past the trunk is a layer like any other and its quantized tensors are rows of
+    // `index.txt` with no bytes in them, so the dense loader is the only thing that can give them a home.  Set
+    // before EVERY `load` - this one and each stage's - because it is a process-wide switch read at load time.
+    strata::core::NativeDense::set_draft_block(o.mtp_block);
     if (!o.native_dense_gguf.empty()) {
         if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
@@ -2748,6 +3534,7 @@ int main(int argc, char** argv) {
     strata::kernels::native_router_set_enabled(o.native_router);
     strata::kernels::native_qsa_set_enabled(o.native_qsa);
     strata::kernels::native_qsa_indexer_set_enabled(o.native_qsa_indexer);
+    strata::kernels::glm_dsa_set_enabled(o.dsa);
     strata::kernels::native_rope_set_enabled(o.native_rope);
     // The vision path: every rope kernel reads a cell's (t, h, w) from this table (strata/kernels/mrope.hpp).  It is
     // the identity until an image request, and it is set here, before any CUDA graph captures a rope kernel.
@@ -2982,7 +3769,7 @@ int main(int argc, char** argv) {
                 pairs_bytes += native_pack ? ((int64_t) lay.blob_bytes(pr.first) + 255) / 256 * 256 : (int64_t) lay.max_blob;
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
-            const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers);
+            const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers, glm_chunk_for(0, g.n_layers));
             const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
             const int64_t room = (int64_t) fb - held_back;
             cudaDeviceProp dp{};
@@ -3292,7 +4079,8 @@ int main(int argc, char** argv) {
         std::vector<int64_t> cap((size_t) ns), used((size_t) ns);
         // what stage i has left for experts if it runs [lb, le): its room, minus its session and (a later stage) its weights
         auto stage_left = [&](int i, int64_t lb, int64_t le) -> int64_t {
-            return cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+            return cap[(size_t) i] -
+                   (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le, glm_chunk_for(lb, le)) -
                    (i == 0 ? 0 : (int64_t) carve_bytes(lb, le));
         };
         std::vector<double> layer_ms((size_t) ns);
@@ -3804,11 +4592,11 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
-        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
+        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0, glm_chunk_for(0, hi0))) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
-        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0) == 0) {
+        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0, glm_chunk_for(0, hi0)) == 0) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
@@ -3839,8 +4627,8 @@ int main(int argc, char** argv) {
         GpuStage& st = *stages[i];
         const strata::core::OnDevice on(st.dev);
         void* sbuf_s = nullptr;
-        if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, st.lb, st.le)) != cudaSuccess ||
-            strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, st.lb, st.le) == 0) {
+        if (cudaMalloc(&sbuf_s, strata::core::session_bytes(g, o.max_context, K, st.lb, st.le, glm_chunk_for(st.lb, st.le))) != cudaSuccess ||
+            strata::core::session_init(g, o.max_context, K, sbuf_s, st.ss, st.lb, st.le, glm_chunk_for(st.lb, st.le)) == 0) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: the session state failed\n", st.dev);
             return 1;
         }
@@ -3920,12 +4708,12 @@ int main(int argc, char** argv) {
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
-            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
+            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, glm_chunk_for(lo, hi));
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
-                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
+                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi, glm_chunk_for(lo, hi)) == 0) {
                     cudaGetLastError();
                     if (buf != nullptr) cudaFree(buf);
                     size_t fb = 0, tb = 0;
@@ -4152,7 +4940,7 @@ int main(int argc, char** argv) {
         src.set_gguf(o.native_preset);
         if (const char* v = std::getenv("STRATA_FETCH_THREADS"); v != nullptr && std::atoi(v) > 0)
             src.set_fetch_threads(std::atoi(v));
-        if (!src.open(o.pack, g.n_layers, g.n_expert, err)) {
+        if (!src.open(o.pack, lay_n, g.n_expert, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -4223,7 +5011,7 @@ int main(int argc, char** argv) {
         else if (pin_wddm_cap)
             std::fprintf(stderr, "strata generate: multi-GPU under WDDM: at most 8 GiB of the expert arena is pinned "
                                  "(STRATA_ARENA_PIN_GIB changes it)\n");
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+        if (!arena_src.open(o.pack, lay_n, g.n_expert, /*threads=*/6, err, pin_limit,
                             o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -4272,6 +5060,131 @@ int main(int argc, char** argv) {
                              "(--host-core %s)\n", pool.workers(), on.c_str(), ht.host_core,
                      pool.host_works() ? " (draining too)" : "",
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
+    }
+    // ================================ glm5-next's expert pool ================================
+    //
+    // **A NATIVE PACK OF THIS ARCH RUNS ONE MODE AND NO OTHER, SO IT IS SELECTED HERE RATHER THAN ASKED FOR.**
+    // Every other switch in this file picks between two working paths; this one has a single path and a set of
+    // flags that would take a run off it:
+    //
+    //   * `session_capture` builds per-layer CUDA graphs of the FIRST family's `block_layer` - there is no
+    //     glm5-next graph to record, so `--no-capture` is not an option here, it is the only mode.
+    //   * `session_loop` and the verify window are that family's host loop around those graphs, so the same.
+    //   * the per-layer expert handoff the loop does (mapped pinned ring, doorbell) exists to hide the pool
+    //     behind a captured graph.  With no capture there is nothing to hide behind and the copies are explicit.
+    //
+    // Leaving any of them to the user is how a GLM run would end up in `session_loop`, which does not know the
+    // arch and would compute the first family's layers against GLM's weights.
+    strata::core::GlmExpertPool glm_pool_store;
+    strata::core::GlmPoolFn glm_pool_fn = nullptr;
+    void* glm_pool_user = nullptr;
+    // --dsa BEFORE the arch branch, because its two refusals are about the ARCH and not about glm5-next's own
+    // wiring: another family has its own indexer behind `--native-qsa-indexer`, and a glm5-next pack without the
+    // indexer geometry would run a selection over a zero-pool score row - `glm_dsa_select` would pad every cell
+    // to -1 and the layer would attend nothing, silently and fluently.
+    if (o.dsa) {
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            std::fprintf(stderr, "strata generate: --dsa is glm5-next's k-pool indexer; %s has its own behind "
+                                 "--native-qsa-indexer\n", strata::core::arch_name(g.arch));
+            return 2;
+        }
+        if (g.idx_key_dim <= 0 || g.idx_q_heads <= 0 || g.idx_kpool <= 0 || g.idx_top_k <= 0) {
+            std::fprintf(stderr, "strata generate: --dsa needs the indexer geometry (key_dim %lld, q_heads %lld, "
+                                 "kpool %lld, top_k %lld) and this pack carries none\n",
+                         (long long) g.idx_key_dim, (long long) g.idx_q_heads, (long long) g.idx_kpool,
+                         (long long) g.idx_top_k);
+            return 2;
+        }
+    }
+    // --mtp BEFORE the arch branch, for `--dsa`'s reason: it is a refusal about the ARCH first and about the
+    // model second, and a qwen4exp run handed it should be told which of the two is wrong.
+    if (o.mtp_block) {
+        if (g.arch != strata::core::Arch::Glm5Next) {
+            std::fprintf(stderr, "strata generate: --mtp is glm5-next's draft block (the next-token-prediction "
+                                 "block past the trunk); %s has none\n", strata::core::arch_name(g.arch));
+            return 2;
+        }
+        if (g.n_nextn <= 0) {
+            std::fprintf(stderr, "strata generate: --mtp needs a model that declares one: this file's "
+                                 "nextn_predict_layers is 0, so there is no block past the trunk\n");
+            return 2;
+        }
+    }
+    if (g.arch == strata::core::Arch::Glm5Next) {
+        if (!o.no_capture) {
+            o.no_capture = true;
+            std::fprintf(stderr, "strata generate: glm5-next has no captured layer graphs; running "
+                                 "`session_token` directly (--no-capture is implied)\n");
+        }
+        if (o.no_pool) {
+            // `--no-pool` would leave `parts` at zero and the combine would run on it: a finite, fluent token
+            // missing every routed expert.  There is no GPU-only floor to measure here either - without the pool
+            // the card computes only the tier `--glm-gpu-experts` was asked to hold, which is half the experts a
+            // token routes and not a smaller version of the same model - so the flag has nothing to mean.
+            std::fprintf(stderr, "strata generate: --no-pool has no meaning for glm5-next: the CPU pool computes "
+                                 "every routed expert the card's tier does not hold.\n");
+            return 2;
+        }
+        if (o.gpu_stages > 0) {
+            // The unrelated per-layer timing mode: it instruments the first family's captured graphs, and this
+            // arch has none.  A LAYER SPLIT, on the other hand, is wired now (see the run loop below): each
+            // stage runs its own layers with its own carved weights and session, and one hand-off carries the
+            // residual across each boundary.
+            std::fprintf(stderr, "strata generate: glm5-next has no captured layer graphs, so --gpu-stages has "
+                                 "nothing to time.\n");
+            return 2;
+        }
+        if (glm_chunk_for(0, -1) > 1) {
+            // **A CHUNK IS THE ONE THING THAT MAKES A PROMPT ON THIS ARCH PRACTICAL.**  Without it a prompt is
+            // read through `session_token` one token at a time at ~4.5 tok/s, so the user's 13k-token prompt is
+            // 48 minutes.  The chunk is layer-major (`session_token_chunk`): every token of the chunk runs layer
+            // `l` before any runs `l+1`, which is what keeps the KDA recurrence sequential and the MLA cache
+            // indexed by absolute position with no change to either - and it reads each DISTINCT expert once for
+            // every token of the chunk that routed to it, which is where the whole speedup comes from.
+            const int64_t c = glm_chunk_for(0, -1);
+            // Price it: `T * k * n_embd * 4` floats of unweighted expert output come back from the pool, so a
+            // 128-token chunk moves 16 MiB an H2D per MoE layer.  Said out loud because it is the cost side of
+            // the trade in the comment above.
+            std::fprintf(stderr, "strata generate: glm5-next chunked prefill: %lld tokens a chunk (%.1f MiB of "
+                                 "session rows, %.1f MiB of expert output an H2D)\n",
+                         (long long) c,
+                         (double) strata::core::glm_chunk_bytes(g, K, c) / 1048576.0,
+                         (double) c * (double) K * (double) g.n_embd * 4.0 / 1048576.0);
+        } else if (o.prefill_chunk > 0 && o.tokens.size() > 1) {
+            // A chunk of 1 is the decode path, so this is `--prefill 1` and not a chunk the session can carry:
+            // `glm_chunk_for` answers 1 for it and the loop below reads the prompt one token at a time, exactly
+            // as it did before chunking existed.  That is the control arm of the verification, and it is worth
+            // saying which arm a run is on.
+            std::fprintf(stderr, "strata generate: glm5-next: --prefill 1 is the unchunked path (one token at a "
+                                 "time through `session_token`)\n");
+        }
+        if (o.spec > 0 || o.spec_oracle.empty() == false || o.spec_follow.empty() == false) {
+            // The verify window is the first family's: captured layer PAIRS, `expert_pool_dispatch_multi`, and a
+            // state commit that assumes its own layout.  None of it is GLM's, so a GLM run that took the
+            // speculative branch would compute the wrong layers - and the native-pack gate below *demands*
+            // `--spec >= 2`, which is why this is a refusal and not a default of 0.
+            std::fprintf(stderr, "strata generate: glm5-next has no verify window yet: run without --spec "
+                                 "(a native pack normally requires it, glm5-next does not)\n");
+            return 2;
+        }
+        // `lay_n` for the draft block, exactly as `expert_layout_load` and the source were handed it: the pool
+        // refuses a layer index at or past its `n_layers`, and the draft block's index IS `g.n_layers`.
+        if (!glm_pool_store.init(srcp, &pool, lay_n, g.n_expert, K, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        glm_pool_fn = &strata::core::glm_expert_pool_call;
+        glm_pool_user = (void*) &glm_pool_store;
+        // `--expert-profile-save` on this arch asks the pool to count instead of the adaptive tier.  The first
+        // family's `heat` is fed by `ExpertDispatch::usage` and needs `--adapt-every`/`--adapt-swaps` and a
+        // starting profile to exist at all; glm5-next has no adaptive tier and no VRAM cache to adapt, so its
+        // count starts from nothing and asks for nothing else.  The save below writes what it learned.
+        if (!o.expert_profile_save.empty()) glm_pool_store.count_routing(true);
+        const auto& glay = strata::kernels::cpu::expert_layout();
+        std::fprintf(stderr, "strata generate: glm5-next experts on the CPU: %lld per token over %lld layers, "
+                             "blob %llu B on the first MoE layer\n", (long long) K,
+                     (long long) (g.n_layers - g.n_layer_dense_lead),
+                     (unsigned long long) glay.blob_bytes(g.n_layer_dense_lead));
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
@@ -4400,7 +5313,7 @@ int main(int argc, char** argv) {
             const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + min_slots * blob;
             const int64_t short_mib = std::max<int64_t>(1, (need_b - (int64_t) free_b + (1 << 20) - 1) >> 20);
             const int64_t session_mib =
-                (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) >> 20);
+                (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers, glm_chunk_for(0, g.n_layers)) >> 20);
             const std::string reserve_tip =
                 o.vram_reserve_given && o.vram_reserve_mib > kSmallReserveMib
                     ? ", a smaller --vram-reserve-mib (" + std::to_string(o.vram_reserve_mib) + " now; " +
@@ -4703,6 +5616,13 @@ int main(int argc, char** argv) {
                      fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0);
     }
 
+    // A LAYER SPLIT'S PER-STAGE EXPERT CACHE IS THE FIRST FAMILY'S, AND glm5-next HAS NONE.  Its 133.8 GiB of
+    // routed experts stay in the mmap'd pack and are computed by the one CPU pool for every stage alike (the
+    // pool takes global layer ids), so `st.profile` is empty on this arch and the sizing below finds nothing to
+    // open: `sized` stays empty, the open fails with "no room", and a healthy two-card GLM start returned 1
+    // there - after its weights, sessions and head had all loaded.  Skipped whole, with the stage's free VRAM
+    // still reported by the session loop above.
+    if (g.arch != strata::core::Arch::Glm5Next)
     for (auto& stp : stages) {
         GpuStage& st = *stp;
         const auto& lay = strata::kernels::cpu::expert_layout();
@@ -5134,7 +6054,12 @@ int main(int argc, char** argv) {
     // routed experts is not a slow measurement of this model, it is a measurement of a different model.
     //
     // Refusing is the fix.  `--no-pool` is the explicit way to say "I want the GPU-only floor".
-    if (o.no_capture && !o.no_pool) {
+    //
+    // **glm5-next IS THE EXCEPTION, AND IT IS THE ONLY ONE.**  Its experts run on the CPU and there is no
+    // second place they can run, so `--no-capture --no-pool` is not a floor there - it is a model with no
+    // routed experts at all.  Its pool is wired into `session_token` itself (`glm_pool_fn` below), which is
+    // exactly the hook this refusal was written about the absence of.
+    if (o.no_capture && !o.no_pool && g.arch != strata::core::Arch::Glm5Next) {
         std::fprintf(stderr,
                      "strata generate: --no-capture runs `session_token`, which has NO CPU expert pool hook, so "
                      "the routed experts would silently contribute nothing. Pass --no-pool as well if the "
@@ -5160,6 +6085,14 @@ int main(int argc, char** argv) {
     mem_mark("the expert cache and the graphs");
     std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_VERSION);
     auto run_head = [&](void* stream) -> bool {
+        // glm5-next collapses the hyper-connection stack with the MEAN and a plain `output_norm`; the first
+        // family's `lm_head_mix` is a `gr_read` over `output_hc_*` weights that a GLM pack does not contain. The
+        // PROJECTION is the same on both, so only the collapse is branched here.
+        if (g.arch == strata::core::Arch::Glm5Next) {
+            if (!strata::core::glm_head_mix(wt, g, ss.block, ss.block.mixed, stream, err)) return false;
+            if (native_head.loaded()) return native_head.run(ss.block.mixed, d_logits, stream, err);
+            return strata::core::lm_head_project(wt, g, ss.block, d_logits, stream, err);
+        }
         if (!native_head.loaded())
             return strata::core::lm_head(wt, g, ss.block, d_logits, stream, err);
         return strata::core::lm_head_mix(wt, g, ss.block, stream, err) &&
@@ -5201,6 +6134,24 @@ int main(int argc, char** argv) {
                 }
         }
         return o.stream_token || cudaDeviceSynchronize() == cudaSuccess;
+    };
+    // **THE CHUNKED PATH WRITES `T` ROWS, SO IT CANNOT USE `put_input`.**  `put_input` broadcasts into `ss.R` -
+    // one row - and its `pos == 0` branch calls `session_zero`, which would wipe the KDA recurrence on every
+    // chunk.  This writes the embedding into an explicit row (`ss.glm_chunk.R + t * hc * n_embd`) and leaves the
+    // zeroing to the caller, which does it once before the first chunk.  No sync here: the caller issues all `T`
+    // embeds and waits once, which is the whole reason this is not `put_input` in a loop.
+    auto put_input_row = [&](int64_t tok, float* row) -> bool {
+        if (!strata::core::embed_row(wt, g, tok, d_emb, token_stream, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return false;
+        }
+        for (int64_t c = 0; c < g.hc; ++c)
+            if (cudaMemcpyAsync(row + (size_t) c * g.n_embd, d_emb, (size_t) g.n_embd * 4,
+                                cudaMemcpyDeviceToDevice, (cudaStream_t) token_stream) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: the chunk's residual broadcast failed\n");
+                return false;
+            }
+        return true;
     };
 
     strata::kernels::SamplerParams sp;
@@ -6193,6 +7144,1185 @@ int main(int argc, char** argv) {
                      dropped ? "is closed" : "stays open", why.c_str());
     }
     if (o.serve) {
+        // ================================ glm5-next's serve loop ================================
+        //
+        // **WHY THIS ARCH NEEDS ITS OWN LOOP RATHER THAN A FLAG ON THE ONE BELOW.**  That loop reads a prompt
+        // through `Prefill` in token-parallel chunks and decodes through `Verifier` windows, and both are built on
+        // a PAGED K/V: a slot per cell, attention gathered over a selected set, several requests resident at once.
+        // glm5-next has neither.  Its 34 KDA layers are a RECURRENCE over tokens - token t's state is a function
+        // of token t-1's - so a chunk of tokens cannot be computed in parallel and a prompt cannot be read in
+        // pieces; and its MLA cache is ONE LINEAR ARRAY indexed by ABSOLUTE POSITION
+        // (`glm_mla_cache_bytes = max_cells * kv_lora_rank * 2`, written as `cache[pos * kv + i]`), not a pool of
+        // slots a request could be handed.  `src/core/verify.cpp` holds no glm5-next code at all and
+        // `Prefill::init` refuses the geometry outright (`src/prefill/prefill.cpp:819`), so the existing loop
+        // cannot be bent onto this arch - it would have to be rewritten, not parameterised.
+        //
+        // What is left is small, and every piece of it already exists and is already arch-aware: `put_input`,
+        // `session_token` (whose GLM branch is the whole per-token forward, CPU expert pool included), `run_head`
+        // (already branched on the arch), `sample_tokens`, `session_zero` and the pool behind `glm_pool_fn`.  This
+        // loop is those, in the order `generate`'s plain token loop puts them in, plus the wire protocol.
+        //
+        // WHAT IT DOES NOT HAVE, AND WHY - each one forced by the architecture above rather than chosen:
+        //   * ONE REQUEST AT A TIME.  The `INFO` line carries no `batch_slots`, which is exactly how
+        //     `serve/server.py` is told to queue requests instead of sharing the engine.
+        //   * NO SPECULATION AND NO MTP: there is no verify window to confirm a draft in.
+        //   * PROMPT INGEST IS SEQUENTIAL: one `session_token` per token, ~4.3 tok/s on the 2x Xeon E5-2680 v4
+        //     rig.  Prefix reuse (below) makes the next turn of a conversation cheap; a fresh long prompt is still
+        //     slow, and that is the real usability cost of this path.
+        //   * TEXT ONLY: no `GENI`/vision, and no `SAVE`/`RESTORE` - the state is a recurrence plus a linear
+        //     cache, not a paged K/V a file can describe.
+        if (g.arch == strata::core::Arch::Glm5Next) {
+            if (o.batch > 0) {
+                std::fprintf(stderr, "strata serve: glm5-next runs one request at a time - its KDA layers are a "
+                                     "recurrence over tokens and its MLA cache is one linear array indexed by "
+                                     "absolute position, so there is no slot form two requests could share. "
+                                     "Drop --batch.\n");
+                return 2;
+            }
+            ServeStdin sin;
+            sin.start();
+            // THE TOKENS THE SESSION STATE CURRENTLY STANDS FOR: the last request's prompt followed by every
+            // token it fed.  `live_ok` is false until a request has left the state in a known place.
+            std::vector<int64_t> live;
+            bool live_ok = false;
+            const int kPenCap = 4096;   // the penalty window's cap, as in the first family's loop
+            int32_t* d_pen = nullptr;   // one row of it, device side: the sampler reads history there
+            if (cudaMalloc(&d_pen, (size_t) kPenCap * sizeof(int32_t)) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: the penalty window buffer failed\n");
+                return 1;
+            }
+            std::vector<int32_t> pen_stage((size_t) kPenCap);
+            // ---- THE PREFIX SNAPSHOT, which is what makes reuse actually fire for a chat client. ----
+            //
+            // The rule below reuses the session only when the new prompt literally EXTENDS the tokens the state
+            // stands for.  Over an OpenAI-style API that is almost never true, and the reason is the TEMPLATE,
+            // not the engine: the client sends the assistant's reply back as TEXT, `chat_template.jinja`
+            // re-renders it, and the re-rendering is not the token stream the model produced.  Measured on
+            // glm-packs/full: the template's `clear_thinking` branch rewrites the reasoning to an empty
+            // `<think></think>`, so the new prompt agrees with `live` up to the end of the PREVIOUS PROMPT and
+            // diverges on the very first reply token.  Under the old rule the common prefix never reached the
+            // whole of `live`, the session was zeroed, and every turn of a conversation re-read its entire
+            // history at ~4.3 tok/s.
+            //
+            // The state at that divergence point is recoverable as long as it was SAVED, and this arch makes
+            // that cheap to reason about: the KDA delta/conv pair is the only part of the state that is a
+            // RUNNING accumulation.  The MLA cache is indexed by ABSOLUTE position, so a rewind leaves every
+            // position below the saved point holding exactly what those tokens wrote, and the positions above it
+            // are overwritten as the tail is read again.  So one buffer, written once per request at the end of
+            // the prompt read, is enough to turn every later turn into "read only what changed".
+            //
+            // WHAT IT COSTS: 34 KDA layers x (64*128*128 + 3*3*8192) floats x 4 = 153 MiB, plus the residual,
+            // which is saved with it because it is the embedding of the last token fed - a rewind that ingests
+            // nothing at all (a regenerated identical prompt) would otherwise decode from the wrong one.
+            const uint64_t kda_bytes = glm_kda_state_floats(g) * 4;
+            int64_t kda_layers = 0;
+            for (int64_t l = ss.layer_lo; l < ss.layer_hi; ++l) kda_layers += glm_is_kda_layer(g, l) ? 1 : 0;
+            const uint64_t res_bytes = (uint64_t) g.hc * (uint64_t) g.n_embd * 4;
+            // **WHAT CROSSES A BOUNDARY IS NOW `T` RESIDUALS, NOT ONE.**  `res_bytes` is one token's stack; a
+            // chunked stage hands its successor the whole chunk's, which is `glm_chunk` of them.  ONE number for
+            // every stage: `glm_chunk_for` answers the same for any range now, and a stage that chunked at a
+            // different size from its neighbours would be handing over a row count nobody asked for.
+            //
+            // The snapshot below is NOT scaled: it saves `ss->R` to rewind a later turn to the end of a prompt,
+            // and only the LAST token of a chunk is that end - `session_token_chunk` leaves exactly that row in
+            // `s.block.R` for the same reason.
+            const int64_t glm_chunk = glm_chunk_for(0, -1);
+            const uint64_t hand_bytes = (uint64_t) glm_chunk * res_bytes;
+            const uint64_t snap_bytes = (uint64_t) kda_layers * kda_bytes + res_bytes;
+            void* d_snap = nullptr;
+            if (snap_bytes > 0 && cudaMalloc(&d_snap, (size_t) snap_bytes) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: the prefix snapshot wants %llu MiB of VRAM and the card has "
+                                     "none free; restart with a smaller --max-context\n",
+                             (unsigned long long) (snap_bytes >> 20));
+                return 1;
+            }
+            // ---- THE STAGES.  A layer split's GLM run is `n` runners; `grs[0]` is CUDA0 and ALIASES the objects
+            // the single-card path already uses, so `grs.size() == 1` is that path, call for call.
+            //
+            // THE ONLY THING THAT CROSSES A BOUNDARY IS THE RESIDUAL `ss.block.R` (hc * n_embd * 4 = 64 KiB).
+            // `glm_block_layer_post` ends in `hc_write` + `hc_write_commit`, which folds the layer's output back
+            // into `R`, and the next layer's `glm_block_layer_pre` starts by reading it.  The KDA delta/conv
+            // state and the MLA latent cache are per-layer and never cross a boundary - and the MLA cache is
+            // indexed by ABSOLUTE position, so a later stage needs nothing carried for it at all.
+            //
+            // One pinned hand-off buffer per boundary, and what crosses it is a plain D2H + sync + H2D of
+            // exactly those bytes.  An exact copy is why a split cannot change a single token.
+            // `cudaHostAllocDefault` is enough here; the first family's portable flag is for a hand-off read
+            // inside a captured graph, and this arch is never captured (`--no-capture` is forced above).
+            struct GlmRunner {
+                int dev = 0;
+                strata::core::WeightTable* wt = nullptr;
+                strata::core::SessionState* ss = nullptr;    ///< carved to this stage's layers
+                strata::core::NativeHead* head = nullptr;    ///< the LAST stage only, and only if it loaded
+                cudaStream_t cs = nullptr;
+                float* parts = nullptr;      ///< K * n_embd: the CPU experts' output for this stage's layers
+                float* logits = nullptr;     ///< n_vocab; only the last stage's is read
+                int* next = nullptr;         ///< the sampled token; only the last stage's is read
+                int32_t* pen = nullptr;      ///< the penalty window's row; only the last stage's is read
+                void* d_snap = nullptr;      ///< its own layers' KDA states, then its residual
+                uint64_t snap_bytes = 0;
+            };
+            std::vector<GlmRunner> grs;
+            std::vector<void*> hand;   // one pinned residual per boundary: `hand.size() == grs.size() - 1`
+            grs.push_back(GlmRunner{0, &wt, &ss, multi_gpu ? nullptr : &native_head, (cudaStream_t) main_cs,
+                                    d_parts, d_logits, d_next, d_pen, d_snap, snap_bytes});
+            for (size_t i = 0; multi_gpu && i < stages.size(); ++i) {
+                GpuStage& st = *stages[i];
+                const strata::core::OnDevice on(st.dev);
+                GlmRunner r;
+                r.dev = st.dev;
+                r.wt = &st.wt;
+                r.ss = &st.ss;
+                r.cs = st.stream;
+                const bool is_last = i + 1 == stages.size();
+                r.head = is_last && st.head.loaded() ? &st.head : nullptr;
+                if (cudaMalloc(&r.parts, (size_t) K * g.n_embd * 4) != cudaSuccess ||
+                    cudaMemset(r.parts, 0, (size_t) K * g.n_embd * 4) != cudaSuccess ||
+                    cudaMalloc(&r.logits, (size_t) n_vocab * 4) != cudaSuccess ||
+                    cudaMalloc(&r.next, sizeof(int)) != cudaSuccess ||
+                    cudaMalloc(&r.pen, (size_t) kPenCap * sizeof(int32_t)) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: layer split, CUDA%d: its per-token buffers failed\n", st.dev);
+                    return 1;
+                }
+                int64_t my_kda = 0;
+                for (int64_t l = st.lb; l < st.le; ++l) my_kda += glm_is_kda_layer(g, l) ? 1 : 0;
+                r.snap_bytes = (uint64_t) my_kda * kda_bytes + res_bytes;
+                if (r.snap_bytes > 0 && cudaMalloc(&r.d_snap, (size_t) r.snap_bytes) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: layer split, CUDA%d: the prefix snapshot wants %llu MiB "
+                                         "of VRAM and that card has none free\n", st.dev,
+                                 (unsigned long long) (r.snap_bytes >> 20));
+                    return 1;
+                }
+                // A stage session is `cudaMalloc` memory and nothing has cleared it.  CUDA0's was zeroed where
+                // it was built; these are zeroed here, on their own stream, before a request can read them.
+                strata::core::session_zero(st.ss, g, nullptr, (void*) st.stream);
+                grs.push_back(r);
+            }
+            // ---- **THE VRAM TIER, ONE PER STAGE** (`--glm-gpu-experts`, glm_gpu_experts.hpp).  Each stage's
+            // slots are for ITS OWN layers and are sized against ITS OWN card's free memory - which is the
+            // whole reason this is a per-stage object and not one shared one - so a 4-way split gives every
+            // card the quota a whole-model sizing would have split four ways.  Built after the `grs` loop
+            // because that is when every stage's weights, state and per-token buffers exist, and
+            // `device_free_bytes()` is a question about what is left.  The arch test is the non-serve path's
+            // too (below): a first family's `session_token` has no VRAM tier to read it, so building one would
+            // be VRAM taken off the cache for nothing.
+            std::vector<std::unique_ptr<strata::core::GlmGpuExperts>> glm_tiers;
+            if (g.arch == strata::core::Arch::Glm5Next && o.glm_gpu_mib >= 0) {
+                glm_tiers.resize(grs.size());
+                for (size_t i = 0; i < grs.size(); ++i) {
+                    const strata::core::OnDevice on(grs[i].dev);
+                    const int64_t lb = grs[i].ss->layer_lo, le = grs[i].ss->layer_hi;
+                    if (!glm_gpu_tier_init(glm_tiers[i], o, g, srcp, lay_n, K, lb, le, err)) {
+                        std::fprintf(stderr, "strata serve: CUDA%d: %s\n", grs[i].dev, err.c_str());
+                        return 1;
+                    }
+                    grs[i].ss->glm_gpu = glm_tiers[i].get();
+                }
+            }
+            for (size_t i = 0; i + 1 < grs.size(); ++i) {
+                void* h = nullptr;
+                if (cudaHostAlloc(&h, (size_t) hand_bytes, cudaHostAllocDefault) != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: the hand-off buffer between CUDA%d and CUDA%d failed "
+                                         "(%llu MiB of pinned host memory; a smaller --prefill is the fix)\n",
+                                 grs[i].dev, grs[i + 1].dev, (unsigned long long) (hand_bytes >> 20));
+                    return 1;
+                }
+                hand.push_back(h);
+            }
+            const bool split_run = grs.size() > 1;
+            if (split_run)
+                std::fprintf(stderr, "strata serve: glm5-next across %zu stages: %.1f MiB of residual crosses each "
+                                     "of the %zu boundaries per chunk of %lld\n", grs.size(),
+                             (double) hand_bytes / 1048576.0, grs.size() - 1, (long long) glm_chunk);
+            // ---- THE THREE PER-TOKEN CALLS, one per stage in order.  With `grs.size() == 1` each of them is
+            // the single call the one-card path made, with the same arguments and the same stream.
+            auto glm_zero_all = [&](const float* R_init, void* cs0) {
+                for (size_t i = 0; i < grs.size(); ++i) {
+                    const strata::core::OnDevice oni(grs[i].dev);
+                    strata::core::session_zero(*grs[i].ss, g, i == 0 ? R_init : nullptr,
+                                               i == 0 ? cs0 : (void*) grs[i].cs);
+                }
+            };
+            auto glm_put = [&](int64_t tok, int64_t pos) -> bool {
+                {   // the embedding is CUDA0's: `NativeEmbed`'s table is mapped host memory gathered on device 0
+                    const strata::core::OnDevice on0(0);
+                    if (!strata::core::embed_row(wt, g, tok, d_emb, token_stream, err)) {
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return false;
+                    }
+                }
+                const strata::core::OnDevice on0(0);
+                if (pos == 0) {
+                    // THE REFERENCE'S OWN INITIAL CONDITION, and the reason every stage is zeroed and not just
+                    // the first: a stage that started from `cudaMalloc` garbage would be wrong for its own
+                    // layers, and the hand-off H2D below overwrites its `R` anyway - so the memset it gets is
+                    // free, and the KDA/MLA state it gets is not negotiable.
+                    glm_zero_all(d_emb, token_stream);
+                } else {
+                    for (int64_t c = 0; c < g.hc; ++c)   // stage 0 only: the rest get their residual by H2D
+                        if (cudaMemcpyAsync(ss.R + (size_t) c * g.n_embd, d_emb, (size_t) g.n_embd * 4,
+                                            cudaMemcpyDeviceToDevice, (cudaStream_t) token_stream) != cudaSuccess) {
+                            std::fprintf(stderr, "strata generate: the residual broadcast failed\n");
+                            return false;
+                        }
+                }
+                return o.stream_token || cudaDeviceSynchronize() == cudaSuccess;
+            };
+            auto glm_token = [&](int64_t pos) -> bool {
+                for (size_t i = 0; i < grs.size(); ++i) {
+                    const strata::core::OnDevice oni(grs[i].dev);
+                    if (i > 0 &&
+                        cudaMemcpyAsync(grs[i].ss->R, hand[i - 1], (size_t) res_bytes, cudaMemcpyHostToDevice,
+                                        grs[i].cs) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: the residual hand-off to CUDA%d failed\n", grs[i].dev);
+                        return false;
+                    }
+                    err.clear();
+                    if (!strata::core::session_token(*grs[i].wt, g, pos, /*pos_base=*/0, *grs[i].ss, grs[i].parts,
+                                                     (void*) grs[i].cs, o.sync_every_layer, glm_pool_fn,
+                                                     glm_pool_user, err))
+                        return false;
+                    if (i + 1 < grs.size()) {
+                        // THE RESIDUAL THE NEXT STAGE'S FIRST LAYER READS.  The D2H is issued after
+                        // `session_token`, which has already synchronized once per MoE layer of this range; the
+                        // explicit sync keeps the hand-off sound even if the last of those layers is not a MoE
+                        // one, and it is what makes each stage strictly ordered behind the one before it.
+                        if (cudaMemcpyAsync(hand[i], grs[i].ss->R, (size_t) res_bytes, cudaMemcpyDeviceToHost,
+                                            grs[i].cs) != cudaSuccess ||
+                            cudaStreamSynchronize(grs[i].cs) != cudaSuccess) {
+                            std::fprintf(stderr, "strata serve: the residual hand-off from CUDA%d failed\n",
+                                         grs[i].dev);
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
+            // ---- **THE CHUNK PIPELINE: A THREAD A STAGE, TWO BUFFERS A BOUNDARY.**
+            //
+            // The chunked prompt call used to be `for i in stages` with a D2H and a `cudaStreamSynchronize` at
+            // every boundary, all on this thread: the four cards took turns and three of them were idle at any
+            // instant.  The first family pipelines this (upstream `44bd7ad`), and the shape it uses is the one
+            // here - a stage a worker, its successor launched against the buffer it just filled.
+            //
+            // **WHAT IT IS WORTH, AND WHY IT IS NOT FOUR TIMES.**  Measured on this box, one 512-token chunk
+            // of the 4-way split, `STRATA_GLM_PREFILL_TIME=1`: stage 0 (layers 0-11) 5.81 s, stage 1 6.78 s,
+            // stage 2 6.28 s, stage 3 4.67 s - 23.5 s in all, of which the CPU expert pool is 15.3 s and the
+            // cards 7.7 s.  The pool is ONE shared object on one set of cores, so overlapping the stages
+            // cannot divide it: it is a serial 15.3 s under every schedule, and 23.5/15.3 = 1.54x is the whole
+            // of what a pipeline can reach here.  It is worth reaching because it costs the GPU time nothing:
+            // the cards sum to 7.7 s they were spending one after another.
+            //
+            // Stage 0 stays on this thread.  Its input is the chunk's own embeddings, which the loop above
+            // writes into stage 0's residual immediately before this call and which stage 0's PREVIOUS chunk
+            // is still reading from until its own D2H is done - so it cannot be handed to a worker without a
+            // second residual there, and its predecessor is a `cudaDeviceSynchronize` on the token stream.  The
+            // other stages get a thread each and run every chunk in order.
+            //
+            // The strict ordering the inline version kept is kept exactly: a producer waits for its slot to be
+            // free, and a consumer releases it only after the H2D has read it.  What changed is which stages
+            // are waiting on which - a stage now waits on its own boundary instead of on the whole chain.
+            struct GlmChunkPipe {
+                struct Slot {
+                    std::mutex mu;
+                    std::condition_variable cv;
+                    bool ready = false;   ///< the producer has filled this buffer for the chunk that owns it
+                    bool free = true;     ///< the consumer has finished with the chunk before last that owned it
+                };
+                /// `unique_ptr`, not `Slot` by value: a `Slot` holds a mutex and a condition variable, so it is
+                /// neither copyable nor movable and no container can hold one directly.
+                std::vector<std::unique_ptr<Slot>> slots;   ///< (stages - 1) boundaries, two buffers each
+                std::vector<void*> bufs;      ///< pinned host residuals, indexed the same way
+                std::vector<std::thread> threads;
+                std::vector<void*> R;         ///< each stage's chunk residual, device side
+                std::vector<int> dev;
+                std::vector<cudaStream_t> cs;
+                /// The stage's own work, so this struct does not need the enclosing lambda's locals.
+                std::function<bool(int, int64_t, int64_t)> run_stage;
+                uint64_t stride = 0;          ///< bytes one token of the residual takes
+                int n = 0;
+                std::mutex mu;
+                std::condition_variable cv;
+                /// (pos, ct), one per submitted chunk, appended by the main thread under `mu`.  Every stage
+                /// reads all of it, in order - see `worker`.
+                std::vector<std::pair<int64_t, int64_t>> jobs;
+                std::atomic<bool> done{false};
+                std::atomic<bool> abort{false};
+                /// Chunks the LAST stage has finished.  `finish` waits for this to reach the number of
+                /// published chunks - see there for why ending on the submitter's last chunk is wrong.
+                ///
+                /// A count of CHUNKS and not of tokens: the only reader wants to know when the stages behind
+                /// have drained, and the prompt's own token count is the submitter's `read_n`, which is what
+                /// the heartbeat reports.  A second counter of finished *tokens* would be a number nothing
+                /// reads - it was one until the pipe was made to die with the request.
+                std::atomic<size_t> last_done{0};
+                std::string err;              ///< the first failure, under `mu`
+
+                Slot& slot(int b, size_t j) { return *slots[(size_t) b * 2 + (j & 1)]; }
+                void* buf(int b, size_t j) { return bufs[(size_t) b * 2 + (j & 1)]; }
+
+                /// The wait predicates are re-tested on a timeout as well as on a notify.  Every wake here is
+                /// paired with its own mutex, so a notify cannot be lost, but a failure has to unblock four
+                /// threads on four different mutexes and a bounded re-check makes that impossible to get
+                /// subtly wrong.  Nothing waits unless something is actually stuck, so it costs nothing.
+                /// A function, not a `static constexpr` member: a local class may not have static data members,
+                /// and this one is declared inside `main`.
+                static constexpr std::chrono::milliseconds kTick() { return std::chrono::milliseconds(50); }
+
+                void fail(const std::string& e) {
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (err.empty()) err = e;
+                    }
+                    abort.store(true);
+                    for (auto& sp : slots) sp->cv.notify_all();
+                    cv.notify_all();
+                }
+                /// Stage `b+1`: wait for chunk `j` to arrive on boundary `b`, then read it onto that card.
+                bool take(int b, size_t j, uint64_t bytes, std::string& e) {
+                    Slot& s = slot(b, j);
+                    {
+                        std::unique_lock<std::mutex> lk(s.mu);
+                        // A LOOP, not a predicate-and-test.  The wait is bounded so that a failure can unblock
+                        // four threads on four different mutexes, which means it returns on a plain timeout as
+                        // well - and a timeout is not a failure.  Only `abort` is.
+                        //
+                        // **`done` IS NOT A STOP CONDITION HERE, AND PUTTING IT HERE WAS A BUG.**  The stages
+                        // run two chunks apart per boundary, so the last one can be six chunks behind the
+                        // thread that submits them; ending the request on `done` then killed a stage that was
+                        // still waiting for a hand-off it was owed, and reported it as a failure - measured:
+                        // "the chunk pipeline stopped before chunk 2 could cross boundary 2", on a five-chunk
+                        // prompt that had submitted all five.  `finish` now waits for every published chunk
+                        // before it sets `done`, so the only thing that can stop a `take` early is `abort`.
+                        while (!s.ready && !abort.load()) s.cv.wait_for(lk, kTick());
+                        if (!s.ready) {
+                            e = "the chunk pipeline stopped before chunk " + std::to_string(j) +
+                                " could cross boundary " + std::to_string(b);
+                            return false;
+                        }
+                    }
+                    if (cudaMemcpyAsync(R[(size_t) b + 1], buf(b, j), (size_t) bytes, cudaMemcpyHostToDevice,
+                                        cs[(size_t) b + 1]) != cudaSuccess ||
+                        cudaStreamSynchronize(cs[(size_t) b + 1]) != cudaSuccess) {
+                        e = "strata serve: the residual hand-off to CUDA" + std::to_string(dev[(size_t) b + 1]) +
+                            " failed: " + cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
+                    // THE COPY HAS TO BE DONE BEFORE THE SLOT IS RELEASED, not merely ordered on the stream:
+                    // the producer writes to this host buffer and the copy engine reads it, and only the sync
+                    // says the reader is finished.
+                    {
+                        std::lock_guard<std::mutex> lk(s.mu);
+                        s.ready = false;
+                        s.free = true;
+                    }
+                    s.cv.notify_all();
+                    return true;
+                }
+                /// Stage `b`: wait for boundary `b`'s slot to be free, then leave chunk `j` in it.
+                bool give(int b, size_t j, uint64_t bytes, std::string& e) {
+                    Slot& s = slot(b, j);
+                    {
+                        std::unique_lock<std::mutex> lk(s.mu);
+                        while (!s.free && !abort.load()) s.cv.wait_for(lk, kTick());   // see `take`
+                        if (!s.free) {
+                            e = "the chunk pipeline stopped before chunk " + std::to_string(j) +
+                                " could leave boundary " + std::to_string(b);
+                            return false;
+                        }
+                    }
+                    if (cudaMemcpyAsync(buf(b, j), R[(size_t) b], (size_t) bytes, cudaMemcpyDeviceToHost,
+                                        cs[(size_t) b]) != cudaSuccess ||
+                        cudaStreamSynchronize(cs[(size_t) b]) != cudaSuccess) {
+                        e = "strata serve: the residual hand-off from CUDA" + std::to_string(dev[(size_t) b]) +
+                            " failed: " + cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(s.mu);
+                        s.ready = true;
+                        s.free = false;
+                    }
+                    s.cv.notify_all();
+                    return true;
+                }
+                /// **EVERY STAGE WALKS THE CHUNKS IN ORDER, AND THAT IS NOT AN OPTIMISATION.**
+                ///
+                /// The obvious shape - one work queue, whichever idle worker claims the next chunk runs it -
+                /// DEADLOCKS here, and it is worth writing down why, because the queue looks correct.  Stage
+                /// `s` can only do chunk `j` once stage `s-1` has handed chunk `j` over, so a worker's jobs are
+                /// not interchangeable: the stage-3 thread can claim chunk 0 and will then wait at boundary 2
+                /// for a hand-off that only the stage-1 thread can make - and the stage-1 thread is idle,
+                /// because the chunk it was supposed to take has already been claimed.  Measured on the first
+                /// run of this code: four chunk summaries and then nothing, at 0% CPU, forever.
+                ///
+                /// So each worker is pinned to its stage and takes the chunks in the one order that works.  The
+                /// `jobs` record is still shared and still published under `mu`; what is per-stage is the index.
+                /// The back-pressure falls out of the two-slot boundaries: the main thread cannot publish chunk
+                /// `j+2` at boundary 0 until stage 1 has taken chunk `j`, and stage 1 cannot reach `j+2` until
+                /// stage 2 has taken `j`, and so on down the line.
+                void worker(int stage) {
+                    std::string e;
+                    for (size_t j = 0;; ++j) {
+                        int64_t pos = 0, ct = 0;
+                        {
+                            std::unique_lock<std::mutex> lk(mu);
+                            while (j >= jobs.size() && !done.load() && !abort.load()) cv.wait_for(lk, kTick());
+                            // Only reachable with `done` or `abort` set: a worker must drain every chunk that
+                            // WAS published before it stops, and `finish` publishes nothing new.
+                            if (j >= jobs.size()) break;
+                            pos = jobs[j].first;
+                            ct = jobs[j].second;
+                        }
+                        if (abort.load()) break;
+                        const uint64_t bytes = (uint64_t) ct * stride;
+                        if (!take(stage - 1, j, bytes, e)) { fail(e); break; }
+                        if (!run_stage(stage, pos, ct)) { fail(e); break; }
+                        if (stage + 1 < n && !give(stage, j, bytes, e)) { fail(e); break; }
+                        if (stage + 1 == n) {
+                            last_done.fetch_add(1, std::memory_order_release);
+                            cv.notify_all();
+                        }
+                    }
+                }
+                /// Every chunk is in: let the workers finish what they have and join them.
+                ///
+                /// **THE WAIT FOR `last_done` IS THE WHOLE POINT.**  `done` means "nothing more will be
+                /// published", not "stop now" - the stages behind this thread are still holding hand-offs that
+                /// were published to them, and joining before they drain would end the request with a stage
+                /// still reading a residual the session is about to rewind under.  Both the failed and the
+                /// cancelled exit land here too, which is why `abort` short-circuits the wait.
+                bool finish() {
+                    size_t want = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        want = jobs.size();
+                    }
+                    {
+                        std::unique_lock<std::mutex> lk(mu);
+                        while (!abort.load() && last_done.load() < want) cv.wait_for(lk, kTick());
+                    }
+                    done.store(true);
+                    cv.notify_all();
+                    for (auto& sp : slots) sp->cv.notify_all();
+                    for (std::thread& t : threads)
+                        if (t.joinable()) t.join();
+                    return err.empty();
+                }
+                /// The pinned hand-off buffers are the pipe's own, since the pipeline replaced the single
+                /// `hand[]` residual the serial arm still uses.  `cudaHostAlloc` has no owner, so without this
+                /// every pipe a request builds leaks `(stages - 1) * 2 * hand_bytes` - 192 MiB on a four-card
+                /// split, a request.
+                ///
+                /// Not `cudaFreeHost` on a pipe whose threads are live: `reset` is only ever reached from
+                /// `finish` (which joins) or from the buffer allocation's own failure path (where no thread has
+                /// been spawned yet).
+                ~GlmChunkPipe() {
+                    for (void* b : bufs)
+                        if (b != nullptr) cudaFreeHost(b);
+                }
+            };
+            std::unique_ptr<GlmChunkPipe> chunk_pipe;
+            // ---- **THE CHUNKED PROMPT CALL: ONE STAGE, OR EVERY STAGE AS A PIPELINE.**  It used to be one
+            // stage only, because `session_token_chunk` refused a layer range and the hand-off carried a
+            // single residual.  Both are gone: `c.R` is `T` rows on every stage, so a stage's INPUT is its
+            // predecessor's `c.R` and its OUTPUT is its own, and the only new work is moving `ct` rows instead
+            // of one.
+            /// ONE STAGE'S CHUNK, on its own `err` so the pipeline's four threads do not write one string, and
+            /// with the caller's own `OnDevice` guard.  Both schedules call this: the pipe from a worker thread,
+            /// the `STRATA_GLM_NO_PIPE` arm from this one, so the two arms run the same code and only the
+            /// schedule differs.
+            auto glm_chunk_stage = [&](int i, int64_t ps, int64_t c, std::string& e) -> bool {
+                const strata::core::OnDevice oni(grs[(size_t) i].dev);
+                if (!strata::core::session_token_chunk(*grs[(size_t) i].wt, g, ps, /*pos_base=*/0, c,
+                                                       *grs[(size_t) i].ss, (void*) grs[(size_t) i].cs, glm_pool_fn,
+                                                       glm_pool_user, e)) {
+                    std::fprintf(stderr, "strata serve: session_token_chunk (CUDA%d): %s\n", grs[(size_t) i].dev,
+                                 e.c_str());
+                    return false;
+                }
+                return true;
+            };
+            auto glm_token_chunk = [&](int64_t pos, int64_t ct) -> bool {
+                if (!split_run) {
+                    const strata::core::OnDevice on0(0);
+                    err.clear();
+                    if (!strata::core::session_token_chunk(wt, g, pos, /*pos_base=*/0, ct, ss,
+                                                           (cudaStream_t) token_stream, glm_pool_fn, glm_pool_user,
+                                                           err)) {
+                        std::fprintf(stderr, "strata serve: session_token_chunk: %s\n", err.c_str());
+                        return false;
+                    }
+                    return true;
+                }
+                // STRATA_GLM_NO_PIPE: the pre-pipeline schedule, kept as the A/B arm.  It is the same code the
+                // pipe replaced - `for i in stages`, a D2H and a `cudaStreamSynchronize` at every boundary,
+                // all on this thread - so one binary can measure the pipeline against the thing it replaced
+                // and the two must produce the SAME tokens.  Read once; the cost of `getenv` here is nothing
+                // against a chunk.
+                static const bool pipe_off = std::getenv("STRATA_GLM_NO_PIPE") != nullptr;
+                if (pipe_off) {
+                    for (size_t i = 0; i < grs.size(); ++i) {
+                        if (i > 0 &&
+                            cudaMemcpyAsync(grs[i].ss->glm_chunk.R, hand[i - 1], (size_t) ct * res_bytes,
+                                            cudaMemcpyHostToDevice, grs[i].cs) != cudaSuccess) {
+                            err = "the residual hand-off to CUDA" + std::to_string(grs[i].dev) + " failed";
+                            return false;
+                        }
+                        std::string e;
+                        if (!glm_chunk_stage((int) i, pos, ct, e)) {
+                            err = e;
+                            return false;
+                        }
+                        if (i + 1 < grs.size() &&
+                            (cudaMemcpyAsync(hand[i], grs[i].ss->glm_chunk.R, (size_t) ct * res_bytes,
+                                             cudaMemcpyDeviceToHost, grs[i].cs) != cudaSuccess ||
+                             cudaStreamSynchronize(grs[i].cs) != cudaSuccess)) {
+                            err = "the residual hand-off from CUDA" + std::to_string(grs[i].dev) + " failed";
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                if (chunk_pipe == nullptr) {
+                    chunk_pipe.reset(new GlmChunkPipe());
+                    GlmChunkPipe& p = *chunk_pipe;
+                    p.n = (int) grs.size();
+                    p.stride = res_bytes;
+                    p.run_stage = [&](int i, int64_t ps, int64_t c) -> bool {
+                        // The stage's own `err`, not the enclosing one: four of these run at once.
+                        std::string e;
+                        return glm_chunk_stage(i, ps, c, e);
+                    };
+                    for (size_t i = 0; i < grs.size(); ++i) {
+                        p.R.push_back(grs[i].ss->glm_chunk.R);
+                        p.dev.push_back(grs[i].dev);
+                        p.cs.push_back(grs[i].cs);
+                    }
+                    for (size_t i = 0; i + 1 < grs.size(); ++i)
+                        for (int k = 0; k < 2; ++k) {
+                            void* h = nullptr;
+                            if (cudaHostAlloc(&h, (size_t) hand_bytes, cudaHostAllocDefault) != cudaSuccess) {
+                                std::fprintf(stderr,
+                                             "strata serve: the pipelined hand-off between CUDA%zu and CUDA%zu "
+                                             "failed (%llu MiB more of pinned host memory; a smaller --prefill "
+                                             "is the fix)\n",
+                                             i, i + 1, (unsigned long long) (hand_bytes >> 20));
+                                chunk_pipe.reset();
+                                return false;
+                            }
+                            p.bufs.push_back(h);
+                            p.slots.push_back(std::make_unique<GlmChunkPipe::Slot>());
+                        }
+                    for (int s = 1; s < p.n; ++s) p.threads.emplace_back([&p, s] { p.worker(s); });
+                }
+                GlmChunkPipe& p = *chunk_pipe;
+                if (p.abort.load()) {
+                    err = p.err.empty() ? "the chunk pipeline stopped" : p.err;
+                    return false;
+                }
+                size_t j = 0;
+                {
+                    std::lock_guard<std::mutex> lk(p.mu);
+                    p.jobs.emplace_back(pos, ct);
+                    j = p.jobs.size() - 1;
+                }
+                p.cv.notify_all();
+                const uint64_t bytes = (uint64_t) ct * (uint64_t) res_bytes;
+                // Stage 0 on this thread, then its own boundary.
+                if (!p.run_stage(0, pos, ct)) {
+                    // `fail` and not just a return: a worker is already waiting on this chunk's boundary-0 slot
+                    // (the job was published before stage 0 ran), and only `abort` unblocks it.
+                    err = "stage 0 of the chunk pipeline failed";
+                    p.fail(err);
+                    return false;
+                }
+                std::string e;
+                if (p.n > 1 && !p.give(0, j, bytes, e)) {
+                    err = e;
+                    p.fail(e);
+                    return false;
+                }
+                return true;
+            };
+            /// Drain: the chunk loop has submitted everything it is going to, so let the stages behind finish.
+            /// Called on every exit from the loop, including the failed and cancelled ones - a stage still
+            /// reading a residual this thread is about to move on from is the one way this can go wrong.
+            auto glm_chunk_pipe_drain = [&]() -> bool {
+                if (chunk_pipe == nullptr) return true;
+                const bool ok = chunk_pipe->finish();
+                if (!ok) {
+                    err = chunk_pipe->err.empty() ? "the chunk pipeline failed" : chunk_pipe->err;
+                    std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                }
+                // **THE PIPE LIVES FOR ONE REQUEST.  KEEPING IT ALIVE WAS A HANG ON THE SECOND ONE.**
+                //
+                // `chunk_pipe` sits OUTSIDE the serve loop (`for (;;)`, below), because a request is not the
+                // only thing in this scope - so a pipe left standing would be found non-null by the next
+                // request, which would then publish its chunks into it.  Everything about that fails: `finish`
+                // has already set `done`, so the stage threads have left their loops and been joined (and
+                // therefore cannot be re-spawned by the `== nullptr` test that builds one); `jobs` still holds
+                // the previous request's entries, so the new chunks are numbered after them; and `last_done`,
+                // which `finish` waits on, starts the new request at the OLD count, so the wait for
+                // `jobs.size()` can never be satisfied.  The second request hangs: no error, no tokens, the
+                // submitter stopped at the first boundary no one is left to read.
+                //
+                // Draining and rebuilding costs the pinned buffers and four threads a request, which is the
+                // honest price of the hand-off buffers being the pipe's (see the destructor).  A request that
+                // never chunked - `--prefill 1`, or no layer split - never builds one and is unaffected.
+                chunk_pipe.reset();
+                return ok;
+            };
+            // `glm_put` WITHOUT ITS `pos == 0` BRANCH: writing one token's embedding into an explicit residual
+            // row.  A chunk writes `ct` of them and zeroes ONCE for itself, so the branch - which would wipe the
+            // KDA recurrence - cannot be in here.
+            auto glm_put_row = [&](int64_t tok, float* row) -> bool {
+                const strata::core::OnDevice on0(0);
+                if (!strata::core::embed_row(wt, g, tok, d_emb, token_stream, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return false;
+                }
+                for (int64_t c = 0; c < g.hc; ++c)
+                    if (cudaMemcpyAsync(row + (size_t) c * g.n_embd, d_emb, (size_t) g.n_embd * 4,
+                                        cudaMemcpyDeviceToDevice, (cudaStream_t) token_stream) != cudaSuccess) {
+                        std::fprintf(stderr, "strata generate: the chunk's residual broadcast failed\n");
+                        return false;
+                    }
+                return true;
+            };
+            auto glm_run_head = [&]() -> bool {
+                GlmRunner& L = grs.back();
+                const strata::core::OnDevice onl(L.dev);
+                void* hcs = split_run ? (void*) L.cs : token_stream;
+                if (!glm_head_mix(*L.wt, g, L.ss->block, L.ss->block.mixed, hcs, err)) return false;
+                if (L.head != nullptr && L.head->loaded()) return L.head->run(L.ss->block.mixed, L.logits, hcs, err);
+                return strata::core::lm_head_project(*L.wt, g, L.ss->block, L.logits, hcs, err);
+            };
+            int64_t snap_pos = -1;   // the position the snapshot stands for; < 0 = none taken yet
+            auto snap_take = [&]() {   // state -> buffer; ordered behind the reads that produced it
+                for (GlmRunner& R : grs) {
+                    const strata::core::OnDevice oni(R.dev);
+                    uint8_t* p = (uint8_t*) R.d_snap;
+                    for (int64_t l = R.ss->layer_lo; l < R.ss->layer_hi; ++l) {
+                        if (!glm_is_kda_layer(g, l)) continue;
+                        cudaMemcpyAsync(p, R.ss->glm_states[l].kda_state, (size_t) kda_bytes,
+                                        cudaMemcpyDeviceToDevice, R.cs);
+                        p += kda_bytes;
+                    }
+                    cudaMemcpyAsync(p, R.ss->R, (size_t) res_bytes, cudaMemcpyDeviceToDevice, R.cs);
+                    cudaStreamSynchronize(R.cs);
+                }
+            };
+            auto snap_put = [&]() {    // buffer -> state; every later read is ordered behind this
+                for (GlmRunner& R : grs) {
+                    const strata::core::OnDevice oni(R.dev);
+                    const uint8_t* p = (const uint8_t*) R.d_snap;
+                    for (int64_t l = R.ss->layer_lo; l < R.ss->layer_hi; ++l) {
+                        if (!glm_is_kda_layer(g, l)) continue;
+                        cudaMemcpyAsync(R.ss->glm_states[l].kda_state, p, (size_t) kda_bytes,
+                                        cudaMemcpyDeviceToDevice, R.cs);
+                        p += kda_bytes;
+                    }
+                    cudaMemcpyAsync(R.ss->R, p, (size_t) res_bytes, cudaMemcpyDeviceToDevice, R.cs);
+                    cudaStreamSynchronize(R.cs);
+                }
+                // SYNCHRONOUS BEFORE THE CALLER'S NEXT `glm_put`.  That one copies the first token's embedding
+                // into stage 0's `R` on `token_stream`, which without --stream-token is the DEFAULT stream while
+                // this is `main_cs` - two streams with no ordering between them, both writing the residual.
+                // Whichever landed last would win, and the loser's value is a different token's.
+                cudaStreamSynchronize((cudaStream_t) main_cs);
+            };
+            {
+                const strata::core::OnDevice on0(0);
+                size_t free_b = 0, total_b = 0;
+                cudaMemGetInfo(&free_b, &total_b);
+                // NO batch_slots KEY: see server.py's `self.batch = int(self.info.get("batch_slots") or 0)`.
+                std::printf("INFO context=%lld kv=glm spec=0 mtp_max=0 lookup=0 vram_free_mib=%lld pool_workers=%d "
+                            "expert_slots=0 expert_cache_mib=0 pcie_frac=%.2f engine=" STRATA_VERSION "\n",
+                            (long long) o.max_context, (long long) (free_b >> 20), pool.workers(),
+                            (double) o.pcie_frac);
+                std::fflush(stdout);
+            }
+            std::printf("READY %lld stop\n", (long long) o.max_context);
+            std::fflush(stdout);
+            std::fprintf(stderr, "strata serve: glm5-next: one request at a time, sequential prompt read, no "
+                                 "speculation, text only (see the loop's comment in generate.cpp)\n");
+            for (;;) {
+                std::string line;
+                if (!sin.next(line)) break;
+                if (line.empty()) continue;
+                if (line == "QUIT") break;
+                if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
+                    // the shape the server expects for a refusal, so a stray SAVE cannot desynchronise its reader
+                    std::printf("SERR invalid 0 glm5-next has no conversation files\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                if (line.rfind("VRAM", 0) == 0) {
+                    // nothing about this path lives in VRAM besides the weights and the session, so the honest
+                    // answer is "no expert cache here" plus the card's free figure
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
+                    std::printf("VRAM expert_slots=0 expert_cache_mib=0 vram_free_mib=%lld\n",
+                                (long long) (fb >> 20));
+                    std::fflush(stdout);
+                    continue;
+                }
+                GenKeys gk;
+                {
+                    std::string ge;
+                    if (!parse_gen_line(line, o.pcie_frac, o.spec_min_p, gk, ge)) {
+                        std::printf("ERR %s\n", ge.c_str());
+                        std::fflush(stdout);
+                        continue;
+                    }
+                }
+                if (gk.geni) {
+                    std::printf("ERR this engine was started without --vision\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                const int64_t n = (int64_t) gk.ids.size();
+                if (n + gk.max_new + 8 > o.max_context) {
+                    std::printf("ERR the request needs %lld tokens of context and this engine has %lld\n",
+                                (long long) (n + gk.max_new + 8), (long long) o.max_context);
+                    std::fflush(stdout);
+                    continue;
+                }
+                bool bad_id = false;
+                for (int64_t t : gk.ids) bad_id = bad_id || t < 0 || t >= n_vocab;
+                if (bad_id) {
+                    std::printf("ERR bad request: a token id is outside 0..%lld\n", (long long) (n_vocab - 1));
+                    std::fflush(stdout);
+                    continue;
+                }
+                sin.stop.store(false);   // a STOP that arrived between requests is stale
+
+                // ---- REUSE OR RESET.  The state is deterministic and a request only ever ends between tokens, so
+                // after feeding k tokens the state corresponds to those k tokens and nothing else.  Keeping it
+                // across requests is worth a great deal here - the prompt read is the expensive half of this path -
+                // and it is safe for the same reason: the MLA cache is indexed by ABSOLUTE position and the KDA
+                // recurrence is over the tokens in order.  A request whose prompt EXTENDS the last one (the next
+                // turn of the same chat) starts reading at the common prefix; anything else - an edited or
+                // regenerated earlier turn - starts from 0 with a zeroed session.
+                //
+                // The guard is not this comment: a reused run must produce byte-identical tokens to a fresh one on
+                // the same prompt.  See the verification note at the top of this block.
+                int64_t c = 0;
+                if (live_ok) {
+                    const int64_t m = std::min<int64_t>((int64_t) live.size(), n);
+                    while (c < m && live[(size_t) c] == gk.ids[(size_t) c]) ++c;
+                }
+                // WHICH OF THE THREE, and each one's precondition is a fact about the state, not a heuristic:
+                //   EXTEND  the prefix is the whole of `live` - the state is already standing on every token
+                //           the new prompt starts with, so only the new ones are read.
+                //   REWIND  it is not, but it does REACH the snapshot (`c >= snap_pos` is the condition that
+                //           makes the rewind sound: every MLA position below `snap_pos` still holds what those
+                //           same tokens wrote).  The session goes back to the end of the previous prompt.
+                //   ZERO    otherwise - an edited or regenerated earlier turn, a different conversation, or the
+                //           very first request.
+                bool reuse = false;
+                if (live_ok && c == (int64_t) live.size()) {
+                    reuse = true;                       // EXTEND: `c` is already the whole prefix we keep
+                } else if (snap_pos >= 0 && c >= snap_pos && snap_pos <= n) {
+                    snap_put();
+                    c = snap_pos;                       // REWIND: the state now stands for the first `c` tokens
+                    reuse = true;
+                }
+                if (!reuse) {
+                    glm_zero_all(nullptr, main_cs);
+                    c = 0;                              // ZERO
+                    // **AND THE SNAPSHOT DOES NOT SURVIVE THIS.**  It describes a KDA state together with the
+                    // MLA rows below its position, and this request is about to overwrite those rows with a
+                    // different prompt's.  A later request could still find `c >= snap_pos` against ITS prompt
+                    // while the cache underneath holds this one's tokens, so a rewind is only sound while
+                    // nothing but a rewind has touched the rows below the saved point.  Dropped here, retaken
+                    // below at this request's own prompt end.
+                    snap_pos = -1;
+                }
+                // Every token the STATE has consumed, which is what the penalty window reads.  On the rewind
+                // path that is the prompt up to the saved point and not up to `live`, which the state has just
+                // stopped standing for.  `c <= n` holds on every path, so taking it from THIS prompt is right:
+                // the two agree on `[0, c)` or the rewind precondition would not have held.
+                std::vector<int64_t> consumed(gk.ids.begin(), gk.ids.begin() + (size_t) c);
+                const int hist_len = std::clamp(gk.penalty_last_n, 0, kPenCap);
+                strata::kernels::SamplerParams req_sp;
+                req_sp.greedy = gk.temperature <= 0.0f;
+                req_sp.temperature = gk.temperature;
+                req_sp.top_p = gk.top_p;
+                req_sp.top_k = gk.top_k;
+                req_sp.seed = gk.seed ? gk.seed
+                                      : (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count();
+                req_sp.min_p = std::clamp(gk.min_p, 0.0f, 1.0f);
+                req_sp.penalty_last_n = hist_len;
+                req_sp.penalty_repeat = gk.penalty_repeat;
+                req_sp.penalty_freq = gk.penalty_freq;
+                req_sp.penalty_present = gk.penalty_present;
+                if (c > 0) {
+                    std::printf("RESUME %lld\n", (long long) c);   // before reading: this many are reused
+                    std::fflush(stdout);
+                }
+
+                // ---- THE PROMPT.  `glm_put` is the call the plain loop makes, and it is what zeroes the session
+                // at position 0 (with the embedding as the initial residual, the reference's own starting
+                // condition) and broadcasts the residual after that.
+                //
+                // **IN CHUNKS WHERE IT CAN BE, AND THAT IS THE DIFFERENCE BETWEEN A MINUTE AND AN HOUR.**  At one
+                // token a call this box read 4.5 tok/s flat in prompt length - the same number as decode, because
+                // a prompt IS a decode with no batching - so a 13k-token prompt was 48 minutes.  A chunk of 128
+                // reads each distinct expert once for every token of the chunk that routed to it: measured off a
+                // 516-token router trace, 5.6x fewer expert bytes a token, and the experts are 44% of a token's
+                // time.  `glm_chunk_for` is 1 only for `--prefill 1` now - a LAYER SPLIT chunks too, one stage
+                // after another - and the loop below is then exactly what it always was.
+                const Clock::time_point r0 = Clock::now();
+                int64_t read_n = 0;
+                bool cancelled = false, failed = false;
+                const int64_t chunk = glm_chunk_for(0, -1);
+                if (chunk > 1) {
+                    for (int64_t p = c; p < n; p += chunk) {
+                        // THE CANCEL IS HONOURED AT A CHUNK BOUNDARY AND NOWHERE ELSE.  Stopping mid-chunk would
+                        // leave the KDA recurrence advanced for some tokens of some layers and not others, and
+                        // there is no cheap way to unwind it - so the request ends where the chunk does.  With a
+                        // 128-token chunk that is a second or two, against 41 s for the read it is cancelling.
+                        if (sin.stop.load()) { cancelled = true; break; }
+                        const int64_t ct = std::min<int64_t>(chunk, n - p);
+                        if (p == 0) {
+                            // The reference's own initial condition, once for the whole prompt: a zeroed KDA/MLA
+                            // state, which the embedding rows below then supply the residual for.  `glm_zero_all`
+                            // and not `glm_put(..., 0)` because that one also seeds `R` with a single token's
+                            // embedding, and this chunk is about to write `ct` rows over it.
+                            glm_zero_all(nullptr, token_stream);
+                        }
+                        for (int64_t t = 0; t < ct; ++t)
+                            if (!glm_put_row(gk.ids[(size_t) (p + t)],
+                                             ss.glm_chunk.R + (size_t) t * (size_t) g.hc * (size_t) g.n_embd)) {
+                                failed = true;
+                                break;
+                            }
+                        // One wait for all `ct` embeds: without `--stream-token` they are on stream 0 and the
+                        // layers are on `main_cs`, and this is the only thing that orders the two.
+                        if (!failed && !o.stream_token && cudaDeviceSynchronize() != cudaSuccess) failed = true;
+                        if (!failed && !glm_token_chunk(p, ct)) failed = true;
+                        if (failed) break;
+                        for (int64_t t = 0; t < ct; ++t) consumed.push_back(gk.ids[(size_t) (p + t)]);
+                        read_n += ct;
+                        // PP <position reached> <prompt tokens> <ms> <fresh tok/s>: also the server's heartbeat.
+                        // Once a chunk here rather than every 8 tokens - a chunk is the unit the read now has.
+                        //
+                        // **THE POSITION IS THE TOKENS THIS LOOP HAS HANDED OVER, NOT THE LAST STAGE'S
+                        // COUNT.**  `read_n` is the same counter the prompt's own summary line reports and the
+                        // same point `consumed` has been advanced to, so it is what this thread has taken out of
+                        // the request; the stages behind it lag by the pipeline's depth (two slots a boundary, so
+                        // up to six chunks), which is a constant and not a fraction.
+                        //
+                        // **THE LAG IS NOT ONLY COSMETIC, and at long context it is the difference between a
+                        // request and a kill.**  The server takes this position as its liveness signal and
+                        // derives the next silence deadline from the chunk it names - `server.py:1488`,
+                        // `allow = max(silence, PP_SLACK * chunk / rate)`, `PP_SLACK` 3.0.  While the position
+                        // keeps moving that is three times this chunk's own time; while it is stalled the
+                        // chunk is ZERO tokens and the deadline falls back to the flat `silence` (300 s by
+                        // default).  So a position that reports a stage behind is fine on a short prompt and
+                        // fatal on a long one: measured here, the last stage had completed 0 of 2,214 tokens at
+                        // 41 s, and a chunk of this box's long-context work is ~100 s and up.
+                        //
+                        // The cost is the rate, which during the fill is the submitter's and never quite the
+                        // prompt's.  That is what the drained `PP` after the loop is for, and the line the
+                        // server reports the prompt with (`prompt_ms`) is measured after the drain too, so the
+                        // number that ends up in front of a user is the true one.
+                        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+                        const int64_t shown = read_n;
+                        std::printf("PP %lld %lld %.0f %.1f\n", (long long) (c + shown), (long long) n, ms,
+                                    ms > 0.0 ? 1000.0 * (double) shown / ms : 0.0);
+                        std::fflush(stdout);
+                    }
+                } else {
+                    for (int64_t p = c; p < n; ++p) {
+                        if (sin.stop.load()) { cancelled = true; break; }
+                        if (!glm_put(gk.ids[(size_t) p], p)) { failed = true; break; }
+                        if (!glm_token(p)) { failed = true; break; }
+                        consumed.push_back(gk.ids[(size_t) p]);
+                        ++read_n;
+                        if (read_n % 8 == 0 || p + 1 == n) {
+                            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+                            std::printf("PP %lld %lld %.0f %.1f\n", (long long) (p + 1), (long long) n, ms,
+                                        ms > 0.0 ? 1000.0 * (double) read_n / ms : 0.0);
+                            std::fflush(stdout);
+                        }
+                    }
+                }
+                // THE PIPELINE IS DRAINED ON EVERY EXIT, INCLUDING THE FAILED AND CANCELLED ONES.  A stage
+                // thread still reading a residual this thread is about to rewind the session under is the one
+                // way this can go wrong, and the window is exactly the stages behind the last chunk.
+                if (!glm_chunk_pipe_drain() && !failed) failed = true;
+                const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+                // The LAST heartbeat, and it is the whole prompt: `read_n` is every token this loop handed
+                // over, and the drain above has just seen all of them finish, so this is the one `PP` whose
+                // position, time and rate are the prompt's own rather than the submitter's.  Printed on every
+                // exit and not only when there was a pipeline - the loop's own last print is inside the loop,
+                // which a cancelled read leaves early.
+                {
+                    std::printf("PP %lld %lld %.0f %.1f\n", (long long) (c + read_n), (long long) n, prompt_ms,
+                                prompt_ms > 0.0 ? 1000.0 * (double) read_n / prompt_ms : 0.0);
+                    std::fflush(stdout);
+                }
+                if (failed) {
+                    // a layer failure is not a bad request: the state cannot be trusted from here
+                    std::printf("ERR %s\n", err.empty() ? "the layer loop failed" : err.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                }
+
+                // THE END OF THE PROMPT READ IS THE POINT A LATER TURN REWINDS TO, so it is saved here - before
+                // decode mutates the KDA recurrence, and behind the last `session_token` on the same stream.  A
+                // later request whose common prefix with this prompt reaches `n` gets the session back as it is
+                // at this instant, and reads only the tail.
+                //
+                // NOT AFTER A CANCELLED READ: the loop broke at token `c + read_n`, so the state is there and
+                // not at `n`, and a snapshot labelled `n` would hand the next request a session missing the
+                // tokens it was promised.  The old snapshot is still good in that case - a cancel only ever
+                // wrote positions at or above the point it rewound to - so it is simply left where it was.
+                if (!cancelled) {
+                    snap_take();
+                    snap_pos = n;
+                }
+
+                if (o.mtp_probe) {
+                    // ================================ THE DRAFT BLOCK, MEASURED ================================
+                    //
+                    // One step of the model's own multi-token-prediction block, on exactly the inputs the oracle
+                    // uses, printed against the oracle's draft.  `/home/gopi/glm-scratch/mtp-oracle/mtp_ref.cpp`
+                    // prints `target_next` (the trunk head's argmax at the last prompt position) and then the
+                    // draft, which is `argmax` of the block's OWN head - and both are pure argmax, no sampling,
+                    // so a mismatch is arithmetic and not a seed.
+                    //
+                    // The two inputs, and both are already live here:
+                    //   * `hidden` - the trunk's post-`output_norm` state at position `n - 1`.  That is what
+                    //     `glm_head_mix` just wrote into `ss.block.mixed`, and it is the tensor the reference
+                    //     emits as `result_mtp_embd`.
+                    //   * `token` - the token the trunk just predicted, i.e. `argmax` of the logits below.  The
+                    //     block's embedding input is that token, not the last prompt token.
+                    // `pos = n` because the draft stands FOR the token at position `n`; with a cold cache (which
+                    // is what this is - nothing warmed it) the reference's own drafts are 72 / 11 / 7739 / 50473
+                    // on the four rungs of `run-warm.sh`.
+                    GlmRunner& L = grs.back();
+                    const strata::core::OnDevice onl(L.dev);
+                    void* hcs = split_run ? (void*) L.cs : token_stream;
+                    if (g.n_nextn <= 0) {
+                        std::printf("ERR --mtp-probe: this model declares no block past its trunk\n");
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    if (!glm_run_head()) {
+                        std::printf("ERR lm_head: %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    // The logits are read on the HOST TWICE here (the target's argmax, then the draft's), which is
+                    // a 620 KB copy each - and this is a measurement, not a token path, so the copy is free.
+                    std::vector<float> lg((size_t) n_vocab);
+                    auto argmax_now = [&](int* out) -> bool {
+                        if (cudaMemcpyAsync(lg.data(), L.logits, (size_t) n_vocab * 4, cudaMemcpyDeviceToHost,
+                                            (cudaStream_t) hcs) != cudaSuccess ||
+                            cudaStreamSynchronize((cudaStream_t) hcs) != cudaSuccess) {
+                            std::printf("ERR reading the logits back failed\n");
+                            std::fflush(stdout);
+                            return false;
+                        }
+                        int best = 0;
+                        for (int64_t v = 1; v < n_vocab; ++v)
+                            if (lg[(size_t) v] > lg[(size_t) best]) best = (int) v;
+                        *out = best;
+                        return true;
+                    };
+                    int target_next = -1;
+                    if (!argmax_now(&target_next)) return 1;
+                    const float* h = L.ss->block.mixed;
+                    // STRATA_MTP_DUMP_H=<path>: write the hidden state the draft block is fed, as raw f32, so it
+                    // can be diffed against the oracle's own `mtp-hidden.f32` (`mtp_ref` writes it per prompt
+                    // position; the row that matters is the LAST one).
+                    if (const char* dp = std::getenv("STRATA_MTP_DUMP_H"); dp != nullptr && dp[0] != '\0') {
+                        std::vector<float> hh((size_t) g.n_embd);
+                        std::FILE* hf = std::fopen(dp, "wb");
+                        if (hf != nullptr) {
+                            if (cudaMemcpyAsync(hh.data(), h, (size_t) g.n_embd * 4, cudaMemcpyDeviceToHost,
+                                                (cudaStream_t) hcs) == cudaSuccess &&
+                                cudaStreamSynchronize((cudaStream_t) hcs) == cudaSuccess)
+                                std::fwrite(hh.data(), 4, (size_t) g.n_embd, hf);
+                            std::fclose(hf);
+                        }
+                    }
+                    if (!strata::core::glm_mtp_step(*L.wt, g, L.ss->glm, L.ss->moe, L.ss->block, L.ss->glm_mtp,
+                                                    target_next, h, n, K, glm_pool_fn, glm_pool_user, L.head, L.logits,
+                                                    hcs, err)) {
+                        std::printf("ERR mtp: %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    int draft = -1;
+                    if (!argmax_now(&draft)) return 1;
+                    // THE TOP FIVE AS WELL, because a draft that misses the oracle can miss it two ways and the
+                    // logits tell them apart: a flat, near-tied distribution means the block is nearly a no-op
+                    // (a wrong or missing input), while a confident wrong answer means the arithmetic is wrong.
+                    int top[5] = {-1, -1, -1, -1, -1};
+                    for (int64_t v = 0; v < n_vocab; ++v) {
+                        for (int s = 0; s < 5; ++s) {
+                            if (top[s] < 0 || lg[(size_t) v] > lg[(size_t) top[s]]) {
+                                for (int k2 = 4; k2 > s; --k2) top[k2] = top[k2 - 1];
+                                top[s] = (int) v;
+                                break;
+                            }
+                        }
+                    }
+                    std::printf("MTP target_next %d draft %d\n", target_next, draft);
+                    std::printf("MTP draft-top5");
+                    for (int s = 0; s < 5; ++s) std::printf(" %d:%.4f", top[s], (double) lg[(size_t) top[s]]);
+                    std::printf("\n");
+                    std::fflush(stdout);
+                    return 0;
+                }
+
+                // ---- DECODE.  The head at the LAST PROMPT POSITION predicts the first generated token, exactly
+                // as the plain loop's `pos >= n_prompt - 1` rule says - so there is no separate "first token" case,
+                // and the state the pick is drawn from is the one a fresh run would have.
+                int64_t produced = 0;
+                const char* finish = "length";
+                double decode_ms = 0;
+                if (!cancelled) {
+                    const Clock::time_point d0 = Clock::now();
+                    int64_t pos = n - 1;
+                    // THE HEAD RUNS ON THE LAST STAGE, which is the only one that loaded it: with a split the
+                    // sampler, the penalty window and the logits all live on that device and on that stream.
+                    // One card: the last stage IS CUDA0, so `head_cs` is `token_stream` and every line below is
+                    // the call it always made.
+                    const strata::core::OnDevice on_head(grs.back().dev);
+                    const cudaStream_t head_cs = split_run ? grs.back().cs : (cudaStream_t) token_stream;
+                    for (;;) {
+                        if (!glm_run_head()) {
+                            std::printf("ERR lm_head: %s\n", err.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        if (hist_len > 0) {
+                            // the window this pick follows: the last `hist_len` tokens the state has consumed, -1
+                            // padded in front.  The sampler counts the TAIL of the row, so the pad's position does
+                            // not matter as long as the newest token is last.
+                            for (int i = 0; i < hist_len; ++i) {
+                                const int64_t j = (int64_t) consumed.size() - hist_len + i;
+                                pen_stage[(size_t) i] = (j >= 0 && j < (int64_t) consumed.size())
+                                                            ? (int32_t) consumed[(size_t) j] : -1;
+                            }
+                            if (cudaMemcpyAsync(grs.back().pen, pen_stage.data(), (size_t) hist_len * sizeof(int32_t),
+                                                cudaMemcpyHostToDevice, head_cs) != cudaSuccess) {
+                                std::printf("ERR staging the penalty window failed\n");
+                                std::fflush(stdout);
+                                return 1;
+                            }
+                        }
+                        // The draw is Philox(seed, position), as in the plain loop: a seed gives the same text
+                        // whether a token comes from this path or from `strata generate`.  It runs on the LAST
+                        // stage's device, beside the logits it reads and the window it counts.
+                        strata::kernels::SamplerParams rsp = req_sp;
+                        rsp.counter = (uint64_t) pos;
+                        strata::kernels::sample_tokens(grs.back().logits, 1, (int) n_vocab,
+                                                       hist_len > 0 ? grs.back().pen : nullptr, hist_len, rsp,
+                                                       grs.back().next, head_cs);
+                        int next = 0;
+                        if (cudaMemcpyAsync(&next, grs.back().next, sizeof(int), cudaMemcpyDeviceToHost,
+                                            head_cs) != cudaSuccess ||
+                            cudaStreamSynchronize(head_cs) != cudaSuccess) {
+                            std::printf("ERR reading the sampled token back failed: %s\n",
+                                        cudaGetErrorString(cudaGetLastError()));
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        if (next < 0 || next >= n_vocab) {
+                            std::printf("ERR the sampler returned %d, outside 0..%lld\n", next,
+                                        (long long) (n_vocab - 1));
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        std::printf("T %d\n", next);
+                        std::fflush(stdout);
+                        ++produced;
+                        if (produced >= gk.max_new) { finish = "length"; break; }
+                        if (o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) next) !=
+                                              o.eos_ids.end()) { finish = "stop"; break; }
+                        if (sin.stop.load()) { finish = "cancel"; break; }
+                        // **THE LAST EMITTED TOKEN IS NOT FED.**  The state then stands for exactly `consumed`,
+                        // which is what makes `live` mean one thing everywhere; a next request whose prompt
+                        // contains this reply re-reads that one token and reuses everything before it.
+                        ++pos;
+                        if (pos + 1 > o.max_context) { finish = "length"; break; }
+                        if (!glm_put(next, pos)) {
+                            std::printf("ERR the embedding of token %d failed: %s\n", next, err.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        if (!glm_token(pos)) {
+                            std::printf("ERR the layer loop failed at position %lld: %s\n", (long long) pos,
+                                        err.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        consumed.push_back(next);
+                    }
+                    decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
+                } else {
+                    finish = "cancel";
+                }
+                live = std::move(consumed);
+                live_ok = true;
+                // 11 fields: the conversation cache's drafts and the decode hit rate are the first family's, and
+                // they are reported as zero rather than left out - `_parse_done` reads f[8] as the reused count.
+                std::printf("DONE %lld %lld %.1f %.1f %s 0 0 %lld 0 0\n", (long long) produced, (long long) n,
+                            prompt_ms, decode_ms, finish, (long long) c);
+                std::fflush(stdout);
+                char read_txt[64];
+                if (cancelled)
+                    std::snprintf(read_txt, sizeof read_txt, "%lld of %lld", (long long) read_n,
+                                  (long long) (n - c));
+                else
+                    std::snprintf(read_txt, sizeof read_txt, "%lld", (long long) read_n);
+                // the line serve/server.py's ENGINE_REQUEST matches, so its logging and tok/s keep working
+                std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %s read in %.0f ms "
+                                     "(%.1f tok/s), %lld generated in %.0f ms (%.1f tok/s), drafts accepted 0 of 0, "
+                                     "0 checkpoints%s\n",
+                             (long long) n, (long long) c, read_txt, prompt_ms,
+                             prompt_ms > 0 ? 1000.0 * (double) read_n / prompt_ms : 0.0, (long long) produced,
+                             decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0,
+                             cancelled ? " (cancelled)" : "");
+            }
+            // `--expert-profile-save`: what this run's routing learned, in `tools/make_profile.py`'s format, so
+            // the next start can be told which experts are hot.  Written here because this is the only exit the
+            // glm5-next branch has - the loop above returns straight out of the block.  The ranking is by the
+            // count alone: this arch has no adaptive tier and no starting profile, so `resident` and `prior` are
+            // empty and `rank_learned_profile` orders purely by heat.
+            const std::vector<float>& usage = glm_pool_store.routing();
+            if (!usage.empty()) {
+                double total = 0.0;
+                for (const float u : usage) total += u;
+                if (total <= 0.0) {
+                    // Not an error: the server ran and nothing was generated.  Writing a profile here would rank
+                    // every pair by index and claim it meant something.
+                    std::fprintf(stderr, "strata serve: --expert-profile-save: no experts were routed, nothing "
+                                         "written\n");
+                } else {
+                    const std::vector<double> heat(usage.begin(), usage.end());
+                    std::string perr;
+                    const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, {}, heat, {});
+                    if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked,
+                                                           perr)) {
+                        std::fprintf(stderr, "strata serve: expert profile saved to %s (%.0f routings over %lld "
+                                             "(layer, expert) pairs)\n", o.expert_profile_save.c_str(), total,
+                                     (long long) usage.size());
+                    } else {
+                        std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", perr.c_str());
+                    }
+                }
+            }
+            std::fprintf(stderr, "strata serve: glm5-next: stdin closed, exiting\n");
+            return 0;
+        }
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
             std::fprintf(stderr, "strata serve: needs --spec T and --prefill CHUNK (and a fillable "
@@ -7027,7 +9157,7 @@ int main(int argc, char** argv) {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
                     {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
                     {"native_gdn", o.native_gdn}, {"native_flash_attn_short", o.native_flash_attn_short},
-                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa},
+                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa}, {"dsa", o.dsa},
                     {"native_rope", o.native_rope}, {"native_ple_postops", o.native_ple_postops},
                     {"native_router", o.native_router}, {"cpu_oracle_q8_0", o.cpu_oracle_q8_0},
                     {"gr_fp32_activations", o.gr_fp32_activations}, {"gr_native_mmvf", o.gr_native_mmvf},
@@ -7919,62 +10049,14 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
             profile_saved_at = Clock::now();
         };
-        // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
-        // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
-        std::mutex in_mu;
-        std::condition_variable in_cv;
-        std::deque<std::string> in_lines;
-        bool in_eof = false;
-        std::thread([&] {
-            // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
-            // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
-            // std::exit) would hang in exit() on Linux, and the server would wait for it forever
-            std::string l, buf;
-            char chunk[4096];
-            auto getline_fd = [&](std::string& out) -> bool {
-                for (;;) {
-                    const size_t nlpos = buf.find('\n');
-                    if (nlpos != std::string::npos) {
-                        out.assign(buf, 0, nlpos);
-                        buf.erase(0, nlpos + 1);
-                        return true;
-                    }
-#if defined(_WIN32)
-                    const int n = _read(0, chunk, (unsigned) sizeof chunk);
-#else
-                    const ssize_t n = ::read(0, chunk, sizeof chunk);
-                    if (n < 0 && errno == EINTR) continue;
-#endif
-                    if (n <= 0) {
-                        if (buf.empty()) return false;
-                        out.swap(buf);
-                        buf.clear();
-                        return true;
-                    }
-                    buf.append(chunk, (size_t) n);
-                }
-            };
-            while (getline_fd(l)) {
-                if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
-                std::lock_guard<std::mutex> lk(in_mu);
-                in_lines.push_back(l);
-                in_cv.notify_one();
-            }
-            std::lock_guard<std::mutex> lk(in_mu);
-            in_eof = true;
-            in_cv.notify_one();
-        }).detach();
-        auto next_line = [&](std::string& out) -> bool {
-            std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
-            if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
-            in_lines.pop_front();
-            return true;
-        };
-        sp.should_stop = [&] { return stop_req.load(); };
+        // stdin is read on its own thread (`ServeStdin`), so a STOP line reaches a request that is still running
+        // (the client went away, or pressed Esc): the flag is checked between prompt chunks and between verify
+        // windows.  glm5-next's loop below takes the same holder - one reader, so the protocol cannot mean two
+        // things.
+        ServeStdin sin;
+        sin.start();
+        auto next_line = [&](std::string& out) -> bool { return sin.next(out); };
+        sp.should_stop = [&] { return sin.stop.load(); };
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -8284,13 +10366,7 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
-        auto try_next_line = [&](std::string& out) -> bool {
-            std::lock_guard<std::mutex> lk(in_mu);
-            if (in_lines.empty()) return false;
-            out = std::move(in_lines.front());
-            in_lines.pop_front();
-            return true;
-        };
+        auto try_next_line = [&](std::string& out) -> bool { return sin.try_next(out); };
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
@@ -8693,7 +10769,7 @@ int main(int argc, char** argv) {
                     strata::core::progress_at("idle");
                 }
             } busy_scope;
-            stop_req.store(false);   // a STOP that arrived between requests is stale
+            sin.stop.store(false);   // a STOP that arrived between requests is stale
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
@@ -8907,76 +10983,32 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
-            const bool geni = line.rfind("GENI ", 0) == 0;
-            if (!geni && line.rfind("GEN ", 0) != 0) {
-                std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");
-                continue;
-            }
-            char* endp = nullptr;
-            const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
-            // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
-            // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
-            // only).  Absent keys keep today's behavior: greedy, no penalties.
-            float req_temperature = 0.0f, req_top_p = 1.0f;
-            int req_top_k = 20;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
-            unsigned long long req_seed = 0;
-            float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
-            int req_penalty_last_n = 0;
-            int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
-            // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
-            // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
-            // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
-            // when that reaches --prompt-cache-root.  Absent = checkpointed as before.
-            int req_ckpt = 1;
-            // pin=N: the first N prompt tokens are a shared read-only prefix (a long document that many short queries
-            // follow).  The prompt is read in two parts at N, the checkpoint there is PINNED (retention never evicts it,
-            // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
-            // branch it leaves: N queries cost one prefix, not N.  Absent = as before.
-            int64_t req_pin = 0;
-            // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
-            // the missed experts and the draft-probability floor, for this request only
-            double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
-            if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
-                                     // embedding file path is the first token without an =
-                for (;;) {
-                    while (*endp == ' ') ++endp;
-                    const char* start = endp;
-                    while (*endp != '\0' && *endp != ' ') ++endp;
-                    if (endp == start) break;
-                    const std::string tok(start, (size_t) (endp - start));
-                    const size_t eq = tok.find('=');
-                    if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
-                    const std::string key = tok.substr(0, eq);
-                    const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
-                    if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
-                    else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
-                    else if (key == "temperature") req_temperature = fv;
-                    else if (key == "top_p") req_top_p = fv;
-                    else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "min_p") req_min_p = fv;
-                    else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
-                    else if (key == "penalty_repeat") req_penalty_repeat = fv;
-                    else if (key == "penalty_freq") req_penalty_freq = fv;
-                    else if (key == "penalty_present") req_penalty_present = fv;
-                    else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
-                    else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
-                    else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
-                    // unknown keys are skipped: the ids start at the first token without '='
+            // THE REQUEST'S OWN PARAMETERS (see `parse_gen_line`: the wire spelling, the keys and the two error
+            // messages live there, because glm5-next's loop below reads the same line).
+            GenKeys gk;
+            {
+                std::string ge;
+                if (!parse_gen_line(line, o.pcie_frac, o.spec_min_p, gk, ge)) {
+                    std::printf("ERR %s\n", ge.c_str());
+                    continue;
                 }
             }
-            std::string emb_path;
-            if (geni && endp != nullptr) {
-                while (*endp == ' ') ++endp;
-                char* gap = std::strchr(endp, ' ');
-                if (gap != nullptr) { emb_path.assign(endp, (size_t) (gap - endp)); endp = gap; }
-            }
-            std::vector<int64_t> ids;
-            std::string pe;
-            if (max_new < 1 || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe)) {
-                std::printf("ERR bad request: %s\n", pe.empty() ? "max_new" : pe.c_str());
-                continue;
-            }
+            const bool geni = gk.geni;
+            const long long max_new = gk.max_new;
+            const float req_temperature = gk.temperature, req_top_p = gk.top_p;
+            const int req_top_k = gk.top_k;   // the sampler's own default; the sampled path REQUIRES top_k in 1..64
+            const unsigned long long req_seed = gk.seed;
+            const float req_min_p = gk.min_p, req_penalty_repeat = gk.penalty_repeat;
+            const float req_penalty_freq = gk.penalty_freq, req_penalty_present = gk.penalty_present;
+            const int req_penalty_last_n = gk.penalty_last_n;
+            const int req_cvec = gk.cvec;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            const int req_ckpt = gk.ckpt ? 1 : 0;
+            const int64_t req_pin = gk.pin;
+            // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
+            // the missed experts and the draft-probability floor, for this request only
+            const double req_pcie_frac = gk.pcie_frac, req_spec_min_p = gk.spec_min_p;
+            const std::string& emb_path = gk.emb_path;
+            const std::vector<int64_t>& ids = gk.ids;
             const int64_t n = (int64_t) ids.size();
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
@@ -9457,7 +11489,7 @@ int main(int argc, char** argv) {
                     return false;
                 };
                 while (f1 < N) {
-                    if (stop_req.load()) return fail("cancelled");
+                    if (sin.stop.load()) return fail("cancelled");
                     // stage 0: up to two windows queued; window K+2 (K's parity) only once stage 1 has finished window
                     // K, whose hand-off K+2 overwrites
                     while (l0 < N && l0 < f0 + 2 && l0 < f1 + 2) {
@@ -9527,7 +11559,7 @@ int main(int argc, char** argv) {
                 } no_head_sampling(ver);
                 std::vector<int32_t> win((size_t) S), outw((size_t) S), nxt((size_t) S);
                 for (int64_t q = a; q < b;) {
-                    if (stop_req.load()) { e = "cancelled"; return false; }
+                    if (sin.stop.load()) { e = "cancelled"; return false; }
                     const int T = (int) std::min<int64_t>(S, b - q);
                     for (int t = 0; t < T; ++t) {
                         win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
@@ -9712,21 +11744,23 @@ int main(int argc, char** argv) {
                     q = r;
                     if (q >= b0) continue;
                     int ys = -1;
-                    {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
-                        std::lock_guard<std::mutex> lk(in_mu);
-                        for (auto it = in_lines.begin(); it != in_lines.end();) {
+                    // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read.
+                    // These two are lifted out of the queue by name, so they are seen even when they arrived
+                    // behind other lines - hence the reach into the deque rather than plain `try_next`.
+                    sin.peek([&](std::deque<std::string>& q) {
+                        for (auto it = q.begin(); it != q.end();) {
                             if (it->rfind("BSTOP ", 0) == 0) {
                                 const int b = std::atoi(it->c_str() + 6);
                                 if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
-                                it = in_lines.erase(it);
+                                it = q.erase(it);
                             } else if (it->rfind("BYIELD ", 0) == 0) {
                                 ys = std::atoi(it->c_str() + 7);
-                                it = in_lines.erase(it);
+                                it = q.erase(it);
                             } else {
                                 ++it;
                             }
                         }
-                    }
+                    });
                     if (ys >= 0) {
                         // only where the rest is read the same way after it (more than a chunk and more than a short
                         // read left), text only, and into a slot that is not decoding
@@ -9897,7 +11931,7 @@ int main(int argc, char** argv) {
                     std::fflush(stderr);
                 }
                 if (!sp_ok) {
-                    if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
+                    if (yielded_at < 0 && (batch_fatal || !sin.stop.load())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
@@ -10484,8 +12518,8 @@ int main(int argc, char** argv) {
                     }
                     std::fflush(stdout);
                     if (eos) finish = "stop";
-                    else if (stop_req.load()) finish = "cancel";
-                    const bool last = eos || produced_n >= max_new || stop_req.load();
+                    else if (sin.stop.load()) finish = "cancel";
+                    const bool last = eos || produced_n >= max_new || sin.stop.load();
                     const bool on = B.launched && a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
                     if (B.made) {   // the gate's calibration: would B have been on the path, by its estimate p_on
                         const bool would = a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
@@ -10766,7 +12800,7 @@ int main(int argc, char** argv) {
                     policy.observe_chain(T_mtp, chain_n, a, cm,
                                          std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
                 if (eos) { finish = "stop"; break; }
-                if (stop_req.load()) { finish = "cancel"; break; }
+                if (sin.stop.load()) { finish = "cancel"; break; }
                 x = outv[(size_t) a];
                 p += a + 1;
             }
@@ -11135,7 +13169,11 @@ int main(int argc, char** argv) {
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);
     std::vector<std::pair<int32_t, int32_t>> lent;     // (residency index, slot) lent to the prompt path
     const int64_t n_batched = (o.prefill_until > 0 && o.prefill_until < n_prompt - 1) ? o.prefill_until : n_prompt - 1;
-    if (o.prefill_chunk > 0 && n_prompt > 1) {
+    // **NOT FOR glm5-next.**  This whole block is the first family's prompt path: a `Prefill` built on its
+    // staging, its geometry gate and its token-parallel attention, with the last prompt token left to the first
+    // verify window.  glm5-next's chunk is `session_token_chunk` and its prompt ends in the decode loop below,
+    // so the two must not both run - the second would read the same prompt again through the wrong kernel.
+    if (o.prefill_chunk > 0 && n_prompt > 1 && g.arch != strata::core::Arch::Glm5Next) {
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         if (!o.no_prefill_borrow && !host_res.empty() && d_res != nullptr) {
@@ -11252,9 +13290,84 @@ int main(int argc, char** argv) {
         kvg_start(xcache.slots());
         if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
     }
+    // ---- **glm5-next's PROMPT, IN CHUNKS.**  Same contract as the first family's block above: positions
+    // `[0, n_batched)` are read here and the decode loop starts at `o.tokens[n_batched]`, whose head predicts the
+    // first generated token.  `n_batched` is `n_prompt - 1`, so the last prompt token is still read by the decode
+    // loop exactly as it was - which is what keeps `--prefill 1` and `--prefill 128` ending in the same place.
+    //
+    // **`session_zero` IS CALLED ONCE, NOT PER CHUNK.**  Position 0's initial condition is the embedding broadcast
+    // to every stream plus a zeroed recurrence, and a chunk writes T embeddings after it - so it happens here,
+    // before the first chunk, and never again.
+    if (g.arch == strata::core::Arch::Glm5Next && n_batched > 0) {
+        const int64_t chunk = glm_chunk_for(0, -1);
+        if (chunk > 1) {
+            const Clock::time_point c0 = Clock::now();
+            strata::core::session_zero(ss, g, nullptr, token_stream);
+            int64_t read_n = 0;
+            for (int64_t p = 0; p < n_batched; p += chunk) {
+                const int64_t c = std::min<int64_t>(chunk, n_batched - p);
+                for (int64_t t = 0; t < c; ++t) {
+                    if (!put_input_row(o.tokens[(size_t) (p + t)],
+                                       ss.glm_chunk.R + (size_t) t * (size_t) g.hc * (size_t) g.n_embd))
+                        return 1;
+                }
+                // One wait for all `c` embeds.  Without `--stream-token` they are on stream 0 and the layers are on
+                // `main_cs`, so the two are ordered by this and by nothing else.
+                if (!o.stream_token && cudaDeviceSynchronize() != cudaSuccess) {
+                    std::fprintf(stderr, "strata generate: the chunk's embeddings did not land: %s\n",
+                                 cudaGetErrorString(cudaGetLastError()));
+                    return 1;
+                }
+                const Clock::time_point tc = Clock::now();
+                err.clear();
+                if (!strata::core::session_token_chunk(wt, g, p, /*pos_base=*/0, c, ss, main_cs, glm_pool_fn,
+                                                       glm_pool_user, err)) {
+                    std::fprintf(stderr, "strata generate: session_token_chunk: %s\n", err.c_str());
+                    return 1;
+                }
+                {
+                    const Clock::time_point n = Clock::now();
+                    ms_layers += std::chrono::duration<double, std::milli>(n - tc).count();
+                }
+                read_n += c;
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
+                std::fprintf(stderr, "strata generate: chunk %lld tokens at %lld, %lld of %lld, %.0f ms (%.2f tok/s)\n",
+                             (long long) c, (long long) p, (long long) read_n, (long long) n_batched, ms,
+                             ms > 0.0 ? 1000.0 * (double) read_n / ms : 0.0);
+            }
+            prefill_batched_ms = std::chrono::duration<double, std::milli>(Clock::now() - c0).count();
+            prefill_ms += prefill_batched_ms;
+            pos_start = n_batched;
+            tok = o.tokens[(size_t) pos_start];
+            ss.ple_prev[0] = pos_start >= 2 ? (int32_t) o.tokens[(size_t) (pos_start - 2)] : -1;
+            ss.ple_prev[1] = pos_start >= 1 ? (int32_t) o.tokens[(size_t) (pos_start - 1)] : -1;
+        }
+    }
+
+    // ---- **THE VRAM TIER OF THE ROUTED EXPERTS** (`--glm-gpu-experts`, glm_gpu_experts.hpp).  Sized HERE and
+    // not with the weights: `device_free_bytes` is what the card has left, and by this line the weights, the
+    // session, the expert cache and the prompt path's own buffers are all allocated - so what it sees is what
+    // the tier may really have.  Sizing it earlier on the card's idle figure is how the first family's cache
+    // ended up handing out slots it did not have.
+    std::unique_ptr<strata::core::GlmGpuExperts> glm_gpu_store;
+    if (g.arch == strata::core::Arch::Glm5Next && o.glm_gpu_mib >= 0) {
+        // `lay_n` and not `g.n_layers`: the arrays have to name every layer the pool can be asked for, and on a
+        // pack that carries the draft block that is one past the trunk.  No SLOTS are made for it (the range
+        // below is the trunk's), so a draft block that routed experts would simply miss and take the CPU pool.
+        if (!glm_gpu_tier_init(glm_gpu_store, o, g, srcp, lay_n, K, /*layer_lo=*/0, /*layer_hi=*/g.n_layers,
+                               err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        ss.glm_gpu = glm_gpu_store.get();
+    }
     for (int64_t pos = pos_start;; ++pos) {
         // plan v0.3 P6: a native pack's last prompt token is the first verify window (T = 1)
-        if (native_pack) { spec_pos = pos; break; }
+        // **A NATIVE PACK LEAVES THIS LOOP FOR THE VERIFY WINDOW - UNLESS IT IS glm5-next.**  The window is the
+        // first family's: it drives captured layer PAIRS and its expert call is `expert_pool_dispatch_multi`,
+        // which is sized in that family's constants.  A GLM native pack falls through to the plain token loop
+        // below instead, which is where `session_token` and the GLM expert pool live.
+        if (native_pack && g.arch != strata::core::Arch::Glm5Next) { spec_pos = pos; break; }
         if (pos >= o.max_context) {
             std::fprintf(stderr, "strata generate: ran out of context at position %lld\n", (long long) pos);
             return 2;
@@ -11313,7 +13426,7 @@ int main(int argc, char** argv) {
         err.clear();
         if (o.no_capture) {
             if (!strata::core::session_token(wt, g, pos, /*pos_base=*/0, ss, d_parts, main_cs,
-                                             o.sync_every_layer, err)) {
+                                             o.sync_every_layer, glm_pool_fn, glm_pool_user, err)) {
                 std::fprintf(stderr, "strata generate: session_token: %s\n", err.c_str());
                 return 1;
             }

@@ -20,6 +20,8 @@
 //
 // Build: scripts/build_artifact.bat        Run: gguf_reader.exe <file.gguf> [--check]
 
+#include "strata/core/arch.hpp"   // a LEAF header: the model families' names and metadata prefixes
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -570,35 +572,75 @@ private:
     std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
-// ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
+// ---- architecture guard (P1.S2). The engine runs a small set of model families; anything else must be
 // refused with a precise error rather than silently mis-run.
-struct Qwen4ExpGuard {
-    uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
-             head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
-                                  // fewer experts than the canonical 512; the graph reads the true value
+//
+// `0` on a count means PRESENCE-ONLY, which is a deliberate allowance in two places: pruned variants
+// (GSQ-RCO Coder) legitimately ship fewer experts than the canonical 512, and glm5-next's head_count_kv is
+// an ARRAY of per-layer mixers rather than a count - the graph reads the true value either way.
+struct ArchExpect {
+    core::Arch arch = core::Arch::Unknown;   ///< Unknown = take the family from the file
+    uint32_t block_count = 0, hidden = 0, experts = 0, experts_used = 0, head_count = 0, head_count_kv = 0;
 };
 
-inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
+/// The counts each family is expected to declare.  This is the metadata-level guard only - it says the file
+/// is the family it claims to be, not that the engine can run every key it carries.
+inline ArchExpect arch_expect(core::Arch a) {
+    ArchExpect e;
+    e.arch = a;
+    if (a == core::Arch::Glm5Next) {
+        // 0 = presence-only, on purpose: `block_count` is the model's SIZE, not its identity, and a TRUNCATED file
+        // of the same family is legitimate - the validation ladder (`block_count` 4, 8, ...) is built exactly that
+        // way, and so is any pruning of the model later.  What still pins the family is everything below plus the
+        // file's own consistency: the per-layer `attention.head_count_kv` array must have one entry per block and
+        // each must agree with the mixer it selects (src/core/model_arch.cpp), and `leading_dense_block_count`
+        // must fit inside the count.  A wrong file fails one of those and is named there.
+        e.block_count = 0;
+        e.hidden = 4096;
+        e.experts = 288;
+        e.experts_used = 8;
+        e.head_count = 64;
+        e.head_count_kv = 0;   // an array of per-layer mixers, not a count
+    } else {
+        e.block_count = 48;
+        e.hidden = 2560;
+        e.experts = 0;
+        e.experts_used = 0;
+        e.head_count = 24;
+        e.head_count_kv = 2;
+    }
+    return e;
+}
+
+inline std::string check_architecture(const GgufFile& g, const ArchExpect& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
+    core::Arch a = core::Arch::Unknown;
+    if (!core::arch_from_string(arch->s, a))
+        return "architecture is '" + arch->s + "', this engine runs " + core::arch_list();
+    // a caller that pinned a family still gets the mismatch reported rather than silently accepted
+    if (want.arch != core::Arch::Unknown && want.arch != a)
+        return "architecture is '" + arch->s + "', these weights are '" + core::arch_meta_prefix(want.arch) + "'";
+    const ArchExpect e = want.arch == core::Arch::Unknown ? arch_expect(a) : want;
+    const std::string p = std::string(core::arch_meta_prefix(a)) + ".";
     struct Req {
         const char* key;
         uint64_t want;
     };
     const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
+        {"block_count", e.block_count},
+        {"embedding_length", e.hidden},
+        {"expert_count", e.experts},
+        {"expert_used_count", e.experts_used},
+        {"attention.head_count", e.head_count},
+        {"attention.head_count_kv", e.head_count_kv},
     };
     for (const auto& r : reqs) {
-        const MetaValue* v = g.get(r.key);
-        if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+        const MetaValue* v = g.get(p + r.key);
+        if (!v) return "missing " + p + r.key;
+        // is_num() is false for an ARRAY, so a per-layer array is checked for presence and not for value
+        if (r.want && v->is_num() && v->u != r.want)
+            return p + r.key + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
     }
     return {}; // empty == ok
 }

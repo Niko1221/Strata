@@ -44,8 +44,20 @@ struct NativeExpertLayout {
     size_t gu_row = 0, d_row = 0;       // bytes per row
     size_t up_off = 0, down_off = 0;    // byte offsets inside the blob
     size_t bytes = 0;                   // the whole blob
+    /// **THE ROUTED EXPERTS' SWIGLU CLAMP - WHAT THE CARD WAS NOT APPLYING.**  glm5-next stamps
+    /// `swiglu_clamp_exp` 10.0 on every layer's routed experts, and the CPU path has carried it since the port
+    /// (`cpu::NativeFmt::swiglu_limit`, applied in `native_gu_rows`), but the GPU's SwiGLU had no limit at all:
+    /// `native_expert_grouped` computed `silu(gate) * up`.  A card and the pool therefore disagree on exactly
+    /// the rows whose gates or ups clear 10 - measured on a 512-token chunk, layer 29: 9 of the 15 entries
+    /// routing expert 107, mean/rms 1.25 against the pool, where a wrong expert reads 0.80; the other 4,087
+    /// entries matched at 2.4e-02 and the same chunk with the pool's own clamp switched off
+    /// (`STRATA_GLM_NO_CLAMP`) passed every layer.  `min(silu(gate), lim) * clamp(up, -lim, lim)`, the SILU'S
+    /// OUTPUT and above only; `lim <= 1e-6` - the default, and every pack whose geometry leaves the key at 0 -
+    /// is the arithmetic this file computed before the field existed.
+    float swiglu_limit = 0.0f;
 };
-NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
+NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff,
+                                        float swiglu_limit = 0.0f);
 /// Whether `native_expert_grouped` has kernels for this gate/up and down type pair at these dimensions, and the
 /// prompt path's dequantizer takes both (checked for every layer at startup, before anything is allocated).
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;

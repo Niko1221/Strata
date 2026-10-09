@@ -20,6 +20,13 @@ public:
     NativeHead& operator=(const NativeHead&) = delete;
 
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    /// What `load` would upload, in bytes, from the GGUF headers only - the same type and shape rules and the
+    /// same `native_mmvq_weight_bytes` the upload uses.  A layer split's LAST stage holds this and nothing else
+    /// does (it is the only stage that runs the head), and it is not in the pack index - `output.weight` is
+    /// served from the model file, not packed - so a placement search cannot see it any other way.  496.3 MiB
+    /// on glm5-next's IQ4_XS file, which is not a rounding error on an 8 GB card.
+    static bool served_bytes(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, uint64_t& out,
+                             std::string& err);
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }
     bool loaded() const { return weights_ != nullptr; }

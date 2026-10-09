@@ -25,6 +25,12 @@ namespace strata::kernels {
 // Input floats must be finite, and their block scales/sums representable in FP16.
 std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 
+/// The widest column count one `native_mmvq` call accepts.  A caller that batches tokens has to size its Q8_1
+/// scratch for THIS many columns - the engine's shared native scratch is allocated at this width so that a
+/// projection may be handed 1..8 columns without reallocating.  Named here rather than written as a literal in
+/// the two places that must agree (`native_mmvq.cu`'s own `MAX_NCOLS` and the allocator).
+constexpr int NATIVE_MMVQ_MAX_NCOLS = 8;
+
 // Layout for ncols > 1. false: llama.cpp's generic multi-column table (upstream), equal to ncols == 1 to
 // float rounding, speed not yet measured. true (default): the ncols == 1 layout, every column bitwise equal to a
 // single-column call. Set before

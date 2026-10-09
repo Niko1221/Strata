@@ -2440,7 +2440,8 @@ int main(int argc, char **argv) try {
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
         const strata::core::ModelGeometry g0;
-        if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err)) {
+        if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, g0.n_embd, g0.n_ff,
+                                                      (float) g0.swiglu_clamp, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

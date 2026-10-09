@@ -25,6 +25,48 @@ void init_once() {
     std::call_once(once, [] { ggml_cpu_init(); });
 }
 
+// The three opt-outs, as functions so that `native_rows_sliceable` and the two row functions ask the SAME
+// question rather than repeating it.  See the note on the multi-token kernels in `native_gu_rows`.
+bool iq512_on() {
+    static const bool v = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
+    return v;
+}
+bool iq256_on() {
+    static const bool v = cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
+    return v;
+}
+bool kq256_on() {
+    // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any
+    // group size, no #152 rule).  Opt-in, STRATA_KQ256=1.
+    static const bool v = [] { const char* e = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && e != nullptr && std::atoi(e) != 0; }();
+    return v;
+}
+
+/// Which multi-token kernel `native_gu_rows` hands this group to: 5 = the AVX-512 i-quant one, 2 = the AVX-2
+/// one, 0 = none, so ggml-cpu's per-token `vec_dot`.  Every one of those kernels addresses the ASSEMBLED blob
+/// (`blob + up_off`), which is why a caller holding the three slices must not be given one; `native_rows_sliceable`
+/// is this same answer for that caller.
+int gu_multi_kind(int gu_type, int nt) {
+    if (nt < native_gu_mt_min(gu_type)) return 0;
+    // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps
+    // ggml-cpu for it, as before (its rows would round differently).
+    const bool cpu512 = cpu_avx512_ok();
+    if (!(iq512_supported(gu_type) || (!cpu512 && iq256_supported(gu_type)))) return 0;
+    if (iq512_on() && iq512_supported(gu_type)) return 5;
+    if (iq256_on() && iq256_supported(gu_type)) return 2;
+    return 0;
+}
+
+/// As `gu_multi_kind`, for the down rows: 8 = the Q5_1/Q8_0 kernel, 20 = IQ4_NL's, 0 = ggml-cpu's per-token dot.
+int down_multi_kind(int d_type, int nt) {
+    if (!cpu_avx2_ok()) return 0;   // both kernels below are /arch:AVX2 translation units
+    if (kq256_on() && nt >= 2 && (d_type == 7 || d_type == 8)) return 8;
+    const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
+    static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
+    if (nt >= mt_min && d_type == 20 && iq4nl_mt) return 20;
+    return 0;
+}
+
 }  // namespace
 
 bool native_experts_available() noexcept { return true; }
@@ -79,6 +121,11 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
         err = "native experts: activation larger than the pool's buffers";
         return false;
     }
+    if (n_ff > kMaxExpertFF) {
+        err = "native experts: the expert intermediate is " + std::to_string(n_ff) + " rows, wider than the " +
+              std::to_string(kMaxExpertFF) + " the pool's per-token buffers hold";
+        return false;
+    }
     return true;
 }
 
@@ -122,81 +169,162 @@ int native_gu_mt_min(int gu_type) {
     return iq3s_one && gu_type == 21 ? 1 : mt_min;
 }
 
+// The multi-token kernels decode the weights once for all tokens: 2.0-2.4x ggml-cpu at three tokens, no faster at
+// one (all are bound by the codebook lookups, ~5 GB/s per core), measured by native_expert_parity.  AVX-512 first,
+// then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the AVX-2 kernel,
+// STRATA_NO_IQ256 drops the AVX-2 kernel; ggml-cpu's single-token vec_dot is reached only with both set.
+// Every one of them reads the ASSEMBLED blob's offsets, so `native_gu_rows_ptrs` below cannot use them and asks
+// `native_rows_sliceable` first.  `gu_multi_kind` is where that question is answered once.
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
-    // the multi-token kernels decode the weights once for all tokens: 2.0-2.4x ggml-cpu at three tokens, no faster
-    // at one (all are bound by the codebook lookups, ~5 GB/s per core), measured by native_expert_parity.  AVX-512
-    // first, then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the
-    // AVX-2 kernel, STRATA_NO_IQ256 drops the AVX-2 kernel; ggml-cpu's single-token vec_dot is reached only with
-    // both set (and on a CPU without AVX-512, STRATA_NO_IQ512 changes nothing).
-    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
-    // STRATA_NO_IQ256 drops the AVX-2 kernel.  cpu_avx2_ok() is ALSO required: iq_avx2.cpp and kq_avx2.cpp
-    // are compiled /arch:AVX2 and use AVX2 and FMA3, so calling them on a CPU without either is an
-    // illegal instruction, not a slow path.  The gate sat next to `avx512` above, which does test
-    // cpu_avx512_ok(), and that asymmetry is what let a pre-Haswell CPU reach iq256_gu_rows.
-    // Without it this falls through to ggml-cpu's vec_dot below, which is compiled for whatever
-    // baseline the build selected (AVX1 here) and covers the same types - IQ2_XXS and IQ2_S among
-    // them.  That path loops over tokens itself, so it is correct for any `nt`, not just one.
-    static const bool avx2 = cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
-    const int mt_min = native_gu_mt_min(f.gu_type);   // #152
-    // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
-    // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
-    // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
-    static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
-    if (kq && f.gu_type == 12 && nt >= 2) {   // one token: ggml's own dot below (the same bits, less overhead)
-        kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+    // Unsloth UD-Q4_K_XL's Q4_K gate/up: bit-exact against ggml's per-token dot (any group size, no #152 rule).
+    // Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold ~1.4 tokens and the
+    // weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).  One token takes
+    // ggml's own dot below - the same bits, less overhead.
+    if (kq256_on() && f.gu_type == 12 && nt >= 2) {
+        kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
         return;
     }
-    // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps ggml-cpu for
-    // it, as before (its rows would round differently).  Each kernel only for the formats it implements: falling
-    // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
-    static const bool cpu512 = cpu_avx512_ok();
-    if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
-        if (avx512 && iq512_supported(f.gu_type)) {
-            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
-        }
-        if (avx2 && iq256_supported(f.gu_type)) {
-            iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
-        }
+    // Each kernel only for the formats it implements: falling through an empty switch would leave ff unwritten
+    // instead of falling back to ggml-cpu.
+    if (const int kind = gu_multi_kind(f.gu_type, nt)) {
+        if (kind == 5)
+            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+        else iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+        return;
     }
-    const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
-    const int n = (int) f.n_embd;
-    for (int r = r0; r < r1; ++r) {
-        const uint8_t* gr = blob + (size_t) r * f.gu_row;
-        const uint8_t* ur = blob + f.up_off + (size_t) r * f.gu_row;
-        for (int t = 0; t < nt; ++t) {
-            float g = 0.f, u = 0.f;
-            dot(n, &g, 0, gr, 0, act[t], 0, 1);
-            dot(n, &u, 0, ur, 0, act[t], 0, 1);
-            ff[t][r] = (g / (1.f + std::exp(-g))) * u;
-        }
-    }
+    // ggml-cpu's vec_dot, reached through the slice form: the blob's two halves ARE its gate and up rows.
+    native_gu_rows_ptrs(f, blob, blob + f.up_off, act, nt, ff, r0, r1);
 }
 
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
-    static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
-    static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
-    static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
-    // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
-    // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
-    // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
-    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size
-        kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+    if (const int kind = down_multi_kind(f.d_type, nt)) {
+        if (kind == 8) kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        else iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
-        return;
+    native_down_rows_ptr(f, blob + f.down_off, hq, nt, out, r0, r1);
+}
+
+bool native_rows_sliceable(int gu_type, int d_type, int nt) {
+    if (kq256_on() && gu_type == 12 && nt >= 2) return false;
+    return gu_multi_kind(gu_type, nt) == 0 && down_multi_kind(d_type, nt) == 0;
+}
+
+// ================================ the multi-token kernels ON SLICES ================================
+//
+// **THE BLOB WAS NEVER THE POINT.**  `iq256_gu_rows` addresses the up row as `blob + up_off + r * gu_row`;
+// nothing in it wants gate and up ADJACENT, only a fixed distance apart.  Two slices out of one mapping
+// (`FileExpertSource::slices` returns three pointers into the same file) therefore ARE a blob, with `up_off`
+// spelled `up - gate`.  The same holds for the down rows: `blob + down_off` is just `down`.
+//
+// So the choice `native_rows_sliceable` forces - assemble the blob, or drop to ggml-cpu's per-token dot - is a
+// false one for a caller that already holds the slices.  A chunk wants the multi-token kernel precisely because
+// it decodes each weight row ONCE for every token of the group, and the bytes a chunk saves are worthless
+// without it: measured on glm5-next, `--prefill 128` read 4.5x fewer expert bytes than `--prefill 1` (1245.3 ->
+// 276.6 GiB) and the pool took the SAME 30.4 s, because the per-token dot re-decodes every row per token and
+// that decode, not the read, is the pool's limit.
+//
+// **THE ROUNDING IS THE PRICE, AND IT IS PAID IN THE CHUNK ONLY.**  These kernels differ from ggml-cpu's
+// per-token dot by ~3e-8 relative, and glm5-next amplifies that: the geometry's `h` activation is quantized to
+// q8_0 between the two projections, so a 3e-8 shift in a gate/up row occasionally crosses a rounding step and
+// lands ~1% away.  Measured at the head, `--prefill 128` with these on differs from `--prefill 1` by up to 1.76
+// on a logit.
+//
+// **THAT IS ENOUGH TO MOVE A TOKEN, AND ON A LONG ENOUGH PROMPT IT DOES.**  Over 64 greedy tokens on the short
+// prompt this was first measured on, the text was identical at chunk 1, 8, 32, 128 and 512, which is why the
+// switch is on by default.  It does not generalise: on a 344-token prompt `--prefill` 1, 128, 256 and 512 give
+// four arms that each reproduce themselves byte for byte and disagree with each other from the first token.  The
+// shape a token's dot takes is the number of tokens sharing its job, and a job's composition is the chunk's, so
+// a chunk-dependent rounding survives into greedy output.  `STRATA_NO_SLICE_MT` goes back to the per-token dot,
+// which reproduces `--prefill 1` bit for bit at every chunk size (verified at 1, 128 and 512 on that prompt) and
+// costs 2.3x on the pool.  The card side is not implicated: `multi_exact` makes a batched column bitwise equal
+// to the single-column call it replaced (`mmvq_multi_parity`).
+//
+// Decode is untouched either way: at `nt == 1` both halves fall through to the `_ptrs` functions below.
+bool slice_mt_on() {
+    static const bool v = std::getenv("STRATA_NO_SLICE_MT") == nullptr;
+    return v;
+}
+/// The down rows' half, and it is OPT-IN where the gate/up half is not: `down_multi_kind` deliberately does not
+/// name IQ4_XS (the parity test covers IQ4_NL and Q2_0 down rows, not IQ4_XS), so this reaches a kernel the
+/// engine's own dispatch would not - and on this pack it is worth about 4%, measured, against the gate/up half's
+/// 2.3x.  Off unless STRATA_SLICE_MT_DOWN is set.
+bool slice_mt_down_on() {
+    static const bool v = std::getenv("STRATA_SLICE_MT_DOWN") != nullptr;
+    return v;
+}
+
+void native_gu_rows_slice(const NativeFmt& f, const uint8_t* gate, const uint8_t* up, const void* const* act,
+                          int nt, float* const* ff, int r0, int r1) {
+    if (slice_mt_on()) {
+        const size_t up_off = (size_t) (up - gate);
+        if (kq256_on() && f.gu_type == 12 && nt >= 2) {
+            kq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+            return;
+        }
+        if (const int kind = gu_multi_kind(f.gu_type, nt)) {
+            if (kind == 5)
+                iq512_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+            else
+                iq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+            return;
+        }
     }
+    native_gu_rows_ptrs(f, gate, up, act, nt, ff, r0, r1);
+}
+
+void native_down_rows_slice(const NativeFmt& f, const uint8_t* down, const void* const* hq, int nt, float* const* out,
+                            int r0, int r1) {
+    if (slice_mt_down_on()) {
+        if (const int kind = down_multi_kind(f.d_type, nt)) {
+            if (kind == 8) kq256_rows(f.d_type, down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            else iq4nl256_down_rows(down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+        // `down_multi_kind` only names the two kernels someone wired to it (Q5_1/Q8_0 and IQ4_NL).  The row-dot
+        // kernels cover IQ4_XS too, and a down row is half a glm5-next expert's bytes, so ask the general one.
+        if (iq256_on() && nt >= 2 && iq256_supported(f.d_type)) {
+            iq256_rows(f.d_type, down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+    }
+    native_down_rows_ptr(f, down, hq, nt, out, r0, r1);
+}
+
+void native_gu_rows_ptrs(const NativeFmt& f, const uint8_t* gate, const uint8_t* up, const void* const* act,
+                         int nt, float* const* ff, int r0, int r1) {
+    const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
+    const int n = (int) f.n_embd;
+    // The reference's SwiGLU with a limit: **THE SILU'S OUTPUT IS CLAMPED, ABOVE ONLY** - not the raw gate, which
+    // is what DEEPSEEK4's `ggml_swiglu_clamp` does and what this port computed for a while - and the UP IS
+    // CLAMPED ON BOTH SIDES.  Both oracles in the engine's header note compute it this way.  `1e-6` is the
+    // reference's own guard, so `f.swiglu_limit == 0` (the first family's pack) takes the same branch it always
+    // took and this loop computes exactly its old arithmetic.
+    const float lim = f.swiglu_limit;
+    const bool clamp = lim > 1e-6f;
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* gr = gate + (size_t) r * f.gu_row;
+        const uint8_t* ur = up + (size_t) r * f.gu_row;
+        for (int t = 0; t < nt; ++t) {
+            float g = 0.f, u = 0.f;
+            dot(n, &g, 0, gr, 0, act[t], 0, 1);
+            dot(n, &u, 0, ur, 0, act[t], 0, 1);
+            const float h = g / (1.f + std::exp(-g));
+            ff[t][r] = (clamp ? std::fmin(h, lim) : h) * (clamp ? std::fmin(std::fmax(u, -lim), lim) : u);
+        }
+    }
+}
+
+void native_down_rows_ptr(const NativeFmt& f, const uint8_t* down, const void* const* hq, int nt, float* const* out,
+                          int r0, int r1) {
     const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;
     const int n = (int) f.n_ff;
     for (int r = r0; r < r1; ++r) {
-        const uint8_t* dr = blob + f.down_off + (size_t) r * f.d_row;
+        const uint8_t* dr = down + (size_t) r * f.d_row;
         for (int t = 0; t < nt; ++t) {
             float s = 0.f;
             dot(n, &s, 0, dr, 0, hq[t], 0, 1);

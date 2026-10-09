@@ -186,6 +186,20 @@ public:
     /// The blob's bytes into `dst` (blob_bytes(layer) of them).  Safe from several threads for a source whose
     /// `transient` can be true.
     virtual bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst);
+    /// The three roles of one expert as pointers straight into this source's own mapping: `copy_blob` without the
+    /// copy.  A GGUF-in-place native pack keeps gate, up and down as three tensors, and within each, one expert's
+    /// rows are one contiguous run - so a consumer that can read them separately needs no assembled buffer at all.
+    /// The pointers stay valid as long as the mapping does, which is the process.  False when the source has no
+    /// such layout (an `experts.bin` pack, whose blob really is one contiguous range), where the caller must
+    /// assemble with `copy_blob` instead.
+    ///
+    /// **The caller must also check the group size.**  The multi-token expert kernels address an assembled blob's
+    /// internal offsets and cannot be handed slices; `native_rows_sliceable` is that check.
+    virtual bool slices(int64_t layer, int64_t expert, const uint8_t** gate, const uint8_t** up,
+                        const uint8_t** down) {
+        (void) layer; (void) expert; (void) gate; (void) up; (void) down;
+        return false;
+    }
     /// Asks the OS for these pairs' bytes ahead of the `blob` calls that read them.  False (nothing asked) by default.
     virtual bool advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
         (void) pairs; (void) n; return false;
@@ -614,6 +628,10 @@ public:
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
     /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
     bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
+    /// The GGUF in place: each expert's three roles are three contiguous runs, so they can be handed over as they
+    /// are.  An `experts.bin` pack has one contiguous blob and answers false.
+    bool slices(int64_t layer, int64_t expert, const uint8_t** gate, const uint8_t** up,
+                const uint8_t** down) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     /// CS-T: the GGUF in place assembles the missed experts on `fetch_threads_` threads.

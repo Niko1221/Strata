@@ -365,9 +365,13 @@ void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
 int native_gu_mt_min(int) { return 2; }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+bool native_rows_sliceable(int, int, int) { return false; }
+void native_gu_rows_ptrs(const NativeFmt&, const uint8_t*, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_down_rows_ptr(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
+                        int64_t n_ff, float swiglu_limit, std::string& err) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
@@ -418,13 +422,21 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
-        if (f.bytes != blob) {
-            err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
-                  " B but its formats make " + std::to_string(f.bytes);
-            return false;
+        // A blob of 0 bytes is a layer with NO routed experts: glm5-next runs a dense SwiGLU on its first
+        // `leading_dense_block_count` blocks, which carry no ffn_{gate,up,down}_exps.weight at all.  The line is
+        // kept - with the types and the GGUF offsets left at 0 - so that a layer index in this table is a block
+        // index, and the contiguity walk below advances by nothing over it.  Every other layer is checked as
+        // before, and a caller that reaches a dense-lead layer's experts is a bug in the layer dispatch, not
+        // something this file can catch.
+        if (blob != 0) {
+            if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
+            if (f.bytes != blob) {
+                err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
+                      " B but its formats make " + std::to_string(f.bytes);
+                return false;
+            }
         }
-        if (ss >> go >> uo >> dox) {   // v2 lines: the GGUF offsets
+        if (blob != 0 && (ss >> go >> uo >> dox)) {   // v2 lines: the GGUF offsets
             if (L.gguf_off.empty()) L.gguf_off.assign((size_t) (3 * n_layers), 0);
             L.gguf_off[(size_t) (3 * l)] = go;
             L.gguf_off[(size_t) (3 * l + 1)] = uo;
@@ -456,13 +468,41 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
                 for (size_t r = 0; r < 3; ++r) L.gguf_file[(size_t) (3 * l) + r] = parts[r];
             }
         }
+        // Stamp every layer, the dense-lead ones included: those carry no experts and their `ffn3` clamp comes
+        // from the geometry, but an index in this table is a BLOCK index, and a block that never reaches the
+        // pool is better described by the model's own number than by the 0 a default-constructed `NativeFmt`
+        // would leave behind.
+        f.swiglu_limit = swiglu_limit;
         L.fmt[(size_t) l] = f;
         L.offset[(size_t) l] = off;
         L.bytes[(size_t) l] = blob;
         if (blob > L.max_blob) L.max_blob = blob;
     }
+    // **A LAYER WITH NO LINE IS AN EMPTY SLOT, NOT A MALFORMED FILE, AND ONLY A TRAILING RUN OF THEM IS.**  The
+    // caller asks for ONE LAYER MORE than `g.n_layers` whenever the model declares a draft block past its trunk
+    // (`generate.cpp`'s `lay_n`), and the row at that index exists only in a pack built with
+    // `tools/iq_pack.py --mtp`.  A pack built without it - which is every pack that existed before the block was
+    // packed, including `/home/gopi/glm-packs/full` - has no line for it, and the walk below used to refuse the
+    // whole file: the model would not start at all, over a block the run was not going to use.
+    //
+    // `bytes` is already 0 and `fmt` is already the default `NativeFmt`, which is exactly what the dense-lead
+    // blocks are written as (a line with a zero blob), so stamping `offset = at` makes the absent row
+    // indistinguishable from theirs and the walk advances by nothing over it.  A missing row in the MIDDLE is
+    // still an error: it would zero a trunk layer's experts silently, and the file is written in order, so a
+    // row after a gap means the file is damaged rather than a block being absent.
     uint64_t at = 0;
+    int64_t first_missing = -1;
     for (int64_t l = 0; l < n_layers; ++l) {
+        if (L.offset[(size_t) l] == ~0ull) {
+            if (first_missing < 0) first_missing = l;
+            L.offset[(size_t) l] = at;
+            continue;
+        }
+        if (first_missing >= 0) {
+            err = "native_experts.txt: layer " + std::to_string(first_missing) + " has no row but layer " +
+                  std::to_string(l) + " does; only a trailing run of rows may be absent";
+            return false;
+        }
         if (L.offset[(size_t) l] != at) {
             err = "native_experts.txt: layer " + std::to_string(l) + " is missing or not contiguous";
             return false;
