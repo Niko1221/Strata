@@ -2143,12 +2143,39 @@ int main(int argc, char **argv) try {
     // SYCL port (the B70, 2026-09-30): lending cache slots to the prompt path costs ~1 s per prompt (2,184 tokens:
     // 610 vs 792 tok/s) but is what keeps every expert in VRAM at a long context - 80,000 tokens without it: the
     // reserve for the KV and the chunk buffers evicts ~1,900 experts, prompt 790 tok/s and decode 2 tok/s after it;
-    // with it: 1,062 tok/s and 39.5 tok/s. So by default only above a 32K context; the flags still decide.
+    // with it: 1,062 tok/s and 39.5 tok/s after it. So by default only above a 32K context; the flags still decide.
     // (0.1.31-0.1.32: borrowing hung in the first chunk of a long prompt; the prompt path's stager waited on the copy
     // queue's events from its own threads, which the Level Zero v2 adapter did not survive once its ring wrapped -
     // prefill.cpp, Stager::issued_one. Fixed 2026-10-01: a 40K prompt borrowing reads at 1,144 tok/s and decodes at
     // 69 tok/s after it, against 1,201 / 65 with its own buffers.)
-    if (!borrow_explicit) o.no_prefill_borrow = o.max_context <= 32768;
+    //
+    // 2026-10-08 (the A770): borrowing is BROKEN on Alchemist. Its prompt buffers are carved from the top of the
+    // ~10 GiB expert-cache allocation, and oneMKL's BF16 GEMM reads a wrong tile when an operand lies more than 4 GiB
+    // into its allocation (docs/INTEL.md); the borrowed operands hit that, so from the first full prefill chunk the
+    // router read garbage and prefill failed ("prefill: routed id out of range") or the engine segfaulted (measured:
+    // a 236-token prompt, mirrored and mmap configs alike). Keep Alchemist's prompt path on its own buffers (its own
+    // allocation, reserved exactly by owned_prefill_mib) and keep an automatic chunk under 4 GiB, until the SYCL BLAS
+    // stages operands as the CUDA/HIP shims do. Battlemage keeps the old default (its long prompts were measured
+    // correct with borrowing). --prefill-borrow overrides, for testing the staging fix. A layer split keeps its rule.
+    if (!borrow_explicit) {
+        static const bool alchemist = [] {
+            try {
+                // PCI device ids, the same table setup_intel.py uses: 56a0 A770, 56a1 A750, 56a2 A580, 56a5 A380,
+                // 56a6 A310, 5690 A770M
+                const unsigned id = dpct::get_current_device().get_info<sycl::ext::intel::info::device::device_id>();
+                switch (id & 0xffffu) {
+                case 0x56a0: case 0x56a1: case 0x56a2: case 0x56a5: case 0x56a6: case 0x5690: return true;
+                default: return false;
+                }
+            } catch (...) { return false; }
+        }();
+        if (!multi_gpu && alchemist) {
+            o.no_prefill_borrow = true;
+            if (o.prefill_auto && o.prefill_chunk > 2048) o.prefill_chunk = o.prefill_auto_max = 2048;
+        } else {
+            o.no_prefill_borrow = o.max_context <= 32768;
+        }
+    }
 #if defined(STRATA_USE_HIP)
     {
         // every GPU this run uses must be an architecture the binary has code for (a gfx1100 build on a gfx1201

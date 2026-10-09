@@ -35,6 +35,7 @@ for k in "${!setting[@]}"; do
     case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
 done
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
+    --ulimit memlock=-1 \
     -v "$root:/work" \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
