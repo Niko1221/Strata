@@ -27,6 +27,18 @@ Removed the unreachable single-row ablation branch from the four-row candidate. 
 
 These are synthetic correctness results, not a fresh performance result. Current-head model parity, capture, latency/throughput ablation and HIP builds still gate review. The row-reuse overlap with #1418 also needs resolution before merging.
 
+### October 9 isolated GPU performance follow-up
+
+Six independent process rounds used the complete current-head CUDA kernel library. Native/four-row NW4/four-row NW3 process order rotated between rounds. Each measurement times a 100-call CUDA Graph with CUDA events; weight copies rotate beyond L2 capacity. Same-process repeats were merged before paired Student-t CI95 (df=5). GPU clocks were not locked; CPU was shared with other programs. The table is T=4, isolated matrix calls, not whole-layer latency or production throughput.
+
+|IQ4_XS shape (K,R)|Native us +/- CI95|Four-row NW4 us +/- CI95|NW3 us +/- CI95|NW3 vs NW4 reduction % +/- CI95|
+|---|---:|---:|---:|---:|
+|2560, 6144|44.68 +/- 0.18|26.63 +/- 0.31|23.84 +/- 0.32|10.48 +/- 1.11|
+|2560, 10240|71.32 +/- 0.42|40.33 +/- 0.23|36.51 +/- 0.80|9.48 +/- 2.11|
+|2560, 12288|84.83 +/- 0.33|47.46 +/- 0.20|42.52 +/- 0.15|10.39 +/- 0.40|
+
+T=1/2/3/4 were tested, with same-input bit comparisons passing in all runs. K=6144,R=2560 is a negative specialization control: both enabled variants dispatch NW4; their measured difference was 3.68 +/- 8.77%, compatible with no change. The four-row contribution overlaps #1418, so the smaller NW3 increment is the relevant additional contribution until that overlap is resolved. Current-head full-model parity and layer/end-to-end performance remain pending.
+
 - CUDA 13, MSVC 14.51, SM75 full engine integration build passed as recorded above.
 - Expanded `mmvq_multi_parity` with all three NW3 shapes and an incomplete four-row tile. Fresh results are recorded below after running.
 - Re-run same-input real model checks on this exact head.
