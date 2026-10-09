@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #if !defined(__AVX__)
 #error "iq_avx1.cpp must be compiled with AVX enabled (see the per-source flags in CMakeLists.txt)"
@@ -42,8 +43,17 @@
 namespace strata::kernels::cpu {
 namespace {
 
-// fp16 -> fp32 without F16C (expert.cpp's h2f: the conversion written out, subnormals included).
+// fp16 -> fp32 without F16C.  The normal-exponent case (every real quantized scale) is branchless:
+// (E<<10|M)<<13 + 0x38000000 == (E+112)<<23 | M<<13, the exact fp32 bits.  Zero, subnormal, inf and nan
+// keep expert.cpp's full converter (bit-identical, off the hot path).
 inline float h2f(uint16_t h) {
+    const uint32_t e = h & 0x7C00u;
+    if (e && e != 0x7C00u) {
+        const uint32_t f = ((uint32_t) (h & 0x7FFFu) << 13) + 0x38000000u | (uint32_t) (h & 0x8000u) << 16;
+        float out;
+        std::memcpy(&out, &f, 4);
+        return out;
+    }
     const uint32_t sign = (uint32_t) (h >> 15) & 1u;
     uint32_t exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu, f;
     if (exp == 0) {
@@ -237,35 +247,55 @@ inline __m128i madd_add(__m128i acc, __m128i g, __m128i sgn, __m128i yv, __m128i
 }
 
 // ---- the row kernels (iq_avx2_rows.inl's row_dot in 128-bit lanes)
-template <int TY, int NT>
-inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+// R rows of the SAME expert through one block loop: the per-half decode chains (index byte -> grid table ->
+// madd) are ~20 cycles of pure latency and at NT=1 there is nothing to overlap, so the kernel runs latency-
+// bound at ~1/4 of its issue rate.  Two rows interleave independent chains in the same registers and roughly
+// double the throughput; the per-row integer sums and the float stage are unchanged, bit for bit.
+template <int TY, int NT, int R>
+inline void row_dot_r(const uint8_t* const* rows, int nblocks, const block_q8_K* const* y, float* res) {
     const int pf = prefetch_distance();
-    __m128 accf[NT];
-    for (int t = 0; t < NT; ++t) accf[t] = _mm_setzero_ps();
+    __m128 accf[R][NT];
+    for (int rr = 0; rr < R; ++rr)
+        for (int t = 0; t < NT; ++t) accf[rr][t] = _mm_setzero_ps();
     for (int i = 0; i < nblocks; ++i) {
-        const uint8_t* blk = row + (size_t) i * Fmt128<TY>::bytes;
-        rows_ahead(blk, pf);
-        __m128i acci[NT][2];
-        for (int t = 0; t < NT; ++t) acci[t][0] = acci[t][1] = _mm_setzero_si128();
+        __m128i acci[R][NT][2];
+        for (int rr = 0; rr < R; ++rr)
+            for (int t = 0; t < NT; ++t) acci[rr][t][0] = acci[rr][t][1] = _mm_setzero_si128();
+        for (int rr = 0; rr < R; ++rr) rows_ahead(rows[rr] + (size_t) i * Fmt128<TY>::bytes, pf);
         for (int j = 0; j < 4; ++j) {
             for (int half = 0; half < 2; ++half) {
-                __m128i g0, g1, s0, s1, c0, c1;
-                Fmt128<TY>::decode(blk, j, half, g0, g1, s0, s1, c0, c1);
+                __m128i g0[R], g1[R], s0[R], s1[R], c0[R], c1[R];
+                for (int rr = 0; rr < R; ++rr) {
+                    const uint8_t* blk = rows[rr] + (size_t) i * Fmt128<TY>::bytes;
+                    Fmt128<TY>::decode(blk, j, half, g0[rr], g1[rr], s0[rr], s1[rr], c0[rr], c1[rr]);
+                }
                 const int off = 64 * j + 32 * half;
-                for (int t = 0; t < NT; ++t) {
-                    const uint8_t* q8 = (const uint8_t*) (y[t][i].qs + off);
-                    acci[t][0] = madd_add(acci[t][0], g0, s0, _mm_loadu_si128((const __m128i*) q8), c0);
-                    acci[t][1] = madd_add(acci[t][1], g1, s1, _mm_loadu_si128((const __m128i*) (q8 + 16)), c1);
+                for (int rr = 0; rr < R; ++rr) {
+                    for (int t = 0; t < NT; ++t) {
+                        const uint8_t* q8 = (const uint8_t*) (y[t][i].qs + off);
+                        acci[rr][t][0] = madd_add(acci[rr][t][0], g0[rr], s0[rr], _mm_loadu_si128((const __m128i*) q8), c0[rr]);
+                        acci[rr][t][1] = madd_add(acci[rr][t][1], g1[rr], s1[rr], _mm_loadu_si128((const __m128i*) (q8 + 16)), c1[rr]);
+                    }
                 }
             }
         }
-        const float dx = h2f(u16(blk)) * Fmt128<TY>::K;
-        for (int t = 0; t < NT; ++t) {
-            const __m128 f = _mm_add_ps(_mm_cvtepi32_ps(acci[t][0]), _mm_cvtepi32_ps(acci[t][1]));
-            accf[t] = _mm_add_ps(accf[t], _mm_mul_ps(_mm_set1_ps(dx * y[t][i].d), f));
+        for (int rr = 0; rr < R; ++rr) {
+            const uint8_t* blk = rows[rr] + (size_t) i * Fmt128<TY>::bytes;
+            const float dx = h2f(u16(blk)) * Fmt128<TY>::K;
+            for (int t = 0; t < NT; ++t) {
+                const __m128 f = _mm_add_ps(_mm_cvtepi32_ps(acci[rr][t][0]), _mm_cvtepi32_ps(acci[rr][t][1]));
+                accf[rr][t] = _mm_add_ps(accf[rr][t], _mm_mul_ps(_mm_set1_ps(dx * y[t][i].d), f));
+            }
         }
     }
-    for (int t = 0; t < NT; ++t) res[t] = hsum4(accf[t]);
+    for (int rr = 0; rr < R; ++rr)
+        for (int t = 0; t < NT; ++t) res[rr * NT + t] = hsum4(accf[rr][t]);
+}
+
+template <int TY, int NT>
+inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    const uint8_t* rows[1] = {row};   // R=1 form: one row, same code, same bits
+    row_dot_r<TY, NT, 1>(rows, nblocks, y, res);
 }
 
 template <int TY, int NT>
@@ -275,7 +305,25 @@ inline void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, co
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     const int nb = n / QK_K;
     float g[NT], u[NT];
-    for (int r = r0; r < r1; ++r) {
+    // two rows per pass while the token count is small (that is where the decode is latency-bound); at
+    // NT >= 3 the decode is already amortized and the registers are better spent on the tokens
+    int r = r0;
+    if (NT <= 2) {
+        float g2[2 * NT], u2[2 * NT];
+        for (; r + 1 < r1; r += 2) {
+            const uint8_t* rows[2] = {blob + (size_t) r * gu_row, blob + (size_t) (r + 1) * gu_row};
+            row_dot_r<TY, NT, 2>(rows, nb, y, g2);
+            const uint8_t* urows[2] = {blob + up_off + (size_t) r * gu_row, blob + up_off + (size_t) (r + 1) * gu_row};
+            row_dot_r<TY, NT, 2>(urows, nb, y, u2);
+            for (int t = 0; t < NT; ++t) {
+                const float gr = g2[0 * NT + t], ur = u2[0 * NT + t];
+                ff[t][r] = (gr / (1.f + std::exp(-gr))) * ur;
+                const float gr1 = g2[1 * NT + t], ur1 = u2[1 * NT + t];
+                ff[t][r + 1] = (gr1 / (1.f + std::exp(-gr1))) * ur1;
+            }
+        }
+    }
+    for (; r < r1; ++r) {
         row_dot<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
         row_dot<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
@@ -319,7 +367,44 @@ void iq4nl_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* con
     const __m128i ones = _mm_set1_epi16(1);
     const int nb = n / QK4_NL;
     const int pf = prefetch_distance();
-    for (int r = r0; r < r1; ++r) {
+    // two rows per pass at one token (independent chains, same bits; see row_dot_r)
+    int r = r0;
+    if (NT == 1 && r1 - r0 >= 2) {
+        for (; r + 1 < r1; r += 2) {
+            const uint8_t* rowA = w + (size_t) r * row_bytes;
+            const uint8_t* rowB = w + (size_t) (r + 1) * row_bytes;
+            __m128 accA = _mm_setzero_ps(), accB = _mm_setzero_ps();
+            for (int ib = 0; ib < nb; ++ib) {
+                const uint8_t* blka = rowA + (size_t) ib * sizeof(block_iq4_nl);
+                const uint8_t* blkb = rowB + (size_t) ib * sizeof(block_iq4_nl);
+                rows_ahead(blka, pf);
+                rows_ahead(blkb, pf);
+                const __m128i bitsa = _mm_loadu_si128((const __m128i*) (blka + 2));
+                const __m128i bitsb = _mm_loadu_si128((const __m128i*) (blkb + 2));
+                const __m128i va0 = _mm_shuffle_epi8(values, _mm_and_si128(bitsa, m4b));
+                const __m128i va1 = _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(bitsa, 4), m4b));
+                const __m128i vb0 = _mm_shuffle_epi8(values, _mm_and_si128(bitsb, m4b));
+                const __m128i vb1 = _mm_shuffle_epi8(values, _mm_and_si128(_mm_srli_epi16(bitsb, 4), m4b));
+                const __m128i aqa0 = _mm_sign_epi8(va0, va0), aqa1 = _mm_sign_epi8(va1, va1);
+                const __m128i aqb0 = _mm_sign_epi8(vb0, vb0), aqb1 = _mm_sign_epi8(vb1, vb1);
+                const float dxa = h2f(u16(blka)), dxb = h2f(u16(blkb));
+                const uint8_t* q8 = (const uint8_t*) y[0][ib].qs;
+                const __m128i yq = _mm_loadu_si128((const __m128i*) q8);
+                const __m128i yq16 = _mm_loadu_si128((const __m128i*) (q8 + 16));
+                const __m128i pa0 = _mm_madd_epi16(_mm_maddubs_epi16(aqa0, _mm_sign_epi8(yq, va0)), ones);
+                const __m128i pa1 = _mm_madd_epi16(_mm_maddubs_epi16(aqa1, _mm_sign_epi8(yq16, va1)), ones);
+                const __m128i pb0 = _mm_madd_epi16(_mm_maddubs_epi16(aqb0, _mm_sign_epi8(yq, vb0)), ones);
+                const __m128i pb1 = _mm_madd_epi16(_mm_maddubs_epi16(aqb1, _mm_sign_epi8(yq16, vb1)), ones);
+                accA = _mm_add_ps(accA, _mm_mul_ps(_mm_set1_ps(dxa * h2f(y[0][ib].d)),
+                                                   _mm_add_ps(_mm_cvtepi32_ps(pa0), _mm_cvtepi32_ps(pa1))));
+                accB = _mm_add_ps(accB, _mm_mul_ps(_mm_set1_ps(dxb * h2f(y[0][ib].d)),
+                                                   _mm_add_ps(_mm_cvtepi32_ps(pb0), _mm_cvtepi32_ps(pb1))));
+            }
+            out[0][r] = hsum4(accA);
+            out[0][r + 1] = hsum4(accB);
+        }
+    }
+    for (; r < r1; ++r) {
         const uint8_t* row = w + (size_t) r * row_bytes;
         __m128 accf[NT];
         for (int t = 0; t < NT; ++t) accf[t] = _mm_setzero_ps();
@@ -347,14 +432,76 @@ void iq4nl_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* con
 // ---- Q2_0 (42) down rows against Q8_0: ggml-cpu has only the scalar generic dot for this type on x86.
 // Codes {0,1,2,3} map to {c-1}: unpack to unsigned code bytes, dot them with maddubs, and subtract the
 // activation's pair sums - all integer, so the per-block sum is EXACTLY the generic dot's sumi_block.
+inline void q2_unpack(__m128i q, __m128i& k0, __m128i& k1) {
+    const __m128i m3 = _mm_set1_epi8(3);
+    const __m128i c0 = _mm_and_si128(q, m3);
+    const __m128i c1 = _mm_and_si128(_mm_srli_epi16(q, 2), m3);
+    const __m128i c2 = _mm_and_si128(_mm_srli_epi16(q, 4), m3);
+    const __m128i c3 = _mm_and_si128(_mm_srli_epi32(q, 6), m3);
+    const __m128i t01 = _mm_unpacklo_epi8(c0, c1);
+    const __m128i t23 = _mm_unpacklo_epi8(c2, c3);
+    k0 = _mm_unpacklo_epi16(t01, t23);   // codes 0..15
+    k1 = _mm_unpackhi_epi16(t01, t23);   // codes 16..31
+}
+
 template <int NT>
 void q2_0_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* const* y, float* const* out,
                int r0, int r1) {
-    const __m128i m3 = _mm_set1_epi8(3);
     const __m128i ones = _mm_set1_epi16(1);
     const int nb = n / QK2_0;
     const int pf = prefetch_distance();
-    for (int r = r0; r < r1; ++r) {
+    // sum(q) per lane depends only on the activations, not the row: compute the per-lane y-sum vectors once
+    // per call and reuse them across every row (the kernel runs thousands of rows against the same NT token
+    // blocks).  Lane m of yv[t][i][k] = sum of the 8 k-half-0 and 8 k-half-1 activation values that p0/p1
+    // lane m covers - so the int32 subtraction below is the same integer the per-row form computed.
+    std::vector<__m128i> yv((size_t) NT * nb * 2);   // [t][i][k]
+    for (int t = 0; t < NT; ++t) {
+        for (int i = 0; i < nb; ++i) {
+            for (int k = 0; k < 2; ++k) {
+                const uint8_t* q8 = (const uint8_t*) y[t][i * 2 + k].qs;
+                const __m128i s0 = _mm_madd_epi16(_mm_maddubs_epi16(_mm_set1_epi8(1), _mm_loadu_si128((const __m128i*) q8)), ones);
+                const __m128i s1 = _mm_madd_epi16(_mm_maddubs_epi16(_mm_set1_epi8(1), _mm_loadu_si128((const __m128i*) (q8 + 16))), ones);
+                yv[((size_t) t * nb + i) * 2 + k] = _mm_add_epi32(s0, s1);
+            }
+        }
+    }
+    // two rows per pass at one token (independent unpack/dot chains, same bits)
+    int r = r0;
+    if (NT == 1 && r1 - r0 >= 2) {
+        for (; r + 1 < r1; r += 2) {
+            const uint8_t* rowA = w + (size_t) r * row_bytes;
+            const uint8_t* rowB = w + (size_t) (r + 1) * row_bytes;
+            __m128 accA = _mm_setzero_ps(), accB = _mm_setzero_ps();
+            for (int i = 0; i < nb; ++i) {
+                const uint8_t* blka = rowA + (size_t) i * sizeof(block_q2_0);
+                const uint8_t* blkb = rowB + (size_t) i * sizeof(block_q2_0);
+                rows_ahead(blka, pf);
+                rows_ahead(blkb, pf);
+                const float dxa = h2f(u16(blka)), dxb = h2f(u16(blkb));
+                for (int k = 0; k < 2; ++k) {
+                    __m128i k0a, k1a, k0b, k1b;
+                    q2_unpack(_mm_cvtsi64_si128((long long) u64(blka + 2 + 8 * k)), k0a, k1a);
+                    q2_unpack(_mm_cvtsi64_si128((long long) u64(blkb + 2 + 8 * k)), k0b, k1b);
+                    const uint8_t* q8 = (const uint8_t*) y[0][i * 2 + k].qs;
+                    const __m128i y0 = _mm_loadu_si128((const __m128i*) q8);
+                    const __m128i y1 = _mm_loadu_si128((const __m128i*) (q8 + 16));
+                    const __m128i yv01 = yv[(size_t) i * 2 + k];   // NT == 1: token 0, [i][k]
+                    const __m128i qa = _mm_sub_epi32(_mm_add_epi32(
+                        _mm_madd_epi16(_mm_maddubs_epi16(k0a, y0), ones),
+                        _mm_madd_epi16(_mm_maddubs_epi16(k1a, y1), ones)), yv01);
+                    const __m128i qb = _mm_sub_epi32(_mm_add_epi32(
+                        _mm_madd_epi16(_mm_maddubs_epi16(k0b, y0), ones),
+                        _mm_madd_epi16(_mm_maddubs_epi16(k1b, y1), ones)), yv01);
+                    const float dy = h2f(y[0][i * 2 + k].d);
+                    accA = _mm_add_ps(accA, _mm_mul_ps(_mm_set1_ps(dxa * dy), _mm_cvtepi32_ps(qa)));
+                    accB = _mm_add_ps(accB, _mm_mul_ps(_mm_set1_ps(dxb * dy), _mm_cvtepi32_ps(qb)));
+                }
+            }
+            out[0][r] = hsum4(accA);
+            out[0][r + 1] = hsum4(accB);
+        }
+    }
+    for (; r < r1; ++r) {
         const uint8_t* row = w + (size_t) r * row_bytes;
         __m128 accf[NT];
         for (int t = 0; t < NT; ++t) accf[t] = _mm_setzero_ps();
@@ -365,24 +512,18 @@ void q2_0_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* cons
             const uint8_t* qs = blk + 2;
             for (int k = 0; k < 2; ++k) {
                 // 8 code bytes -> 32 unsigned codes in order (c0..c3 = the four 2-bit groups of each byte)
-                const __m128i q = _mm_cvtsi64_si128((long long) u64(qs + 8 * k));
-                const __m128i c0 = _mm_and_si128(q, m3);
-                const __m128i c1 = _mm_and_si128(_mm_srli_epi16(q, 2), m3);
-                const __m128i c2 = _mm_and_si128(_mm_srli_epi16(q, 4), m3);
-                const __m128i c3 = _mm_and_si128(_mm_srli_epi32(q, 6), m3);
-                const __m128i t01 = _mm_unpacklo_epi8(c0, c1);
-                const __m128i t23 = _mm_unpacklo_epi8(c2, c3);
-                const __m128i k0 = _mm_unpacklo_epi16(t01, t23);   // codes 0..15
-                const __m128i k1 = _mm_unpackhi_epi16(t01, t23);   // codes 16..31
+                __m128i k0, k1;
+                q2_unpack(_mm_cvtsi64_si128((long long) u64(qs + 8 * k)), k0, k1);
                 for (int t = 0; t < NT; ++t) {
                     const uint8_t* q8 = (const uint8_t*) y[t][i * 2 + k].qs;
                     const __m128i y0 = _mm_loadu_si128((const __m128i*) q8);
                     const __m128i y1 = _mm_loadu_si128((const __m128i*) (q8 + 16));
-                    // (c-1)*qy per pair: c*qy - qy, both at int16 level (|result| <= 508, no saturation)
-                    const __m128i d0 = _mm_sub_epi16(_mm_maddubs_epi16(k0, y0), _mm_maddubs_epi16(_mm_set1_epi8(1), y0));
-                    const __m128i d1 = _mm_sub_epi16(_mm_maddubs_epi16(k1, y1), _mm_maddubs_epi16(_mm_set1_epi8(1), y1));
-                    const __m128 f = _mm_add_ps(_mm_cvtepi32_ps(_mm_madd_epi16(d0, ones)),
-                                                _mm_cvtepi32_ps(_mm_madd_epi16(d1, ones)));
+                    // (c-1)*qy: c*qy at int16 level, minus the precomputed per-lane sum(qy) at int32 level
+                    // (same integer as the per-row subtraction, all values exact in int32)
+                    const __m128i p0 = _mm_madd_epi16(_mm_maddubs_epi16(k0, y0), ones);
+                    const __m128i p1 = _mm_madd_epi16(_mm_maddubs_epi16(k1, y1), ones);
+                    const __m128i q = _mm_sub_epi32(_mm_add_epi32(p0, p1), yv[((size_t) t * nb + i) * 2 + k]);
+                    const __m128 f = _mm_cvtepi32_ps(q);
                     accf[t] = _mm_add_ps(accf[t], _mm_mul_ps(_mm_set1_ps(dx * h2f(y[t][i * 2 + k].d)), f));
                 }
             }
