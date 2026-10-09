@@ -27,7 +27,7 @@
 
 // ============================================================================================
 // The runtime: weights, the drafter's own K/V pools, the fusion (context cells) and the block
-// forward.  Eager, one stream, greedy.  All semantics: docs/DFLASH.md.
+// forward. One stream, greedy, with reusable query graphs. Semantics: docs/DFLASH.md.
 // ============================================================================================
 
 namespace strata::core {
@@ -237,6 +237,14 @@ int64_t DFlashDrafter::shrink_scratch(int64_t cells, const std::function<void(Vm
     return freed;
 }
 
+void DFlashDrafter::clear_graphs() {
+    for (auto& graph : graph_exec_) {
+        if (graph) cudaGraphExecDestroy(graph);
+        graph = nullptr;
+    }
+    graph_chunks_.fill(0); graph_cap_.fill(0);
+}
+
 void DFlashDrafter::release() {
     df_timing_dump();
     df_timing().acc.clear();
@@ -244,8 +252,9 @@ void DFlashDrafter::release() {
     df_timing().ev_used = 0;
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
+    clear_graphs();
     auto free_dev = [](void* p) { if (p) cudaFree(p); };
-    free_dev(w_);
+    free_dev(w_); free_dev(head_ids_); head_ids_ = nullptr; head_rows_ = 0;
     for (auto& [name, p] : wf_) free_dev((void*) p);
     for (auto& st : st_) {
         qsa_state_release_elastic(st);
@@ -266,7 +275,7 @@ void DFlashDrafter::release() {
     free_dev(xq_);
     if (scratch_range_) scratch_range_.reset();
     else free_dev(attn_scratch_);
-    free_dev(arg_scratch_);
+    free_dev(arg_scratch_); free_dev(top_scratch_);
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
     delete owned_head_; owned_head_ = nullptr;
@@ -281,7 +290,7 @@ void DFlashDrafter::release() {
     gate_ = up_ = logits_ = nullptr;
     xq_ = nullptr;
     attn_scratch_ = nullptr;
-    arg_scratch_ = nullptr;
+    arg_scratch_ = top_scratch_ = nullptr;
     out_ = h_out_ = nullptr; h_tok_ = nullptr;
     cs_ = nullptr;
     vram_ = 0;
@@ -458,11 +467,11 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         return bail("dflash: mapped staging failed");
     }
     auto take = [&](size_t n, void** p) -> bool {
-        if (cudaMalloc(p, n) != cudaSuccess) {
+        if (cudaMalloc(p, std::max<size_t>(n, 4)) != cudaSuccess) {
             err = "dflash: the drafter buffers do not fit in VRAM";
             return false;
         }
-        vram_ += n;
+        vram_ += std::max<size_t>(n, 4);
         return true;
     };
     const int64_t W16 = std::max(N, std::max(I, Q));   // the widest bf16 activation (MLP down's input)
@@ -480,6 +489,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take(R * I * 4, (void**) &gate_) && take(R * I * 4, (void**) &up_) &&
               take(R * dg.vocab * 4, (void**) &logits_) &&
               take(strata::kernels::argmax_rows_scratch_bytes((int) R), (void**) &arg_scratch_) &&
+              take(strata::kernels::row_top_prob_scratch_bytes((int) R), (void**) &top_scratch_) &&
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_);
     if (ok && elastic_kv) {
         scratch_range_ = std::make_unique<VmmRange>();
@@ -498,7 +508,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     if (!ok) return bail(err);
     // no selection table: the drafter's attention reads the identity cells straight from the
     // block position (dflash_attn_batch); dflash_identity_fill stays for the load test
-    if (cudaMemset(arg_scratch_, 0, strata::kernels::argmax_rows_scratch_bytes((int) R)) != cudaSuccess ||
+    if (cudaMemset(top_scratch_, 0, std::max<uint64_t>(4, strata::kernels::row_top_prob_scratch_bytes((int) R))) != cudaSuccess ||
+        cudaMemset(arg_scratch_, 0, std::max<uint64_t>(4, strata::kernels::argmax_rows_scratch_bytes((int) R))) != cudaSuccess ||
         cudaStreamSynchronize(cs_) != cudaSuccess)
         return bail("dflash: the upload did not land");
     if (const char* pd = std::getenv("STRATA_DF_PARITY"))
@@ -518,7 +529,10 @@ bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
     return true;
 }
 
-bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err) {
+bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err, const std::string& vocab_path) {
+    if (cs_) cudaStreamSynchronize(cs_);
+    clear_graphs();
+    if (head_ids_) { cudaFree(head_ids_); head_ids_ = nullptr; vram_ -= (uint64_t) head_rows_ * 4; head_rows_ = 0; }
     const DFlashGeometry& dg = artifact_.geom();
     head_ = owned_head_ ? owned_head_ : head;
     if (head_ == nullptr || !head_->loaded()) {
@@ -535,10 +549,34 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
     emb_ref_ = wt.find("token_embd.weight");
     if (emb_ref_ == nullptr) { err = "dflash: the target's token_embd.weight is missing"; return false; }
     // GGUF shape [n_embd, n_vocab]: ne0 is the embedding length, ne1 the table's row count
-    if (emb_ref_->ne1 < (uint64_t) dg.vocab) {
+    if (emb_ref_->ne1 < dg.vocab) {
         err = "dflash: the target's embedding table holds " + std::to_string(emb_ref_->ne1) +
               " rows, less than the artifact's vocabulary " + std::to_string(dg.vocab);
         return false;
+    }
+    if (!vocab_path.empty()) {
+        switch (head_->type()) {
+            case 2: case 6: case 8: case 11: case 12: case 13: case 14: case 20: case 23: case 42: break;
+            default: err = "dflash: this head type has no indexed kernel; omit --dflash-vocab"; return false;
+        }
+        FILE* f = std::fopen(vocab_path.c_str(), "rb");
+        if (!f) { err = "dflash: cannot open draft vocabulary"; return false; }
+        std::fseek(f, 0, SEEK_END); const long bytes = std::ftell(f); std::rewind(f);
+        std::vector<int32_t> ids(bytes > 0 && bytes <= dg.vocab * 4 && bytes % 4 == 0 ? bytes / 4 : 0);
+        const bool read = !ids.empty() && std::fread(ids.data(), 4, ids.size(), f) == ids.size();
+        std::fclose(f);
+        std::sort(ids.begin(), ids.end());
+        if (!read || ids.front() < 0 || ids.back() >= dg.vocab ||
+            std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+            err = "dflash: invalid draft vocabulary"; return false;
+        }
+        if (cudaMalloc(&head_ids_, ids.size() * 4) != cudaSuccess ||
+            cudaMemcpy(head_ids_, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess) {
+            err = "dflash: draft vocabulary upload failed"; return false;
+        }
+        head_rows_ = (int) ids.size(); vram_ += ids.size() * 4;
+        std::fprintf(stderr, "dflash: indexed shared head over %d of %lld tokens, %.2f MiB of indices\n",
+                     head_rows_, (long long) dg.vocab, ids.size() * 4.0 / 1048576);
     }
     return true;
 }
@@ -738,7 +776,6 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             std::fprintf(stderr, "dflash dbg: fusion append pos0=%lld rows=%d cells [%lld..%lld)\n",
                          (long long) pos0, rows, (long long) pos0, (long long) (pos0 + rows));
         const QsaState& stl = st_[(size_t) l];
-        const QsaAttnPools pools = qsa_attn_pools(stl);
 
         if (stl.kv_q4)
             kv_append_q4_steps(stl.k_q4, stl.v_q4, stl.page_table, step_, 4, rows, kc_, vc_, shapes_, cs_, &stl.host);
@@ -785,7 +822,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     return true;
 }
 
-bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err) {
+bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err, float* probabilities) {
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim, I = dg.intermediate;
@@ -810,6 +847,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         return false;
     }
     const int K = block;
+    const int vocab = head_ids_ ? head_rows_ : (int) dg.vocab;
 
     // ---- the query rows: [x, mask x (K-1)]; row 0 = the anchor's own embedding
     h_tok_[0] = x;
@@ -851,214 +889,259 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     dflash_build_steps(step_, K, pos, (int) shapes_.page_size, cs_);
     dflash_build_attn_steps(attn_step_, K, pos + K, (int) shapes_.page_size, cs_);
 
-    for (int64_t l = 0; l < dg.layers; ++l) {
-        const std::string pre = "layers." + std::to_string(l);
-        // ---- attention half
-        {
-            DFlashSection s("L*.attn_norm");
-            native_qsa_rms_norm_weighted(h_, wf((pre + ".input_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+    const bool graph_on = (!std::getenv("STRATA_DFLASH_GRAPH") ||
+                           std::getenv("STRATA_DFLASH_GRAPH")[0] != '0') &&
+                          !parity_dir_[0] && !std::getenv("STRATA_DF_DBG") && !df_timing().on;
+    const bool probs = probabilities != nullptr;
+    const int64_t chunks = (pos + K + 63) / 64;
+    if (graph_prob_ != probs) { clear_graphs(); graph_prob_ = probs; }
+    if (graph_exec_[K] && (graph_chunks_[K] != chunks || graph_cap_[K] != scratch_cap_)) {
+        cudaGraphExecDestroy(graph_exec_[K]); graph_exec_[K] = nullptr;
+    }
+    auto forward = [&]() -> bool {
+        for (int64_t l = 0; l < dg.layers; ++l) {
+            const std::string pre = "layers." + std::to_string(l);
+            // ---- attention half
+            {
+                DFlashSection s("L*.attn_norm");
+                native_qsa_rms_norm_weighted(h_, wf((pre + ".input_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+                if (parity_want(cycle_)) {
+                    char name[32];
+                    std::snprintf(name, sizeof name, "xn%d", (int) l);
+                    parity_dump(parity_dir_, name, xn_, K * N, cs_);
+                }
+                f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+            }
+            prepare_projection(xn16_, (int) N, K, cs_);   // Q/K/V reuse one Q8_1 activation
+            {
+                {
+                    DFlashSection section("L*.q_proj");
+                    project(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_, true);
+                }
+                {
+                    DFlashSection section("L*.k_proj");
+                    project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_, true);
+                }
+                {
+                    DFlashSection section("L*.v_proj");
+                    project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_, true);
+                }
+            }
+            // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
             if (parity_want(cycle_)) {
                 char name[32];
-                std::snprintf(name, sizeof name, "xn%d", (int) l);
-                parity_dump(parity_dir_, name, xn_, K * N, cs_);
+                std::snprintf(name, sizeof name, "qraw%d", (int) l);
+                parity_dump(parity_dir_, name, q_, K * Q, cs_);
             }
-            f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
-        }
-        prepare_projection(xn16_, (int) N, K, cs_);   // Q/K/V reuse one Q8_1 activation
-        {
+            native_qsa_rms_norm_weighted(q_, wf((pre + ".self_attn.q_norm").c_str()), q_, (int) dg.head_dim,
+                                         (int) (K * dg.n_head), kEps, cs_);
+            if (parity_want(cycle_)) {
+                char name[32];
+                std::snprintf(name, sizeof name, "qnormed%d", (int) l);
+                parity_dump(parity_dir_, name, q_, K * Q, cs_);
+            }
+            native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
+                                         (int) (K * dg.n_head_kv), kEps, cs_);
             {
-                DFlashSection section("L*.q_proj");
-                project(xn16_, wp((pre + ".self_attn.q_proj").c_str()), q_, N, Q, K, cs_, true);
+                DFlashSection s("L*.rope_q");
+                dflash_rope_neox_apply(q_, q_, (int) (K * dg.n_head), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
             }
             {
-                DFlashSection section("L*.k_proj");
-                project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_, true);
+                DFlashSection s("L*.rope_kv");
+                dflash_rope_neox_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, poskv_, cs_);
+            }
+            // append the queries' own cells at their true positions (step_, built once above), then
+            // every query reads [0, pos+K) (attn_step_)
+            const QsaState& stl = st_[(size_t) l];
+            const QsaAttnPools pools = qsa_attn_pools(stl);
+            {
+                DFlashSection s("L*.kv_append");
+                if (stl.kv_q4)
+                    kv_append_q4_steps(stl.k_q4, stl.v_q4, stl.page_table, step_, 4, K, kc_, vc_, shapes_, cs_, &stl.host);
+                else if (stl.kv_int8)
+                    kv_append_q8_steps(stl.k_q, stl.v_q, stl.k_scale, stl.v_scale, stl.page_table, step_, 4, kc_, vc_,
+                                       (int) KVW, K, shapes_, cs_, &stl.host);
+                else
+                    kv_append_f16_steps(stl.k_pool, stl.v_pool, stl.page_table, step_, 4, kc_, vc_, (int) KVW, K,
+                                        shapes_, cs_, &stl.host);
+            }
+            if (parity_want(cycle_)) {
+                char name[32];
+                std::snprintf(name, sizeof name, "steps%d", (int) l);
+                parity_dump(parity_dir_, name, attn_step_, K * 4, cs_);   // i32 bits reinterpreted as f32
+            }
+            if ((int64_t)(pos + K) > cap_ || pos + K > scratch_cap_) {
+                err = "dflash: the window cap is exceeded (raise --dflash-window)";
+                return false;
+            }
+            if (parity_want(cycle_)) {
+                // the attention oracle's inputs: whole pool pages covering every visible cell (the
+                // pools are read-only for the kernel, so dumping before or after it is the same), the
+                // page table's entries for those pages, and the per-row steps the kernel is handed
+                const int64_t pages = (pos + K + shapes_.page_size - 1) / shapes_.page_size;
+                const int64_t prows = pages * shapes_.page_size * dg.n_head_kv;
+                char name[32];
+                std::snprintf(name, sizeof name, "kpool%d", (int) l);
+                parity_dump_u16_as_f32(parity_dir_, name, pools.k_pool, prows * dg.head_dim, cs_);
+                std::snprintf(name, sizeof name, "vpool%d", (int) l);
+                parity_dump_u16_as_f32(parity_dir_, name, pools.v_pool, prows * dg.head_dim, cs_);
+                std::snprintf(name, sizeof name, "pt%d", (int) l);
+                parity_dump(parity_dir_, name, pools.page_table, pages, cs_);
+            }
+            static const bool df_dbg = std::getenv("STRATA_DF_DBG") != nullptr;
+            if (l == 0 && df_dbg) {
+                const QsaAttnPools pl = qsa_attn_pools(st_[0]);
+                std::fprintf(stderr,
+                             "dflash dbg: attn cap=%lld K=%d attn_end=%lld pools k=%p kq=%p kq4=%p pt=%p "
+                             "kv_mode=%d rot=%d int8=%d q4=%d shapes hd=%lld nh=%lld nkv=%lld ps=%lld rot_bits=%lld\n",
+                             (long long) cap_, K, (long long) (pos + K), (const void*) pl.k_pool,
+                             (const void*) pl.k_q, (const void*) pl.k_q4, (const void*) pl.page_table, (int) st_[0].kv_mode,
+                             (int) st_[0].kv_rot, (int) st_[0].kv_int8, (int) st_[0].kv_q4, (long long) shapes_.head_dim,
+                             (long long) shapes_.n_head, (long long) shapes_.n_head_kv, (long long) shapes_.page_size,
+                             (long long) shapes_.n_rot);
             }
             {
-                DFlashSection section("L*.v_proj");
-                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_, true);
+                DFlashSection s("L*.attn");
+                // the drafter's cells are the identity [0, pos+K): no selection table, and only their
+                // chunks launch (the configured window cap stays the scratch stride)
+                dflash_attn_batch(q_, pools, attn_step_, pos + K, scratch_cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
+            }
+            if (parity_want(cycle_)) {
+                char name[32];
+                std::snprintf(name, sizeof name, "q%d", (int) l);
+                parity_dump(parity_dir_, name, q_, K * Q, cs_);
+                std::snprintf(name, sizeof name, "k%d", (int) l);
+                parity_dump(parity_dir_, name, kc_, K * KVW, cs_);
+                std::snprintf(name, sizeof name, "v%d", (int) l);
+                parity_dump(parity_dir_, name, vc_, K * KVW, cs_);
+                std::snprintf(name, sizeof name, "attn%d", (int) l);
+                parity_dump(parity_dir_, name, attn_, K * Q, cs_);
+            }
+            f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
+            {
+                DFlashSection s("L*.o_proj");
+                project(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
+            }
+            if (l == 0 && df_dbg) {
+                std::vector<float> hb(4), ab(4);
+                cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
+                cudaMemcpyAsync(ab.data(), bo_, 16, cudaMemcpyDeviceToHost, cs_);
+                cudaStreamSynchronize(cs_);
+                std::fprintf(stderr, "df dbg: after attn h0=%.3e bo0=%.3e\n", hb[0], ab[0]);
+            }
+            {
+                DFlashSection section("L*.residual_add");
+                add_inplace(h_, bo_, K * N, cs_);
+            }
+            if (parity_want(cycle_)) {
+                char name[32];
+                std::snprintf(name, sizeof name, "h_attn%d", (int) l);
+                parity_dump(parity_dir_, name, h_, K * N, cs_);
+            }
+            // ---- MLP half
+            {
+                DFlashSection s("L*.mlp_norm");
+                native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+                f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+            }
+            prepare_projection(xn16_, (int) N, K, cs_);   // gate/up share one Q8_1 activation
+            {
+                {
+                    DFlashSection section("L*.gate_proj");
+                    project(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_, true);
+                }
+                {
+                    DFlashSection section("L*.up_proj");
+                    project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_, true);
+                }
+            }
+            {
+                DFlashSection s("L*.swiglu");
+                swiglu_inplace(gate_, up_, K * I, cs_);
+                f32_to_bf16_bulk(gate_, xn16_, (int64_t) K * I, cs_);
+            }
+            {
+                DFlashSection s("L*.down_gemv");
+                project(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
+            }
+            {
+                DFlashSection section("L*.residual_add");
+                add_inplace(h_, bo_, K * N, cs_);
+            }
+            if (parity_want(cycle_)) {
+                char name[32];
+                std::snprintf(name, sizeof name, "h_mlp%d", (int) l);
+                parity_dump(parity_dir_, name, h_, K * N, cs_);
             }
         }
-        // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "qraw%d", (int) l);
-            parity_dump(parity_dir_, name, q_, K * Q, cs_);
-        }
-        native_qsa_rms_norm_weighted(q_, wf((pre + ".self_attn.q_norm").c_str()), q_, (int) dg.head_dim,
-                                     (int) (K * dg.n_head), kEps, cs_);
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "qnormed%d", (int) l);
-            parity_dump(parity_dir_, name, q_, K * Q, cs_);
-        }
-        native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
-                                     (int) (K * dg.n_head_kv), kEps, cs_);
-        {
-            DFlashSection s("L*.rope_q");
-            dflash_rope_neox_apply(q_, q_, (int) (K * dg.n_head), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
-        }
-        {
-            DFlashSection s("L*.rope_kv");
-            dflash_rope_neox_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, poskv_, cs_);
-        }
-        // append the queries' own cells at their true positions (step_, built once above), then
-        // every query reads [0, pos+K) (attn_step_)
-        const QsaState& stl = st_[(size_t) l];
-        const QsaAttnPools pools = qsa_attn_pools(stl);
-        {
-            DFlashSection s("L*.kv_append");
-            if (stl.kv_q4)
-                kv_append_q4_steps(stl.k_q4, stl.v_q4, stl.page_table, step_, 4, K, kc_, vc_, shapes_, cs_, &stl.host);
-            else if (stl.kv_int8)
-                kv_append_q8_steps(stl.k_q, stl.v_q, stl.k_scale, stl.v_scale, stl.page_table, step_, 4, kc_, vc_,
-                                   (int) KVW, K, shapes_, cs_, &stl.host);
-            else
-                kv_append_f16_steps(stl.k_pool, stl.v_pool, stl.page_table, step_, 4, kc_, vc_, (int) KVW, K,
-                                    shapes_, cs_, &stl.host);
-        }
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "steps%d", (int) l);
-            parity_dump(parity_dir_, name, attn_step_, K * 4, cs_);   // i32 bits reinterpreted as f32
-        }
-        if ((int64_t)(pos + K) > cap_ || pos + K > scratch_cap_) {
-            err = "dflash: the window cap is exceeded (raise --dflash-window)";
-            return false;
-        }
-        if (parity_want(cycle_)) {
-            // the attention oracle's inputs: whole pool pages covering every visible cell (the
-            // pools are read-only for the kernel, so dumping before or after it is the same), the
-            // page table's entries for those pages, and the per-row steps the kernel is handed
-            const int64_t pages = (pos + K + shapes_.page_size - 1) / shapes_.page_size;
-            const int64_t prows = pages * shapes_.page_size * dg.n_head_kv;
-            char name[32];
-            std::snprintf(name, sizeof name, "kpool%d", (int) l);
-            parity_dump_u16_as_f32(parity_dir_, name, pools.k_pool, prows * dg.head_dim, cs_);
-            std::snprintf(name, sizeof name, "vpool%d", (int) l);
-            parity_dump_u16_as_f32(parity_dir_, name, pools.v_pool, prows * dg.head_dim, cs_);
-            std::snprintf(name, sizeof name, "pt%d", (int) l);
-            parity_dump(parity_dir_, name, pools.page_table, pages, cs_);
-        }
-        static const bool df_dbg = std::getenv("STRATA_DF_DBG") != nullptr;
-        if (l == 0 && df_dbg) {
-            const QsaAttnPools pl = qsa_attn_pools(st_[0]);
-            std::fprintf(stderr,
-                         "dflash dbg: attn cap=%lld K=%d attn_end=%lld pools k=%p kq=%p kq4=%p pt=%p "
-                         "kv_mode=%d rot=%d int8=%d q4=%d shapes hd=%lld nh=%lld nkv=%lld ps=%lld rot_bits=%lld\n",
-                         (long long) cap_, K, (long long) (pos + K), (const void*) pl.k_pool,
-                         (const void*) pl.k_q, (const void*) pl.k_q4, (const void*) pl.page_table, (int) st_[0].kv_mode,
-                         (int) st_[0].kv_rot, (int) st_[0].kv_int8, (int) st_[0].kv_q4, (long long) shapes_.head_dim,
-                         (long long) shapes_.n_head, (long long) shapes_.n_head_kv, (long long) shapes_.page_size,
-                         (long long) shapes_.n_rot);
-        }
-        {
-            DFlashSection s("L*.attn");
-            // the drafter's cells are the identity [0, pos+K): no selection table, and only their
-            // chunks launch (the configured window cap stays the scratch stride)
-            dflash_attn_batch(q_, pools, attn_step_, pos + K, scratch_cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
-        }
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "q%d", (int) l);
-            parity_dump(parity_dir_, name, q_, K * Q, cs_);
-            std::snprintf(name, sizeof name, "k%d", (int) l);
-            parity_dump(parity_dir_, name, kc_, K * KVW, cs_);
-            std::snprintf(name, sizeof name, "v%d", (int) l);
-            parity_dump(parity_dir_, name, vc_, K * KVW, cs_);
-            std::snprintf(name, sizeof name, "attn%d", (int) l);
-            parity_dump(parity_dir_, name, attn_, K * Q, cs_);
-        }
-        f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
-        {
-            DFlashSection s("L*.o_proj");
-            project(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
-        }
-        if (l == 0 && df_dbg) {
-            std::vector<float> hb(4), ab(4);
+        // ---- final norm, the target's head, the row argmaxes
+        static const bool df_dbg2 = std::getenv("STRATA_DF_DBG") != nullptr;
+        if (df_dbg2) {
+            std::vector<float> hb(4), eb(4);
             cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
-            cudaMemcpyAsync(ab.data(), bo_, 16, cudaMemcpyDeviceToHost, cs_);
+            cudaMemcpyAsync(eb.data(), emb_, 16, cudaMemcpyDeviceToHost, cs_);
             cudaStreamSynchronize(cs_);
-            std::fprintf(stderr, "df dbg: after attn h0=%.3e bo0=%.3e\n", hb[0], ab[0]);
+            std::fprintf(stderr, "df dbg: final h0=%.3e emb0=%.3e\n", hb[0], eb[0]);
         }
         {
-            DFlashSection section("L*.residual_add");
-            add_inplace(h_, bo_, K * N, cs_);
+            DFlashSection section("out.rmsnorm");
+            native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
         }
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "h_attn%d", (int) l);
-            parity_dump(parity_dir_, name, h_, K * N, cs_);
-        }
-        // ---- MLP half
+        if (parity_want(cycle_)) parity_dump(parity_dir_, "final_norm", xn_, K * N, cs_);
+        const bool output_parity = parity_want(cycle_);
         {
-            DFlashSection s("L*.mlp_norm");
-            native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
-            f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+            DFlashSection s("out.quantize");
+            native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
         }
-        prepare_projection(xn16_, (int) N, K, cs_);   // gate/up share one Q8_1 activation
+        if (output_parity)
+            parity_dump(parity_dir_, "head_act_q8", (const float*) xq_,
+                        strata::kernels::native_q8_1_bytes((int) N, K) / 4, cs_);
         {
-            {
-                DFlashSection section("L*.gate_proj");
-                project(xn16_, wp((pre + ".mlp.gate_proj").c_str()), gate_, N, I, K, cs_, true);
-            }
-            {
-                DFlashSection section("L*.up_proj");
-                project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_, true);
-            }
+            DFlashSection s("out.head");
+            if (head_ids_) native_mmvq_indexed(head_->type(), head_->weights(), xq_, logits_, (int) N, vocab, K, head_ids_, cs_);
+            else native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, vocab, K, cs_);
+        }
+        if (output_parity) {
+            parity_dump(parity_dir_, "head_logits", logits_, K * vocab, cs_);
+            if (head_ids_) parity_dump(parity_dir_, "head_ids", (const float*) head_ids_, vocab, cs_);
         }
         {
-            DFlashSection s("L*.swiglu");
-            swiglu_inplace(gate_, up_, K * I, cs_);
-            f32_to_bf16_bulk(gate_, xn16_, (int64_t) K * I, cs_);
+            DFlashSection s("out.argmax");
+            argmax_rows(logits_, K, vocab, arg_scratch_, out_, cs_);
         }
-        {
-            DFlashSection s("L*.down_gemv");
-            project(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
+        if (probs) {
+            DFlashSection s("out.probability");
+            if (multi_block_head_ops()) row_top_prob_split(logits_, K, vocab, out_, (float*) (out_ + max_rows_), top_scratch_, cs_);
+            else row_top_prob(logits_, K, vocab, out_, (float*) (out_ + max_rows_), cs_);
         }
-        {
-            DFlashSection section("L*.residual_add");
-            add_inplace(h_, bo_, K * N, cs_);
+        if (head_ids_) map_ids(out_, head_ids_, K, cs_);
+        if (output_parity) parity_dump(parity_dir_, "head_picks", (const float*) out_, K, cs_);
+        return true;
+    };
+    bool ran = false;
+    if (graph_on && !graph_exec_[K]) {
+        cudaGraph_t graph = nullptr;
+        if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) == cudaSuccess) {
+            const bool ok = forward();
+            const cudaError_t captured = cudaStreamEndCapture(cs_, &graph);
+            cudaGraphExec_t candidate = nullptr;
+            if (ok && captured == cudaSuccess && graph &&
+                cudaGraphInstantiate(&candidate, graph, 0) == cudaSuccess) {
+                graph_exec_[K] = candidate;
+                graph_chunks_[K] = chunks; graph_cap_[K] = scratch_cap_;
+            } else if (candidate) cudaGraphExecDestroy(candidate);
+            if (graph) cudaGraphDestroy(graph);
+            if (!ok) return false;
+            cudaGetLastError();
+        } else cudaGetLastError();
+    }
+    if (graph_on && graph_exec_[K]) {
+        if (cudaGraphLaunch(graph_exec_[K], cs_) != cudaSuccess) {
+            err = "dflash: graph launch failed"; return false;
         }
-        if (parity_want(cycle_)) {
-            char name[32];
-            std::snprintf(name, sizeof name, "h_mlp%d", (int) l);
-            parity_dump(parity_dir_, name, h_, K * N, cs_);
-        }
+        ran = true;
     }
-    // ---- final norm, the target's head, the row argmaxes
-    static const bool df_dbg2 = std::getenv("STRATA_DF_DBG") != nullptr;
-    if (df_dbg2) {
-        std::vector<float> hb(4), eb(4);
-        cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
-        cudaMemcpyAsync(eb.data(), emb_, 16, cudaMemcpyDeviceToHost, cs_);
-        cudaStreamSynchronize(cs_);
-        std::fprintf(stderr, "df dbg: final h0=%.3e emb0=%.3e\n", hb[0], eb[0]);
-    }
-    {
-        DFlashSection section("out.rmsnorm");
-        native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
-    }
-    if (parity_want(cycle_)) parity_dump(parity_dir_, "final_norm", xn_, K * N, cs_);
-    const bool output_parity = parity_want(cycle_);
-    ++cycle_;
-    {
-        DFlashSection s("out.quantize");
-        native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
-    }
-    if (output_parity)
-        parity_dump(parity_dir_, "head_act_q8", (const float*) xq_,
-                    strata::kernels::native_q8_1_bytes((int) N, K) / 4, cs_);
-    {
-        DFlashSection s("out.head");
-        native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, (int) dg.vocab, K, cs_);
-    }
-    if (output_parity) parity_dump(parity_dir_, "head_logits", logits_, K * dg.vocab, cs_);
-    {
-        DFlashSection s("out.argmax");
-        argmax_rows(logits_, K, (int) dg.vocab, arg_scratch_, out_, cs_);
-    }
-    if (output_parity) parity_dump(parity_dir_, "head_picks", (const float*) out_, K, cs_);
+    if (!ran && !forward()) return false;
     {
         DFlashSection s("out.sync");
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
@@ -1067,7 +1150,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
     }
     df_timing_drain();
+    ++cycle_;
     std::memcpy(out, h_out_, (size_t) K * 4);
+    if (probabilities) std::memcpy(probabilities, h_out_ + max_rows_, (size_t) K * 4);
     return true;
 }
 

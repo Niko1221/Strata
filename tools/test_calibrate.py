@@ -172,6 +172,55 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({}, "a"), "a")
 
 
+class DFlashCalibration(unittest.TestCase):
+    def measure(self, speed, maximum=7, base=None):
+        starts = []
+        base = base or CAL.with_arg(BASE, "--spec", "8") + ["--dflash", "draft.gguf"]
+        class DraftEngine(FakeEngine):
+            def __init__(self, args):
+                super().__init__(args, lambda *a: 50, info_workers=0, starts=starts)
+                self.info.update(dflash_block=int(CAL.arg_value(args, "--dflash-block") or maximum), dflash_max=maximum)
+            def generate(self, ids, max_new, sampling, cancel):
+                tune = sampling.get("strata_tune") or {}
+                k = tune.get("dflash_block", self.info["dflash_block"])
+                assert 1 <= k <= maximum
+                rate = speed(k, tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]))
+                yield from [1] * max_new
+                self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000}
+        return CAL.measure(base, [[1]] * 3, DraftEngine, say=lambda *_: None), starts
+
+    def test_forward_width_persisted_through_restarts(self):
+        res, starts = self.measure(lambda k, f, p: 60 if k == 4 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "4")
+        self.assertTrue(all(CAL.arg_value(a, "--dflash-block") == "4" for a in starts[1:]))
+        self.assertEqual(len(res["report"]["dflash_block_sweeps"]), 2)
+
+    def test_noise_keeps_default_and_resets_old_width(self):
+        res, starts = self.measure(lambda k, f, p: 51 if k == 4 else 50,
+                                  base=BASE + ["--dflash", "draft.gguf", "--dflash-block", "4"])
+        self.assertEqual(res["settings"], {})
+        self.assertIsNone(CAL.arg_value(starts[0], "--dflash-block"))
+
+    def test_loaded_capacity_limits_candidates(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 2 else 50, maximum=3)
+        self.assertEqual(res["settings"]["--dflash-block"], "2")
+        self.assertEqual(set(res["report"]["dflash_block_sweeps"][0]["rates"]), {"1", "2", "3"})
+
+    def test_retunes_width_after_pcie_change(self):
+        # A GPU-favouring share changes which forward width wins.
+        def speed(k, f, p):
+            if f == 0.2:
+                return 80 if k == 3 else 65
+            return 60 if k == 4 else 50
+        res, _ = self.measure(speed)
+        self.assertEqual(res["settings"]["--dflash-block"], "3")
+        self.assertEqual(res["settings"]["--pcie-frac"], "0.20")
+
+    def test_mtp_never_receives_dflash_setting(self):
+        args = CAL.apply(BASE, {"--dflash-block": "4"})
+        self.assertNotIn("--dflash-block", args)
+
+
 class SetupIntegration(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -209,6 +258,16 @@ class SetupIntegration(unittest.TestCase):
         # another context size is another key (its KV cache changes the expert cache)
         other = dict(written, args=CAL.with_arg(written["args"], "--max-context", "131072"))
         self.assertIsNone(self.S.saved_calibration(other))
+
+    def test_calibration_keys_separate_drafters_and_quantization(self):
+        cfg = {"args": BASE + ["--mtp", "mtp"], "model_name": "m", "drafter": "mtp"}
+        df = dict(cfg, args=BASE + ["--dflash", "q4.gguf", "--dflash-vocab", "vocab.bin"], drafter="dflash")
+        keys = [self.S.hardware_key(cfg), self.S.hardware_key(df),
+                self.S.hardware_key(dict(df, args=CAL.with_arg(df["args"], "--dflash", "q8.gguf"))),
+                self.S.hardware_key(dict(cfg, args=BASE, drafter="none"))]
+        self.assertEqual(len(set(keys)), 4)
+        # The calibrated width itself is not part of its cache key.
+        self.assertEqual(keys[1], self.S.hardware_key(dict(df, args=df["args"] + ["--dflash-block", "4"])))
 
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"

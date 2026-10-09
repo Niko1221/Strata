@@ -29,6 +29,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -71,6 +72,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -113,6 +115,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -155,6 +158,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -195,6 +199,7 @@
     "71"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -237,6 +242,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -283,6 +289,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -329,6 +336,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -375,6 +383,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -419,6 +428,7 @@
     "8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -461,6 +471,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -507,6 +518,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -552,6 +564,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -597,6 +610,7 @@
     "--remote-expert-opt"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -641,6 +655,7 @@
     "23"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -681,6 +696,7 @@
     "int8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -723,6 +739,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -765,6 +782,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -807,6 +825,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -847,6 +866,7 @@
     "40"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -889,6 +909,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -931,6 +952,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -973,6 +995,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1015,6 +1038,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1055,6 +1079,7 @@
     "71"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,

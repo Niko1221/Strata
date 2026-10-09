@@ -551,11 +551,12 @@ struct Options {
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
     /// DFlash (docs/DFLASH.md): the standalone block drafter's GGUF; --mtp and --dflash are exclusive.
     std::string dflash;
+    std::string dflash_vocab;      ///< selected rows of the shared target head, int32 token ids
     std::string dflash_head;       ///< optional draft-only GGUF output.weight
     int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
     int64_t dflash_window = 32768; ///< the drafter's attention window in cells (the reference attends to every cell)
     int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
-    bool suffix_draft_set = false; ///< --suffix-draft was passed explicitly (the dflash refusal is for requests, not defaults)
+    bool suffix_draft_set = false; ///< whether --suffix-draft was passed explicitly
     bool lookup_chain_set = false;
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
@@ -572,6 +573,7 @@ struct Options {
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
+    bool spec_min_p_set = false;
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
     std::vector<int64_t> eos_ids = {248044, 248046};
@@ -781,8 +783,9 @@ void usage() {
                  "  --dflash GGUF        experimental: DFlash GGUF (BF16/Q8_0/Q5_0/Q4_0; CLI and server)\n"
                  "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
                  "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
+                 "  --dflash-vocab FILE  draft over these int32 token ids in the shared head (full vocabulary if omitted)\n"
                  "  --dflash-head GGUF   experimental draft-only output.weight; target verification keeps its own head\n"
-                 "  --dflash-block K     fixed candidates per pass; 0 = automatic in --serve, maximum in CLI\n"
+                 "  --dflash-block K     fixed candidates per pass; 0 = trained pass with confidence gating\n"
                  "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
                  "                       attends to every cell)\n"
                  "  --dflash-mask-token ID  the mask token when the artifact's metadata lacks it (published artifact: 248077)\n"
@@ -935,6 +938,7 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -973,6 +977,7 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
@@ -1793,6 +1798,7 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--dflash") o.dflash = next("--dflash");
+        else if (a == "--dflash-vocab") o.dflash_vocab = next("--dflash-vocab");
         else if (a == "--dflash-head") o.dflash_head = next("--dflash-head");
         else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
         else if (a == "--dflash-window") o.dflash_window = std::max(0LL, std::atoll(next("--dflash-window")));
@@ -1801,7 +1807,7 @@ int main(int argc, char** argv) {
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
-        else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
+        else if (a == "--spec-min-p") { o.spec_min_p = std::atof(next("--spec-min-p")); o.spec_min_p_set = true; }
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
@@ -3980,8 +3986,8 @@ int main(int argc, char** argv) {
     // DFlash (docs/DFLASH.md): the standalone block drafter.  Mutually exclusive with --mtp; the
     // artifact is parsed and validated HERE, before the expert cache is sized, exactly like the
     // MTP drafter above, so the cache auto-sizing reserves the drafter's footprint.
-    if (!o.dflash_head.empty() && o.dflash.empty()) {
-        std::fprintf(stderr, "strata generate: --dflash-head requires --dflash\n");
+    if ((!o.dflash_head.empty() || !o.dflash_vocab.empty()) && o.dflash.empty()) {
+        std::fprintf(stderr, "strata generate: --dflash-head / --dflash-vocab require --dflash\n");
         return 2;
     }
     strata::core::DFlashDrafter dflash;
@@ -4003,12 +4009,9 @@ int main(int argc, char** argv) {
                                  "window is 1 anchor + K candidates\n", o.spec, strata::kernels::kVerifyMaxT);
             return 2;
         }
-        if ((o.suffix_draft_set && o.suffix_draft > 0) || (o.lookup_chain_set && o.lookup_chain > 0)) {
-            std::fprintf(stderr, "strata generate: --dflash does not compose with --suffix-draft / "
-                                 "--lookup-chain (one model drafter at a time for now)\n");
-            return 2;
+        if (o.lookup_chain_set && o.lookup_chain > 0) {
+            std::fprintf(stderr, "dflash: --lookup-chain is not supported\n"); return 2;
         }
-        o.suffix_draft = 0;   // one model drafter at a time: prompt lookup stays off, said out loud below
         o.lookup_chain = 0;
         if (!dflash.load(o.dflash, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -4044,6 +4047,10 @@ int main(int argc, char** argv) {
                          o.spec, o.spec - 1, trained, trained);
             return 2;
         }
+        // The default DFlash pass keeps the trained noise width and verifies
+        // only confident consecutive predictions. Explicit fixed blocks retain
+        // their existing behavior unless the user requests a probability gate.
+        if (o.dflash_block == 0 && !o.spec_min_p_set) o.spec_min_p = 0.5;
         // ONE authoritative effective draft length: the startup validation, the propose call, the
         // verifier window and the statistics below all read this variable
         dflash_k = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
@@ -4068,7 +4075,7 @@ int main(int argc, char** argv) {
                      (long long) dg.n_head_kv, (long long) dg.head_dim, (long long) dg.intermediate, taps.c_str(),
                      (long long) dg.block_size, dflash_k, (long long) effective_mask,
                      dg.rope_theta, (double) dflash.artifact().weight_bytes() / 1048576.0);
-        std::fprintf(stderr, "dflash: prompt-lookup drafting is off (one model drafter at a time)\n");
+        std::fprintf(stderr, "dflash: prompt-lookup drafting follows --suffix-draft\n");
         // The weights and the drafter's K/V pools land BEFORE the expert cache is sized, like the
         // MTP drafter's; the head/embedding bind follows the native head's load below.
         {
@@ -4100,7 +4107,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str());
             return 1;
         }
-        if (!o.dflash.empty() && !dflash.bind(wt, &native_head, err)) {
+        if (!o.dflash.empty() && !dflash.bind(wt, &native_head, err, o.dflash_vocab)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -8091,7 +8098,7 @@ int main(int argc, char** argv) {
             std::printf("INFO context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
-                        "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
+                        "spec_min_p=%.2f dflash_block=%d dflash_max=%d conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -8102,7 +8109,8 @@ int main(int argc, char** argv) {
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
-                        o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
+                        o.spec_min_p, dflash_k, has_dflash ? std::min(o.spec - 1, dflash.max_block()) : 0,
+                        (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
@@ -8954,6 +8962,8 @@ int main(int argc, char** argv) {
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
+            int req_dflash_k = dflash_k;
+            bool req_dflash_block_set = false, bad_dflash_block = false;
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -8980,8 +8990,22 @@ int main(int argc, char** argv) {
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "dflash_block") {
+                        char* tail = nullptr;
+                        errno = 0;
+                        const long value = std::strtol(tok.c_str() + eq + 1, &tail, 10);
+                        bad_dflash_block = bad_dflash_block || errno == ERANGE || tail == tok.c_str() + eq + 1 ||
+                            *tail != '\0' || !has_dflash || value < 1 ||
+                            value > std::min(o.spec - 1, dflash.max_block());
+                        if (!bad_dflash_block) req_dflash_k = (int) value;
+                        req_dflash_block_set = true;
+                    }
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
+            }
+            if (bad_dflash_block) {
+                std::printf("ERR bad request: dflash_block\n");
+                continue;
             }
             std::string emb_path;
             if (geni && endp != nullptr) {
@@ -9983,7 +10007,7 @@ int main(int argc, char** argv) {
             }
             bool first_window = true;
             bool dflash_ready = false;
-            const bool df_auto = req_dflash && o.dflash_block == 0;
+            const bool df_auto = req_dflash && o.dflash_block == 0 && !req_dflash_block_set && req_spec_min_p <= 0.0;
             df_policy.reset();
             int df_pending_k = 0;
             double df_pending_ms = 0;
@@ -10653,7 +10677,7 @@ int main(int argc, char** argv) {
                 if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
-                    if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                    if (k > 0 && (!(use_mtp || (req_dflash && dflash_ready)) || sbuf[0] == drafts[0])) {
                         const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
@@ -10767,19 +10791,28 @@ int main(int argc, char** argv) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err);
                     const auto ctx_done = Clock::now();
-                    if (df_auto && rounds > 1) {
+                    if (df_auto && rounds > 1 && !from_sfx) {
                         const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
                         df_policy.observe(T - 1, a + 1, ms + df_pending_ms);
                     }
                     ++df_windows[T - 1];
-                    df_pending_k = df_auto ? df_policy.choose() : dflash_k;
+                    df_pending_k = df_auto ? df_policy.choose() : req_dflash_k;
                     // Finish near the context limit with target-only windows rather than
                     // proposing a block which the next verification window cannot fit.
                     dflash_ready = drafted && df_pending_k > 0 &&
                                    p + a + 1 + df_pending_k + 1 <= o.max_context;
+                    const bool proposed = dflash_ready;
                     if (dflash_ready)
-                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err);
-                    df_pending_ms = dflash_ready ?
+                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err,
+                                                 req_spec_min_p > 0 ? dprob.data() : nullptr);
+                    if (dflash_ready && drafted && req_spec_min_p > 0) {
+                        const float min_p = (float) req_spec_min_p;
+                        int prefix = 0;
+                        while (prefix < df_pending_k && dprob[(size_t) prefix] >= min_p) ++prefix;
+                        df_pending_k = prefix;
+                        dflash_ready = prefix > 0;
+                    }
+                    df_pending_ms = proposed ?
                         std::chrono::duration<double, std::milli>(Clock::now() - ctx_done).count() : 0;
                 }
                 {
@@ -11829,9 +11862,10 @@ int main(int argc, char** argv) {
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
             int T = use_dflash ? dflash_k + 1 : S_mtp;
-            if (use_mtp && o.spec_min_p > 0.0) {
+            if ((use_mtp || use_dflash) && o.spec_min_p > 0.0) {
+                const int max_t = use_dflash ? dflash_k + 1 : S_mtp;
                 T = 1;
-                while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
+                while (T < max_t && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
             }
             if (first_window) T = 1;
             bool from_sfx = false;
@@ -11839,7 +11873,7 @@ int main(int argc, char** argv) {
             if (o.suffix_draft > 0 && !first_window) {
                 const int k = sfx.propose(o.spec - 1, sbuf.data());
                 sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                if (k > 0 && (!(use_mtp || use_dflash) || (use_dflash && T == 1) || sbuf[0] == drafts[0])) {
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
@@ -12031,7 +12065,8 @@ int main(int argc, char** argv) {
                     const Clock::time_point td = Clock::now();
                     const bool ok = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(),
                                                            p - (a + 1), a + 1, err) &&
-                                    (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err));
+                                    (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
+                                                                o.spec_min_p > 0 ? dprob.data() : nullptr));
                     if (ok && std::getenv("STRATA_DF_DBG") != nullptr) {
                         std::fprintf(stderr, "df dbg: anchor=%d at %lld proposals:", x, (long long) p);
                         for (int i = 0; i < dflash_k; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);

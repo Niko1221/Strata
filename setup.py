@@ -3866,7 +3866,8 @@ def hip_config_cards(sel) -> list[dict]:
 def hardware_key(cfg: dict) -> str:
     """What a calibration is valid for: this GPU, CPU and RAM, and the model with its context and images setting
     (the context's KV cache and the image encoder take VRAM from the expert cache).  #566: a HIP config's cards are
-    AMD's (hip_config_cards) - nvidia-smi's list named them "?" (or another card with that number) before."""
+    AMD's (hip_config_cards) - nvidia-smi's list named them "?" (or another card with that number) before.
+    DFlash also keys its artifact, head vocabulary and draft capacity; off has its own key."""
     sel = cfg.get("gpu")
     if cfg.get("backend") == "hip":
         gl = hip_config_cards(sel)
@@ -3875,8 +3876,18 @@ def hardware_key(cfg: dict) -> str:
     g = {"name": " + ".join(x.get("name", "?") for x in gl), "vram_gb": sum(x.get("vram_gb", 0) for x in gl)}
     a = cfg.get("args", [])
     ctx = a[a.index("--max-context") + 1] if "--max-context" in a else "?"
-    return "|".join([g.get("name", "?"), f"{g.get('vram_gb', 0):.0f}GB", cpu_info()[0], f"{ram_gb():.0f}GB",
-                     cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
+    key = "|".join([g.get("name", "?"), f"{g.get('vram_gb', 0):.0f}GB", cpu_info()[0], f"{ram_gb():.0f}GB",
+                    cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
+    # Keep existing MTP calibrations valid; DFlash/off must never inherit their settings.
+    if "--dflash" in a:
+        def value(flag):
+            return str(a[a.index(flag) + 1]) if flag in a and a.index(flag) + 1 < len(a) else ""
+        # The artifact fingerprint/quantization and vocabulary change draft cost and confidence.
+        return key + "|dflash|" + "|".join(value(f) for f in
+                                         ("--dflash", "--dflash-head", "--dflash-vocab", "--spec", "--dflash-window"))
+    if cfg.get("drafter") in ("none", "off"):
+        return key + "|off"
+    return key
 
 
 def calibrate_config(cfg_path: Path) -> bool:
@@ -3887,7 +3898,7 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache). It takes about 10 minutes; the PC is busy meanwhile.")
+    say("  draft probability/forward length, the CPU threads, the expert cache). It takes about 10 minutes; the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -3950,6 +3961,7 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
         del a[i:i + 2]
         changed = True
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
+    changed = sync_dflash_vocab(cfg) or changed
     if changed:
         write_config(cfg_path, cfg)
     return cfg
@@ -4029,6 +4041,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
+        sync_dflash_vocab(cfg)
         write_config(cfg_path, cfg)
         ok("saved for this model: " + ", ".join(
             "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
@@ -4177,14 +4190,29 @@ def choose_drafter(method, path, quant, yes):
     return method, quant or "original"
 
 
-def drafter_args(dflash, rt):
+def drafter_args(dflash, rt, draft_vocab=None):
     if dflash:
-        return ["--spec", "8", "--dflash", str(dflash), "--dflash-window", "0"]
+        return ["--spec", "8", "--spec-min-p", "0.5", "--dflash", str(dflash), "--dflash-window", "0",
+                "--dflash-vocab", str(ROOT / "data" / DRAFT_VOCABS[draft_vocab or "cjk"])]
     if rt:
         return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
     # Leave the engine's prompt-lookup defaults in place without loading a model
     # drafter. --spec reserves verifier capacity for any suffix proposals.
     return ["--spec", "2"]
+
+
+def sync_dflash_vocab(cfg):
+    """Apply a saved --draft-vocab choice to an indexed DFlash head on start/update."""
+    args = cfg.get("args", [])
+    choice = cfg.get("draft_vocab")
+    if choice not in DRAFT_VOCABS or "--dflash-vocab" not in args[:-1]:
+        return False
+    at = args.index("--dflash-vocab") + 1
+    path = str(ROOT / "data" / DRAFT_VOCABS[choice])
+    if args[at] == path:
+        return False
+    args[at] = path
+    return True
 
 
 def prepare_dflash(data, roots, source, quant, env):
@@ -4343,7 +4371,7 @@ def draft_vocab_note(vram_gb: float, chosen: str | None) -> list[str]:
 SMALL_CARD_GB = 7.5            # #496: a card under 8 GB gets a tip (an 8 GB card lists 7.99)
 
 
-def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
+def small_card_note(ctx: int, draft_vocab: str | None, mtp: bool = True) -> list[str]:
     """#496: what frees VRAM on a card under 8 GB when the start stops with "no VRAM is left for the expert cache"
     (the engine already lowers its own reserve on such a card) - a recommendation, setup changes none of it.  (The
     draft layer stays: the server needs it.)"""
@@ -4351,7 +4379,7 @@ def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
     tips = []
     if ctx > 8192:
         tips.append("an 8K context (a smaller KV cache)")
-    if draft_vocab != "en":
+    if mtp and draft_vocab != "en":
         tips.append(f"--draft-vocab en (a draft head of ~{DRAFT_VOCAB_MIB['en']} MiB instead of "
                     f"~{DRAFT_VOCAB_MIB[draft_vocab or 'cjk']})")
     lines = ["If the start stops with \"no VRAM is left for the expert cache\" (the engine's log says how much is "
@@ -4733,7 +4761,7 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
-                    help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
+                    help="draft head tokens (the memory/speed figures below apply to MTP): cjk = with Chinese, Japanese and Korean (default), en = English "
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
@@ -5463,14 +5491,13 @@ def main() -> int:
     rt = None
     if dflash is not None:
         # the DFlash block drafter replaces the MTP layer (the engine takes one model drafter at a time): the
-        # MTP tensors' ~5 GB download is skipped and the draft vocabulary does not apply
+        # MTP tensors' ~5 GB download is skipped; only shared-head row indices are needed
         try:
             note = dflash_artifact_note(dflash)
         except ValueError as e:
             fail(f"--dflash {dflash}: {e}")
         ok(f"DFlash block drafter: {note}")
-        if a.draft_vocab:
-            warn("--draft-vocab applies to the MTP draft layer's token subset; ignored with --dflash")
+        draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
     elif a.drafter == "mtp":
         mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
         rt = mtp / "rt"
@@ -5512,7 +5539,7 @@ def main() -> int:
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto",
-            *drafter_args(dflash, rt),
+            *drafter_args(dflash, rt, draft_vocab),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -5594,7 +5621,7 @@ def main() -> int:
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
-        for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
+        for line in small_card_note(ctx, draft_vocab, mtp=rt is not None):   # a recommendation: nothing changes
             say("  " + line)
     elif hip and a.vram_reserve_mib is None and linux_desktop():
         for line in desktop_reserve_note():              # #560 #516: a recommendation: nothing changes

@@ -146,17 +146,42 @@ full draft capacity up front. `STRATA_DFLASH_KV_GROW=0` retains that allocation
 for comparisons. A positive `--dflash-window N` is a capacity limit, not a
 rolling window: requests beyond it are refused.
 
-The server measures real forwards at different block lengths and chooses the
-length with the best observed committed tokens per millisecond. It can pause
-proposals while maintaining context, and periodically probes to resume drafting.
-It warms up lengths 0–3 first and probes wider forwards every 16 measured rounds;
-new requests reset cost/acceptance estimates but keep the verifier's graph warm state.
-`--dflash-block K` selects a fixed length for reproducible comparisons; the CLI
-also keeps its fixed-length behavior. Sampled requests still use target-only
-decoding and do not compute or grow the draft context during prefill. A greedy
-request exceeding an explicit draft capacity is rejected before changing state;
-sampled requests use the target's capacity. The server and CLI capture the same
-layer boundaries, and the prompt feature stride follows the current buffer layout after each relayout.
+The default pass uses the artifact's trained block (seven rows for this checkpoint)
+and verifies only the consecutive predictions whose draft probability is at least
+`--spec-min-p 0.5`. Cutting the verified prefix does not change the drafter's
+non-causal input width. `--dflash-block K` still selects an actual fixed forward
+width for reproducible comparisons; its probability gate is off unless explicitly
+requested. With `--spec-min-p 0`, the server retains the measured block-length
+policy, including periodic probes and pauses.
+
+Setup's existing calibration (`./setup.sh --calibrate`) also measures actual
+DFlash forward lengths, within the loaded drafter's and `--spec` limits. It
+sweeps the block before and after the PCIe share and probability floor, then
+compares the candidate and defaults three times each in alternating order.
+A gain must exceed 3% to save `--dflash-block` in the run configuration. CPU
+worker and expert-tier measurements then use that chosen block. Saved results
+are specific to the PC, target/context, drafter artifact, vocabulary and draft
+capacity; DFlash and off do not reuse MTP's calibration.
+
+Setup projects only the chosen draft vocabulary's rows from the shared target
+head (`--dflash-vocab FILE`); no second head matrix is allocated. Its default
+subset is the same CJK-inclusive subset used by MTP. `--draft-vocab en`, `fr`,
+`cyrillic` or `cjk` selects the corresponding indices. Omitting `--dflash-vocab`
+uses the full head. This affects draft proposals and their probabilities; the
+target always verifies against its own full head.
+
+Drafter forwards reuse GPU graphs while their attention chunk count and scratch
+layout are unchanged. Growing or trimming the scratch, changing probability
+output, or rebinding the head invalidates them. `STRATA_DFLASH_GRAPH=0` keeps
+eager execution for comparisons. Stage dumps and GPU-event profiling also use
+eager execution. Prompt-lookup drafts follow `--suffix-draft`; lookup-chain
+composition remains unsupported.
+
+Sampled requests use target-only decoding and do not compute or grow the draft
+context during prefill. A greedy request exceeding an explicit draft capacity
+is rejected before changing state; sampled requests use the target's capacity.
+The server and CLI capture the same layer boundaries, and the prompt feature
+stride follows the current buffer layout after each relayout.
 
 This branch's CUDA and Linux HIP engines are built from source for DFlash;
 released engines may lack its server and quantization support. Windows HIP needs
