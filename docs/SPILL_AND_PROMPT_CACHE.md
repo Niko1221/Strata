@@ -148,6 +148,18 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
 - The scan never deletes. A file of another identity, a broken or missing sidecar, an orphan session file and a
   leftover temporary are ignored and counted (`foreign`, `stale`, `orphan`), never removed. Only the GC removes,
   by budget and (if enabled) by age, oldest first.
+- **Known limitation: the divergence discard can name the wrong copy** when the chat template puts few-shot turns
+  **inside the system prompt**. `discard_diverged_impl`
+  ([`src/core/conversation_spill.cpp`](../src/core/conversation_spill.cpp)) decides which stored copy a rewritten
+  tail belongs to from the end of the stored conversation's header - `conversation_header_length`, the start of its
+  first assistant turn - and keeps a copy whose shared prefix reaches past that marker
+  (`header == 0 || common < header` skips it). Few-shot turns inside the system prompt move that marker into the
+  root the conversations share, so a **sibling** conversation (same system prompt, a different first exchange) also
+  satisfies the guard, and its copy is the one removed - **discarded from disk, not archived**, in this version. The
+  fix is a property guard: only the copy sharing the **longest prefix** with the prompt is a rewrite candidate, a tie
+  between copies that disagree discards nothing, and a trace line names the `conversation_key` of the copy removed.
+  It is written and tested on a sibling branch and arrives as the next stacked PR against this branch; this delta
+  ships without it.
 - Nothing is written with the flags absent: no folder is created and no byte is written. The mirror writes at the
   **end of a request** (the park), never mid-generation, and collapses a burst of parks of one conversation to its
   newest state; the disk cost is bounded by `--conversation-cache-disk-mib` either way.
@@ -231,3 +243,14 @@ Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the de
   every request is a miss. The cache does not fix that; it makes it visible (a `hash_changes` counter).
 - **There is no end-to-end measurement yet** with the model loaded. The hit rate, the tokens saved and the
   per-turn latency of these two functions have not been read from a real run.
+- **The known limitation of the divergence discard is declared here, not tested on this base.** The defect is in this
+  layer's own code - the guard quoted under [Use and limits](#use-and-limits) is what this branch ships - so it is
+  present on `v0.1.41` as it was on `v0.1.40.1`. The test that reproduces it (red on the base, green under the fix)
+  was written against the sibling base `v0.1.40.1`, **not** against `v0.1.41`, and has not been re-run here. The fix
+  is deliberately not backported into this delta: it arrives as a separate stacked PR against this branch.
+
+## Credits
+
+This layer is authored and directed by Shahrokh Zargarpour. It was written and verified with the Grok TUI Build
+coding agent - first on DeepSeek Flash, currently on Qwen3.8 flash-next UD iq4_xs, the local inference runtime the
+layer was developed and verified against.
