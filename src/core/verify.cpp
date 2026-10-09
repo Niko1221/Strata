@@ -65,12 +65,14 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
 inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
-// STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
+// STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi): residency-biased routing.
+// Zero-based tail ranks default to 6-9 for 512/10, 5-7 for 256/8. Off by default; swaps change the output.
 struct RouteResidentCfg;
 RouteResidentCfg& route_resident_cfg();
 struct RouteResidentCfg {
     float margin = 0.0f;
     int lo = 6, hi = 9;
+    bool ranks_override = false;
     unsigned long long* d_stats = nullptr;
     unsigned long long* stats() {
         if (d_stats == nullptr && margin > 0.0f) {
@@ -94,7 +96,10 @@ RouteResidentCfg& route_resident_cfg() {
     static RouteResidentCfg c = [] {
         RouteResidentCfg r;
         if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT")) r.margin = (float) std::atof(v);
-        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT_RANKS")) std::sscanf(v, "%d-%d", &r.lo, &r.hi);
+        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT_RANKS")) {
+            r.ranks_override = true;
+            if (std::sscanf(v, "%d-%d", &r.lo, &r.hi) != 2) r.lo = r.hi = -1;   // rejected before launching
+        }
         return r;
     }();
     return c;
@@ -428,7 +433,13 @@ int64_t Verifier::pcie_staging_capacity(int max_t, int64_t k, bool all_misses) {
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
     g_diag_verifier.store(this);
-    (void) route_resident_cfg().stats();   // STRATA_ROUTE_RESIDENT: the counters are allocated outside graph capture
+    RouteResidentCfg& rr = route_resident_cfg();
+    if (!rr.ranks_override) {
+        const bool rr256 = g.n_expert == 256 && ss.k == 8;
+        rr.lo = rr256 ? 5 : 6;
+        rr.hi = rr256 ? 7 : 9;
+    }
+    (void) rr.stats();   // STRATA_ROUTE_RESIDENT: the counters are allocated outside graph capture
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
         Verifier* none = nullptr;
@@ -1366,11 +1377,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
-        if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
+        if (route_resident_cfg().margin > 0.0f && ((NE == 512 && K == 10) || (NE == 256 && K == 8)) &&
+            hits_.d_res != nullptr) {
             // STRATA_ROUTE_RESIDENT: after the router, before the plan/doorbell read ids_/w_ (opt-in, changes the output)
             try {
                 native_route_resident(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, hits_.d_res + l * g.n_expert, n,
-                                      route_resident_cfg().margin, route_resident_cfg().lo, route_resident_cfg().hi,
+                                      (int) NE, (int) K, route_resident_cfg().margin,
+                                      route_resident_cfg().lo, route_resident_cfg().hi,
                                       route_resident_cfg().stats() + (n <= 8 ? 4 : 0), cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
