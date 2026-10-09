@@ -93,8 +93,9 @@ catch (sycl::exception const &exc) {
 /// Geometry validation.  A silently wrong `head_dim % 4` would corrupt the gather's uint2 copy and a silently
 /// wrong `n_head % n_head_kv` would produce a plausible attention with the wrong key, so both are refused.
 void validate(const QsaShapes& s, const char* who) {
-    if (s.n_head <= 0 || s.n_head_kv <= 0 || s.head_dim <= 0 || s.idx_dim <= 0 || s.idx_n_head <= 0 ||
-        s.idx_block < 2 || s.page_size < 1) {
+    // dense attention (qwen35moe) has no indexer: its indexer sizes are 0 and nothing reads them
+    const bool idx_ok = s.idx_top_k == kDenseTopK || (s.idx_dim > 0 && s.idx_n_head > 0);
+    if (s.n_head <= 0 || s.n_head_kv <= 0 || s.head_dim <= 0 || !idx_ok || s.idx_block < 2 || s.page_size < 1) {
         std::fprintf(stderr, "qsa: %s: geometry is not set up\n", who);
         std::exit(1);
     }
@@ -108,7 +109,7 @@ void validate(const QsaShapes& s, const char* who) {
                      (long long) s.head_dim);
         std::exit(1);
     }
-    if (s.n_rot <= 0 || s.n_rot % 2 != 0 || s.n_rot > s.head_dim || s.n_rot > s.idx_dim) {
+    if (s.n_rot <= 0 || s.n_rot % 2 != 0 || s.n_rot > s.head_dim || (s.idx_top_k != kDenseTopK && s.n_rot > s.idx_dim)) {
         std::fprintf(stderr, "qsa: %s: n_rot %lld must be even and <= head_dim %lld and idx_dim %lld\n", who,
                      (long long) s.n_rot, (long long) s.head_dim, (long long) s.idx_dim);
         std::exit(1);
