@@ -1,0 +1,765 @@
+{
+  "initial_metrics": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 0, "requests_reused": 0, "reused_tokens": 0, "prompt_tokens": 0, "last_reused": null, "last_prompt": null}, "requests_kept": 0, "totals": {"since": 1791467806.917516, "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0, "prompt_ms": 0.0, "decode_ms": 0.0, "drafts_offered": 0, "drafts_accepted": 0}, "hardware": {"gpu_util": 6, "gpu_mem_used": 33309364224, "gpu_mem_total": 34208743424, "gpu_temp": 51.0, "gpu_power": 25.0, "gpu_power_limit": 300.0, "cpu": 0.0, "ram_used": 72069963776, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 0.0, "tok_s_mean": 0, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6], "gpu_mem_used": [33309364224], "gpu_temp": [51.0], "gpu_power": [25.0], "gpu_pcie_rx_mb": [null], "cpu": [0.0], "ram_used": [72069963776], "disk_read_mb": [null], "tok_s": [0.0], "prefill_tok_s_mean": [0.0]}, "time": 1791467807.2238433},
+  "fixtures_sha256": "162559a0fc41270fa094d8a5cbcb376bb320833d0efa4bd77d164a99ce8fc174",
+  "url": "http://127.0.0.1:8097",
+  "records": [
+    {
+      "name": "json-extraction",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-70ca6db9535c425f98acef81",
+        "object": "chat.completion",
+        "created": 1791467807,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"name\": \"Mira\", \"count\": 17}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 42,
+          "completion_tokens": 15,
+          "total_tokens": 57,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 42,
+          "prompt_ms": 417.5,
+          "prompt_per_token_ms": 9.94,
+          "prompt_per_second": 100.6,
+          "predicted_n": 15,
+          "predicted_ms": 287.5,
+          "predicted_per_token_ms": 19.167,
+          "predicted_per_second": 52.2,
+          "draft_n": 12,
+          "draft_n_accepted": 12
+        }
+      },
+      "wall_s": 0.7102950939442962,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 1, "requests_reused": 0, "reused_tokens": 0, "prompt_tokens": 42, "last_reused": 0, "last_prompt": 42}, "requests_kept": 1, "totals": {"since": 1791467806.917516, "requests": 1, "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "drafts_offered": 12, "drafts_accepted": 12}, "hardware": {"gpu_util": 58, "gpu_mem_used": 33321058304, "gpu_mem_total": 34208743424, "gpu_temp": 44.0, "gpu_power": 131.0, "gpu_power_limit": 300.0, "cpu": 7.9534811114580055, "ram_used": 72256532480, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 52.0, "tok_s_mean": 53.42025946950028, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58], "gpu_mem_used": [33309364224, 33321058304], "gpu_temp": [51.0, 44.0], "gpu_power": [25.0, 131.0], "gpu_pcie_rx_mb": [null, null], "cpu": [0.0, 7.95], "ram_used": [72069963776, 72256532480], "disk_read_mb": [null, null], "tok_s": [0.0, 52.0], "prefill_tok_s_mean": [0.0, 0.0]}, "time": 1791467807.9381502}
+    },
+    {
+      "name": "arithmetic",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-73fd94258de44119aae7ff75",
+        "object": "chat.completion",
+        "created": 1791467807,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"result\": 675}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 35,
+          "completion_tokens": 9,
+          "total_tokens": 44,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 35,
+          "prompt_ms": 384.8,
+          "prompt_per_token_ms": 10.994,
+          "prompt_per_second": 91.0,
+          "predicted_n": 9,
+          "predicted_ms": 190.6,
+          "predicted_per_token_ms": 21.178,
+          "predicted_per_second": 47.2,
+          "draft_n": 9,
+          "draft_n_accepted": 7
+        }
+      },
+      "wall_s": 0.5793440300039947,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 2, "requests_reused": 0, "reused_tokens": 0, "prompt_tokens": 77, "last_reused": 0, "last_prompt": 35}, "requests_kept": 2, "totals": {"since": 1791467806.917516, "requests": 2, "prompt_tokens": 77, "reused": 0, "output_tokens": 24, "prompt_ms": 802.3, "decode_ms": 478.1, "drafts_offered": 21, "drafts_accepted": 19}, "hardware": {"gpu_util": 58, "gpu_mem_used": 33321058304, "gpu_mem_total": 34208743424, "gpu_temp": 44.0, "gpu_power": 131.0, "gpu_power_limit": 300.0, "cpu": 7.9534811114580055, "ram_used": 72256532480, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 52.0, "tok_s_mean": 53.42025946950028, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58], "gpu_mem_used": [33309364224, 33321058304], "gpu_temp": [51.0, 44.0], "gpu_power": [25.0, 131.0], "gpu_pcie_rx_mb": [null, null], "cpu": [0.0, 7.95], "ram_used": [72069963776, 72256532480], "disk_read_mb": [null, null], "tok_s": [0.0, 52.0], "prefill_tok_s_mean": [0.0, 0.0]}, "time": 1791467808.5196025}
+    },
+    {
+      "name": "python-code",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-9022351915064f319a860160",
+        "object": "chat.completion",
+        "created": 1791467808,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "```python\ndef dedupe_keep_order(values):\n    seen = set()\n    result = []\n    for v in values:\n        if v not in seen:\n            seen.add(v)\n            result.append(v)\n    return result\n```"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 61,
+          "completion_tokens": 55,
+          "total_tokens": 116,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 61,
+          "prompt_ms": 476.9,
+          "prompt_per_token_ms": 7.818,
+          "prompt_per_second": 127.9,
+          "predicted_n": 55,
+          "predicted_ms": 804.9,
+          "predicted_per_token_ms": 14.635,
+          "predicted_per_second": 68.3,
+          "draft_n": 42,
+          "draft_n_accepted": 42
+        }
+      },
+      "wall_s": 1.2879169629886746,
+      "code_check_stdout": "{\"passed\": true, \"cases\": 5}\n",
+      "code_check_stderr": "",
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 3, "requests_reused": 0, "reused_tokens": 0, "prompt_tokens": 138, "last_reused": 0, "last_prompt": 61}, "requests_kept": 3, "totals": {"since": 1791467806.917516, "requests": 3, "prompt_tokens": 138, "reused": 0, "output_tokens": 79, "prompt_ms": 1279.1999999999998, "decode_ms": 1283.0, "drafts_offered": 63, "drafts_accepted": 61}, "hardware": {"gpu_util": 87, "gpu_mem_used": 33321365504, "gpu_mem_total": 34208743424, "gpu_temp": 45.0, "gpu_power": 196.0, "gpu_power_limit": 300.0, "cpu": 12.611275964391687, "ram_used": 72315850752, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 0.0, "tok_s_mean": 0, "prefill_tok_s_mean": 147.9}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58, 87], "gpu_mem_used": [33309364224, 33321058304, 33321365504], "gpu_temp": [51.0, 44.0, 45.0], "gpu_power": [25.0, 131.0, 196.0], "gpu_pcie_rx_mb": [null, null, null], "cpu": [0.0, 7.95, 12.61], "ram_used": [72069963776, 72256532480, 72315850752], "disk_read_mb": [null, null, null], "tok_s": [0.0, 52.0, 0.0], "prefill_tok_s_mean": [0.0, 0.0, 147.9]}, "time": 1791467809.8310502}
+    },
+    {
+      "name": "tool-call",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-3a6ea3a6f37d45758f26b672",
+        "object": "chat.completion",
+        "created": 1791467809,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_ed12215a18d946bd96def169",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Hangzhou\",\"units\":\"celsius\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 300,
+          "completion_tokens": 40,
+          "total_tokens": 340,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 300,
+          "prompt_ms": 1063.0,
+          "prompt_per_token_ms": 3.543,
+          "prompt_per_second": 282.2,
+          "predicted_n": 40,
+          "predicted_ms": 582.9,
+          "predicted_per_token_ms": 14.572,
+          "predicted_per_second": 68.6,
+          "draft_n": 33,
+          "draft_n_accepted": 28
+        }
+      },
+      "wall_s": 1.6525816599605605,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467809.8357575, "duration_s": 1.6, "finish": "stop", "prompt_tokens": 300, "reused": 0, "output_tokens": 40, "prompt_total": 300, "prompt_read": 300, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 40, "prompt_ms": 1063.0, "decode_ms": 582.9, "decode_tok_s": 68.6, "hit_rate": 0.804, "pcie_share": 0.134, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 33, "drafts_accepted": 28}, {"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 4, "requests_reused": 0, "reused_tokens": 0, "prompt_tokens": 438, "last_reused": 0, "last_prompt": 300}, "requests_kept": 4, "totals": {"since": 1791467806.917516, "requests": 4, "prompt_tokens": 438, "reused": 0, "output_tokens": 119, "prompt_ms": 2342.2, "decode_ms": 1865.9, "drafts_offered": 96, "drafts_accepted": 89}, "hardware": {"gpu_util": 93, "gpu_mem_used": 33328566272, "gpu_mem_total": 34208743424, "gpu_temp": 46.0, "gpu_power": 247.0, "gpu_power_limit": 300.0, "cpu": 2.4460768990309467, "ram_used": 72289193984, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 4.0, "tok_s_mean": 148.00988072552755, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58, 87, 90, 93], "gpu_mem_used": [33309364224, 33321058304, 33321365504, 33326686208, 33328566272], "gpu_temp": [51.0, 44.0, 45.0, 45.0, 46.0], "gpu_power": [25.0, 131.0, 196.0, 174.0, 247.0], "gpu_pcie_rx_mb": [null, null, null, null, null], "cpu": [0.0, 7.95, 12.61, 11.81, 2.45], "ram_used": [72069963776, 72256532480, 72315850752, 72425570304, 72289193984], "disk_read_mb": [null, null, null, null, null], "tok_s": [0.0, 52.0, 0.0, 0.0, 4.0], "prefill_tok_s_mean": [0.0, 0.0, 147.9, null, 0.0]}, "time": 1791467811.4872005}
+    },
+    {
+      "name": "multi-turn",
+      "passed": true,
+      "first_response": {
+        "id": "chatcmpl-2f4d694110184a90bbad91e2",
+        "object": "chat.completion",
+        "created": 1791467811,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "OK"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 29,
+          "completion_tokens": 2,
+          "total_tokens": 31,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 29,
+          "prompt_ms": 285.5,
+          "prompt_per_token_ms": 9.845,
+          "prompt_per_second": 101.6,
+          "predicted_n": 2,
+          "predicted_ms": 61.2,
+          "predicted_per_token_ms": 30.6,
+          "predicted_per_second": 32.7,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        }
+      },
+      "actual_messages": [
+        {
+          "role": "user",
+          "content": "Remember this project code: NIMBUS-7391. Reply OK."
+        },
+        {
+          "role": "assistant",
+          "content": "OK"
+        },
+        {
+          "role": "user",
+          "content": "What was the project code? Reply only with JSON {\"code\": \"...\"}."
+        }
+      ],
+      "response": {
+        "id": "chatcmpl-39e88e431f7b4b04a31e652c",
+        "object": "chat.completion",
+        "created": 1791467811,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"code\": \"NIMBUS-7391\"}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 60,
+          "completion_tokens": 14,
+          "total_tokens": 74,
+          "prompt_tokens_details": {
+            "cached_tokens": 22
+          }
+        },
+        "timings": {
+          "cache_n": 22,
+          "prompt_n": 38,
+          "prompt_ms": 326.5,
+          "prompt_per_token_ms": 8.592,
+          "prompt_per_second": 116.4,
+          "predicted_n": 14,
+          "predicted_ms": 235.1,
+          "predicted_per_token_ms": 16.793,
+          "predicted_per_second": 59.5,
+          "draft_n": 17,
+          "draft_n_accepted": 11
+        }
+      },
+      "wall_s": 0.5679930640617386,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467811.8434086, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 60, "reused": 22, "output_tokens": 14, "prompt_total": 60, "prompt_read": 38, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 14, "prompt_ms": 326.5, "decode_ms": 235.1, "decode_tok_s": 59.5, "hit_rate": 0.89, "pcie_share": 0.078, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 17, "drafts_accepted": 11}, {"projection": null, "time": 1791467811.491725, "duration_s": 0.3, "finish": "stop", "prompt_tokens": 29, "reused": 0, "output_tokens": 2, "prompt_total": 29, "prompt_read": 29, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 285.5, "decode_ms": 61.2, "decode_tok_s": 32.7, "hit_rate": 0.894, "pcie_share": 0.073, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791467809.8357575, "duration_s": 1.6, "finish": "stop", "prompt_tokens": 300, "reused": 0, "output_tokens": 40, "prompt_total": 300, "prompt_read": 300, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 40, "prompt_ms": 1063.0, "decode_ms": 582.9, "decode_tok_s": 68.6, "hit_rate": 0.804, "pcie_share": 0.134, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 33, "drafts_accepted": 28}, {"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 6, "requests_reused": 1, "reused_tokens": 22, "prompt_tokens": 527, "last_reused": 22, "last_prompt": 60}, "requests_kept": 6, "totals": {"since": 1791467806.917516, "requests": 6, "prompt_tokens": 527, "reused": 22, "output_tokens": 135, "prompt_ms": 2954.2, "decode_ms": 2162.2000000000003, "drafts_offered": 116, "drafts_accepted": 103}, "hardware": {"gpu_util": 91, "gpu_mem_used": 33329758208, "gpu_mem_total": 34208743424, "gpu_temp": 47.0, "gpu_power": 199.0, "gpu_power_limit": 300.0, "cpu": 12.956446946594735, "ram_used": 72406798336, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 0.0, "tok_s_mean": 0, "prefill_tok_s_mean": null}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58, 87, 90, 93, 91], "gpu_mem_used": [33309364224, 33321058304, 33321365504, 33326686208, 33328566272, 33329758208], "gpu_temp": [51.0, 44.0, 45.0, 45.0, 46.0, 47.0], "gpu_power": [25.0, 131.0, 196.0, 174.0, 247.0, 199.0], "gpu_pcie_rx_mb": [null, null, null, null, null, null], "cpu": [0.0, 7.95, 12.61, 11.81, 2.45, 12.96], "ram_used": [72069963776, 72256532480, 72315850752, 72425570304, 72289193984, 72406798336], "disk_read_mb": [null, null, null, null, null, null], "tok_s": [0.0, 52.0, 0.0, 0.0, 4.0, 0.0], "prefill_tok_s_mean": [0.0, 0.0, 147.9, null, 0.0, null]}, "time": 1791467812.4110403}
+    },
+    {
+      "name": "recall-32768",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-14e45834f5ab41cab5faf53d",
+        "object": "chat.completion",
+        "created": 1791467812,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\n  \"ALPHA\": 481927,\n  \"BETA\": 602314,\n  \"GAMMA\": 975086\n}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 32605,
+          "completion_tokens": 46,
+          "total_tokens": 32651,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32605,
+          "prompt_ms": 42562.3,
+          "prompt_per_token_ms": 1.305,
+          "prompt_per_second": 766.1,
+          "predicted_n": 46,
+          "predicted_ms": 569.5,
+          "predicted_per_token_ms": 12.38,
+          "predicted_per_second": 80.8,
+          "draft_n": 36,
+          "draft_n_accepted": 36
+        }
+      },
+      "wall_s": 43.187254560994916,
+      "expected_prompt_tokens": 32605,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467812.4613717, "duration_s": 43.1, "finish": "stop", "prompt_tokens": 32605, "reused": 0, "output_tokens": 46, "prompt_total": 32605, "prompt_read": 32605, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 46, "prompt_ms": 42562.3, "decode_ms": 569.5, "decode_tok_s": 80.8, "hit_rate": 0.868, "pcie_share": 0.092, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 36, "drafts_accepted": 36}, {"projection": null, "time": 1791467811.8434086, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 60, "reused": 22, "output_tokens": 14, "prompt_total": 60, "prompt_read": 38, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 14, "prompt_ms": 326.5, "decode_ms": 235.1, "decode_tok_s": 59.5, "hit_rate": 0.89, "pcie_share": 0.078, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 17, "drafts_accepted": 11}, {"projection": null, "time": 1791467811.491725, "duration_s": 0.3, "finish": "stop", "prompt_tokens": 29, "reused": 0, "output_tokens": 2, "prompt_total": 29, "prompt_read": 29, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 285.5, "decode_ms": 61.2, "decode_tok_s": 32.7, "hit_rate": 0.894, "pcie_share": 0.073, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791467809.8357575, "duration_s": 1.6, "finish": "stop", "prompt_tokens": 300, "reused": 0, "output_tokens": 40, "prompt_total": 300, "prompt_read": 300, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 40, "prompt_ms": 1063.0, "decode_ms": 582.9, "decode_tok_s": 68.6, "hit_rate": 0.804, "pcie_share": 0.134, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 33, "drafts_accepted": 28}, {"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 7, "requests_reused": 1, "reused_tokens": 22, "prompt_tokens": 33132, "last_reused": 0, "last_prompt": 32605}, "requests_kept": 7, "totals": {"since": 1791467806.917516, "requests": 7, "prompt_tokens": 33132, "reused": 22, "output_tokens": 181, "prompt_ms": 45516.5, "decode_ms": 2731.7000000000003, "drafts_offered": 152, "drafts_accepted": 139}, "hardware": {"gpu_util": 94, "gpu_mem_used": 33330135040, "gpu_mem_total": 34208743424, "gpu_temp": 70.0, "gpu_power": 260.0, "gpu_power_limit": 300.0, "cpu": 1.7489069331667717, "ram_used": 72476733440, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 0.0, "tok_s_mean": 0, "prefill_tok_s_mean": 770.1}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [6, 58, 87, 90, 93, 91, 86, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 95, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 99, 100, 100, 100, 100, 100, 100, 100, 94], "gpu_mem_used": [33309364224, 33321058304, 33321365504, 33326686208, 33328566272, 33329758208, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040, 33330135040], "gpu_temp": [51.0, 44.0, 45.0, 45.0, 46.0, 47.0, 48.0, 49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0, 57.0, 57.0, 58.0, 59.0, 60.0, 61.0, 61.0, 62.0, 63.0, 63.0, 64.0, 65.0, 65.0, 66.0, 66.0, 67.0, 67.0, 68.0, 68.0, 68.0, 69.0, 69.0, 69.0, 69.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0, 70.0], "gpu_power": [25.0, 131.0, 196.0, 174.0, 247.0, 199.0, 237.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 300.0, 298.0, 301.0, 298.0, 300.0, 300.0, 299.0, 301.0, 299.0, 299.0, 300.0, 300.0, 287.0, 299.0, 299.0, 301.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 300.0, 300.0, 300.0, 299.0, 300.0, 300.0, 299.0, 260.0], "gpu_pcie_rx_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "cpu": [0.0, 7.95, 12.61, 11.81, 2.45, 12.96, 7.08, 1.7, 1.75, 1.81, 1.73, 2.29, 1.75, 2.38, 1.77, 1.73, 1.71, 1.79, 1.69, 1.69, 1.67, 2.02, 1.76, 1.69, 1.69, 1.72, 2.26, 1.84, 1.8, 1.98, 1.69, 1.83, 1.72, 1.73, 1.7, 1.68, 1.96, 1.85, 1.9, 1.72, 1.9, 1.73, 1.65, 1.71, 2.02, 2.11, 1.69, 1.67, 1.75], "ram_used": [72069963776, 72256532480, 72315850752, 72425570304, 72289193984, 72406798336, 72231194624, 72231575552, 72230912000, 72241336320, 72236843008, 72265977856, 72263061504, 72274558976, 72258134016, 72244756480, 72244215808, 72247599104, 72245706752, 72242565120, 72239095808, 72238977024, 72234561536, 72232128512, 72229744640, 72228794368, 72270495744, 72397770752, 72394330112, 72386170880, 72379191296, 72376442880, 72371527680, 72386109440, 72362668032, 72360710144, 72355270656, 72356159488, 72356352000, 72352972800, 72347975680, 72345403392, 72338350080, 72334901248, 72336617472, 72357007360, 72354598912, 72353624064, 72476733440], "disk_read_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "tok_s": [0.0, 52.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "prefill_tok_s_mean": [0.0, 0.0, 147.9, null, 0.0, null, null, null, null, null, null, null, null, null, null, null, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 795.7, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 782.4, 779.0, 779.0, 779.0, 779.0, 779.0, 779.0, 779.0, 779.0, 779.0, 779.0, 770.1]}, "time": 1791467855.6026123}
+    },
+    {
+      "name": "recall-131072",
+      "passed": true,
+      "response": {
+        "id": "chatcmpl-a0ac4dca9bcc440dadee36c1",
+        "object": "chat.completion",
+        "created": 1791467855,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\n  \"ALPHA\": 481927,\n  \"BETA\": 602314,\n  \"GAMMA\": 975086\n}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 130911,
+          "completion_tokens": 46,
+          "total_tokens": 130957,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 130911,
+          "prompt_ms": 181064.8,
+          "prompt_per_token_ms": 1.383,
+          "prompt_per_second": 723.0,
+          "predicted_n": 46,
+          "predicted_ms": 508.8,
+          "predicted_per_token_ms": 11.061,
+          "predicted_per_second": 90.4,
+          "draft_n": 34,
+          "draft_n_accepted": 33
+        }
+      },
+      "wall_s": 181.78175903495867,
+      "expected_prompt_tokens": 130911,
+      "metrics_after": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791467855.786412, "duration_s": 181.6, "finish": "stop", "prompt_tokens": 130911, "reused": 0, "output_tokens": 46, "prompt_total": 130911, "prompt_read": 130911, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 46, "prompt_ms": 181064.8, "decode_ms": 508.8, "decode_tok_s": 90.4, "hit_rate": 0.931, "pcie_share": 0.047, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 34, "drafts_accepted": 33}, {"projection": null, "time": 1791467812.4613717, "duration_s": 43.1, "finish": "stop", "prompt_tokens": 32605, "reused": 0, "output_tokens": 46, "prompt_total": 32605, "prompt_read": 32605, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 46, "prompt_ms": 42562.3, "decode_ms": 569.5, "decode_tok_s": 80.8, "hit_rate": 0.868, "pcie_share": 0.092, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 36, "drafts_accepted": 36}, {"projection": null, "time": 1791467811.8434086, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 60, "reused": 22, "output_tokens": 14, "prompt_total": 60, "prompt_read": 38, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 14, "prompt_ms": 326.5, "decode_ms": 235.1, "decode_tok_s": 59.5, "hit_rate": 0.89, "pcie_share": 0.078, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 17, "drafts_accepted": 11}, {"projection": null, "time": 1791467811.491725, "duration_s": 0.3, "finish": "stop", "prompt_tokens": 29, "reused": 0, "output_tokens": 2, "prompt_total": 29, "prompt_read": 29, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 285.5, "decode_ms": 61.2, "decode_tok_s": 32.7, "hit_rate": 0.894, "pcie_share": 0.073, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791467809.8357575, "duration_s": 1.6, "finish": "stop", "prompt_tokens": 300, "reused": 0, "output_tokens": 40, "prompt_total": 300, "prompt_read": 300, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 40, "prompt_ms": 1063.0, "decode_ms": 582.9, "decode_tok_s": 68.6, "hit_rate": 0.804, "pcie_share": 0.134, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 33, "drafts_accepted": 28}, {"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 8, "requests_reused": 1, "reused_tokens": 22, "prompt_tokens": 164043, "last_reused": 0, "last_prompt": 130911}, "requests_kept": 8, "totals": {"since": 1791467806.917516, "requests": 8, "prompt_tokens": 164043, "reused": 22, "output_tokens": 227, "prompt_ms": 226581.3, "decode_ms": 3240.5000000000005, "drafts_offered": 186, "drafts_accepted": 172}, "hardware": {"gpu_util": 93, "gpu_mem_used": 33331445760, "gpu_mem_total": 34208743424, "gpu_temp": 72.0, "gpu_power": 232.0, "gpu_power_limit": 300.0, "cpu": 7.005226616740778, "ram_used": 73041342464, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 95.11109095444341, "tok_s_mean": 86.39368203085196, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 97, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 94, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 93], "gpu_mem_used": [33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331445760], "gpu_temp": [72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0], "gpu_power": [299.0, 300.0, 300.0, 300.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 291.0, 297.0, 300.0, 299.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 300.0, 282.0, 302.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 232.0], "gpu_pcie_rx_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "cpu": [1.66, 1.7, 1.79, 1.65, 1.69, 1.9, 1.8, 1.69, 2.05, 1.75, 1.71, 1.71, 1.84, 2.02, 1.8, 1.71, 1.84, 1.69, 1.73, 1.73, 1.77, 2.02, 1.89, 1.73, 1.69, 1.81, 1.72, 1.7, 1.76, 2.0, 1.73, 1.75, 1.69, 1.69, 1.82, 1.63, 1.96, 1.99, 1.7, 1.71, 1.69, 2.07, 1.76, 1.69, 2.17, 1.73, 1.76, 1.91, 1.77, 1.7, 1.83, 1.98, 2.02, 1.71, 2.36, 1.7, 1.71, 1.69, 1.82, 7.01], "ram_used": [72774037504, 72771575808, 72777129984, 72767627264, 72766840832, 72762863616, 72764932096, 72762482688, 72766877696, 72757731328, 72758595584, 72848752640, 72890552320, 72891183104, 72890908672, 72889749504, 72898445312, 72897368064, 72878583808, 72878247936, 72876257280, 72883404800, 72893227008, 72892248064, 72889901056, 72898199552, 72891154432, 72890167296, 72890056704, 72892375040, 72890404864, 72887889920, 72885690368, 72882585600, 72881725440, 72992600064, 72978792448, 72981979136, 72972324864, 72951853056, 72941256704, 72958291968, 72942018560, 72934776832, 72926429184, 72920399872, 72909414400, 72910901248, 72907042816, 72902533120, 72895115264, 72924336128, 72922902528, 72918040576, 72946380800, 72931590144, 72927342592, 72924778496, 72928329728, 73041342464], "disk_read_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "tok_s": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 95.11], "prefill_tok_s_mean": [741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 0.0]}, "time": 1791468037.3887458}
+    },
+    {
+      "name": "sse-cancel-retry",
+      "passed": true,
+      "first_content": {
+        "id": "chatcmpl-5d58c2b25f114d17a40a1abf",
+        "object": "chat.completion.chunk",
+        "created": 1791468037,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "content": "1"
+            },
+            "finish_reason": null
+          }
+        ]
+      },
+      "http_sse_ttft_s": 0.38038654206320643,
+      "after_cancel": {
+        "engine": {
+          "model": "r9700-quality-iq3_s-baseline",
+          "max_context": 147456,
+          "images": false,
+          "version": "0.1.40.3",
+          "context": 147456,
+          "kv": "int8",
+          "kv_resident": 32768,
+          "expert_slots": 13021,
+          "expert_cache_mib": 25303,
+          "expert_slots_primary": 13021,
+          "expert_cache_primary_mib": 25303,
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "vram_free_mib": 940,
+          "cvec": 0,
+          "arena_mib": 47962,
+          "pool_workers": 15,
+          "pcie_frac": "0.55",
+          "spec_min_p": "0.50",
+          "conversation_cache_mib": 0,
+          "conversation_cache_slots": 4,
+          "conversation_cache_min_free_mib": 2560,
+          "tail_role_token": -1,
+          "vram_elastic": 0,
+          "engine": "0.1.40.3"
+        },
+        "live": {
+          "state": "idle",
+          "queued": 0,
+          "phase": null,
+          "prompt_tokens": null,
+          "prompt_read": null,
+          "prompt_total": null,
+          "generated": null,
+          "max_tokens": null,
+          "elapsed_s": null,
+          "tok_s": null,
+          "tok_s_mean": null,
+          "prefill_tok_s_mean": null,
+          "tok_s_window_s": null
+        },
+        "requests": [
+          {
+            "projection": null,
+            "time": 1791468037.393817,
+            "duration_s": 0.4,
+            "finish": "disconnect",
+            "prompt_tokens": 32,
+            "reused": 0,
+            "output_tokens": 5,
+            "prompt_total": 32,
+            "prompt_read": 32,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 5,
+            "prompt_ms": 358.2,
+            "decode_ms": 59.8,
+            "decode_tok_s": 83.6,
+            "hit_rate": 0.947,
+            "pcie_share": 0.025,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 3,
+            "drafts_accepted": 3
+          },
+          {
+            "projection": null,
+            "time": 1791467855.786412,
+            "duration_s": 181.6,
+            "finish": "stop",
+            "prompt_tokens": 130911,
+            "reused": 0,
+            "output_tokens": 46,
+            "prompt_total": 130911,
+            "prompt_read": 130911,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 46,
+            "prompt_ms": 181064.8,
+            "decode_ms": 508.8,
+            "decode_tok_s": 90.4,
+            "hit_rate": 0.931,
+            "pcie_share": 0.047,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 34,
+            "drafts_accepted": 33
+          },
+          {
+            "projection": null,
+            "time": 1791467812.4613717,
+            "duration_s": 43.1,
+            "finish": "stop",
+            "prompt_tokens": 32605,
+            "reused": 0,
+            "output_tokens": 46,
+            "prompt_total": 32605,
+            "prompt_read": 32605,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 46,
+            "prompt_ms": 42562.3,
+            "decode_ms": 569.5,
+            "decode_tok_s": 80.8,
+            "hit_rate": 0.868,
+            "pcie_share": 0.092,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 36,
+            "drafts_accepted": 36
+          },
+          {
+            "projection": null,
+            "time": 1791467811.8434086,
+            "duration_s": 0.6,
+            "finish": "stop",
+            "prompt_tokens": 60,
+            "reused": 22,
+            "output_tokens": 14,
+            "prompt_total": 60,
+            "prompt_read": 38,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 14,
+            "prompt_ms": 326.5,
+            "decode_ms": 235.1,
+            "decode_tok_s": 59.5,
+            "hit_rate": 0.89,
+            "pcie_share": 0.078,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 17,
+            "drafts_accepted": 11
+          },
+          {
+            "projection": null,
+            "time": 1791467811.491725,
+            "duration_s": 0.3,
+            "finish": "stop",
+            "prompt_tokens": 29,
+            "reused": 0,
+            "output_tokens": 2,
+            "prompt_total": 29,
+            "prompt_read": 29,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 2,
+            "prompt_ms": 285.5,
+            "decode_ms": 61.2,
+            "decode_tok_s": 32.7,
+            "hit_rate": 0.894,
+            "pcie_share": 0.073,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 3,
+            "drafts_accepted": 3
+          },
+          {
+            "projection": null,
+            "time": 1791467809.8357575,
+            "duration_s": 1.6,
+            "finish": "stop",
+            "prompt_tokens": 300,
+            "reused": 0,
+            "output_tokens": 40,
+            "prompt_total": 300,
+            "prompt_read": 300,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 40,
+            "prompt_ms": 1063.0,
+            "decode_ms": 582.9,
+            "decode_tok_s": 68.6,
+            "hit_rate": 0.804,
+            "pcie_share": 0.134,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 33,
+            "drafts_accepted": 28
+          },
+          {
+            "projection": null,
+            "time": 1791467808.5231597,
+            "duration_s": 1.3,
+            "finish": "stop",
+            "prompt_tokens": 61,
+            "reused": 0,
+            "output_tokens": 55,
+            "prompt_total": 61,
+            "prompt_read": 61,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 55,
+            "prompt_ms": 476.9,
+            "decode_ms": 804.9,
+            "decode_tok_s": 68.3,
+            "hit_rate": 0.72,
+            "pcie_share": 0.176,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 42,
+            "drafts_accepted": 42
+          },
+          {
+            "projection": null,
+            "time": 1791467807.9405808,
+            "duration_s": 0.6,
+            "finish": "stop",
+            "prompt_tokens": 35,
+            "reused": 0,
+            "output_tokens": 9,
+            "prompt_total": 35,
+            "prompt_read": 35,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 9,
+            "prompt_ms": 384.8,
+            "decode_ms": 190.6,
+            "decode_tok_s": 47.2,
+            "hit_rate": 0.729,
+            "pcie_share": 0.176,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 9,
+            "drafts_accepted": 7
+          },
+          {
+            "projection": null,
+            "time": 1791467807.2291765,
+            "duration_s": 0.7,
+            "finish": "stop",
+            "prompt_tokens": 42,
+            "reused": 0,
+            "output_tokens": 15,
+            "prompt_total": 42,
+            "prompt_read": 42,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 15,
+            "prompt_ms": 417.5,
+            "decode_ms": 287.5,
+            "decode_tok_s": 52.2,
+            "hit_rate": 0.691,
+            "pcie_share": 0.206,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0,
+            "drafts_offered": 12,
+            "drafts_accepted": 12
+          }
+        ],
+        "conversation_cache": {
+          "enabled": false,
+          "budget_mib": 0,
+          "slots": 4,
+          "parked": 0,
+          "bytes": 0,
+          "evictions": 0,
+          "parks": 0,
+          "restores": 0,
+          "last_event": null,
+          "last_tokens": null,
+          "last_at": null,
+          "requests": 9,
+          "requests_reused": 1,
+          "reused_tokens": 22,
+          "prompt_tokens": 164075,
+          "last_reused": 0,
+          "last_prompt": 32
+        },
+        "requests_kept": 9,
+        "totals": {
+          "since": 1791467806.917516,
+          "requests": 9,
+          "prompt_tokens": 164075,
+          "reused": 22,
+          "output_tokens": 232,
+          "prompt_ms": 226939.5,
+          "decode_ms": 3300.3000000000006,
+          "drafts_offered": 189,
+          "drafts_accepted": 175
+        },
+        "hardware": {
+          "gpu_util": 93,
+          "gpu_mem_used": 33331445760,
+          "gpu_mem_total": 34208743424,
+          "gpu_temp": 72.0,
+          "gpu_power": 232.0,
+          "gpu_power_limit": 300.0,
+          "cpu": 7.005226616740778,
+          "ram_used": 73041342464,
+          "ram_total": 540772958208,
+          "disk_read_mb": null,
+          "disk_write_mb": null,
+          "tok_s": 95.11109095444341,
+          "tok_s_mean": 86.39368203085196,
+          "prefill_tok_s_mean": 0.0
+        },
+        "hardware_static": {
+          "gpu_name": "AMD Radeon",
+          "gpu_count": 1,
+          "gpu_note": null,
+          "cpu_name": "AMD EPYC 9334 32-Core Processor",
+          "cores": null,
+          "threads": 128,
+          "psutil": false
+        },
+        "history": {
+          "gpu_util": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 97, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 94, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 93],
+          "gpu_mem_used": [33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331445760],
+          "gpu_temp": [72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0],
+          "gpu_power": [299.0, 300.0, 300.0, 300.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 291.0, 297.0, 300.0, 299.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 300.0, 282.0, 302.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 232.0],
+          "gpu_pcie_rx_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+          "cpu": [1.66, 1.7, 1.79, 1.65, 1.69, 1.9, 1.8, 1.69, 2.05, 1.75, 1.71, 1.71, 1.84, 2.02, 1.8, 1.71, 1.84, 1.69, 1.73, 1.73, 1.77, 2.02, 1.89, 1.73, 1.69, 1.81, 1.72, 1.7, 1.76, 2.0, 1.73, 1.75, 1.69, 1.69, 1.82, 1.63, 1.96, 1.99, 1.7, 1.71, 1.69, 2.07, 1.76, 1.69, 2.17, 1.73, 1.76, 1.91, 1.77, 1.7, 1.83, 1.98, 2.02, 1.71, 2.36, 1.7, 1.71, 1.69, 1.82, 7.01],
+          "ram_used": [72774037504, 72771575808, 72777129984, 72767627264, 72766840832, 72762863616, 72764932096, 72762482688, 72766877696, 72757731328, 72758595584, 72848752640, 72890552320, 72891183104, 72890908672, 72889749504, 72898445312, 72897368064, 72878583808, 72878247936, 72876257280, 72883404800, 72893227008, 72892248064, 72889901056, 72898199552, 72891154432, 72890167296, 72890056704, 72892375040, 72890404864, 72887889920, 72885690368, 72882585600, 72881725440, 72992600064, 72978792448, 72981979136, 72972324864, 72951853056, 72941256704, 72958291968, 72942018560, 72934776832, 72926429184, 72920399872, 72909414400, 72910901248, 72907042816, 72902533120, 72895115264, 72924336128, 72922902528, 72918040576, 72946380800, 72931590144, 72927342592, 72924778496, 72928329728, 73041342464],
+          "disk_read_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+          "tok_s": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 95.11],
+          "prefill_tok_s_mean": [741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 0.0]
+        },
+        "time": 1791468037.9760797
+      },
+      "retry": {
+        "id": "chatcmpl-337d67baa0d34aaf9867cb44",
+        "object": "chat.completion",
+        "created": 1791468037,
+        "model": "r9700-quality-iq3_s-baseline",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "5"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 26,
+          "completion_tokens": 2,
+          "total_tokens": 28,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 26,
+          "prompt_ms": 269.0,
+          "prompt_per_token_ms": 10.346,
+          "prompt_per_second": 96.7,
+          "predicted_n": 2,
+          "predicted_ms": 65.4,
+          "predicted_per_token_ms": 32.7,
+          "predicted_per_second": 30.6,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        }
+      }
+    }
+  ],
+  "final_metrics": {"engine": {"model": "r9700-quality-iq3_s-baseline", "max_context": 147456, "images": false, "version": "0.1.40.3", "context": 147456, "kv": "int8", "kv_resident": 32768, "expert_slots": 13021, "expert_cache_mib": 25303, "expert_slots_primary": 13021, "expert_cache_primary_mib": 25303, "spec": 6, "mtp_max": 4, "lookup": 3, "vram_free_mib": 940, "cvec": 0, "arena_mib": 47962, "pool_workers": 15, "pcie_frac": "0.55", "spec_min_p": "0.50", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "tail_role_token": -1, "vram_elastic": 0, "engine": "0.1.40.3"}, "live": {"state": "idle", "queued": 0, "phase": null, "prompt_tokens": null, "prompt_read": null, "prompt_total": null, "generated": null, "max_tokens": null, "elapsed_s": null, "tok_s": null, "tok_s_mean": null, "prefill_tok_s_mean": null, "tok_s_window_s": null}, "requests": [{"projection": null, "time": 1791468037.977661, "duration_s": 0.3, "finish": "stop", "prompt_tokens": 26, "reused": 0, "output_tokens": 2, "prompt_total": 26, "prompt_read": 26, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 269.0, "decode_ms": 65.4, "decode_tok_s": 30.6, "hit_rate": 0.88, "pcie_share": 0.09, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791468037.393817, "duration_s": 0.4, "finish": "disconnect", "prompt_tokens": 32, "reused": 0, "output_tokens": 5, "prompt_total": 32, "prompt_read": 32, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 5, "prompt_ms": 358.2, "decode_ms": 59.8, "decode_tok_s": 83.6, "hit_rate": 0.947, "pcie_share": 0.025, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791467855.786412, "duration_s": 181.6, "finish": "stop", "prompt_tokens": 130911, "reused": 0, "output_tokens": 46, "prompt_total": 130911, "prompt_read": 130911, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 46, "prompt_ms": 181064.8, "decode_ms": 508.8, "decode_tok_s": 90.4, "hit_rate": 0.931, "pcie_share": 0.047, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 34, "drafts_accepted": 33}, {"projection": null, "time": 1791467812.4613717, "duration_s": 43.1, "finish": "stop", "prompt_tokens": 32605, "reused": 0, "output_tokens": 46, "prompt_total": 32605, "prompt_read": 32605, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 46, "prompt_ms": 42562.3, "decode_ms": 569.5, "decode_tok_s": 80.8, "hit_rate": 0.868, "pcie_share": 0.092, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 36, "drafts_accepted": 36}, {"projection": null, "time": 1791467811.8434086, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 60, "reused": 22, "output_tokens": 14, "prompt_total": 60, "prompt_read": 38, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 14, "prompt_ms": 326.5, "decode_ms": 235.1, "decode_tok_s": 59.5, "hit_rate": 0.89, "pcie_share": 0.078, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 17, "drafts_accepted": 11}, {"projection": null, "time": 1791467811.491725, "duration_s": 0.3, "finish": "stop", "prompt_tokens": 29, "reused": 0, "output_tokens": 2, "prompt_total": 29, "prompt_read": 29, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 285.5, "decode_ms": 61.2, "decode_tok_s": 32.7, "hit_rate": 0.894, "pcie_share": 0.073, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 3, "drafts_accepted": 3}, {"projection": null, "time": 1791467809.8357575, "duration_s": 1.6, "finish": "stop", "prompt_tokens": 300, "reused": 0, "output_tokens": 40, "prompt_total": 300, "prompt_read": 300, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 40, "prompt_ms": 1063.0, "decode_ms": 582.9, "decode_tok_s": 68.6, "hit_rate": 0.804, "pcie_share": 0.134, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 33, "drafts_accepted": 28}, {"projection": null, "time": 1791467808.5231597, "duration_s": 1.3, "finish": "stop", "prompt_tokens": 61, "reused": 0, "output_tokens": 55, "prompt_total": 61, "prompt_read": 61, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 55, "prompt_ms": 476.9, "decode_ms": 804.9, "decode_tok_s": 68.3, "hit_rate": 0.72, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 42, "drafts_accepted": 42}, {"projection": null, "time": 1791467807.9405808, "duration_s": 0.6, "finish": "stop", "prompt_tokens": 35, "reused": 0, "output_tokens": 9, "prompt_total": 35, "prompt_read": 35, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 9, "prompt_ms": 384.8, "decode_ms": 190.6, "decode_tok_s": 47.2, "hit_rate": 0.729, "pcie_share": 0.176, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 9, "drafts_accepted": 7}, {"projection": null, "time": 1791467807.2291765, "duration_s": 0.7, "finish": "stop", "prompt_tokens": 42, "reused": 0, "output_tokens": 15, "prompt_total": 42, "prompt_read": 42, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 15, "prompt_ms": 417.5, "decode_ms": 287.5, "decode_tok_s": 52.2, "hit_rate": 0.691, "pcie_share": 0.206, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0, "drafts_offered": 12, "drafts_accepted": 12}], "conversation_cache": {"enabled": false, "budget_mib": 0, "slots": 4, "parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": null, "last_tokens": null, "last_at": null, "requests": 10, "requests_reused": 1, "reused_tokens": 22, "prompt_tokens": 164101, "last_reused": 0, "last_prompt": 26}, "requests_kept": 10, "totals": {"since": 1791467806.917516, "requests": 10, "prompt_tokens": 164101, "reused": 22, "output_tokens": 234, "prompt_ms": 227208.5, "decode_ms": 3365.7000000000007, "drafts_offered": 192, "drafts_accepted": 178}, "hardware": {"gpu_util": 64, "gpu_mem_used": 33331445760, "gpu_mem_total": 34208743424, "gpu_temp": 71.0, "gpu_power": 172.0, "gpu_power_limit": 300.0, "cpu": 9.335937500000002, "ram_used": 72558215168, "ram_total": 540772958208, "disk_read_mb": null, "disk_write_mb": null, "tok_s": 4.0, "tok_s_mean": 39.030578250916605, "prefill_tok_s_mean": 0.0}, "hardware_static": {"gpu_name": "AMD Radeon", "gpu_count": 1, "gpu_note": null, "cpu_name": "AMD EPYC 9334 32-Core Processor", "cores": null, "threads": 128, "psutil": false}, "history": {"gpu_util": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 97, 98, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 94, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 93, 64], "gpu_mem_used": [33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33330823168, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331052544, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331281920, 33331445760, 33331445760], "gpu_temp": [72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 72.0, 71.0], "gpu_power": [300.0, 300.0, 300.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 291.0, 297.0, 300.0, 299.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 299.0, 300.0, 300.0, 282.0, 302.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 300.0, 299.0, 300.0, 299.0, 300.0, 299.0, 300.0, 232.0, 172.0], "gpu_pcie_rx_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "cpu": [1.7, 1.79, 1.65, 1.69, 1.9, 1.8, 1.69, 2.05, 1.75, 1.71, 1.71, 1.84, 2.02, 1.8, 1.71, 1.84, 1.69, 1.73, 1.73, 1.77, 2.02, 1.89, 1.73, 1.69, 1.81, 1.72, 1.7, 1.76, 2.0, 1.73, 1.75, 1.69, 1.69, 1.82, 1.63, 1.96, 1.99, 1.7, 1.71, 1.69, 2.07, 1.76, 1.69, 2.17, 1.73, 1.76, 1.91, 1.77, 1.7, 1.83, 1.98, 2.02, 1.71, 2.36, 1.7, 1.71, 1.69, 1.82, 7.01, 9.34], "ram_used": [72771575808, 72777129984, 72767627264, 72766840832, 72762863616, 72764932096, 72762482688, 72766877696, 72757731328, 72758595584, 72848752640, 72890552320, 72891183104, 72890908672, 72889749504, 72898445312, 72897368064, 72878583808, 72878247936, 72876257280, 72883404800, 72893227008, 72892248064, 72889901056, 72898199552, 72891154432, 72890167296, 72890056704, 72892375040, 72890404864, 72887889920, 72885690368, 72882585600, 72881725440, 72992600064, 72978792448, 72981979136, 72972324864, 72951853056, 72941256704, 72958291968, 72942018560, 72934776832, 72926429184, 72920399872, 72909414400, 72910901248, 72907042816, 72902533120, 72895115264, 72924336128, 72922902528, 72918040576, 72946380800, 72931590144, 72927342592, 72924778496, 72928329728, 73041342464, 72558215168], "disk_read_mb": [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], "tok_s": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 95.11, 4.0], "prefill_tok_s_mean": [741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 741.2, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 737.1, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 732.7, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 728.9, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 726.4, 0.0, 0.0]}, "time": 1791468038.31667},
+  "passed": true,
+  "complete": true
+}

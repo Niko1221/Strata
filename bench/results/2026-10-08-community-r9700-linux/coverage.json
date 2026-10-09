@@ -1,0 +1,8 @@
+{
+  "scope": "Recomputed archived evidence, not new GPU measurements or automatic performance acceptance",
+  "paired_formal_requests": 94,
+  "current_speed_formal_requests": 12,
+  "http_task_checks_passed": 32,
+  "exported_artifact_hashes_verified": 132,
+  "all_workload_performance_acceptance": false
+}

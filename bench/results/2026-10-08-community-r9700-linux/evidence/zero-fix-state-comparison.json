@@ -1,0 +1,57 @@
+{
+  "passed": true,
+  "scope": "real batched prefill; one output token; independent engine sessions",
+  "cases": [
+    {
+      "tokens": 19,
+      "state_identical": true,
+      "output_ids_identical": true,
+      "reused": 0,
+      "keys": [
+        "L",
+        "gdn",
+        "ple",
+        "tail",
+        "dead",
+        "pooled",
+        "pooled_full",
+        "kv",
+        "ple_prev"
+      ]
+    },
+    {
+      "tokens": 128,
+      "state_identical": true,
+      "output_ids_identical": true,
+      "reused": 0,
+      "keys": [
+        "L",
+        "gdn",
+        "ple",
+        "tail",
+        "dead",
+        "pooled",
+        "pooled_full",
+        "kv",
+        "ple_prev"
+      ]
+    },
+    {
+      "tokens": 4096,
+      "state_identical": true,
+      "output_ids_identical": true,
+      "reused": 0,
+      "keys": [
+        "L",
+        "gdn",
+        "ple",
+        "tail",
+        "dead",
+        "pooled",
+        "pooled_full",
+        "kv",
+        "ple_prev"
+      ]
+    }
+  ]
+}

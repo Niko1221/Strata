@@ -1,0 +1,66 @@
+{
+  "scope": "2026-10-08 recorded R9700 / ROCm 7.2.3 configurations; not a universal hardware or model claim",
+  "coverage_complete": true,
+  "all_workload_performance_acceptance": false,
+  "formal_performance_requests": 94,
+  "output_tokens_per_formal_request": 256,
+  "http_task_checks": {
+    "passed": 32,
+    "total": 32
+  },
+  "adopted_correctness_change": {
+    "commit": "c8cbc0d",
+    "change": "preserve gfx1201 Q2_0 negative zero"
+  },
+  "reference_backend": "ROCBLAS_USE_HIPBLASLT=0; STRATA_HIP_WMMA=0; STRATA_HIPBLASLT_TUNING empty",
+  "experimental_code": {
+    "commit": "269a140",
+    "upstream_pr": 1107,
+    "recommend_as_general_default": false,
+    "supported_scope": "controlled Tensile 32K retained history, IQ3_S +512/+900 tokens: five independent pairs; IQ2_XS two-pair contrast",
+    "iq3_s_median_paired_ttft_reduction_pct": {
+      "512": 16.1777,
+      "900": 14.0743
+    },
+    "iq2_xs_median_paired_ttft_reduction_pct": {
+      "512": 16.2108,
+      "900": 14.9611
+    },
+    "limits": [
+      "+256 has large paired regressions and timing bands; no stable claim",
+      "IQ3_S fresh 4K/32K decode is 3.5-4.7% slower in both recorded pairs",
+      "IQ2_XS decode flips direction between pairs and one 128K TTFT pair regresses 9.67%",
+      "full-model exactness passed under recorded controls; earlier original-setting IQ2_XS exact failures remain",
+      "product functional success does not establish default-setting bitwise identity or performance acceptance"
+    ]
+  },
+  "other_decisions": [
+    {
+      "candidate": "default/preferred hipBLASLt on this installation",
+      "decision": "not used as the reliable reference; independently reproduced large GEMM errors"
+    },
+    {
+      "candidate": "four Lt/WMMA numerical screens against stable Tensile",
+      "decision": "rejected; unchanged predeclared quality criteria failed"
+    },
+    {
+      "candidate": "PLE RAM, worker counts, runtime affinity/issuer settings",
+      "decision": "no reliable gain in recorded historical screens; not adopted"
+    },
+    {
+      "candidate": "PR #1368",
+      "decision": "not ported; prior instrumented gather phase was about 22 ms at 4K, low measured priority; no current-backend speed claim"
+    },
+    {
+      "candidate": "PR #1297 and other investigated changes",
+      "decision": "not ported; investigation is not performance or correctness evidence"
+    }
+  ],
+  "unmeasured": [
+    "full chunk/ring/MTP/KV/PCIe parameter sweep on the stable backend",
+    "strict NUMA binding/interleaving comparison",
+    "Windows, other GPUs, concurrent serving and other model variants"
+  ],
+  "source_report": "pr1107-final-coverage.json",
+  "build_audit": "pr1107-build-objects.json"
+}

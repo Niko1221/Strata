@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "declared_before_candidate_quality_results": true,
+  "scope": "Local regression gates, not a general model quality benchmark or formal equivalence proof",
+  "reference": "same quantization and fixed diagnostic engine, ROCBLAS_USE_HIPBLASLT=0 (Tensile), WMMA=0, suffix/chain=0; new logits required",
+  "kernel": "existing attention/MMQ/parity test criteria remain unchanged",
+  "teacher_forced": {
+    "input_lengths": [128, 4096, 32768],
+    "positions_per_length": 16,
+    "continuation": "Fixed historical baseline normal-generation IDs, used only as shared teacher-forced inputs; new Tensile logits are the numerical reference.",
+    "sampling": "temperature=0, top_k=1, top_p=1, min_p=0, seed=42; no penalties",
+    "prompt_cache": 6,
+    "require_first_request_reused": 0,
+    "require_incremental_reuse": true,
+    "max_mean_kl_reference_candidate_nats": 0.001,
+    "max_position_kl_reference_candidate_nats": 0.01,
+    "min_top1_agreement": 0.98,
+    "require_all_logits_finite": true,
+    "baseline_repeat": "new independent Tensile teacher-forced repeat required; no use of historical default-backend logits as acceptance reference"
+  },
+  "tasks": {
+    "require_all_reference_passes_preserved": true,
+    "minimum_tasks": 6,
+    "categories": [
+      "structured JSON extraction",
+      "integer arithmetic",
+      "Python code with deterministic unit cases",
+      "tool-call argument parsing",
+      "32K/128K record retrieval",
+      "multi-turn factual retention"
+    ],
+    "cancel_retry": "cancel in-flight generation and verify retry completes normally without engine restart"
+  },
+  "performance": "screening timings are diagnostic; final acceptance requires >=5 interleaved pairs in >=2 sessions and the Goal performance gates"
+}

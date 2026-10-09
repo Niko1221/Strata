@@ -1,0 +1,53 @@
+{
+  "reference_repeat_byte_identical": true,
+  "candidates": [
+    {
+      "candidate": "Lt preferred + K/V table",
+      "passed": false,
+      "checks": {
+        "mean_kl": false,
+        "max_position_kl": true,
+        "top1_agreement": true
+      },
+      "mean_kl_nats": 0.0011082150812253262,
+      "max_kl_nats": 0.008271107156351968,
+      "top1_agreement": 1.0
+    },
+    {
+      "candidate": "wmma",
+      "passed": false,
+      "checks": {
+        "mean_kl": false,
+        "max_position_kl": true,
+        "top1_agreement": false
+      },
+      "mean_kl_nats": 0.0010609307462441035,
+      "max_kl_nats": 0.008354427004233863,
+      "top1_agreement": 0.9791666666666666
+    },
+    {
+      "candidate": "kv-tensile",
+      "passed": false,
+      "checks": {
+        "mean_kl": true,
+        "max_position_kl": true,
+        "top1_agreement": false
+      },
+      "mean_kl_nats": 0.0009750058860732188,
+      "max_kl_nats": 0.006866646037794865,
+      "top1_agreement": 0.9791666666666666
+    },
+    {
+      "candidate": "kv-tensile-wmma",
+      "passed": false,
+      "checks": {
+        "mean_kl": false,
+        "max_position_kl": false,
+        "top1_agreement": true
+      },
+      "mean_kl_nats": 0.001052395913698884,
+      "max_kl_nats": 0.010164729312370372,
+      "top1_agreement": 1.0
+    }
+  ]
+}

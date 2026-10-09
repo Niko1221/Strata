@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="5"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="25"
+	timestamp="2026-10-08T15:45:34"
+	>
+	<testcase name="hip_q2_zero" classname="hip_q2_zero" time="5.22338" status="run">
+		<properties/>
+		<system-out>hip_q2_zero: 1024 values, 0 failures
+</system-out>
+	</testcase>
+	<testcase name="hip_prompt_attn_wmma" classname="hip_prompt_attn_wmma" time="9.15018" status="run">
+		<properties/>
+		<system-out>strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+NEWHASH 2c5cab7eb6601f66
+PASS int8 ctx 32768, 2048 queries: vs FP64 old 2.13e-06 new 2.64e-06 (output scale 3.62); new vs old 6.32e-06 (1.7e-06 of scale); 39.635 -&gt; 5.261 ms per chunk (7.53x)
+NEWHASH deb4f727fbac41af
+PASS int8 ctx 1500, 1500 queries: vs FP64 old 1.78e-06 new 3.57e-06 (output scale 3.57); new vs old 5.25e-06 (1.4e-06 of scale); 13.296 -&gt; 1.524 ms per chunk (8.72x)
+NEWHASH 2d10cd9d6d1fd5b5
+PASS int8 ctx 2100, 256 queries: vs FP64 old 2.03e-06 new 3.13e-06 (output scale 3.61); new vs old 4.05e-06 (1.1e-06 of scale); 5.291 -&gt; 0.736 ms per chunk (7.18x)
+FAILURES: 0
+</system-out>
+	</testcase>
+	<testcase name="iq_parity_fixtures" classname="iq_parity_fixtures" time="0.143817" status="run">
+		<properties/>
+		<system-out>  IQ2_XXS  type 16  32 x 256  2112 block bytes, 8192 reference floats
+  IQ2_XS   type 17  32 x 256  2368 block bytes, 8192 reference floats
+  IQ2_S    type 22  32 x 256  2624 block bytes, 8192 reference floats
+  IQ3_XXS  type 18  32 x 256  3136 block bytes, 8192 reference floats
+  IQ3_S    type 21  32 x 256  3520 block bytes, 8192 reference floats
+  IQ1_M    type 29  32 x 256  1792 block bytes, 8192 reference floats
+  IQ4_NL   type 20  32 x 256  4608 block bytes, 8192 reference floats
+  IQ4_XS   type 23  32 x 256  4352 block bytes, 8192 reference floats
+  Q2_0     type 42  32 x 256  2304 block bytes, 8192 reference floats
+  Q3_K     type 11  32 x 256  3520 block bytes, 8192 reference floats
+iq_fixture: 10 fixtures in ${MEASURED_REPO}/build-r9700-fix/iq_fixture (seed 7)
+</system-out>
+	</testcase>
+	<testcase name="iq_parity" classname="iq_parity" time="5.20753" status="run">
+		<properties/>
+		<system-out>IQ2_XXS  type 16   32 x   256  dequant rel 0.00e+00  mmvq rel 4.75e-03 (ncols 1..8)  ok
+IQ2_XS   type 17   32 x   256  dequant rel 0.00e+00  mmvq rel 5.27e-03 (ncols 1..8)  ok
+IQ2_S    type 22   32 x   256  dequant rel 0.00e+00  mmvq rel 5.13e-03 (ncols 1..8)  ok
+IQ3_XXS  type 18   32 x   256  dequant rel 0.00e+00  mmvq rel 5.73e-03 (ncols 1..8)  ok
+IQ3_S    type 21   32 x   256  dequant rel 0.00e+00  mmvq rel 4.63e-03 (ncols 1..8)  ok
+IQ1_M    type 29   32 x   256  dequant rel 0.00e+00  mmvq rel 5.53e-03 (ncols 1..8)  ok
+IQ4_NL   type 20   32 x   256  dequant rel 0.00e+00  mmvq rel 5.06e-03 (ncols 1..8)  ok
+IQ4_XS   type 23   32 x   256  dequant rel 0.00e+00  mmvq rel 5.09e-03 (ncols 1..8)  ok
+Q2_0     type 42   32 x   256  dequant rel 0.00e+00  mmvq rel 4.57e-03 (ncols 1..8)  ok
+Q3_K     type 11   32 x   256  dequant rel 0.00e+00  mmvq rel 4.82e-03 (ncols 1..8)  ok
+iq_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="hip_prefill_mmq_parity" classname="hip_prefill_mmq_parity" time="5.82472" status="run">
+		<properties/>
+		<system-out>synthetic-Q2_0-GU-pass0: type=42 rows=7 experts=3 ref_rms=1.98041 rel_l2=0.00106754 max_abs/ref_rms=0.00380488 zero_row_max=0
+synthetic-Q2_0-down-pass0: type=42 rows=7 experts=3 ref_rms=2.10697 rel_l2=0.000617685 max_abs/ref_rms=0.00253579 zero_row_max=0
+synthetic-Q2_0-GU-pass1: type=42 rows=7 experts=3 ref_rms=1.98512 rel_l2=0.0011973 max_abs/ref_rms=0.00416652 zero_row_max=0
+synthetic-Q2_0-down-pass1: type=42 rows=7 experts=3 ref_rms=2.12958 rel_l2=0.000538054 max_abs/ref_rms=0.00216068 zero_row_max=0
+synthetic-Q2_0-GU-pass2: type=42 rows=5 experts=2 ref_rms=1.90121 rel_l2=0.00125928 max_abs/ref_rms=0.00443 zero_row_max=0
+synthetic-Q2_0-down-pass2: type=42 rows=5 experts=2 ref_rms=2.0192 rel_l2=0.000491596 max_abs/ref_rms=0.00196968 zero_row_max=0
+synthetic-Q4_K skipped: not built (STRATA_MMQ_KQUANTS off?)
+synthetic-Q5_K skipped: not built (STRATA_MMQ_KQUANTS off?)
+synthetic-Q6_K skipped: not built (STRATA_MMQ_KQUANTS off?)
+synthetic-Q5_1 skipped: not built (STRATA_MMQ_KQUANTS off?)
+MMQ parity screen passed...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+</testsuite>
