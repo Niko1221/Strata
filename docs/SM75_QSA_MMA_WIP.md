@@ -183,3 +183,19 @@ IQ4 primary results use an additional BA/AB/BA set of three pairs with six-decim
 QSA uses the original two-decimal ms stage output: each stage sum is rounded by at most 0.005 ms per window before division by layer count. The ordinary CI95 does not include print rounding. The separate worst-rounding envelope propagates all stage bounds into each paired percentage, then computes the most extreme Student-t interval endpoints over all eight endpoint combinations for the three pairs. It is a conservative sensitivity envelope, not a second independent confidence interval or a hardware-counter accuracy guarantee.
 
 Forced-follow throughput has acceptance 100% by construction and is not production MTP tok/s. CPU load, altered routing for numerically different MMA, and device clock differences limit end-to-end attribution. Stage timings include execution and inter-kernel gaps; they are not hardware-counter decompositions. Three pairs are a small sample. The run matrix covers the final integrated code but does not qualify every T/context/KV mode or backend.
+
+## October 9: real MTP and additional backend qualification
+
+Full HIP engine compile passed on exact head0eedc17 using the official ROCm7.0.2 container, with no AMD GPU runtime claim. CI: https://github.com/Unmaple/Strata/actions/runs/37923593706 (qsa-hip). SYCL qualification remains pending; its first environment initialization failed before a compile result was obtained.
+
+Actual CUDA12.9.86 compute70 PTX-only fixture JIT on SM75 passed all240 cases with byte-exact native fallback, including graph capture/replay. cudaFuncAttributes confirmed PTX70/binary75 for all four KV formats. A compute75 PTX-only positive control passed240 cases with max_abs0.000244141 and worst NRMSE0.000308986. This closes the standalone low-target runtime fallback check, not a full-engine CUDA12 build gate.
+
+Free generation uses real MTP, greedy seed20261009,512 output tokens,14 CPU participants, default42 tasks,PCIe .14,actual6528 expert slots. Three balanced AB/BA independent process pairs per topic; no oracle/follow or logits export. CLI --spec4 --mtp-max-t3 actually limits verification to T<=3 (up to two drafts). CPU total is sampled every2 seconds over the whole process and includes external work; GPU clocks are unlocked.
+
+|Topic|Native tok/s|MMA tok/s|Paired change %|CI95 % (n3,df2)|
+|---|---:|---:|---:|---:|
+|code|39.145|37.556|-4.041|[-7.682,-0.401]|
+|systems|45.500|44.309|-2.569|[-14.730,9.591]|
+|long16k|44.272|43.427|-1.890|[-6.676,2.896]|
+
+Code shows an observed workload throughput regression; the other differences are inconclusive. Native/MMA output text differs in every pair. Draft acceptance falls3.372pp/code,1.111pp/systems,.233pp/long16k; acceptance/routes, external CPU work and clocks confound attribution. This does not establish identical-work kernel regression or an acceptance-driven causal explanation. There is no demonstrated production throughput benefit in this batch. Separate T<=4 (three-draft) testing is underway and will not be pooled with T<=3. Keep default off and Draft.
