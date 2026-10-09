@@ -2253,6 +2253,28 @@ class CancelledRead(unittest.TestCase):
         self.assertEqual(m["totals"]["prompt_tokens"], 8 + 2 * total)
 
 
+class QueuedHeartbeat(unittest.TestCase):
+    """#1619: a request waiting for the single request turn used to send no bytes at all, so a client with a
+    stream idle timeout aborted a healthy queued request (and its retry re-read the prompt).  It now pings while
+    it waits - the same heartbeat as while the engine is quiet - and the fifo is still released at the end."""
+
+    def test_pings_while_waiting_for_the_turn(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.fifo.acquire()                                     # another request holds the turn
+        try:
+            with mock.patch("serve.server.FIFO_PING_S", 0.01):
+                gen = svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event())
+                self.assertEqual(next(gen)[0], "ping")         # a heartbeat, not silence
+                self.assertEqual(next(gen)[0], "ping")
+                svc.fifo.release()                             # the turn frees up: the request runs
+                self.assertIn("done", [k for k, _ in gen])
+        finally:
+            if svc.fifo.locked():
+                svc.fifo.release()
+        self.assertFalse(svc.fifo.locked())                    # released when the request ended
+
+
 class LiveRate(unittest.TestCase):
     """The Monitor's Speed readout: live.tok_s is a rate, and a request that never got a DONE keeps no counters.
 

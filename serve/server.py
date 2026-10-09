@@ -249,6 +249,9 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
+# #1619: how often a request waiting for the request turn sends a heartbeat (the engine-quiet one is 10 s);
+# STRATA_FIFO_PING_S overrides it.
+FIFO_PING_S = _timeout_env("STRATA_FIFO_PING_S", 10.0) or 10.0
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -2574,6 +2577,16 @@ def slot_filename_problem(name) -> str | None:
     return None
 
 
+@contextlib.contextmanager
+def _acquired(lock):
+    """`with` a lock that is already held: enters nothing and exits through the lock's own __exit__ (the fifo's
+    unlock runs whatever the turn's release does)."""
+    try:
+        yield
+    finally:
+        lock.__exit__()
+
+
 def slot_save_dir(value, base: str | None = None) -> str:
     """The slot save path as one absolute, normalized directory (relative to `base`, else the server's working
     directory), created private to this user when missing.  ValueError for anything else."""
@@ -3462,8 +3475,17 @@ class Service:
         with self.status_lock:
             self.status["queued"] += 1
         try:
+            # #1619: while a request waits for the turn it sends nothing at all, so a client with a stream idle
+            # timeout aborts a healthy queued request - and the retry re-reads the prompt.  Ping while waiting,
+            # the same heartbeat as while the engine is quiet (FIFO_PING_S; --batch requests do not hold the fifo).
+            fifo_ctx = contextlib.nullcontext()
+            if not par:
+                while not self.fifo.acquire(False):      # acquire(blocking=False): a short wait, a ping, retry
+                    yield "ping", None
+                    time.sleep(FIFO_PING_S)
+                fifo_ctx = _acquired(self.fifo)
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
-            with (contextlib.nullcontext() if getattr(self.engine, "batch", 0) else self.fifo):
+            with fifo_ctx:
                 try:
                     with self.status_lock:
                         if trace is not None:
