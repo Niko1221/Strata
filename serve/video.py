@@ -49,8 +49,8 @@ class VideoPolicy:
     max_source_pixels: int = 16 << 20
     max_rgb_bytes: int = 256 << 20
     max_decoded_bytes: int = 4 << 30
-    max_tokens: int = 32768
-    max_embedding_bytes: int = 384 << 20
+    max_tokens: int = 65536
+    max_embedding_bytes: int = 512 << 20
     max_disk_bytes: int = 2 << 30
     cache_bytes: int = 256 << 20
     deadline_s: float = 600.0

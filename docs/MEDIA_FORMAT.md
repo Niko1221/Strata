@@ -102,13 +102,13 @@ and smaller request budgets as appropriate. An allowed-pad list is not a model p
 each kind to its verified pad ID. Source bytes, decoded frames/pixels, retained RGB, disk use and deadlines need separate
 limits in the decoder/server; this codec cannot enforce them.
 
-The opt-in serving defaults are 1,024 selected frames, 600 s clip duration, 32,768 visual rows, 256 MiB retained
-RGB, 384 MiB wire, 4 GiB streamed decoder output, 256 MiB source, 2 GiB shared disk and a 600 s request deadline.
+The opt-in serving defaults are 1,024 selected frames, 600 s clip duration, 65,536 visual rows, 256 MiB retained
+RGB, 512 MiB wire, 4 GiB streamed decoder output, 256 MiB source, 2 GiB shared disk and a 600 s request deadline.
 The configured frame ceiling is 4,096; it does not relax the row, RGB, wire, decoder-output, disk, duration or
 request deadline budgets. `ClipInfo` calculates rows, RGB, decoder output and a conservative wire reservation from
 the actual selected indices and resized dimensions before decoding. The disk quota covers source, RGB spool,
 encoder output, request artifact and completed cache files, including concurrent requests. At their default
-individual maxima, source + RGB + two wire artifacts + cache total at most 1,536 MiB against a 2 GiB disk quota;
+individual maxima, source + RGB + two wire artifacts + cache total at most 1,792 MiB against a 2 GiB disk quota;
 requests can also be rejected when the shared quota is busy. HTTP request-body limits independently restrict large
 base64 data URLs. These are safety budgets, not model context or video-quality guarantees.
 

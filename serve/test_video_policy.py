@@ -26,14 +26,19 @@ class VideoPolicyTests(unittest.TestCase):
         self.assertEqual(VideoPolicy.from_config({"enabled": True}), VideoPolicy())
         for cfg in (True, {"enabled": "yes"}, {"enabled": True, "typo": 1},
                     {"enabled": True, "fps": float("nan")}, {"enabled": True, "max_frames": 4097},
-                    {"enabled": True, "max_tokens": False}, {"enabled": True, "max_disk_bytes": 1},
+                    {"enabled": True, "max_tokens": False}, {"enabled": True, "max_tokens": 65537},
+                    {"enabled": True, "max_embedding_bytes": (768 << 20) + 1},
+                    {"enabled": True, "max_disk_bytes": 1},
                     {"enabled": True, "max_decoded_bytes": (16 << 30) + 1}):
             with self.subTest(cfg=cfg), self.assertRaises(VideoError):
                 VideoPolicy.from_config(cfg)
         with self.assertRaises(VideoError):
             VideoPolicy.from_config({"enabled": True, "max_group_tokens": 301}, 8, 300)
-        self.assertEqual(VideoPolicy.from_config({"enabled": True, "max_frames": 2048}).max_frames, 2048)
-        self.assertEqual(VideoPolicy().max_frames, 1024)
+        max_budget = VideoPolicy.from_config({"enabled": True, "max_tokens": 65536,
+                                              "max_embedding_bytes": 768 << 20})
+        self.assertEqual((max_budget.max_tokens, max_budget.max_embedding_bytes), (65536, 768 << 20))
+        self.assertEqual((VideoPolicy().max_frames, VideoPolicy().max_tokens, VideoPolicy().max_embedding_bytes),
+                         (1024, 65536, 512 << 20))
 
     def test_reference_sampling_and_ties_to_even(self):
         import numpy as np
