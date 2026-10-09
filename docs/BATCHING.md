@@ -38,6 +38,41 @@ by default, and the pipelined path does not run the slots' MTP drafts, so with `
 engine runs one group and says so; `--batch-groups G` (G above 1) or `--batch-groups auto` given on the command line
 keeps the pipeline and turns `--batch-mtp` off. Only a layer split of two stages on two GPUs has been run.
 
+Measured on a layer split of 2x RTX 3080 20 GB (220 W cap) with a Xeon E5-2696 v4, UD-Q4_K_XL, `"layer_split": "23"`,
+`"parallel": 2`, `--spec 4`: two concurrent greedy decodes of 300 tokens, the two streams' tok/s added, median of
+the measurements (10 rounds of two streams after each restart of the engine, 20 measurements per restart). The
+engine was 0.1.41 with the rest of our production stack on it (the shared KV pool, and the adaptive expert tier
+running in batch windows in the first two arms; the pipelined path of the third never adapts in windows), so this is
+`--batch-mtp` on top of that, not this change alone on main.
+
+| arm | aggregate tok/s | restarts, measurements | per window |
+| --- | --- | --- | --- |
+| `--batch-mtp`, one group | **89.2** | 3, 60 | 3.3 rows, 34.6 ms, 66-67% of the proposals accepted |
+| no `--batch-mtp`, one serial group | 77.3 | 2, 40 | 2.0 rows, 23.7 ms |
+| no `--batch-mtp`, `--batch-groups` unset (the 0.1.41 default: two pipelined groups of one slot) | 77.7 | 1, 20 | one row per group step |
+
+That is +15.4% for `--batch-mtp` against serial windows without it (95% bootstrap interval of the ratio of medians
++12.5% to +17.9%) and +14.8% against the pipelined default; the two arms without it tie. One stream alone decodes the
+same with and without it (81.7 and 82.0 tok/s), and the two slot drafters cost 35 to 110 expert-cache slots on the
+last GPU (50 MiB of private state each).
+
+The pipelined default is better in one place: a new prompt of about 48k tokens arriving while one stream decodes was
+read at 2508 tok/s with pipelined groups and 1217 tok/s in serial windows, and the decoding stream finished sooner
+(25.0 against 18.0 tok/s over its whole run); `--batch-mtp` does not change that. So it pays where concurrent decodes
+dominate; with long reads arriving beside decodes the pipelined groups can be the better choice. Not measured: more
+than two stages (the report on #1253 found no gain at four stages), more than two slots, sampled decoding, an
+upstream-main binary (the pipelined arm is our build, started with the flags 0.1.41 resolves to).
+
+Earlier, on engine 0.1.40.3 with this change and the same two cards, two concurrent streams: UD-Q4_K_XL 39.9 to 43.5
+tok/s without and 44.5 to 51.3 with `--batch-mtp` (2 runs per arm), and a small Coder IQ1_M test model with all
+experts in VRAM 84.0 without and 101.2 with it, the greedy text of both streams identical.
+
+Text: with the same expert cache on both arms (the slot drafters take VRAM, so the cache differs unless the
+reserve is adjusted) and `--pcie-frac 0`, `--adapt-every 0`, the greedy text with `--batch-mtp` was equal to the text
+without it for 5 short prompts in all 6 comparisons (one restart per arm). That is text equality, not a bit-exactness
+proof, and a 25k-token prompt read while the other stream decodes was not repeatable between two identical streams
+of the same arm.
+
 With a layer split, the engine options go into the config's `args`:
 
 ```
