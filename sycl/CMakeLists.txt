@@ -294,6 +294,12 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
+  target_link_libraries(sycl_router_fast PRIVATE strata_kernels)
+  add_test(NAME sycl_router_fast COMMAND sycl_router_fast)
+  add_executable(sycl_payload_pairs ${CMAKE_CURRENT_SOURCE_DIR}/probe/payload_pairs.cpp)
+  target_link_libraries(sycl_payload_pairs PRIVATE strata_kernels)
+  add_test(NAME sycl_payload_pairs COMMAND sycl_payload_pairs)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):

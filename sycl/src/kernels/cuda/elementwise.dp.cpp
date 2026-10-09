@@ -425,7 +425,7 @@ __dpct_inline__ void copy_from_mapped_kernel(sycl::float4 *__restrict__ dst,
              item_ct1.get_local_id(2);
          i < n4; i += (int64_t)item_ct1.get_group_range(2) *
                       item_ct1.get_local_range(2)) {
-        const sycl::float4 v = const_cast<const sycl::float4 *>(src)[i];
+        const sycl::float4 v = strata::load_mapped_float4(src + i);
         dst[i] = v;
     }
 }
@@ -468,7 +468,7 @@ __dpct_inline__ void copy_rows_from_mapped_kernel(
 #pragma unroll
         for (int64_t i = item_ct1.get_local_id(2); i < row4;
              i += item_ct1.get_local_range(2))
-            d[i] = const_cast<const sycl::float4 *>(sr)[i];
+            d[i] = strata::load_mapped_float4(sr + i);
     }
 }
 namespace {
@@ -588,6 +588,30 @@ inline uint32_t dbx_payload_sum(const float* x, int64_t n, const int32_t* ids, c
         for (int64_t j = 0; j < k; ++j) s += dbx_payload_mix(sycl::bit_cast<uint32_t>(w[j]), (uint32_t) (n + k + j));
     return s;
 }
+// Pair the activation stores without changing the checksum's word/position
+// order. Odd sizes or unaligned mapped pointers retain the scalar path.
+__dpct_inline__ uint32_t dbx_publish_x(const float* x, float* out, int n, int lane, int threads) {
+    uint32_t part = 0;
+    if (((uintptr_t)out & 7u) == 0) {
+        for (int j = 2 * lane; j + 1 < n; j += 2 * threads) {
+            const uint32_t a = sycl::bit_cast<uint32_t>(x[j]);
+            const uint32_t b = sycl::bit_cast<uint32_t>(x[j + 1]);
+            strata::sys_store_mapped(reinterpret_cast<uint64_t*>(out + j),
+                                     (uint64_t)a | ((uint64_t)b << 32));
+            part += dbx_payload_mix(a, (uint32_t)j) + dbx_payload_mix(b, (uint32_t)(j + 1));
+        }
+        if ((n & 1) && lane == 0) {
+            strata::sys_store_mapped(out + n - 1, x[n - 1]);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[n - 1]), (uint32_t)(n - 1));
+        }
+    } else {
+        for (int j = lane; j < n; j += threads) {
+            strata::sys_store_mapped(out + j, x[j]);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[j]), (uint32_t)j);
+        }
+    }
+    return part;
+}
 // The ring, its tag and its checksum, in slot r % 4 of the sequence word (elementwise.hpp).  Written last, after a
 // system fence over the uncached payload stores.
 __dpct_inline__ void dbx_ring_commit(uint32_t* seq, uint32_t part, bool group_ok, uint32_t ring) {
@@ -612,13 +636,7 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item_ct1.get_local_id(2);
     const int nt = (int) item_ct1.get_local_range(2);
-    uint32_t part = 0;
-#pragma unroll
-    for (int j = i; j < n; j += nt) {
-        const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
-        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
-    }
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt);
     if (i < k) {
         const int32_t id = ids[i];
         strata::sys_store_mapped(ids_out + i, id);
@@ -649,13 +667,7 @@ __dpct_inline__ void doorbell_publish_res_kernel(
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item_ct1.get_local_id(2);
     const int nt = (int) item_ct1.get_local_range(2);
-    uint32_t part = 0;
-#pragma unroll
-    for (int j = i; j < n; j += nt) {
-        const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
-        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
-    }
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt);
     if (i < k) {
         const int32_t id = ids[i];
         strata::sys_store_mapped(ids_out + i, id);
@@ -679,13 +691,7 @@ __dpct_inline__ void doorbell_publish_value_kernel(
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item_ct1.get_local_id(2);
     const int nt = (int) item_ct1.get_local_range(2);
-    uint32_t part = 0;
-#pragma unroll
-    for (int j = i; j < n; j += nt) {
-        const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
-        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
-    }
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt);
     if (i < k) {
         const int32_t id = ids[i];
         strata::sys_store_mapped(ids_out + i, id);
