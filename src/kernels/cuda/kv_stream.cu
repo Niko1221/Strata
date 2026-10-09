@@ -165,10 +165,10 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
 }
 
 // One block per missed block (grid-stride): copy its runs from the host copy into its slot, 16 B per thread.
-__global__ void copy_kernel(KvStreamMap m, Runs r) {
+__global__ void copy_kernel(KvStreamMap m, Runs r, KvHostPools host) {
     const int need = m.ctl[2];
     for (int k = blockIdx.x; k < need; k += gridDim.x) {
-        const long long b = m.miss_block[k], sl = m.miss_slot[k];
+        const long long b = host.block(m.miss_block[k]), sl = m.miss_slot[k];
         for (int a = 0; a < r.n; ++a) {
             const uint4* src = reinterpret_cast<const uint4*>(r.src[a] + b * r.len[a]);
             uint4* dst = reinterpret_cast<uint4*>(r.dst[a] + sl * r.len[a]);
@@ -229,7 +229,7 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
     }
     resolve_kernel<<<1, RT, 0, (cudaStream_t) stream>>>(m, ids, steps, (int) n_q, (int) cap, (int) s.page_size);
     check("resolve");
-    copy_kernel<<<96, 128, 0, (cudaStream_t) stream>>>(m, runs_of(slots, host, fmt, s));
+    copy_kernel<<<96, 128, 0, (cudaStream_t) stream>>>(m, runs_of(slots, host, fmt, s), host);
     check("copy");
 }
 
@@ -242,9 +242,11 @@ void kv_ring_restore(const QsaAttnPools& slots, const KvHostPools& host, int fmt
                      int64_t n_slots, const QsaShapes& s, void* stream) {
     const Runs r = runs_of(slots, host, fmt, s);
     for (int64_t b = b0; b < b1;) {
-        const int64_t sl = b % n_slots, run = std::min<int64_t>(b1 - b, n_slots - sl);   // up to the ring's end
+        // up to the ring's end and the end of the host chunk
+        const int64_t sl = b % n_slots, run = host.contiguous(b, std::min<int64_t>(b1 - b, n_slots - sl));
+        const int64_t hb = host.block_host(b);
         for (int a = 0; a < r.n; ++a)
-            if (cudaMemcpyAsync(r.dst[a] + sl * r.len[a], r.src[a] + b * r.len[a], (size_t) (run * r.len[a]),
+            if (cudaMemcpyAsync(r.dst[a] + sl * r.len[a], r.src[a] + hb * r.len[a], (size_t) (run * r.len[a]),
                                 cudaMemcpyDefault, (cudaStream_t) stream) != cudaSuccess)
                 check("ring restore");
         b += run;
@@ -255,20 +257,28 @@ void kv_stage_from_host(const QsaAttnPools& stage, const KvHostPools& host, int 
                         const QsaShapes& s, void* stream) {
     if (n_blocks <= 0) return;
     const Runs r = runs_of(stage, host, fmt, s);
-    for (int a = 0; a < r.n; ++a)
-        if (cudaMemcpyAsync(r.dst[a], r.src[a], (size_t) (n_blocks * r.len[a]), cudaMemcpyDefault,
-                            (cudaStream_t) stream) != cudaSuccess)
-            check("stage");
+    for (int64_t b = 0; b < n_blocks;) {   // one copy per host chunk
+        const int64_t run = host.contiguous(b, n_blocks - b), hb = host.block_host(b);
+        for (int a = 0; a < r.n; ++a)
+            if (cudaMemcpyAsync(r.dst[a] + b * r.len[a], r.src[a] + hb * r.len[a], (size_t) (run * r.len[a]),
+                                cudaMemcpyDefault, (cudaStream_t) stream) != cudaSuccess)
+                check("stage");
+        b += run;
+    }
 }
 
 void kv_unstage_to_host(const QsaAttnPools& stage, const KvHostPools& host, int fmt, int64_t b0, int64_t b1,
                         const QsaShapes& s, void* stream) {
     if (b1 <= b0) return;
-    const Runs r = runs_of(stage, host, fmt, s);   // src: the host copy, dst: the staging pool (identity layout both)
-    for (int a = 0; a < r.n; ++a)
-        if (cudaMemcpyAsync((void*) (r.src[a] + b0 * r.len[a]), r.dst[a] + b0 * r.len[a], (size_t) ((b1 - b0) * r.len[a]),
-                            cudaMemcpyDefault, (cudaStream_t) stream) != cudaSuccess)
-            check("unstage");
+    const Runs r = runs_of(stage, host, fmt, s);   // src: the host copy, dst: the staging pool (identity layout)
+    for (int64_t b = b0; b < b1;) {                 // one copy per host chunk
+        const int64_t run = host.contiguous(b, b1 - b), hb = host.block_host(b);
+        for (int a = 0; a < r.n; ++a)
+            if (cudaMemcpyAsync((void*) (r.src[a] + hb * r.len[a]), r.dst[a] + b * r.len[a], (size_t) (run * r.len[a]),
+                                cudaMemcpyDefault, (cudaStream_t) stream) != cudaSuccess)
+                check("unstage");
+        b += run;
+    }
 }
 
 KvStreamCounters kv_stream_counters(const KvStreamMap& m) {

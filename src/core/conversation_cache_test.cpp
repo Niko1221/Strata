@@ -356,5 +356,60 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // the retained reuse image belongs to the conversation it was restored from.  The production bug: with
+        // --kv-pool-tokens a solo request's conversation moved into a batch slot and the session forgot it, the
+        // retained K/V stayed behind, the next request resumed ANOTHER conversation from a different slot, and
+        // that one's next park reused the first conversation's bytes as its own unchanged prefix.
+        auto kv = [](size_t n) { std::vector<ConversationKv> v(1); v[0].k.resize(n, 1); return v; };
+        ConversationCache cache(1 << 20, 4);
+        const std::vector<int32_t> root = {1, 2, 3, 4};              // the system prompt both share
+        const std::vector<int32_t> conv_a = {1, 2, 3, 4, 5, 6, 7, 8};
+        const std::vector<int32_t> conv_b = {1, 2, 3, 4, 9, 10};
+        cache.retain(kv(100), int64_t(conv_a.size()), {}, conv_a);   // A restored, then parked again
+        cache.limit_reuse(int64_t(conv_b.size()));                   // the session now holds B: limit_reuse alone
+        auto r = cache.take_reuse(conv_b, {});                       // would keep A's bytes for B's first 6 cells
+        check(!r.kv.empty() && r.unchanged_tokens == 4,
+              "a park of another conversation reuses only the prefix the two share");
+        cache.retain(kv(100), int64_t(conv_a.size()), {}, conv_a);
+        auto gone = cache.take_reuse();   // the park early-returned: the session holds no conversation at all
+        check(gone.kv.empty() && cache.retained_bytes() == 0, "asking for the reuse with no conversation drops it");
+        cache.retain(kv(100), int64_t(conv_a.size()), {}, conv_a);
+        std::vector<int32_t> grown = conv_a;
+        grown.push_back(9);
+        r = cache.take_reuse(grown, {});
+        check(r.unchanged_tokens == 8, "the same conversation, continued, keeps its retained prefix");
+        cache.retain(kv(100), 8, {}, conv_a);
+        cache.limit_reuse(5);
+        r = cache.take_reuse(conv_a, {});
+        check(r.unchanged_tokens == 5, "the first rewrite still bounds the reuse");
+        cache.retain(kv(100), 8, {}, conv_a);
+        cache.retain(kv(100), 6, {}, conv_b);   // B restored: its bytes, B's identity
+        r = cache.take_reuse(conv_a, {});
+        check(r.unchanged_tokens == 4, "retaining another conversation replaces the identity with it");
+        std::vector<std::vector<ConversationKv>> stage_kv;
+        stage_kv.push_back(kv(50));
+        cache.retain(kv(100), 8, std::move(stage_kv), conv_a);
+        r = cache.take_reuse(conv_b, {});
+        check(r.stages.size() == 1 && r.stages[0].unchanged_tokens == 4,
+              "a later stage's reuse is bounded by the shared prefix too");
+        // the pictures: equal placeholder tokens over different pixels share only the cells before the picture
+        const std::vector<ConversationImageKey> img_a{{2, 111}}, img_b{{2, 222}};
+        cache.retain(kv(100), 4, {}, root, img_a);
+        r = cache.take_reuse(root, img_b);
+        check(r.unchanged_tokens == 2, "the same tokens under different pixels stop at the picture");
+        cache.retain(kv(100), 4, {}, root, img_a);
+        r = cache.take_reuse(root, {});
+        check(r.unchanged_tokens == 2, "a conversation without the picture reuses nothing past its start");
+        cache.retain(kv(100), 4, {}, root, img_a);
+        r = cache.take_reuse(root, img_a);
+        check(r.unchanged_tokens == 4, "the same tokens and the same pixels keep everything");
+        check(conversation_shared_prefix({1, 2, 3}, {}, {1, 2}, {}) == 2, "shared prefix: the shorter prefix");
+        check(conversation_shared_prefix({1, 2, 3}, {}, {1, 9, 3}, {}) == 1, "shared prefix: to the first difference");
+        check(conversation_shared_prefix({1, 2}, {{1, 5}}, {1, 2}, {{1, 5}}) == 2, "shared prefix: equal pictures pass");
+        ConversationCache budgeted(1 << 20, 4);
+        budgeted.retain(kv(100), 8, {}, conv_a);
+        check(budgeted.bytes() > budgeted.retained_bytes(), "the retained identity counts against the budget");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
