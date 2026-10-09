@@ -3622,9 +3622,9 @@ namespace {
 constexpr int WG_BM = 64, WG_BN = 128, WG_THREADS = 256, WG_XK = 128, WG_MT = 4;
 // A block: BN = 128 weight rows of one expert x up to WG_MT * BM = 256 of its token rows (blockIdx.y walks an expert's
 // rows in such chunks), so every weight superblock is dequantized ONCE per chunk into shared memory (WK 256: an IQ
-// superblock through dq_dispatch; WK 128: two Q2_0 blocks); the activations stream through a BM x 128 tile.  8 warps
-// of 32 x 32 per m-tile (2 x 2 fragments), FP32 accumulators for the chunk's m-tiles in registers.
-template<int WK, bool Q20>
+// superblock through dq_dispatch; WK 128: two Q2_0 blocks, or four IQ4_NL blocks); the activations stream through a
+// BM x 128 tile.  8 warps of 32 x 32 per m-tile (2 x 2 fragments), FP32 accumulators for the chunk's m-tiles in registers.
+template<int WK, bool Q20, bool IQNL = false>
 __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty, const uint8_t* __restrict__ W,
                                                                          size_t expert_bytes, size_t row_bytes, int K,
                                                                          const __half* __restrict__ X, int ldx,
@@ -3669,7 +3669,23 @@ __global__ void __launch_bounds__(WG_THREADS) gemm_iq_f16_grouped_kernel(int ty,
     load_x(0);
     int it = 0;
     for (int k0 = 0; k0 < K; k0 += WK) {
-        if constexpr (!Q20) {
+        if constexpr (IQNL) {
+            // IQ4_NL down (WK 128 = 4 x block_iq4_nl): one thread per (row, 64-value half) - the four blocks of the
+            // 128-value window sit in two halves of two blocks, and each thread's values are exactly dq_iq4_nl's
+            const int r = tid >> 1, half = tid & 1;
+            const block_iq4_nl* bp = reinterpret_cast<const block_iq4_nl*>(we + (size_t) (n0 + r) * row_bytes) + k0 / 32 + half * 2;
+            __half* o = sw + r * LDW + half * 64;
+#pragma unroll
+            for (int bl = 0; bl < 2; ++bl) {
+                const block_iq4_nl* b = bp + bl;
+                const float d = (float) b->d;
+#pragma unroll
+                for (int p = 0; p < 16; ++p) {
+                    o[bl * 32 + p] = cvt<__half>(d * kvalues_iq4nl[b->qs[p] & 0xf]);
+                    o[bl * 32 + p + 16] = cvt<__half>(d * kvalues_iq4nl[b->qs[p] >> 4]);
+                }
+            }
+        } else if constexpr (!Q20) {
             for (int r = warp; r < WG_BN; r += WG_THREADS / 32)
                 dq_dispatch<__half>(ty, we + (size_t) (n0 + r) * row_bytes, k0 / 256, sw + r * LDW, lane);
         } else {
@@ -3743,7 +3759,8 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
                          const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream) {
     if (n_out % WG_BN != 0 || n_experts <= 0 || max_rows <= 0 || ldy % 4 != 0) return false;
     const bool q20 = ty == 42;
-    if (q20 ? K % 128 != 0 : (K % 256 != 0 || !is_iq(ty))) return false;
+    const bool nl = ty == 20 && K % 256 != 0;   // IQ4_NL down (K=640): there is no WK=256 path for this K
+    if (q20 || nl ? K % 128 != 0 : (K % 256 != 0 || !is_iq(ty))) return false;
     const size_t row_bytes = iq_row_bytes(ty, K);
     const int mt = (max_rows + WG_MT * WG_BM - 1) / (WG_MT * WG_BM);   // row chunks per expert
     const dim3 grid((unsigned) (n_out / WG_BN), (unsigned) (n_experts * mt));
@@ -3753,11 +3770,15 @@ bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, 
     if (!attr) {
         cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<256, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(256));
         cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<128, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(128));
+        cudaFuncSetAttribute(gemm_iq_f16_grouped_kernel<128, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem(128));
         attr = true;
     }
     if (q20)
         gemm_iq_f16_grouped_kernel<128, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                  (const __half*) X, ldx, bounds, mt, Y, ldy);
+    else if (nl)
+        gemm_iq_f16_grouped_kernel<128, false, true><<<grid, WG_THREADS, smem(128), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
+                                                                                         (const __half*) X, ldx, bounds, mt, Y, ldy);
     else
         gemm_iq_f16_grouped_kernel<256, false><<<grid, WG_THREADS, smem(256), s>>>(ty, (const uint8_t*) W, expert_bytes, row_bytes, K,
                                                                                   (const __half*) X, ldx, bounds, mt, Y, ldy);
