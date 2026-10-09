@@ -6046,8 +6046,8 @@ int main(int argc, char** argv) {
         }
         for (const auto& [i, s] : filled) host_res[i] = s;
         kvg.refilled += (int64_t) filled.size();
-        if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess)
-            return false;
+        // res_put waits for its copy: the next reader can be a verify window (a non-blocking stream) right away
+        if (res_put(d_res) != cudaSuccess) return false;
         for (const strata::core::VmmChunk h : kvg.spare) strata::core::vmm_chunk_free(h);   // new ones, if any
         kvg.spare.clear();
         ++kvg.trims;
