@@ -35,6 +35,32 @@ This candidate is **not bit-exact** to native FP32 attention. Historical main-mo
 
 The main release gates remain model-quality checks, current-head performance ablation, upstream default-path comparison, and HIP builds. Do not infer quality from the small synthetic error or infer new performance intervals from the historical table.
 
+### October 9 GPU timing and model-quality follow-up
+
+The complete current-head CUDA kernel library was used for six independent process rounds. A 100-call graph was timed with CUDA events, with native/MMA order alternating inside each process. Process-level paired Student-t CI95 uses df=5. Clocks were not locked. The same synthetic KV was reused and may reside in L2: these are isolated attention-call timings, not DRAM throughput, whole-layer prefix latency or production tok/s.
+
+|INT8 KV capacity|T|Native us +/- CI95|MMA us +/- CI95|Paired reduction % +/- CI95|
+|---|---|---:|---:|---:|
+|65|2|30.29 +/- 0.13|12.74 +/- 0.06|57.96 +/- 0.09|
+|65|3|30.36 +/- 0.14|12.90 +/- 0.10|57.51 +/- 0.31|
+|65|4|30.36 +/- 0.14|12.88 +/- 0.12|57.59 +/- 0.23|
+|2051|2|68.27 +/- 0.20|31.73 +/- 0.11|53.52 +/- 0.06|
+|2051|3|95.86 +/- 0.27|43.38 +/- 0.12|54.75 +/- 0.04|
+|2051|4|124.97 +/- 0.35|54.12 +/- 0.12|56.69 +/- 0.04|
+
+Full-model fixed-token comparisons used a local logits-export diagnostic build of this head, retaining all CPU experts (six participants, PCIe=0). CPU load varied during testing. An initial comparison was confounded by upstream's default dynamic prefill CPU share: even the first native T=1 window differed. Those results were discarded. With `STRATA_PREFILL_CPU_SHARE=0`, fixed residency and adaptation off, two native prose runs were bit-identical across all 69 logits rows; every condition's initial T=1 row also matched exactly.
+
+|Condition|Scored positions|Mean KL(native || MMA)|Top-1 agreement|Fixed-target PPL change|
+|---|---:|---:|---:|---:|
+|Prose, T=4, 10-token prompt|69|0.006188|95.65%|+1.35%|
+|Code, T=2, 12-token prompt|93|0.007454|98.92%|-1.56%|
+|Code, T=3, 12-token prompt|93|0.006822|98.92%|-2.74%|
+|3872-token prompt, mixed windows|40|0.003919|100.00%|-3.31%|
+
+The last condition scored 34 positions from T=4 windows, five from T=6 suffix-draft windows (native fallback) and one from T=1. It is not a pure T=4 test. Code text is repeated across two T settings; the 295 scored positions are not independent quality samples. PPL is exp(mean target NLL) on these small fixed continuations, not a standard corpus benchmark. No quality equivalence threshold or CI95 is claimed. Logits changed by up to approximately 1.91-2.95, despite much smaller isolated attention errors.
+
+A separate 3656-token, single-needle free-generation smoke test with MTP returned `AMBER-7319` in both variants. It does not qualify 16K/80K retrieval or other needle placements. Larger quality datasets and true long-context checks still gate review; the candidate remains opt-in and Draft.
+
 - Full CUDA engine integration and synthetic capture/masking checks passed as recorded above; real-model capture and runtime fallback failure injection remain pending.
 - Improve kernel readability and review layout, masking and host dispatch overhead.
 - Test quality with teacher-forced logits/KL, perplexity and long-context retrieval. Small attention error alone does not prove quality equivalence.
