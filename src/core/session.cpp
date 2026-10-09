@@ -14,6 +14,7 @@
 #include "strata/kernels/ngram.hpp"
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>   // __half2float, for the check's read-back of the card's own q8_1 activation rows
 
 #include <atomic>
 #include <chrono>
@@ -87,7 +88,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
         // tail".  `glm_chunk_bytes` itself is happy with any T >= 1; the guard is the caller's.
         if (glm_chunk > 1) {
             n += glm_chunk_bytes(g, k, glm_chunk);
-            n += glm_buffers_bytes(g, GLM_MAX_NTOK, max_cells);
+            n += glm_buffers_bytes(g, glm_group_max(), max_cells);
         }
         for (int64_t l = layer_lo; l < layer_hi; ++l) n += glm_layer_state_bytes(g, max_cells, l);
         // The draft block's own state, on the stage that holds the trunk's end.  `layer_hi == g.n_layers`
@@ -184,8 +185,8 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
             s.glm_chunk_tokens = glm_chunk;
             // The group carve, in the same two places `session_bytes` adds it - the sizes there and here are the
             // same expression, which is what keeps a stage's arena byte-for-byte what the allocator reserved.
-            s.glm_group_arena = take(glm_buffers_bytes(g, GLM_MAX_NTOK, max_cells));
-            glm_buffers_init(g, GLM_MAX_NTOK, max_cells, s.glm_group_arena, s.glm_group);
+            s.glm_group_arena = take(glm_buffers_bytes(g, glm_group_max(), max_cells));
+            glm_buffers_init(g, glm_group_max(), max_cells, s.glm_group_arena, s.glm_group);
         }
         s.glm_states = new GlmLayerState[(size_t) g.n_layers]();   // entries outside the range stay null
         uint64_t total = 0;
@@ -990,6 +991,18 @@ bool glm_gpu_layer(SessionState& s, int64_t l, std::vector<float>& x, std::vecto
     return true;
 }
 
+/// **THE CHUNK CHECK'S BAR, AND IT IS A MEASURED NUMBER.**  The statistic is the worst sampled entry's mean
+/// |gpu - cpu| over that entry's own rms (see `glm_gpu_chunk_check`).  Measured over the layers the check ran
+/// on with the wrong-slot self-test armed (`engine-half3full.log`, 4,096 of 4,096 entries a layer): a RIGHT
+/// slot reads **1.82e-02 to 5.45e-02** on most layers, and the highest reading anywhere is **2.47e-01** - layer
+/// 14, token 1 expert 15, a row whose own `max |cpu|` is 1.33e+01 against an rms of 1.29e-01, so the quantized
+/// dot's own rounding is 2.5e-1 of a small rms.  The same rows computed against a DIFFERENT expert the chunk
+/// also routed to read **7.89e-01 to 1.61e+00** (`chunk separation: mean right ..., wrong ...`).  The bar sits
+/// between the two with room on both sides: **2x above the worst right-slot reading measured, 1.6x below the
+/// least wrong one**.  It was 0.25, which layer 14's 2.47e-01 reads 0.99 of - and a bar a right slot can fail
+/// is not a bar, it is a fallback that fires on correct work.
+constexpr double kChunkCheckBar = 0.5;
+
 /// **THE CHUNK PATH'S HALF OF `STRATA_GLM_GPU_CHECK`, AND IT IS THE SAME GATE.**  `glm_gpu_layer`'s check
 /// above covers the decode path's hits; nothing covered `run_chunk`, which is the path prefill takes - and a
 /// chunk is 12,096 slot decisions a layer instead of 8, all of them silent when they are wrong, because a slot
@@ -1012,6 +1025,23 @@ static bool glm_gpu_chunk_check(SessionState& s, int64_t l, const float* cur_dev
         const long n = (v != nullptr) ? std::strtol(v, nullptr, 10) : 16;
         return (n > 0) ? (int64_t) n : (int64_t) 16;
     }();
+    // **HUNTING A LAYER, WITHOUT PAYING FOR THE ONES THAT PASS.**  A full-chunk check is ~4 minutes a layer and
+    // the gate only ever fires on one of them, so a hunt re-reads twenty layers to reach the twenty-first.  With
+    // STRATA_GLM_GPU_CHECK_FROM=<layer> the layers below it are skipped - and SAID SO IN THE LOG, once, because a
+    // pass that only checked the top of the model is not the same reading as a pass that checked all of it.
+    static const int64_t from = [] {
+        const char* v = std::getenv("STRATA_GLM_GPU_CHECK_FROM");
+        return (v != nullptr) ? (int64_t) std::strtoll(v, nullptr, 10) : (int64_t) -1;
+    }();
+    if (from >= 0 && l < from) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            std::fprintf(stderr, "strata glm gpu check: SKIPPING every layer below %lld "
+                                 "(STRATA_GLM_GPU_CHECK_FROM is set)\n", (long long) from);
+        }
+        return true;
+    }
     const int64_t ne = s.glm_gpu->last_chunk_entries();
     const auto& dst = s.glm_gpu->last_chunk_dst();
     if (ne <= 0 || (int64_t) dst.size() < ne) return true;
@@ -1027,15 +1057,90 @@ static bool glm_gpu_chunk_check(SessionState& s, int64_t l, const float* cur_dev
         return false;
     }
     if (cudaStreamSynchronize(cs) != cudaSuccess) { err = "waiting for the chunk's activations"; return false; }
+    // ---- STRATA_GLM_GPU_POISON=<layer>: THE ROWS THE KERNEL DID NOT WRITE, WITH NO SAMPLING AT ALL.  Every row
+    // of `parts` belongs to exactly one (token, expert) entry, so a row still holding the poison after the layer
+    // is an entry the kernel walked past - which no stride sample can rule out and which reads exactly like a
+    // wrong slot from the outside.  The scan is the whole buffer, 67 MB at T=512, k=8, n=4096: a few ms, and it
+    // catches every skipped row of the layer rather than the sampled ones.
+    {
+        static const int64_t poison_layer = [] {
+            const char* v = std::getenv("STRATA_GLM_GPU_POISON");
+            return (v != nullptr) ? (int64_t) std::strtoll(v, nullptr, 10) : (int64_t) -1;
+        }();
+        if (poison_layer == l) {
+            static thread_local std::vector<uint32_t> pr;
+            const size_t nc = (size_t) (T * k * n);
+            pr.resize(nc);
+            if (cudaMemcpyAsync(pr.data(), parts_dev, nc * sizeof(float), cudaMemcpyDeviceToHost, cs) !=
+                    cudaSuccess ||
+                cudaStreamSynchronize(cs) != cudaSuccess) {
+                err = std::string("reading the chunk's rows back for the poison scan: ") +
+                      cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+            int64_t skipped = 0, partial = 0;
+            for (int64_t row = 0; row < T * k; ++row) {
+                const uint32_t* r = pr.data() + (size_t) row * (size_t) n;
+                int64_t pn = 0;
+                for (int64_t c = 0; c < n; ++c) pn += (r[(size_t) c] == 0x7F7F7F7Fu);
+                if (pn == n) {
+                    if (skipped < 8)
+                        std::fprintf(stderr, "strata glm gpu check: layer %lld POISON: row %lld (token %lld, "
+                                             "expert %d) was never written\n",
+                                     (long long) l, (long long) row, (long long) (row / k), (int) ids[row]);
+                    ++skipped;
+                } else if (pn > 0) {
+                    if (partial < 8)
+                        std::fprintf(stderr, "strata glm gpu check: layer %lld poison: row %lld (token %lld, expert "
+                                             "%d) has %lld of %lld channels unwritten\n",
+                                     (long long) l, (long long) row, (long long) (row / k), (int) ids[row],
+                                     (long long) pn, (long long) n);
+                    ++partial;
+                }
+            }
+            std::fprintf(stderr, "strata glm gpu check: layer %lld poison scan: %lld of %lld rows never written, "
+                                 "%lld written only in part\n",
+                         (long long) l, (long long) skipped, (long long) (T * k), (long long) partial);
+        }
+    }
     // =2, as on the decode path, measures what a WRONG slot looks like on THIS data as it goes - the 1.0 bar
     // was calibrated there, and this is what says it separates right from wrong here too.
     static const bool selftest = [] {
         const char* v = std::getenv("STRATA_GLM_GPU_CHECK");
         return v != nullptr && v[0] == '2';
     }();
-    double wrong = 0.0;
+    double wrong = 0.0, wrong_mean = 0.0;
     double worst = 0.0, scale = 0.0, sum_abs = 0.0, sum_sq = 0.0;
     int64_t cnt = 0, checked = 0;
+    // **THE GATE IS THE WORST ENTRY'S MEAN, NOT THE WORST COLUMN'S.**  A wrong slot makes EVERY column of every
+    // row of that expert wrong, so the per-entry mean |gpu - cpu| over the entry's own rms is ~1 for a wrong
+    // slot and ~1e-2 for a right one - measured on layer 3's first chunk: right 1.38e-02, wrong 1.48e+00, a
+    // **107x** separation.  The MAX is a different statistic and a bad gate: it is one channel of one entry and
+    // it grows both with that entry's largest value and with how many entries are sampled, so on the same
+    // layer, on nearly identical data (max |cpu| ~3.1), 16-entry runs read 0.185 to 1.06 and the full chunk
+    // reads **3.08** while the wrong-slot figure is 6.93 - a 2.3x separation with the old 1.0 bar sitting
+    // inside the right tail.  The max is still printed, because it is what says WHERE, not WHETHER.
+    double worst_mean = 0.0;
+    int64_t wm_t = -1, wm_row = -1;
+    int32_t wm_e = -1;
+    int64_t wm_p = -1;                 // ...and the plan index it sits at, which is what names its wave
+    std::vector<float> wm_gpu((size_t) n);
+    // **EVERY SAMPLED ENTRY OVER THE BAR, AND WHERE IT SITS IN THE PLAN.**  One bad entry at a wave's or a
+    // group's edge is an off-by-one in the uploads; the same bad figure on every entry of one expert is that
+    // expert's slot holding the wrong bytes; a scatter over many experts is neither.  Eight are kept, and the
+    // count is the first thing the failure says - a single bad entry in 4,096 and a broken group read very
+    // differently here.
+    struct Over {
+        double v;
+        int64_t p, t;
+        int32_t e;
+    };
+    std::vector<Over> over;
+    int64_t n_over = 0;
+    // ...and where the worst COLUMN was, which is diagnostics rather than the bar.
+    int64_t w_row = -1, w_t = -1, w_c = -1;
+    int32_t w_e = -1;
+    double w_ref = 0.0, w_got = 0.0;
     std::vector<float> cpu((size_t) n);
     std::vector<float> oc((size_t) n);
     for (int64_t p = 0; p < ne; p += step) {
@@ -1070,36 +1175,264 @@ static bool glm_gpu_chunk_check(SessionState& s, int64_t l, const float* cur_dev
                     orms += (double) oc[(size_t) c] * (double) oc[(size_t) c];
                 }
                 orms = std::sqrt(orms / (double) n);
-                if (orms > 0.0) wrong = std::max(wrong, ow / orms);
+                if (orms > 0.0) {
+                    wrong = std::max(wrong, ow / orms);
+                    wrong_mean = std::max(wrong_mean, oa / (double) n / orms);
+                }
                 std::fprintf(stderr, "strata glm gpu check: layer %lld chunk wrong-slot self-test: max/rms %.2e, "
                                      "mean/rms %.2e\n", (long long) l, ow / orms, oa / (double) n / orms);
             }
         }
         ++checked;
+        double e_abs = 0.0, e_sq = 0.0;
         for (int64_t c = 0; c < n; ++c) {
             const double ref = cpu[(size_t) c];
             const double got = gpu[(size_t) c];
-            worst = std::max(worst, std::fabs(got - ref));
-            sum_abs += std::fabs(got - ref);
+            const double d = std::fabs(got - ref);
+            if (d > worst) {
+                worst = d;
+                w_row = row;
+                w_t = t;
+                w_e = expert;
+                w_c = c;
+                w_ref = ref;
+                w_got = got;
+            }
+            e_abs += d;
+            e_sq += ref * ref;
+            sum_abs += d;
             sum_sq += ref * ref;
             scale = std::max(scale, std::fabs(ref));
             ++cnt;
         }
+        const double e_rms = std::sqrt(e_sq / (double) n);
+        if (e_rms > 0.0 && e_abs / (double) n / e_rms > worst_mean) {
+            worst_mean = e_abs / (double) n / e_rms;
+            wm_t = t;
+            wm_row = row;
+            wm_e = expert;
+            wm_p = p;
+            wm_gpu = gpu;
+        }
+        if (e_rms > 0.0 && e_abs / (double) n / e_rms > kChunkCheckBar) {
+            ++n_over;
+            if (over.size() < 8) over.push_back({e_abs / (double) n / e_rms, p, t, expert});
+        }
     }
     const double rms = (cnt > 0) ? std::sqrt(sum_sq / (double) cnt) : 0.0;
-    std::fprintf(stderr, "strata glm gpu check: layer %lld chunk, %lld of %lld entries, max |gpu - cpu| %.3e, "
-                         "mean %.3e (max |cpu| %.3e, rms %.3e: max/rms %.2e, mean/rms %.2e)\n",
-                 (long long) l, (long long) checked, (long long) ne, worst, sum_abs / (double) cnt, scale, rms,
-                 worst / rms, sum_abs / (double) cnt / rms);
-    // What the 1.0 bar has to sit between, measured on this layer: the worst correct entry and the wrong-slot
-    // figure.  A bar is only a bar if those two are apart.
+    std::fprintf(stderr, "strata glm gpu check: layer %lld chunk, %lld of %lld entries, worst entry mean/rms "
+                         "%.2e (token %lld, expert %d), max |gpu - cpu| %.3e, mean %.3e (max |cpu| %.3e, rms "
+                         "%.3e: max/rms %.2e, mean/rms %.2e)\n",
+                 (long long) l, (long long) checked, (long long) ne, worst_mean, (long long) wm_t, (int) wm_e,
+                 worst, sum_abs / (double) cnt, scale, rms, worst / rms, sum_abs / (double) cnt / rms);
+    if (w_row >= 0)
+        std::fprintf(stderr, "strata glm gpu check: the widest column is token %lld (row %lld) expert %d column "
+                             "%lld: gpu %.6e, cpu %.6e, diff %.3e\n",
+                     (long long) w_t, (long long) w_row, (int) w_e, (long long) w_c, w_got, w_ref, worst);
+    // What the bar has to sit between, measured on this layer: the worst correct entry and the wrong-slot
+    // figure, on both statistics.  A bar is only a bar if those two are apart - and the mean is the one where
+    // they are.
     if (selftest && wrong > 0.0 && rms > 0.0) {
-        std::fprintf(stderr, "strata glm gpu check: layer %lld chunk separation: right %.2e, wrong %.2e (%.1fx)\n",
-                     (long long) l, worst / rms, wrong, wrong / std::max(worst / rms, 1e-30));
+        std::fprintf(stderr, "strata glm gpu check: layer %lld chunk separation: mean right %.2e, wrong %.2e "
+                             "(%.1fx); max right %.2e, wrong %.2e (%.1fx)\n",
+                     (long long) l, worst_mean, wrong_mean, wrong_mean / std::max(worst_mean, 1e-30), worst / rms,
+                     wrong, wrong / std::max(worst / rms, 1e-30));
     }
-    if (rms > 0.0 && worst / rms > 1.0) {
+    if (worst_mean > kChunkCheckBar) {
+        // **WHICH EXPERT THE SLOT ACTUALLY HELD.**  "A slot is wrong" is not actionable; the expert whose row
+        // the card's row actually matches is.  Every expert the chunk routed to is recomputed on the CPU and
+        // the closest one is named.  This runs ONCE, on the failure path, and only there: it is up to 288 expert
+        // rows, ~26 s at the pool's measured 0.28 TMAC/s, which is nothing against a failed request and far too
+        // much to spend on every layer that passes.
+        std::vector<int32_t> cand(ids, ids + (size_t) (T * k));
+        std::sort(cand.begin(), cand.end());
+        cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+        double best = 1e30, second = 1e30;
+        int32_t best_e = -1, second_e = -1;
+        for (const int32_t c : cand) {
+            if (!pool(user, l, xh.data() + (size_t) wm_t * (size_t) n, &c, 1, 1, oc.data(), err)) return false;
+            double ca = 0.0, cs = 0.0;
+            for (int64_t i = 0; i < n; ++i) {
+                ca += std::fabs(wm_gpu[(size_t) i] - oc[(size_t) i]);
+                cs += (double) oc[(size_t) i] * (double) oc[(size_t) i];
+            }
+            const double crms = std::sqrt(cs / (double) n);
+            const double m = (crms > 0.0) ? ca / (double) n / crms : 1e30;
+            if (m < best) {
+                second = best, second_e = best_e;
+                best = m, best_e = c;
+            } else if (m < second) {
+                second = m, second_e = c;
+            }
+        }
+        std::fprintf(stderr, "strata glm gpu check: layer %lld the card's row for token %lld expert %d matches "
+                             "expert %d (mean/rms %.3e, vs its own %.3e); next closest %d (%.3e)\n",
+                     (long long) l, (long long) wm_t, (int) wm_e, (int) best_e, best, worst_mean, (int) second_e,
+                     second);
+        // ---- WHERE IN THE PLAN THE BAD ENTRY SITS, AND HOW MANY OTHERS ARE OVER THE BAR WITH IT.  One bad entry
+        // at a wave's or a group's edge is an off-by-one in the uploads; the same figure on every entry of one
+        // expert is that expert's slot; a scatter over several experts is neither.  This is host bookkeeping on
+        // the plan, so it costs nothing but the print.
+        std::fprintf(stderr, "strata glm gpu check: layer %lld: %lld of %lld sampled entries are over the bar "
+                             "(%.2e)\n", (long long) l, (long long) n_over, (long long) checked, kChunkCheckBar);
+        for (const Over& o : over)
+            std::fprintf(stderr, "strata glm gpu check:   over: plan %lld, token %lld, expert %d, mean/rms %.3e%s\n",
+                         (long long) o.p, (long long) o.t, (int) o.e, o.v, o.p == wm_p ? "   <-- the worst" : "");
+        {
+            const auto& ew = s.glm_gpu->last_chunk_entry_wave();
+            const auto& wo = s.glm_gpu->last_chunk_wave_off();
+            int64_t gsize = 0, ord = 0;
+            for (int64_t j = 0; j < T * k; ++j) {
+                if (ids[j] != wm_e) continue;
+                ++gsize;
+                if (j < wm_row) ++ord;
+            }
+            if (wm_p >= 0 && (size_t) wm_p < ew.size() && (size_t) ew[(size_t) wm_p] + 1 < wo.size()) {
+                const int32_t w = ew[(size_t) wm_p];
+                std::fprintf(stderr, "strata glm gpu check: layer %lld the worst entry is plan %lld: wave %d, "
+                                     "entry %lld of that wave's %lld\n",
+                             (long long) l, (long long) wm_p, (int) w, (long long) (wm_p - wo[(size_t) w]),
+                             (long long) (wo[(size_t) w + 1] - wo[(size_t) w]));
+            }
+            std::fprintf(stderr, "strata glm gpu check: layer %lld expert %d carries %lld of the chunk's entries "
+                                 "and this is number %lld of them (row %lld, token %lld)\n",
+                         (long long) l, (int) wm_e, (long long) gsize, (long long) ord, (long long) wm_row,
+                         (long long) wm_t);
+        }
+        // ---- OR THE ACTIVATIONS WERE ANOTHER TOKEN'S.  The search above recomputed every expert the chunk
+        // routed to at THIS token's x; this one recomputes THIS expert at every token's x.  A row that matches
+        // one of them at a right-row figure is the card having applied the right weights to the wrong row of
+        // activations - a different bug with a different fix, and one no expert search can see.  Like the search
+        // above it runs ONCE, on the failure path: `T` expert rows, ~46 s at T=512 and the pool's measured
+        // 0.28 TMAC/s, against a request that is already failing.
+        {
+            double tb = 1e30, ts = 1e30;
+            int64_t tb_t = -1, ts_t = -1;
+            for (int64_t t2 = 0; t2 < T; ++t2) {
+                if (!pool(user, l, xh.data() + (size_t) t2 * (size_t) n, &wm_e, 1, 1, oc.data(), err)) return false;
+                double ca = 0.0, csq = 0.0;
+                for (int64_t i = 0; i < n; ++i) {
+                    ca += std::fabs(wm_gpu[(size_t) i] - oc[(size_t) i]);
+                    csq += (double) oc[(size_t) i] * (double) oc[(size_t) i];
+                }
+                const double crms = std::sqrt(csq / (double) n);
+                const double m = (crms > 0.0) ? ca / (double) n / crms : 1e30;
+                if (m < tb) {
+                    ts = tb, ts_t = tb_t;
+                    tb = m, tb_t = t2;
+                } else if (m < ts) {
+                    ts = m, ts_t = t2;
+                }
+            }
+            std::fprintf(stderr, "strata glm gpu check: layer %lld expert %d applied to every token of the chunk: "
+                                 "best token %lld (mean/rms %.3e), next %lld (%.3e); the entry's own token is %lld\n",
+                         (long long) l, (int) wm_e, (long long) tb_t, tb, (long long) ts_t, ts, (long long) wm_t);
+        }
+        // ---- OR THE CARD'S OWN QUANTIZED ACTIVATIONS WERE THE INPUT.  Both searches above hand the pool the
+        // fp32 activation, and the card never sees fp32: `run_chunk` quantizes the chunk to one q8_1 row a token
+        // (32 values, one fp16 scale) and the kernel reads that, so "close to its own expert, matches nothing" is
+        // also what a quantization the pool cannot reproduce looks like - and neither search can see it, because
+        // neither of them uses the card's row.  This one does: the card's q8_1 row for the failing token is read
+        // back, dequantized, and the SAME expert is applied to it on the CPU.  If that figure is a right row's,
+        // the weights and the kernel are fine and the difference is the quantization; if it is unchanged, the
+        // card was not applying this expert's weights to this row at all.
+        if (s.glm_gpu->chunk_xq() != nullptr && wm_t >= 0) {
+            const int64_t nb = n / 32;
+            static thread_local std::vector<uint8_t> qrow;
+            static thread_local std::vector<float> dqx;
+            qrow.resize((size_t) nb * 36);
+            dqx.resize((size_t) n);
+            const uint8_t* xq = (const uint8_t*) s.glm_gpu->chunk_xq();
+            if (cudaMemcpyAsync(qrow.data(), xq + (size_t) wm_t * (size_t) nb * 36, qrow.size(),
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess ||
+                cudaStreamSynchronize(cs) != cudaSuccess) {
+                err = "reading back the card's own activations for the check";
+                return false;
+            }
+            for (int64_t b = 0; b < nb; ++b) {
+                const uint8_t* blk = qrow.data() + (size_t) b * 36;
+                uint16_t scale_bits;
+                std::memcpy(&scale_bits, blk, 2);
+                const float d = __half2float(*reinterpret_cast<const __half*>(&scale_bits));
+                for (int64_t i = 0; i < 32; ++i)
+                    dqx[(size_t) (b * 32 + i)] = d * (float) ((int8_t) blk[4 + i]);
+            }
+            if (!pool(user, l, dqx.data(), &wm_e, 1, 1, oc.data(), err)) return false;
+            double ca = 0.0, csq = 0.0;
+            for (int64_t i = 0; i < n; ++i) {
+                ca += std::fabs(wm_gpu[(size_t) i] - oc[(size_t) i]);
+                csq += (double) oc[(size_t) i] * (double) oc[(size_t) i];
+            }
+            const double crms = std::sqrt(csq / (double) n);
+            std::fprintf(stderr, "strata glm gpu check: layer %lld expert %d on the CARD's own q8_1 activations "
+                                 "of token %lld: mean/rms %.3e - against %.3e for the same expert applied to the "
+                                 "fp32 activation\n",
+                         (long long) l, (int) wm_e, (long long) wm_t, (crms > 0.0) ? ca / (double) n / crms : 1e30,
+                         worst_mean);
+            // ---- AND WHETHER THAT IMAGE IS THE q8_1 OF THIS TOKEN AT ALL.  The figure above only says the
+            // card was self-consistent - it applied this expert to the row it read.  This says the row it read is
+            // the quantization of token `wm_t`: the SAME kernel quantizes the host's fp32 row of that token, and
+            // the two rows are compared block by block.  A row that differs is the activation image holding
+            // something other than this token's, which no weight check can see.
+            {
+                static thread_local void* qf32 = nullptr;
+                static thread_local void* q8 = nullptr;
+                static thread_local std::vector<uint8_t> qmine;
+                const size_t row_bytes = (size_t) nb * 36;
+                if (qf32 == nullptr) {
+                    if (cudaMalloc(&qf32, (size_t) n * sizeof(float)) != cudaSuccess ||
+                        cudaMalloc(&q8, row_bytes) != cudaSuccess) {
+                        qf32 = q8 = nullptr;
+                    }
+                }
+                if (qf32 != nullptr) {
+                    qmine.resize(row_bytes);
+                    if (cudaMemcpyAsync(qf32, xh.data() + (size_t) wm_t * (size_t) n, (size_t) n * sizeof(float),
+                                        cudaMemcpyHostToDevice, cs) != cudaSuccess) {
+                        err = "uploading the check's own activation row";
+                        return false;
+                    }
+                    strata::kernels::quantize_q8_1_rows((const float*) qf32, 1, n, q8, cs);
+                    if (cudaMemcpyAsync(qmine.data(), q8, row_bytes, cudaMemcpyDeviceToHost, cs) != cudaSuccess ||
+                        cudaStreamSynchronize(cs) != cudaSuccess) {
+                        err = "reading the check's own q8_1 row back";
+                        return false;
+                    }
+                    int64_t blocks_differ = 0, first_bad = -1;
+                    double worst_abs = 0.0;
+                    int64_t worst_blk = -1;
+                    for (int64_t b = 0; b < nb; ++b) {
+                        const uint8_t* a = qrow.data() + (size_t) b * 36;   // the card's
+                        const uint8_t* c = qmine.data() + (size_t) b * 36;  // the check's own
+                        uint16_t ha, hc;
+                        std::memcpy(&ha, a, 2);
+                        std::memcpy(&hc, c, 2);
+                        const float da = __half2float(*reinterpret_cast<const __half*>(&ha));
+                        const float dc = __half2float(*reinterpret_cast<const __half*>(&hc));
+                        if (std::memcmp(a, c, 36) != 0) {
+                            ++blocks_differ;
+                            if (first_bad < 0) first_bad = b;
+                        }
+                        for (int64_t i = 0; i < 32; ++i) {
+                            const double ea = da * (double) ((int8_t) a[4 + i]);
+                            const double ec = dc * (double) ((int8_t) c[4 + i]);
+                            if (std::fabs(ea - ec) > worst_abs) {
+                                worst_abs = std::fabs(ea - ec);
+                                worst_blk = b;
+                            }
+                        }
+                    }
+                    std::fprintf(stderr, "strata glm gpu check: layer %lld token %lld: %lld of %lld q8_1 blocks of "
+                                         "the card's own image differ from the same row quantized again (first %lld, "
+                                         "worst |value| gap %.3e at block %lld)\n",
+                                 (long long) l, (long long) wm_t, (long long) blocks_differ, (long long) nb,
+                                 (long long) first_bad, worst_abs, (long long) worst_blk);
+                }
+            }
+        }
         err = "the VRAM tier's slot for layer " + std::to_string(l) + " holds the wrong expert on the CHUNK "
-              "path (max |gpu - cpu| is " + std::to_string(worst / rms) + " of the row's rms; "
+              "path (the worst entry's mean |gpu - cpu| is " + std::to_string(worst_mean) +
+              " of its own row's rms, over a bar of " + std::to_string(kChunkCheckBar) + "; "
               "STRATA_GLM_GPU_CHECK is on)";
         return false;
     }
@@ -1344,10 +1677,10 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
             const char* v = std::getenv("STRATA_GLM_GROUP");
             if (v == nullptr) return (int64_t) 0;
             const long long n = std::atoll(v);
-            return (n >= 1 && n <= GLM_MAX_NTOK) ? (int64_t) n : (int64_t) 0;
+            return (n >= 1 && n <= glm_group_max()) ? (int64_t) n : (int64_t) 0;
         }();
         const int64_t gmax = (s.glm_group_arena == nullptr || no_group) ? 1
-                                                                       : (group_env > 0 ? group_env : GLM_MAX_NTOK);
+                                                                       : (group_env > 0 ? group_env : glm_group_max());
         for (int64_t t0 = 0; t0 < T; t0 += gmax) {
             const int64_t nt = (T - t0 < gmax) ? (T - t0) : gmax;
             GlmBuffers vb;
@@ -1390,6 +1723,24 @@ bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int6
             // As in the pool path, this sync is the layer's ONLY one and it waits for the whole `pre` loop,
             // which only enqueues - so `l0` to here is the card's dense work for the layer plus the ids copy.
             t_gpu += secs(l0, std::chrono::steady_clock::now());
+            // ---- STRATA_GLM_GPU_POISON=<layer>: A ROW THE KERNEL NEVER WROTE, MADE VISIBLE.  `parts` is one
+            // buffer per stage, reused by every layer and every chunk, so a row the card's kernel skips does not
+            // come back empty - it comes back holding the PREVIOUS layer's answer for that row, which is a
+            // plausible-looking row for a different expert: precisely the shape the check cannot explain, since
+            // the row then matches no expert the chunk routed to at that token.  Filling `parts` with a value no
+            // expert dot produces before the kernel runs turns that case into a value that cannot be anything
+            // else, and the check scans for it row by row.  Only the named layer is poisoned: the layers above it
+            // are the ones that would otherwise carry the value, and they run unpoisoned.
+            static const int64_t poison_layer = [] {
+                const char* v = std::getenv("STRATA_GLM_GPU_POISON");
+                return (v != nullptr) ? (int64_t) std::strtoll(v, nullptr, 10) : (int64_t) -1;
+            }();
+            if (l == poison_layer &&
+                cudaMemsetAsync(c.parts, 0x7F, (size_t) (T * k * n) * sizeof(float), cs) != cudaSuccess) {
+                err = "layer " + std::to_string(l) + ": poisoning the chunk's expert rows: " +
+                      cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
             if (!s.glm_gpu->run_chunk(l, c.cur, ids_host.data(), T, k, c.parts, stream, served_on_card, err)) {
                 err = "layer " + std::to_string(l) + ": " + err;
                 return false;

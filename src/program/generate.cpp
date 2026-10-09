@@ -818,7 +818,7 @@ void usage() {
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
                  "  --glm-gpu-experts N  glm5-next: keep N MiB of the routed experts in VRAM and compute their\n"
                  "                       hits on the card; -1 (default) is off, 0 is every free byte less\n"
-                 "                       STRATA_GLM_GPU_RESERVE_MIB (2048).  Each stage sizes its own share, so\n"
+                 "                       STRATA_GLM_GPU_RESERVE_MIB (512).  Each stage sizes its own share, so\n"
                  "                       a layer split multiplies what a card can hold.  Measured +43%% decode on a\n"
                  "                       4-way rig; not bit-identical to the CPU pool (see docs/DETAILS.md)\n"
                  "  --dsa                glm5-next: attend the 2048 cells the DSA k-pool indexer selects instead\n"
@@ -1485,14 +1485,29 @@ bool glm_gpu_tier_init(std::unique_ptr<strata::core::GlmGpuExperts>& out, const 
     }
     std::vector<int> gu((size_t) lay_n, -1), dt((size_t) lay_n, -1);
     std::vector<uint64_t> bb((size_t) lay_n, 0);
+    // The routed experts' SwiGLU limit, read from the SAME `expert_layout()` the CPU pool is built from
+    // (generate.cpp's `expert_layout_load` above), so the card and the pool cannot be handed two readings of
+    // `swiglu_clamp_exp` - which is exactly what happened while the GPU kernels carried no limit at all.
+    std::vector<float> lim((size_t) lay_n, 0.0f);
     for (int64_t l = layer_lo; l < layer_hi && l < lay_n; ++l) {
         if (g.is_dense_ffn_layer(l) || (size_t) l >= glay.fmt.size()) continue;
         gu[(size_t) l] = glay.fmt[(size_t) l].gu_type;
         dt[(size_t) l] = glay.fmt[(size_t) l].d_type;
         bb[(size_t) l] = glay.blob_bytes(l);
+        lim[(size_t) l] = glay.fmt[(size_t) l].swiglu_limit;
     }
+    // **WHAT THE RESERVE IS FOR, AND WHAT IT COSTS.**  It is the VRAM left for everything allocated AFTER this
+    // point - the session's attention and KV buffers, a longer context, whatever the driver wants - and it is
+    // spent directly out of the expert tier, because the slots are sized to `free - reserve`.  Sampling all
+    // four cards once a second through a whole run (5,304-token prompt, chunk 4096, 4-way layer split) measured
+    // what actually moved: every card ended with 2473-2580 MiB free, of which 2048 MiB was this reserve and the
+    // rest the rounding of the budget into whole slots, and the ENTIRE chunk path - plan, activations,
+    // scratch - moved the card by 2 MiB peak to peak.  So 512 MiB is 250x the largest excursion a real run
+    // showed, and the 1.5 GiB it hands back is what pays for the second half of the chunk's slots
+    // (`run_chunk`), which is what lets a wave's copies run under the previous wave's kernel.  Raise it with
+    // STRATA_GLM_GPU_RESERVE_MIB on a card whose context buffers are bigger than this one's.
     const char* rv = std::getenv("STRATA_GLM_GPU_RESERVE_MIB");
-    const int64_t reserve = (int64_t) (rv != nullptr ? std::atoll(rv) : 2048) << 20;
+    const int64_t reserve = (int64_t) (rv != nullptr ? std::atoll(rv) : 512) << 20;
     const int64_t avail = (int64_t) strata::core::device_free_bytes() - reserve;
     if (avail < (1 << 20)) {
         err = "there is no VRAM free for --glm-gpu-experts (a run with no tier is the answer on this card)";
@@ -1508,7 +1523,7 @@ bool glm_gpu_tier_init(std::unique_ptr<strata::core::GlmGpuExperts>& out, const 
     chunk_tokens = std::clamp<int64_t>(chunk_tokens, 1, strata::core::GlmExpertPool::kMaxChunk);
     if (chunk_tokens <= 1 || std::getenv("STRATA_GLM_GPU_NO_PREFILL") != nullptr) chunk_tokens = 0;
     auto tier = std::make_unique<strata::core::GlmGpuExperts>();
-    if (!tier->init(src, gu, dt, bb, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, chunk_tokens,
+    if (!tier->init(src, gu, dt, bb, lim, layer_lo, layer_hi, g.n_expert, k, g.n_embd, g.n_ff, budget, chunk_tokens,
                     err))
         return false;
     out = std::move(tier);
