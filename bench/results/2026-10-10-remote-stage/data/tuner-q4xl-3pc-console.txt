@@ -1,0 +1,76 @@
+[16:47:03] model: 48 layers, 75.6 GiB of layer tensors (1.54-1.99 GiB a layer); goal: 32000-token prompts searched, profile [(8000, 0.3), (32000, 0.5), (100000, 0.2)], max context 131072
+[16:47:03] nodes:
+[16:47:05]   2080ti: NVIDIA GeForce RTX 2080 Ti 11264 MiB (10818 free), PCIe gen 3 x16, RAM 64220 MiB, 24 CPUs
+[16:47:05]   3070: NVIDIA GeForce RTX 3070 8192 MiB (7183 free), PCIe gen 4 x16, RAM 65446 MiB, 16 CPUs
+[16:47:05] links:
+[16:47:14]   main -> 2080ti: 117 MB/s, agent round trip 1584.2 ms
+[16:47:15]   2080ti -> 3070: 114 MB/s, agent round trip 63.1 ms
+[16:47:15] measure (search): splits [24, 40] (stages [(0, 24), (24, 40), (40, 48)]), chunk 5888 
+[16:47:17]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[16:47:25]   3070: layers 40-47 up in 7.1 s
+[16:47:28]   ship: 27.63 GiB wanted, 0.00 GiB to send (15 files)
+[16:48:07]   2080ti: layers 24-39 up in 38.9 s
+[16:49:25]   32K: prefill 950, decode 35.9 (short 37.1), request 45.7 s; stages: 24L pf 3333 ms win 41.4 ms, 16L pf 2611 ms win 14.0 ms, 8L pf 1246 ms win 6.5 ms
+[16:49:27] measure (search): splits [18, 34] (stages [(0, 18), (18, 34), (34, 48)]), chunk 5888 
+[16:49:34]   ship: 24.78 GiB wanted, 9.26 GiB to send (15 files)
+[16:51:25]     models/huihui-ud-q4_k_xl/Huihui-Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf: 9.26 of 9.26 GiB, 89 MB/s
+[16:51:36]   3070: layers 34-47 up in 11.1 s
+[16:51:39]   ship: 27.63 GiB wanted, 9.26 GiB to send (15 files)
+[16:53:29]     models/huihui-ud-q4_k_xl/Huihui-Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf: 9.26 of 9.26 GiB, 91 MB/s
+[16:54:07]   2080ti: layers 18-33 up in 37.9 s
+[16:55:23]   32K: prefill 926, decode 36.9 (short 40.4), request 48.0 s; stages: 18L pf 2424 ms win 29.2 ms, 16L pf 2418 ms win 14.5 ms, 14L pf 2122 ms win 14.7 ms
+[16:55:25] measure (search): splits [22, 40] (stages [(0, 22), (22, 40), (40, 48)]), chunk 5888 
+[16:55:33]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[16:55:39]   3070: layers 40-47 up in 6.1 s
+[16:55:42]   ship: 30.71 GiB wanted, 0.00 GiB to send (15 files)
+[16:56:26]   2080ti: layers 22-39 up in 43.9 s
+[16:57:52]   32K: prefill 960, decode 35.7 (short 38.6), request 47.4 s; stages: 22L pf 3000 ms win 38.5 ms, 18L pf 2867 ms win 16.3 ms, 8L pf 1158 ms win 6.9 ms
+[16:57:54] measure (search): splits [26, 40] (stages [(0, 26), (26, 40), (40, 48)]), chunk 5888 
+[16:58:01]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[16:58:09]   3070: layers 40-47 up in 7.1 s
+[16:58:11]   ship: 24.53 GiB wanted, 0.00 GiB to send (15 files)
+[16:58:48]   2080ti: layers 26-39 up in 36.6 s
+[17:00:10]   32K: prefill 1007, decode 32.4 (short 36.9), request 47.3 s; stages: 26L pf 3622 ms win 46.3 ms, 14L pf 2259 ms win 11.8 ms, 8L pf 1139 ms win 6.5 ms
+[17:00:12] measure (search): splits [24, 38] (stages [(0, 24), (24, 38), (38, 48)]), chunk 5888 
+[17:00:19]   ship: 18.60 GiB wanted, 0.00 GiB to send (15 files)
+[17:00:27]   3070: layers 38-47 up in 8.1 s
+[17:00:30]   ship: 24.54 GiB wanted, 0.00 GiB to send (15 files)
+[17:01:07]   2080ti: layers 24-37 up in 36.6 s
+[17:02:26]   32K: prefill 984, decode 33.9 (short 37.1), request 47.3 s; stages: 24L pf 3327 ms win 42.1 ms, 14L pf 2132 ms win 11.8 ms, 10L pf 1598 ms win 8.8 ms
+[17:02:28] measure (search): splits [24, 42] (stages [(0, 24), (24, 42), (42, 48)]), chunk 5888 
+[17:02:35]   ship: 12.42 GiB wanted, 0.00 GiB to send (15 files)
+[17:02:41]   3070: layers 42-47 up in 6.0 s
+[17:02:44]   ship: 30.72 GiB wanted, 0.00 GiB to send (15 files)
+[17:03:28]   2080ti: layers 24-41 up in 43.9 s
+[17:04:48]   32K: prefill 979, decode 33.6 (short 36.8), request 47.6 s; stages: 24L pf 3330 ms win 40.1 ms, 18L pf 2841 ms win 15.4 ms, 6L pf 980 ms win 4.7 ms
+[17:04:50] measure (search): splits [23, 40] (stages [(0, 23), (23, 40), (40, 48)]), chunk 5888 
+[17:04:57]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[17:05:04]   3070: layers 40-47 up in 7.1 s
+[17:05:07]   ship: 29.17 GiB wanted, 0.00 GiB to send (15 files)
+[17:05:49]   2080ti: layers 23-39 up in 42.0 s
+[17:07:10]   32K: prefill 959, decode 34.3 (short 35.4), request 48.0 s; stages: 23L pf 3163 ms win 37.0 ms, 17L pf 2697 ms win 15.2 ms, 8L pf 1187 ms win 6.5 ms
+[17:07:12] measure (search): splits [25, 40] (stages [(0, 25), (25, 40), (40, 48)]), chunk 5888 
+[17:07:19]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[17:07:26]   3070: layers 40-47 up in 7.1 s
+[17:07:29]   ship: 26.08 GiB wanted, 0.00 GiB to send (15 files)
+[17:08:07]   2080ti: layers 25-39 up in 37.8 s
+[17:09:27]   32K: prefill 988, decode 33.5 (short 37.3), request 47.4 s; stages: 25L pf 3484 ms win 42.2 ms, 15L pf 2413 ms win 12.8 ms, 8L pf 1197 ms win 6.5 ms
+[17:09:29] measure (profile): splits [24, 40] (stages [(0, 24), (24, 40), (40, 48)]), chunk 5888 , prompts [8000, 32000, 100000]
+[17:09:35]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[17:09:42]   3070: layers 40-47 up in 6.1 s
+[17:09:45]   ship: 27.63 GiB wanted, 0.00 GiB to send (15 files)
+[17:10:24]   2080ti: layers 24-39 up in 39.9 s
+[17:13:28]   8K: prefill 552, decode 33.1; 32K: prefill 975, decode 35.2; 100K: prefill 1383, decode 33.6 (short 36.8), request 49.1 s; stages: 24L pf 3357 ms win 40.1 ms, 16L pf 2745 ms win 14.0 ms, 8L pf 1170 ms win 6.7 ms
+[17:13:30] measure (profile): splits [26, 40] (stages [(0, 26), (26, 40), (40, 48)]), chunk 5888 , prompts [8000, 32000, 100000]
+[17:13:37]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[17:13:43]   3070: layers 40-47 up in 6.1 s
+[17:13:46]   ship: 24.53 GiB wanted, 0.00 GiB to send (15 files)
+[17:14:23]   2080ti: layers 26-39 up in 36.6 s
+[17:17:28]   8K: prefill 592, decode 34.7; 32K: prefill 1016, decode 31.6; 100K: prefill 1332, decode 34.5 (short 36.8), request 49.3 s; stages: 26L pf 3632 ms win 43.4 ms, 14L pf 2378 ms win 12.3 ms, 8L pf 1127 ms win 6.9 ms
+[17:17:30] measure (max): splits [24, 40] (stages [(0, 24), (24, 40), (40, 48)]), chunk 5888 , prompts [124198]
+[17:17:37]   ship: 15.51 GiB wanted, 0.00 GiB to send (15 files)
+[17:17:44]   3070: layers 40-47 up in 7.1 s
+[17:17:47]   ship: 27.63 GiB wanted, 0.00 GiB to send (15 files)
+[17:18:27]   2080ti: layers 24-39 up in 39.9 s
+[17:20:20]   124K: prefill 1410, decode 33.8, request 103.6 s; stages: 24L pf 3420 ms win 40.6 ms, 16L pf 2849 ms win 13.4 ms, 8L pf 1145 ms win 6.4 ms
+[17:20:22] pick: stages [(0, 24), (24, 40), (40, 48)], chunk 5888 , request 49.1 s -> OUTDIR/main.json, nodes.json, report.md

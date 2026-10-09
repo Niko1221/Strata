@@ -1,0 +1,38 @@
+# Output lines quoted from the runs (2026-10-09 / 2026-10-10), for numbers the docs cite that are not in the JSONL.
+
+## tools/stage_ship.py, the summary line of each ship (main PC -> node agent over 1 GbE)
+ship: 16.64 GiB in 217 s      RVN IQ3_S layers 36-47 and the engine's bin directory -> PC C under WSL2 (ext4 in the VM)
+ship: 11.39 GiB in 211 s      RVN IQ3_S layers 40-47 -> PC C native Windows (ReFS)
+ship: 15.51 GiB in 184 s      UD-Q4_K_XL layers 40-47 -> PC C native Windows
+ship: 27.63 GiB in 342 s      UD-Q4_K_XL layers 24-39 -> PC B (Linux), two ships in parallel with the line above
+ship: 12.85 GiB in 162 s      UD-Q4_K_XL layers 26-47 -> PC B, which already held 24-39 (only 40-47 sent)
+(in the tuner's run: 9.26 GiB to each node in ~110 s each, see tuner-q4xl-3pc-console.txt)
+
+## PC C, the shipped files on Windows (ReFS): logical size against allocated size (GetCompressedFileSizeW)
+RVN-Qwen3.8-Flash-Next-IQ3_S-00002-of-00008.gguf: 26.82 GiB, on disk 0.00 GiB   (the PLE shard: not shipped)
+RVN-Qwen3.8-Flash-Next-IQ3_S-00007-of-00008.gguf: 9.60 GiB, on disk 4.63 GiB
+RVN-Qwen3.8-Flash-Next-IQ3_S-00008-of-00008.gguf: 4.57 GiB, on disk 4.57 GiB
+dense.bin: 1.43 GiB, on disk 1.43 GiB
+total: 84.77 GiB, on disk 11.94 GiB
+(before the fix in stage_node.py: an 8 GiB test file with 16 MiB written at its end took 6.2 GB on disk; after: 4 KiB)
+
+## PC A alone, UD-Q4_K_XL, the engine's start-up lines
+# with the served config's --resident-budget-gib 70 (q4xl-single-auto-1009)
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: expert cache 620 slots, 1.80 GiB of VRAM; policy is
+FileExpertSource: RAM budget 70.00 GiB: 23956 of the 69.93 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+strata generate: resident RAM mode: 69.93 GiB of experts in RAM (page-locked), 620 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: prompt chunk auto: 2048 tokens, a 96-slot ring
+strata serve: 299 MiB of VRAM free with everything loaded
+# without the budget (q4xl-single-auto-nobudget-1010)
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert cache 571 slots, 1.66 GiB of VRAM; policy is
+strata serve: prompt chunk auto: 1280 tokens, a 132-slot ring
+strata serve: 443 MiB of VRAM free with everything loaded
+
+## PC C, a UD-Q4_K_XL worker (layers 40-47) at three --expert-cache values: Windows' GPU memory counters
+## (\GPU Process Memory(pid_*)\Dedicated Usage and \Shared Usage), idle after start-up
+--expert-cache 1800: 1,766 slots, dedicated 6,774 MiB, shared 14,662 MiB, 213 MiB of VRAM free
+--expert-cache 1400: 1,747 slots, dedicated 6,784 MiB, shared 14,598 MiB, 237 MiB free
+--expert-cache 1000: 1,248 slots, dedicated 5,262 MiB, shared 14,598 MiB, 2,018 MiB free
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 13111394304 B (...); using 4 KB pages

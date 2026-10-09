@@ -1,0 +1,32 @@
+{
+ "code": {
+  "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"Merge two sorted lists into a single sorted list.\"\"\"\n    merged = []\n    i, j = 0, 0\n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j]:\n            merged.append(list1[i])\n            i += 1\n        else:\n            merged.append(list2[j])\n            j += 1\n    merged.extend(list1[i:])\n    merged.extend(list2[j:])\n    return merged\n```",
+  "finish": "stop",
+  "prompt_tokens": 32,
+  "completion_tokens": 132
+ },
+ "prose": {
+  "text": "The sky appears blue during the day due to a phenomenon called Rayleigh scattering, where sunlight interacts with molecules in the Earth's atmosphere and scatters shorter-wavelength blue light more effectively than longer-wavelength red light. At sunset, however, sunlight must travel through a much thicker layer of the atmosphere to reach the observer, causing most of the blue light to be scattered away from the line of sight. As a result, the remaining light that reaches our eyes is predominantly composed of longer wavelengths, such as red, orange, and yellow, which gives the sky its characteristic warm hues during twilight.",
+  "finish": "stop",
+  "prompt_tokens": 30,
+  "completion_tokens": 119
+ },
+ "zh": {
+  "text": "**快取（Cache）** 是一種用於暫時儲存資料的高速儲存機制。\n\n它之所以能讓程式變快，主要基於以下兩個原因：\n\n1. **存取速度更快**：快取通常使用比主記憶體（RAM）或硬碟（HDD/SSD）更快的硬體技術。當程式需要資料時，若資料已存在快取中，CPU 可以極快地讀取，大幅減少等待時間。\n2. **減少重複計算或讀取**：如果程式多次需要相同的資料或計算結果，快取會儲存第一次的結果，後續請求直接從快取取得，避免重複耗費資源進行計算或從慢速儲存裝置讀取。\n\n簡單來說，快取就像是在你手邊放一本常用的書，而不是每次都去圖書館借閱，這樣能節省大量時間，讓整體運作更高效。",
+  "finish": "stop",
+  "prompt_tokens": 31,
+  "completion_tokens": 177
+ },
+ "math": {
+  "text": "To calculate the duration of the trip in minutes, we will determine the time difference between the departure time and the arrival time.\n\n**Step 1: Calculate the time difference in hours and minutes.**\n\n*   **Departure Time:** 9:40\n*   **Arrival Time:** 13:05\n\nFirst, let's find the difference from 9:40 to 13:05.\n\n1.  From 9:40 to 12:40 is exactly **3 hours**.\n2.  From 12:40 to 13:05 is the remaining time.\n    *   From 12:40 to 13:00 is 20 minutes.\n    *   From 13:00 to 13:05 is 5 minutes.\n    *   Total remaining minutes = $20 + 5 = 25",
+  "finish": "length",
+  "prompt_tokens": 43,
+  "completion_tokens": 200
+ },
+ "long8k": {
+  "text": "Here are the main ideas of the document summarized in five bullet points:\n\n*   **Local AI Deployment:** The document provides instructions for installing and running \"Strata,\" a local AI model (Qwen3.8-Flash-Next) that serves an OpenAI- and Anthropic-compatible API on a user's personal computer, requiring significant local resources (12+ GB VRAM, 32+ GB RAM, and ~80 GB disk space).\n*   **Hardware Compatibility & Requirements:** It specifies supported hardware, primarily NVIDIA RTX 20–50 series and specific AMD Radeon RX 7000/9000 series cards, while detailing strict requirements for drivers, operating systems (Windows 10/11 or Linux), and CPU capabilities (AVX2 support recommended) to ensure the system can handle the model's memory and processing demands.\n*   **Installation Process:** Users are guided to use automated setup scripts (`START-HERE.bat",
+  "finish": "length",
+  "prompt_tokens": 9364,
+  "completion_tokens": 200
+ }
+}
