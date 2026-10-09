@@ -7,14 +7,16 @@ I run Qwen3.8-Flash-Next at UD-Q4_K_XL (104 GB) on a used server I built for abo
 This tests Strata with the Unsloth UD-Q4_K_XL quant of Qwen3.8-Flash-Next (a 4-bit K-quant, 103.7 GiB of GGUF files) on two consumer 20 GB cards, with
 `--max-context 262144`, two serving lanes of 262,144 tokens each, and one 524,288-token KV pool shared by both lanes.
 
-**This report does not reproduce from upstream `main` plus the four open pull requests.** The engine here is my fork's
-build (`strata-w7`). It depends on four changes that are in neither upstream `main` (`fb58e0d`) nor
-[#1598](https://github.com/Niko1221/Strata/pull/1598)-[#1601](https://github.com/Niko1221/Strata/pull/1601): the shared
-KV pool (`--kv-pool-tokens`), `--batch-mtp` on a layer split and `--adapt-async` beside `--batch` slots (my patches; a PR
-for each is in preparation), and [#1190](https://github.com/Niko1221/Strata/pull/1190) (resident split lend regions; an
-open PR by evaanp, not mine, and not in `main`). With a layer split and prefill borrowing, #1190 keeps a RAM copy of the
-lend regions, which the "no disk reads while serving" behaviour of this setup requires. I did not measure how much the
-numbers depend on #1190.
+**This report is a fork build on the 0.1.40.3 base. It does not reproduce from upstream `main` plus the open pull
+requests.** The engine here is my fork's build (`strata-w7`). It depends on four changes that are in neither upstream
+`main` (`fb58e0d`) nor [#1598](https://github.com/Niko1221/Strata/pull/1598)-[#1601](https://github.com/Niko1221/Strata/pull/1601):
+the shared KV pool (`--kv-pool-tokens`, my open PR [#1614](https://github.com/Niko1221/Strata/pull/1614)), `--batch-mtp`
+on a layer split (my open PR [#1636](https://github.com/Niko1221/Strata/pull/1636)), `--adapt-async` beside `--batch`
+slots (my open PR [#1637](https://github.com/Niko1221/Strata/pull/1637), stacked on #1636), and
+[#1190](https://github.com/Niko1221/Strata/pull/1190) (resident split lend regions; an open PR by evaanp, not mine, not
+in `main`, currently conflicting). With a layer split and prefill borrowing, #1190 keeps a RAM copy of the lend regions,
+which the "no disk reads while serving" behaviour of this setup requires. I did not measure how much the numbers depend
+on #1190.
 
 To get the binary I measured, build branch `repro/w7` (commit `428d9910134aaaae9ffd8c8e262cec39504221e5`) on
 [noon-at-cgn/Strata](https://github.com/noon-at-cgn/Strata/tree/repro/w7): it is upstream v0.1.40.3 plus my patch stack.
@@ -103,18 +105,19 @@ no key in it, the key reaches the engine through `STRATA_API_KEY` from a systemd
 | `STRATA_PREFILL_EQUAL=1` | upstream env (#693), in `main` | on top of both: 25k 1,864 -> 2,188, 51k 2,274 -> 2,598, 104k 2,726 -> 2,865 tok/s |
 | `--ple-io direct` | upstream option, in `main` | speed neutral (25K reads 1,458 / 1,468 with `--ple-io direct` on my pre-merge binary against 1,451 / 1,465 on the merged build with the default; two different binaries). It frees RAM: the engine's locked memory (`VmLck`) was 26.8 GiB with the default (2026-10-07 18:34) and 0.0 GiB with `--ple-io direct` (from 22:39 on, merged build), and container `MemAvailable` went from 4.6-13.8 GiB with the default (20:14-20:39) to 30.8-32.7 GiB with `--ple-io direct` (20:42-20:52), same pre-merge binary, same day (host `/var/log/strata-mem.log`, 10 s samples) |
 | `--kv int8`, `--kv-resident`, `--spec 4`, `--spec-min-p`, `--mtp`, `--vision`, `--expert-cache auto`, `--resident-experts`, `--trim-stage-weights`, `--layer-split`, `--batch`, `--adapt-every`, `--expert-profile-save`, `--conversation-cache-*`, `--pcie-frac`, `STRATA_LOOKAHEAD=0`, `STRATA_SPLIT_TIMING=1`, `STRATA_ENGINE_READY_S=0` | upstream options, in `main`. `--pcie-frac 0.1` is in the command as it ran; its effect on this box was not tested for this report | not measured separately |
-| `--aux-cpus auto` | **PR [#1598](https://github.com/Niko1221/Strata/pull/1598)** (open) | decode +10%: solo 72.1 / 72.4 -> 79.7 / 80.4 tok/s, two streams 80.8 / 82.8 -> 90.8 / 90.7 tok/s (two restart pairs); host-thread preemptions 43,808 / 42,825 -> 3,901 / 2,825. Prefill unaffected |
-| `STRATA_SPLIT_MTP_BATCH=1` | **PR [#1599](https://github.com/Niko1221/Strata/pull/1599)** (open) | prefill +3% to +8%, greedy output identical in 6 of 6 comparisons. Decode effect is not resolved (pooled about -3%, restart noise up to 4.7%) |
-| `--memory-limit-mib 101376` | **PR [#1601](https://github.com/Niko1221/Strata/pull/1601)** (open) | not a speed feature: parking and session save check the RAM the container really has |
-| (`STRATA_SPLIT_RING` lend sizing) | **PR [#1600](https://github.com/Niko1221/Strata/pull/1600)** (open, depends on open #1190) | **not needed for these numbers**: the bug is reachable only with `STRATA_SPLIT_RING`, and this configuration uses `STRATA_PREFILL_RING`. `strata-w7` does not contain the fix |
-| `--kv-pool-tokens 524288` | **my patch, PR in preparation** (branch `pr/kv-pool-141`), not in `main` (an earlier upstream PR for it, #1011, was closed by the 2026-10-06 history rewrite) | makes two 262,144-token lanes share one pool; not measured against a non-pool run here |
-| `--batch-mtp` on a layer split | **my patch, PR in preparation** (branch `pr/batch-mtp-split`). In `main` the engine turns `--batch-mtp` off with a layer split ("it is for one GPU (no layer split or helper) for now"). Similar open work: [#1253](https://github.com/Niko1221/Strata/pull/1253) | the two-stream numbers depend on it; not measured against a run without it here |
-| `--adapt-async 1` beside `--batch` slots | **my patch, PR in preparation** (branch `batch-adapt`). In `main` `--adapt-async` is refused beside `--batch` slots and the blocking tier runs | not measured separately |
+| `--aux-cpus auto` | **my open PR [#1598](https://github.com/Niko1221/Strata/pull/1598)** (head `1e80ce9`) | decode +10%: solo 72.1 / 72.4 -> 79.7 / 80.4 tok/s, two streams 80.8 / 82.8 -> 90.8 / 90.7 tok/s (two restart pairs); host-thread preemptions 43,808 / 42,825 -> 3,901 / 2,825. Prefill unaffected |
+| `STRATA_SPLIT_MTP_BATCH=1` | **my open PR [#1599](https://github.com/Niko1221/Strata/pull/1599)** (head `3d57d0c`) | prefill +3% to +8%, greedy output identical in 6 of 6 comparisons. Decode effect is not resolved (pooled about -3%, restart noise up to 4.7%) |
+| `--memory-limit-mib 101376` | **my open PR [#1601](https://github.com/Niko1221/Strata/pull/1601)** (head `dcb9fdd`) | not a speed feature: parking and session save check the RAM the container really has |
+| (`STRATA_SPLIT_RING` lend sizing) | **my open PR [#1600](https://github.com/Niko1221/Strata/pull/1600)** (head `8c274dd`; waits on #1190) | **not needed for these numbers**: the bug is reachable only with `STRATA_SPLIT_RING`, and this configuration uses `STRATA_PREFILL_RING`. `strata-w7` does not contain the fix |
+| `--kv-pool-tokens 524288` | **my open PR [#1614](https://github.com/Niko1221/Strata/pull/1614)** (head `400fc50`), not in `main` (an earlier upstream PR for it, #1011, was closed by the 2026-10-06 history rewrite) | makes two 262,144-token lanes share one pool. Not measured against a non-pool run on the binary of this report; measured on the 0.1.41 stack, see [Newer upstream](#newer-upstream-0141) |
+| `--batch-mtp` on a layer split | **my open PR [#1636](https://github.com/Niko1221/Strata/pull/1636)** (head `2c08077`; same design as open [#1253](https://github.com/Niko1221/Strata/pull/1253) by ilumn). In `main` the engine turns `--batch-mtp` off with a layer split ("it is for one GPU (no layer split or helper) for now") | the two-stream numbers depend on it; not measured against a run without it on the binary of this report; measured on the 0.1.41 stack, see [Newer upstream](#newer-upstream-0141) |
+| `--adapt-async 1` beside `--batch` slots | **my open PR [#1637](https://github.com/Niko1221/Strata/pull/1637)** (head `4dba66a`; stacked on #1636). In `main` `--adapt-async` is refused beside `--batch` slots and the blocking tier runs | not measured separately on the binary of this report; measured on the 0.1.41 stack, see [Newer upstream](#newer-upstream-0141) |
 | resident split lend regions | **PR [#1190](https://github.com/Niko1221/Strata/pull/1190)** (open), by evaanp, **not mine**, not in `main` | with a layer split and prefill borrowing, the RAM copy of the lend regions is required for the "no disk reads while serving" behaviour (start line in [engine-start.log](engine-start.log): `the split stages lend 5396 slots to the prompt path: 5396 keep their experts in RAM too (15.76 GiB)`). I did not measure how much the numbers depend on it |
 | the rest of `repro/w7` | my fork's other work: 77 commits on `up-merge` that are not in `main` (plus 9 merge commits; 7 of the 77 are already in `main` under other commit ids), and the one `opt/04` commit that is the code of #1599. These are always on in the binary: the AVX2 Q8_K quantizer (also in upstream), the O(n) window plan (#1181), the flag-B fold (`a48f52c` / `1194892` on `repro/w7`, earlier ids `530afec` / `d68cf5e`; it changes the captured window graph at `--pcie-frac 0.1`, `STRATA_VERIFY_FLAGB=1` restores the old wait), per-slot vision tables (#1242), the parking fixes (#1163 and `c55444d` = #1503, earlier id `460b0a7`), and the serve give-way rule (#1288) | not measured separately. I did not measure the effect of the flag-B fold and of the window plan separately |
 
-The largest prefill gain therefore comes from upstream options. All four of my open PRs (#1598-#1601) are in this table.
-Of them only #1598 (decode) and #1599 (prefill) change the numbers in this report; #1601 is a safety guard and #1600 is
+The largest prefill gain therefore comes from upstream options. All seven of my open PRs (#1598-#1601, #1614, #1636,
+#1637) are in this table. Of them #1598 (decode), #1599 (prefill), and #1614, #1636, #1637 (two lanes, batch MTP, the
+adaptive tier beside slots) are in the binary and shape the numbers in this report; #1601 is a safety guard and #1600 is
 not used.
 
 ## Source of the binary and what is not upstream
@@ -148,21 +151,24 @@ All branches are on `https://github.com/noon-at-cgn/Strata` (checked with `git l
 | earlier ids, what the binary was built from: the `opt/04` commit | `opt/04-split-batched-draft-kv` | `ac5fc3f3cce9e5b917aa0e818afb116725f53ea5` |
 | earlier ids: its base, upstream v0.1.40.3 + my stack | `up-merge` | `9098e8969c22deeb364b3ff0c1207b5e316c6b4e` (`f0187e27867bc229cab003322d5c8d1b244d825f` on `repro/w7`) |
 
-**Patches whose PR is in preparation** (all inside `repro/w7`; `main` has none of them):
+**My open PRs for the patches that are not in `main`** (the binary contains the 0.1.40.x-based branches in the third
+column; the PRs are written against 0.1.41):
 
-| Feature | Branch for the PR | Branch head in the build: earlier id, id on `repro/w7` | Against upstream `main` `fb58e0d` (text merge, nothing compiled) |
+| Feature | My open PR (branch, head) | Branch the binary was built from: earlier id, id on `repro/w7` | The 0.1.40.x-based copy against upstream `main` `fb58e0d` (text merge, nothing compiled) |
 | --- | --- | --- | --- |
-| shared KV pool, `--kv-pool-tokens` | `pr/kv-pool-141` (the pool on 0.1.41); copy on the 0.1.40.x base: `pr/kv-pool` `3aefa1166047e1df1cc5b702f19600039a7fb738` | `kv-shared-pool` `9c533de70a3369fefe36bc98bdda87b2f95a0227`, `b346dd6` | old-base copy: base `82f46a8`, 13 commits, 393 commits behind `main`; conflicts only in code that upstream already has (one hunk in `serve/server.py`, one comment-only hunk in `src/core/verify.cpp`) |
-| `--batch-mtp` on a layer split | `pr/batch-mtp-split` `484b49c6813c7ed8b2d3d587fa8f5795e23cc39d` | `batch-mtp-split` `384d67ea0a2f3581e031af35ec05bf857915191f`, `0aec553` | base `82f46a8`, 3 commits, 393 commits behind `main`; merges clean |
-| a shared draft head keeps its ggml type and vocab map | `pr/mtp-shared-draft-head` `08ef4a38d01cd0d051881d7ff683860064acd1f9` (in `batch-mtp-split`) | | one commit, merges clean |
-| `--adapt-async` beside `--batch` slots | `batch-adapt` | `batch-adapt` `8d0c1068c323f3a59b0b6ae5af892b36a0d5a2e8`, `7c011e0` | two commits, `347420d` (`822a0d3` on `repro/w7`) and `3e9cecb` (`c2ce009`), base `82f46a8`, 393 commits behind `main`; the first applies cleanly, the second conflicts with upstream `13eee45` |
+| shared KV pool, `--kv-pool-tokens` | [#1614](https://github.com/Niko1221/Strata/pull/1614) (`pr/kv-pool-141`, `400fc50`) | `kv-shared-pool` `9c533de70a3369fefe36bc98bdda87b2f95a0227`, `b346dd6` | copy `pr/kv-pool` `3aefa1166047e1df1cc5b702f19600039a7fb738`: base `82f46a8`, 13 commits, 393 commits behind `main`; conflicts only in code that upstream already has (one hunk in `serve/server.py`, one comment-only hunk in `src/core/verify.cpp`) |
+| `--batch-mtp` on a layer split | [#1636](https://github.com/Niko1221/Strata/pull/1636) (`pr/batch-mtp-141`, `2c08077`) | `batch-mtp-split` `384d67ea0a2f3581e031af35ec05bf857915191f`, `0aec553` (it holds `pr/mtp-shared-draft-head` `08ef4a38d01cd0d051881d7ff683860064acd1f9`, one commit) | copy `pr/batch-mtp-split` `484b49c6813c7ed8b2d3d587fa8f5795e23cc39d`: base `82f46a8`, 3 commits, 393 commits behind `main`; merges clean |
+| `--adapt-async` beside `--batch` slots | [#1637](https://github.com/Niko1221/Strata/pull/1637) (`pr/adapt-async-141`, `4dba66a`; stacked on #1636) | `batch-adapt` `8d0c1068c323f3a59b0b6ae5af892b36a0d5a2e8`, `7c011e0` | two commits, `347420d` (`822a0d3` on `repro/w7`) and `3e9cecb` (`c2ce009`), base `82f46a8`, 393 commits behind `main`; the first applies cleanly, the second conflicts with upstream `13eee45` |
 
-Open upstream work that is similar to the second row: [#1253](https://github.com/Niko1221/Strata/pull/1253)
-("Enable serial multi-GPU batch MTP", by another contributor). I have not compared its code with mine.
+[#1636](https://github.com/Niko1221/Strata/pull/1636) has the same design as open
+[#1253](https://github.com/Niko1221/Strata/pull/1253) ("Enable serial multi-GPU batch MTP", by ilumn); I have not
+compared the code line by line.
 
-The open PRs of this report, on branches based on `main`: #1598 `pr/aux-cpus` `1e80ce9`, #1599 `pr/split-mtp-batch`
-`3d57d0c`, #1600 `pr/lend-sizing` `8c274dd`, #1601 `pr/memory-guard` `dcb9fdd`. The build used the same changes from
-`up-merge` (for #1598 and #1601 as `w2-affinity` and `batch-adapt`), not these rebased copies.
+My other open PRs, head commits read on 2026-10-08: [#1598](https://github.com/Niko1221/Strata/pull/1598) `pr/aux-cpus`
+`1e80ce9`, [#1599](https://github.com/Niko1221/Strata/pull/1599) `pr/split-mtp-batch` `3d57d0c`,
+[#1600](https://github.com/Niko1221/Strata/pull/1600) `pr/lend-sizing` `8c274dd`,
+[#1601](https://github.com/Niko1221/Strata/pull/1601) `pr/memory-guard` `dcb9fdd`. The binary was built from the same
+changes on the 0.1.40.x base (earlier branches), not from these PR branches.
 
 ## Newer upstream: 0.1.41
 
@@ -194,10 +200,19 @@ On 0.1.41, `--batch-groups auto` is on by default for a layer split with `--batc
 pipelined groups of one slot, and in that path batch MTP does not draft (upstream issue
 [#1413](https://github.com/Niko1221/Strata/issues/1413)); the adaptive tier of `--adapt-async` does not run either. In
 `up-141`, commit `db925c1` makes `auto` resolve to 1 when `--batch-mtp` or `--adapt-async 1` is given and `--batch-groups`
-is not; the start log of `strata-w10` shows `batch-groups auto: 1 group of 2 slots`. Without that commit, 0.1.41 needs
-`--batch-groups 1` on the command line to keep batch MTP on in this setup. I did not run that variant.
-[#1253](https://github.com/Niko1221/Strata/pull/1253) is similar batch-MTP-on-a-split work by another contributor; my
-branch for it is `pr/batch-mtp-split` on my fork (on the 0.1.40.x base, rebased as part of `up-141`).
+is not; the start log of `strata-w10` shows `batch-groups auto: 1 group of 2 slots`. I did not run a build without that
+commit. [#1253](https://github.com/Niko1221/Strata/pull/1253) is similar batch-MTP-on-a-split work by another
+contributor; my open PR for it is [#1636](https://github.com/Niko1221/Strata/pull/1636).
+
+More `strata-w10` measurements from later the same day (UD-Q4_K_XL, layer split 23, 2 slots, greedy `ab.py` prompts;
+same binary in every arm, only the flags named differ; the arm called "upstream's pipelined groups" is `strata-w10`
+started with the flags upstream 0.1.41 would pick here, not the upstream binary), medians:
+
+- Batch MTP on the split: two-stream decode 89.2 tok/s with it (3 restarts, 60 rounds) against 77.3 without it (2 restarts, 40 rounds) and 77.7 for upstream's pipelined groups (1 restart, 20 rounds); one-stream decode is the same (81.7 and 82.0).
+- Upstream's pipelined groups read a long prompt beside a running decode 2.06x faster than my serial batch windows (2,508 against 1,217 tok/s); batch MTP wins where concurrent decodes dominate, and the pipelined groups win for a long read that arrives beside a decode.
+- Adaptive tier beside slots: two-stream decode is 89.2 tok/s with the asynchronous tier, 74.7 with the blocking tier (1 restart) and 45.2 with the tier off (2 restarts).
+- Shared KV pool: at two lanes it pins 3.1 GiB less RAM (pinned arena 72.0 against 75.1 GiB); two-stream decode is 89.2 with the pool (3 restarts) and 87.7 without it (2 restarts), which is inside the restart-to-restart spread of the same configuration.
+- Prompt reads on `strata-w10` in those arms (`read96`, one value per engine start: the start above and a fresh restart): 25K 1,968 and 2,048, 51K 2,483 and 2,200, 104K 2,703 and 2,638 tok/s. They stay below the `strata-w7` medians, and the 51K read moved by 13% between the two starts; I do not know why.
 
 ## Method
 
@@ -350,8 +365,9 @@ An old used server can now run the latest open-weight Qwen model. I use this set
   any read from the model file, depend on that. File reads during the long requests were not examined here.
 - **AVX2 only:** the Xeon has no AVX-512; the CPU expert kernels run on AVX2. Results on a newer CPU may differ.
 - **Fork build, not reproducible from upstream `main`** (see above; the source is branch `repro/w7`, the sha256 of my
-  binary is from a build of the earlier ids). I did not run the configuration without the pool, without
-  `--batch-mtp` on the split, without `--adapt-async` beside slots or without #1190, so I make no claim about what each of those adds.
+  binary is from a build of the earlier ids). I did not run the binary of this report without the pool, without
+  `--batch-mtp` on the split, without `--adapt-async` beside slots or without #1190, so I make no claim about what each
+  of those adds on it; the `strata-w10` comparisons above are on the 0.1.41 stack and for two slots on two stages.
 - I did not hash the GGUF files against the Hugging Face revision. I did not hash the pack or the expert profile either.
 - **Prompt type:** the harness prompts are repeated synthetic code lines; decode and draft acceptance on real agent
   sessions differ. My own `ab.py` prompts are also synthetic.

@@ -6,7 +6,7 @@
     "bytes": 67691704,
     "mtime": "2026-10-07 23:32:38 -0400"
   },
-  "binary_not_a_release": "Built on lm-server from my fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'Patches whose PR is in preparation'.",
+  "binary_not_a_release": "Built on lm-server from my fork. It is NOT upstream v0.1.40.3 and NOT upstream main plus the four open PRs; see README, 'Source of the binary' and 'My open PRs for the patches that are not in main'.",
   "source_of_binary": {
     "statement": "strata-w7 = the up-merge build (strata-w5) plus branch opt/04-split-batched-draft-kv, per my own evidence notes (pr-evidence 'w7 = merged w5 + opt/04'). The commit is not embedded in the binary; the match below is by branch contents and by time (binary mtime 23:32:38, opt/04 commit time 23:32:28, 2026-10-07, -0400).",
     "repository": "https://github.com/noon-at-cgn/Strata",
@@ -38,13 +38,16 @@
     "kv-shared-pool (shared KV pool, in up-merge)": "9c533de70a3369fefe36bc98bdda87b2f95a0227",
     "batch-mtp-split (batch MTP on a layer split, in up-merge)": "384d67ea0a2f3581e031af35ec05bf857915191f",
     "batch-adapt (--adapt-async beside --batch slots, in up-merge)": "8d0c1068c323f3a59b0b6ae5af892b36a0d5a2e8",
-    "pr/kv-pool (PR-ready copy)": "3aefa1166047e1df1cc5b702f19600039a7fb738",
-    "pr/batch-mtp-split (PR-ready copy)": "484b49c6813c7ed8b2d3d587fa8f5795e23cc39d",
+    "pr/kv-pool (copy of the shared KV pool on the 0.1.40.x base)": "3aefa1166047e1df1cc5b702f19600039a7fb738",
+    "pr/batch-mtp-split (copy of batch MTP on a split on the 0.1.40.x base)": "484b49c6813c7ed8b2d3d587fa8f5795e23cc39d",
     "pr/mtp-shared-draft-head": "08ef4a38d01cd0d051881d7ff683860064acd1f9",
     "pr/aux-cpus (#1598)": "1e80ce9cdad6b1eea5af577b6dc54fc70a73f6cf",
     "pr/split-mtp-batch (#1599)": "3d57d0c0ce215e0e3339446d528d5db9e027a08c",
     "pr/lend-sizing (#1600)": "8c274ddcc28382c7c19a6abb7ecebc92e544c03e",
     "pr/memory-guard (#1601)": "dcb9fddde345dc36011065f90d4dfaaceac1cfa9",
+    "pr/kv-pool-141 (#1614, shared KV pool)": "400fc50e8edd7ba9bbf073129197afba850633d3",
+    "pr/batch-mtp-141 (#1636, batch MTP on a layer split)": "2c0807762e258b6be7031f77ac19b4b0fa0de262",
+    "pr/adapt-async-141 (#1637, adaptive tier beside batch slots)": "4dba66ac5e721c0d336328b32f8a385e9c487dbf",
     "repro/w7": "428d9910134aaaae9ffd8c8e262cec39504221e5",
     "up-141 (my stack on upstream 0.1.41, built as strata-w10; code head db925c1)": "10baecbcb5c70b39b21422a5fc6d11f4bcbc138d"
   },
