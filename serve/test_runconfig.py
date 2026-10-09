@@ -17,7 +17,8 @@ from pathlib import Path
 
 from serve import runconfig
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import (ByteTokenizer, MockEngine, Service, sampling_config_lines, sampling_defaults_from_config,
+                          serve)
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv", "int8", "--spec-min-p", "0.5"],
@@ -75,6 +76,62 @@ class Apply(unittest.TestCase):
         self.assertEqual(got["anthropic_thinking"]["choices"], ["model", "on_request"])
         self.assertNotIn("api_key", got)
         self.assertNotIn("mcp_servers", got)
+
+
+class Presets(unittest.TestCase):
+    """#1129: the two sampling sets the model card recommends - setup writes one of them (--thinking / --instruct),
+    and the server's start line names it, so a start says out loud what a request that asks for none gets."""
+
+    def test_the_cards_numbers_reach_the_server_as_they_are(self):
+        for name, block in runconfig.SAMPLING_PRESETS.items():
+            with self.subTest(name):
+                self.assertEqual(sampling_defaults_from_config({"sampling": block}), block)
+
+    def test_the_block_is_named(self):
+        self.assertEqual(runconfig.preset_of(dict(runconfig.SAMPLING_PRESETS["thinking"])), "thinking")
+        self.assertEqual(runconfig.preset_of({**runconfig.SAMPLING_PRESETS["instruct"], "top_p": 0.80, "top_k": 20.0}),
+                         "instruct")                          # 0.80 and 20.0, as a JSON file writes them
+        for own in (None, {},                                      # no block, an empty one
+                    {"temperature": 1.0, "top_p": 0.95, "top_k": 20},      # the shorter block of an earlier setup
+                    {"temperature": 0.0}, {"temperature": "warm"}):        # their own numbers, a value not a number
+            self.assertIsNone(runconfig.preset_of(own), own)
+
+    def test_the_one_line_a_start_prints(self):
+        self.assertEqual(runconfig.sampling_summary(runconfig.SAMPLING_PRESETS["instruct"]),
+                         "temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5, "
+                         "repetition_penalty=1.0")
+        self.assertEqual(runconfig.sampling_summary({"seed": 7, "top_p": 0.5}), "top_p=0.5, seed=7")   # own keys last
+        self.assertEqual(runconfig.sampling_summary(None), "")
+
+    def test_a_block_that_is_not_a_set_of_numbers_refuses_to_start(self):
+        """A "sampling" that is a name, a number or a list gets a message, not a traceback: the docs point people at
+        that key, and the web page cannot write one of these (it checks every value first)."""
+        for bad in ("warm", 5, ["temperature"], True):
+            with self.subTest(bad=bad):
+                with self.assertRaises(SystemExit) as e:
+                    sampling_defaults_from_config({"sampling": bad})
+                self.assertIn("expected a set of numbers", str(e.exception))
+
+    def test_the_start_line_names_a_block_the_way_setup_names_it(self):
+        """#1129: setup's `Settings (...)` line and the server's start line must call one block one thing.  The card's
+        thinking numbers are its preset; the same numbers with a key set to null are the user's own - setup keeps such
+        a block as theirs, so the start line may not call it the preset."""
+        thinking = runconfig.SAMPLING_PRESETS["thinking"]
+        self.assertEqual(sampling_config_lines({"sampling": dict(thinking)}),
+                         ["[strata] sampling defaults from the config: temperature=1.0, top_p=0.95, top_k=20, "
+                          "min_p=0.0, presence_penalty=0.0, repetition_penalty=1.0 (Qwen's thinking preset)"])
+        line = sampling_config_lines({"sampling": {**thinking, "seed": None}})[0]
+        self.assertIn("sampling defaults from the config: temperature=1.0", line)
+        self.assertNotIn("preset", line)
+        extra = sampling_config_lines({"sampling": {**thinking, "banana": 2}})[0]  # an unknown key: named, ignored
+        self.assertIn("temperature=1.0", extra)
+        self.assertNotIn("preset", extra)                     # so: named only when the block is exactly one of two
+        self.assertIn("greedy for every request that sends none", sampling_config_lines({})[0])
+        self.assertIn("greedy for every request that sends none", sampling_config_lines({"sampling": {}})[0])
+        for falsy in (0, "", [], False):            # a block that is not numbers at all, the empty spellings too
+            with self.subTest(falsy=falsy):
+                with self.assertRaises(SystemExit):
+                    sampling_config_lines({"sampling": falsy})
 
 
 class Http(unittest.TestCase):

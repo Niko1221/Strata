@@ -38,6 +38,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
   }
  },
@@ -80,6 +88,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -122,6 +138,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -164,6 +188,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -204,6 +236,14 @@
    "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
   }
  },
@@ -249,6 +289,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
   }
  },
@@ -294,6 +342,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -339,6 +395,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -384,6 +448,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -424,6 +496,14 @@
    "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
   }
  },
@@ -469,6 +549,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
   }
  },
@@ -514,6 +602,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -558,6 +654,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -602,6 +706,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -642,6 +754,14 @@
    "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
   }
  },
@@ -682,6 +802,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
   }
  },
@@ -724,6 +852,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -766,6 +902,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -808,6 +952,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -848,6 +1000,14 @@
    "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
   }
  },
@@ -890,6 +1050,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
   }
  },
@@ -932,6 +1100,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -974,6 +1150,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
@@ -1016,6 +1200,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
@@ -1056,6 +1248,14 @@
    "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
    "port": 8080,
+   "sampling": {
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "temperature": 1.0,
+    "top_k": 20,
+    "top_p": 0.95
+   },
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
   }
  }

@@ -66,7 +66,9 @@ questions are setup's own. What changes:
 - **The config:** it uses the container's paths and `"backend": "sycl"`. The VRAM reserve is 1,024 MiB up to
   32K and 2,048 MiB with 4,096-token prompt chunks above that, 300 MiB on a card under 12 GB; a
   `--vram-reserve-mib N` you give is kept as given. KV streaming (`--kv-resident 32768`) is on from
-  64K up when the RAM holds the KV. A `model_switcher` or `sampling` block from an earlier config is kept.
+  64K up when the RAM holds the KV. A `model_switcher` block from an earlier config is kept, and so is its `sampling`
+  block (#1129) - but not over a choice this run made: setup writes the card's thinking set for a new install, and
+  `--thinking` / `--instruct` names either set; the block it wrote survives this rewrite.
   `run-<model>.sh` starts `sycl/serve/server_intel.py`.
 - **Arc A-series (`i915`, e.g. the A750 with 8 GB):** a different config, see "Arc A750 and the other Alchemist cards" below.
 - **Engine settings:** the config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every variable starting with
@@ -82,6 +84,9 @@ mount. A symlink to a folder outside the mount does not work in the container; a
 
 Then `run-<model>.sh` (or `./setup.sh --backend sycl` again) starts the model. The first start of a 30 GB model
 takes about two minutes. `--port N` and `--host 0.0.0.0` work as in upstream's setup.
+What such a start names - `--thinking` / `--instruct`, `--host`, `--api-key`, `--vram-reserve-mib`, `--draft-vocab`,
+`--no-browser` - is written into the config before the run script starts the server, so the model keeps it from then
+on (#179, #493, #1129).
 
 ## How to build it
 
