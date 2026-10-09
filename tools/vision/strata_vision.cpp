@@ -19,6 +19,7 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "media_export.hpp"
+#include "strata/program/video_limits.hpp"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -195,9 +196,16 @@ int main(int argc, char** argv) {
         if (line == "CAPS") {
             // Requested, additive: NEVER another unsolicited line after READY.
             std::printf("CAPS media=2 profile=%s width=%d image_pad=248056 video_pad=248057 "
-                        "vision_start=248053 vision_end=248054 image_min=%d image_max=%d\n",
+                        "vision_start=248053 vision_end=248054 image_min=%d image_max=%d "
+                        "video_max_frames=%u video_max_rows=%llu video_max_rgb_bytes=%llu "
+                        "video_max_wire_bytes=%llu video_max_duration_s=%.0f\n",
                         video_profile ? strata::vision::video_profile_name : "none", n_embd,
-                        min_tokens > 0 ? min_tokens : 8, max_tokens > 0 ? max_tokens : 4096);
+                        min_tokens > 0 ? min_tokens : 8, max_tokens > 0 ? max_tokens : 4096,
+                        strata::program::video_limits::max_frames,
+                        (unsigned long long) strata::program::video_limits::max_rows,
+                        (unsigned long long) strata::program::video_limits::max_rgb_bytes,
+                        (unsigned long long) strata::program::video_limits::max_wire_bytes,
+                        strata::program::video_limits::max_duration_s);
             std::fflush(stdout);
             continue;
         }
@@ -210,10 +218,12 @@ int main(int argc, char** argv) {
             const bool valid = parsed && !(values >> extra) && video_profile &&
                 requested.group_tokens >= uint32_t(min_tokens > 0 ? min_tokens : 8) &&
                 requested.group_tokens <= uint32_t(std::min(1024, max_tokens > 0 ? max_tokens : 4096)) &&
-                requested.frames >= 1 && requested.frames <= 128 && requested.rows >= 1 && requested.rows <= 16384 &&
-                requested.rgb_bytes >= 1 && requested.rgb_bytes <= (256u << 20) &&
-                requested.embedding_bytes >= 1 && requested.embedding_bytes <= (256u << 20) &&
-                std::isfinite(requested.duration_s) && requested.duration_s > 0 && requested.duration_s <= 3600;
+                requested.frames >= 1 && requested.frames <= strata::program::video_limits::max_frames &&
+                requested.rows >= 1 && requested.rows <= strata::program::video_limits::max_rows &&
+                requested.rgb_bytes >= 1 && requested.rgb_bytes <= strata::program::video_limits::max_rgb_bytes &&
+                requested.embedding_bytes >= 1 && requested.embedding_bytes <= strata::program::video_limits::max_wire_bytes &&
+                std::isfinite(requested.duration_s) && requested.duration_s > 0 &&
+                requested.duration_s <= strata::program::video_limits::max_duration_s;
             video_ready = false;
             try {
                 if (!valid) throw strata::program::MediaError("unsupported video profile or video limits");
@@ -235,7 +245,7 @@ int main(int argc, char** argv) {
                 if (!parse_enc("ENC " + line.substr(5), img, out))
                     throw strata::program::MediaError("expected: ENCV <RGB frame spool> <output>");
                 const auto bundle = strata::vision::export_video(ctx, img, uint32_t(n_embd), video_limits);
-                strata::vision::publish_media(out, bundle);
+                strata::vision::publish_media(out, bundle, video_limits);
                 size_t rows = 0;
                 for (const auto& span : bundle.spans) rows += span.positions.size();
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

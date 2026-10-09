@@ -41,18 +41,19 @@ class VideoPolicy:
     fps: float = 2.0
     min_group_tokens: int = 8
     max_group_tokens: int = 256
-    max_source_bytes: int = 64 << 20
-    max_duration_s: float = 60.0
-    max_frames: int = 128
-    max_source_frames: int = 8192
+    max_source_bytes: int = 256 << 20
+    max_duration_s: float = 600.0
+    max_frames: int = 1024
+    max_source_frames: int = 32768
     max_source_side: int = 8192
     max_source_pixels: int = 16 << 20
     max_rgb_bytes: int = 256 << 20
-    max_tokens: int = 16384
-    max_embedding_bytes: int = 256 << 20
-    max_disk_bytes: int = 512 << 20
+    max_decoded_bytes: int = 4 << 30
+    max_tokens: int = 32768
+    max_embedding_bytes: int = 384 << 20
+    max_disk_bytes: int = 2 << 30
     cache_bytes: int = 256 << 20
-    deadline_s: float = 120.0
+    deadline_s: float = 600.0
     decoder_memory_bytes: int = 2 << 30
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
@@ -88,10 +89,12 @@ class VideoPolicy:
             raise VideoError("video FPS/duration/deadline exceeds the supported ceiling")
         if not (max(8, image_min or 0) <= p.min_group_tokens <= p.max_group_tokens <= min(1024, image_max or 4096)):
             raise VideoError("video group tokens must fit the existing image encoder's min/max token policy (8..1024)")
-        if p.max_frames > 128 or p.max_tokens > 16384 or p.max_source_frames > 65536:
+        if p.max_frames > 4096 or p.max_tokens > 65536 or p.max_source_frames > 65536:
             raise VideoError("video frames/tokens exceed the supported transport ceiling")
-        if p.max_rgb_bytes > 256 << 20 or p.max_embedding_bytes > 256 << 20:
-            raise VideoError("video RGB/embedding budgets must be at most 256 MiB")
+        if p.max_rgb_bytes > 1 << 30 or p.max_embedding_bytes > 768 << 20 or p.max_decoded_bytes > 16 << 30:
+            raise VideoError("video RGB/embedding/decode budgets exceed the supported ceiling")
+        if p.max_source_bytes > 1 << 30 or p.max_disk_bytes > 8 << 30 or p.cache_bytes > 1 << 30:
+            raise VideoError("video source/disk/cache budgets exceed the supported ceiling")
         if p.cache_bytes > p.max_disk_bytes or p.max_source_bytes > p.max_disk_bytes:
             raise VideoError("video source/cache budget exceeds the disk budget")
         if p.max_source_side > 16384 or p.max_source_pixels > 64 << 20 or p.decoder_memory_bytes > 8 << 30:
@@ -107,7 +110,7 @@ class VideoRequestBudget:
     def __init__(self, policy: VideoPolicy, cancel=None):
         self.policy, self.cancel = policy, cancel
         self.deadline = time.monotonic() + policy.deadline_s
-        self.source_bytes = self.frames = self.rgb_bytes = self.tokens = self.embedding_bytes = 0
+        self.source_bytes = self.frames = self.rgb_bytes = self.decoded_bytes = self.tokens = self.embedding_bytes = 0
         self.duration_s = 0.0
 
     def check(self):
@@ -120,7 +123,7 @@ class VideoRequestBudget:
         self.check()
         projected = {}
         for key, n in costs.items():
-            if key not in ("source_bytes", "frames", "rgb_bytes", "tokens", "embedding_bytes", "duration_s"):
+            if key not in ("source_bytes", "frames", "rgb_bytes", "decoded_bytes", "tokens", "embedding_bytes", "duration_s"):
                 raise VideoError("unknown video budget cost")
             if isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < 0:
                 raise VideoError("invalid video budget cost")
@@ -243,8 +246,16 @@ class ClipInfo:
         return len(self.indices) * self.resized_width * self.resized_height * 3
 
     @property
+    def decoded_bytes(self):
+        return len(self.indices) * self.width * self.height * 4
+
+    @property
     def packet_bytes(self):
         return FRAME_HEADER.size + len(self.indices) * FRAME_TIME.size + self.rgb_bytes
+
+    @property
+    def spool_reservation(self):
+        return self.packet_bytes + 64 * len(self.indices)
 
     @property
     def max_wire_bytes(self):
@@ -256,7 +267,7 @@ class ClipInfo:
         if self.max_wire_bytes > budget.policy.max_embedding_bytes:
             raise VideoLimitError("video wire payload exceeds its embedding/transport byte budget")
         budget.charge(duration_s=self.duration_s, frames=len(self.indices), rgb_bytes=self.rgb_bytes,
-                      tokens=self.rows, embedding_bytes=self.rows * 2560 * 4)
+                      decoded_bytes=self.decoded_bytes, tokens=self.rows, embedding_bytes=self.rows * 2560 * 4)
 
 
 def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
@@ -326,8 +337,9 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
         indices, seconds = sample_times(times, policy.fps, policy.max_frames)
         rh, rw = resize_shape(h, w, len(indices), policy)
         info = ClipInfo(len(times), fps, w, h, duration, indices, seconds, rw, rh, rotation)
-        if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes:
-            raise VideoError("video exceeds its visual token/RGB budget")
+        if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes or \
+                info.decoded_bytes > policy.max_decoded_bytes or info.max_wire_bytes > policy.max_embedding_bytes:
+            raise VideoLimitError("video exceeds its visual row, RGB, decoder-output or wire budget")
         return info
     except VideoError:
         raise

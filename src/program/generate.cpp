@@ -61,6 +61,7 @@
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/media_embeddings.hpp"
+#include "strata/program/video_limits.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
@@ -9032,6 +9033,8 @@ int main(int argc, char** argv) {
                 } else if (media_v2) {
                     try {
                         strata::program::MediaLimits limits;
+                        limits.max_rows = strata::program::video_limits::max_rows;
+                        limits.max_bytes = strata::program::video_limits::max_wire_bytes;
                         limits.max_spans = limits.max_rows;
                         limits.expected_width = uint32_t(g.n_embd);
                         limits.max_tokens = std::min<uint64_t>(limits.max_tokens, uint64_t(cells));

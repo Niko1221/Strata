@@ -92,6 +92,7 @@ class OwnedMediaFile:
             # Native publication uses this additional owned name. It is never an
             # arbitrary prefix glob, and child processes are reaped before here.
             Path(str(self.path) + ".partial").unlink(missing_ok=True)
+            Path(str(self.path) + ".select").unlink(missing_ok=True)
             if os.name == "nt" and self.path.exists():
                 self.path.chmod(0o600)  # staged sources were read-only; Windows refuses unlink otherwise
             self.path.unlink(missing_ok=True)
@@ -215,10 +216,11 @@ def decode_video(source, root, quota, budget):
             info.width * info.height <= p.max_source_pixels and
             p.min_group_tokens <= info.resized_width // 32 * (info.resized_height // 32) <= p.max_group_tokens and
             info.rows <= p.max_tokens and info.rgb_bytes <= p.max_rgb_bytes and
+            info.decoded_bytes <= p.max_decoded_bytes and info.max_wire_bytes <= p.max_embedding_bytes and
             info.resized_width % 32 == info.resized_height % 32 == 0):
         raise VideoError("video decoder metadata exceeds its policy")
     info.charge(budget)
-    owned = OwnedMediaFile(root, quota, info.packet_bytes, ".svf")
+    owned = OwnedMediaFile(root, quota, info.spool_reservation, ".svf")
     try:
         result = worker("decode", source, owned.path, budget, info=info)
         info = result.get("info")
@@ -231,6 +233,7 @@ def decode_video(source, root, quota, budget):
         if not (1 <= len(info.indices) <= p.max_frames and 0 < info.duration_s <= p.max_duration_s and
                 p.min_group_tokens <= info.resized_width // 32 * (info.resized_height // 32) <= p.max_group_tokens and
                 info.rows <= p.max_tokens and info.rgb_bytes <= p.max_rgb_bytes and
+                info.decoded_bytes <= p.max_decoded_bytes and info.max_wire_bytes <= p.max_embedding_bytes and
                 info.resized_width % 32 == info.resized_height % 32 == 0):
             raise VideoError("video decoder metadata exceeds its policy")
         owned.finish(info.packet_bytes)

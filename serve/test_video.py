@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from serve.video import FRAME_HEADER, FRAME_TIME, VideoError, VideoLimitError, VideoRequestBudget
+from serve.media_worker import select_filter
 from serve.video_source import DiskQuota, OwnedMediaFile, decode_video, local_video_path, stage_video
 from serve.test_video_policy import policy
 
@@ -28,10 +29,21 @@ class SourceTests(unittest.TestCase):
             sentinel=Path(d)/"keep";sentinel.write_bytes(b"keep")
             with OwnedMediaFile(d,quota,15,".test") as f:
                 Path(str(f.path)+".partial").write_bytes(b"partial")
+                Path(str(f.path)+".select").write_text("select=1")
                 with self.assertRaises(VideoLimitError):
                     OwnedMediaFile(d,quota,10,".test")
             self.assertEqual(quota.used,0)
             self.assertEqual(list(Path(d).iterdir()),[sentinel])
+
+    def test_large_select_expression_has_bounded_depth(self):
+        expression = select_filter(range(4096))
+        self.assertEqual(expression.count("eq(n\\,"), 4096)
+        depth = peak = 0
+        for ch in expression:
+            depth += (ch == "(") - (ch == ")")
+            peak = max(peak, depth)
+        self.assertEqual(depth, 0)
+        self.assertLessEqual(peak, 13)
 
     def test_regular_local_and_base64_hashes_cumulative_source_limit(self):
         with tempfile.TemporaryDirectory() as d:

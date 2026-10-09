@@ -80,7 +80,7 @@ def probe(source, budget):
     args = decoder_args(budget.policy.ffprobe, source)
     args[1:1] = ["-select_streams", "v:0", "-show_frames", "-show_streams", "-of", "json", "-show_entries",
                  "frame=best_effort_timestamp_time,width,height:stream=width,height,avg_frame_rate:stream_side_data=rotation"]
-    with OwnedMediaProcess(args, budget, max_stdout=8 << 20, inherit_group=True) as process:
+    with OwnedMediaProcess(args, budget, max_stdout=16 << 20, inherit_group=True) as process:
         raw = process.read()
     try:
         return probe_info(json.loads(raw), budget.policy)
@@ -88,45 +88,62 @@ def probe(source, budget):
         raise VideoError("video probe returned invalid JSON") from None
 
 
+def select_filter(indices):
+    terms = [f"eq(n\\,{i})" for i in indices]
+    while len(terms) > 1:
+        terms = [f"({terms[i]}+{terms[i + 1]})" if i + 1 < len(terms) else terms[i]
+                 for i in range(0, len(terms), 2)]
+    return "select=" + terms[0]
+
+
 def decode(source, output, budget, info=None):
     from PIL import Image
     info = info or probe(source, budget)
     p = budget.policy
     # Fail before allocating RGB. These products use validated positive dimensions/counts.
-    if info.rgb_bytes > p.max_rgb_bytes or info.packet_bytes > p.max_disk_bytes:
-        raise VideoError("video frame spool exceeds its RGB/disk budget")
-    wanted = "+".join(f"eq(n\\,{i})" for i in info.indices)
+    if info.rgb_bytes > p.max_rgb_bytes or info.spool_reservation > p.max_disk_bytes or \
+            info.decoded_bytes > p.max_decoded_bytes:
+        raise VideoLimitError("video frame decode/spool exceeds its byte budget")
+    selected = select_filter(info.indices)
+    if len(selected) > info.spool_reservation - info.packet_bytes:
+        raise VideoLimitError("video decoder filter exceeds its disk reservation")
+    select_path = Path(str(output) + ".select")
+    with select_path.open("x", encoding="ascii") as script:
+        script.write(selected)
     args = decoder_args(p.ffmpeg, source)
     # No implicit hardware decoder/device selection, console input, audio, subtitles or data streams.
     args[1:1] = ["-nostdin", "-hwaccel", "none"]
-    args += ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", "select=" + wanted,
+    args += ["-map", "0:v:0", "-an", "-sn", "-dn", "-filter_script:v", str(select_path),
              "-fps_mode", "passthrough", "-frames:v", str(len(info.indices)), "-threads", "1",
              "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]
     original_bytes = info.width * info.height * 4
     pending, written = bytearray(), 0
-    with open(output, "wb") as out, OwnedMediaProcess(args, budget,
-            max_stdout=original_bytes * len(info.indices), inherit_group=True) as process:
-        out.write(FRAME_HEADER.pack(b"SVF1", 0, len(info.indices), info.resized_width, info.resized_height,
-                                   info.duration_s, info.rgb_bytes))
-        for chunk in process:
-            pending.extend(chunk)
-            while len(pending) >= original_bytes:
-                budget.check()
-                if written >= len(info.indices):
-                    raise VideoError("video decoder returned extra frames")
-                rgb = bytes(pending[:original_bytes])
-                del pending[:original_bytes]
-                im = Image.frombytes("RGBA", (info.width, info.height), rgb)
-                if im.getextrema()[3] != (255, 255):
-                    raise VideoError("transparent video frames are not supported; supply an opaque RGB clip")
-                im = im.convert("RGB")
-                if im.size != (info.resized_width, info.resized_height):
-                    im = im.resize((info.resized_width, info.resized_height), Image.Resampling.BICUBIC)
-                out.write(FRAME_TIME.pack(info.times[written]))
-                out.write(im.tobytes())
-                written += 1
-        if pending or written != len(info.indices):
-            raise VideoError("video decoder returned a short RGB frame stream")
+    try:
+        with open(output, "wb") as out, OwnedMediaProcess(args, budget,
+                max_stdout=info.decoded_bytes, inherit_group=True) as process:
+            out.write(FRAME_HEADER.pack(b"SVF1", 0, len(info.indices), info.resized_width, info.resized_height,
+                                       info.duration_s, info.rgb_bytes))
+            for chunk in process:
+                pending.extend(chunk)
+                while len(pending) >= original_bytes:
+                    budget.check()
+                    if written >= len(info.indices):
+                        raise VideoError("video decoder returned extra frames")
+                    rgb = bytes(pending[:original_bytes])
+                    del pending[:original_bytes]
+                    im = Image.frombytes("RGBA", (info.width, info.height), rgb)
+                    if im.getextrema()[3] != (255, 255):
+                        raise VideoError("transparent video frames are not supported; supply an opaque RGB clip")
+                    im = im.convert("RGB")
+                    if im.size != (info.resized_width, info.resized_height):
+                        im = im.resize((info.resized_width, info.resized_height), Image.Resampling.BICUBIC)
+                    out.write(FRAME_TIME.pack(info.times[written]))
+                    out.write(im.tobytes())
+                    written += 1
+            if pending or written != len(info.indices):
+                raise VideoError("video decoder returned a short RGB frame stream")
+    finally:
+        select_path.unlink(missing_ok=True)
     return {"bytes": info.packet_bytes,
             "info": {**info.__dict__, "indices": list(info.indices), "times": list(info.times)}}
 

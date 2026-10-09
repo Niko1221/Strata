@@ -56,6 +56,22 @@ class VideoEncoder:
         if any(facts.get(k) != v for k, v in wanted.items()):
             self.reason = "the encoder/projector/tokenizer do not match the supported Qwen4 video profile"
             return
+        for key, configured in (("video_max_frames", self.policy.max_frames),
+                                ("video_max_rows", self.policy.max_tokens),
+                                ("video_max_rgb_bytes", self.policy.max_rgb_bytes),
+                                ("video_max_wire_bytes", self.policy.max_embedding_bytes),
+                                ("video_max_duration_s", self.policy.max_duration_s)):
+            if key in facts:
+                try:
+                    ceiling = float(facts[key])
+                    if not ceiling.is_integer() or ceiling <= 0:
+                        raise ValueError()
+                except (ValueError, OverflowError):
+                    self.reason = f"video encoder reported an invalid {key}"
+                    return
+                if configured > ceiling:
+                    self.reason = f"vision.video.{key[6:]} exceeds the encoder's {key}={facts[key]}"
+                    return
         ffmpeg, ffprobe = shutil.which(self.policy.ffmpeg), shutil.which(self.policy.ffprobe)
         if ffmpeg is None or ffprobe is None:
             self.reason = "video requires ffmpeg and ffprobe (images remain available)"

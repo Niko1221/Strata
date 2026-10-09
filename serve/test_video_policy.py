@@ -25,12 +25,15 @@ class VideoPolicyTests(unittest.TestCase):
             self.assertIsNone(VideoPolicy.from_config(cfg))
         self.assertEqual(VideoPolicy.from_config({"enabled": True}), VideoPolicy())
         for cfg in (True, {"enabled": "yes"}, {"enabled": True, "typo": 1},
-                    {"enabled": True, "fps": float("nan")}, {"enabled": True, "max_frames": 129},
-                    {"enabled": True, "max_tokens": False}, {"enabled": True, "max_disk_bytes": 1}):
+                    {"enabled": True, "fps": float("nan")}, {"enabled": True, "max_frames": 4097},
+                    {"enabled": True, "max_tokens": False}, {"enabled": True, "max_disk_bytes": 1},
+                    {"enabled": True, "max_decoded_bytes": (16 << 30) + 1}):
             with self.subTest(cfg=cfg), self.assertRaises(VideoError):
                 VideoPolicy.from_config(cfg)
         with self.assertRaises(VideoError):
             VideoPolicy.from_config({"enabled": True, "max_group_tokens": 301}, 8, 300)
+        self.assertEqual(VideoPolicy.from_config({"enabled": True, "max_frames": 2048}).max_frames, 2048)
+        self.assertEqual(VideoPolicy().max_frames, 1024)
 
     def test_reference_sampling_and_ties_to_even(self):
         import numpy as np
@@ -106,6 +109,23 @@ class VideoPolicyTests(unittest.TestCase):
         with self.assertRaises(VideoError):
             sample_times([0.0, 0.5], 0, 128)
 
+    def test_default_frame_cap_and_derived_clip_costs(self):
+        raw = probe_data(frames=15360, fps=30)
+        raw["streams"][0].update(width=320, height=192)
+        for frame in raw["frames"]:
+            frame.update(width=320, height=192)
+        info = probe_info(raw, VideoPolicy())
+        self.assertEqual((len(info.indices), info.indices[::128]),
+                         (1024, tuple(i * 15 for i in range(0, 1024, 128))))
+        self.assertEqual((info.rows, info.rgb_bytes, info.decoded_bytes),
+                         (30720, 1024 * 320 * 192 * 3, 1024 * 320 * 192 * 4))
+        budget = VideoRequestBudget(VideoPolicy())
+        info.charge(budget)
+        self.assertEqual((budget.frames, budget.tokens, budget.embedding_bytes),
+                         (1024, 30720, 30720 * 2560 * 4))
+        with self.assertRaisesRegex(VideoLimitError, "selected frames"):
+            sample_times([i / 2 for i in range(1025)], 2., 1024)
+
     def test_cumulative_budget_repeat_costs_cancel_and_deadline(self):
         b = VideoRequestBudget(policy(max_frames=12, max_duration_s=8, max_tokens=40))
         info = probe_info(probe_data(), b.policy)
@@ -116,6 +136,8 @@ class VideoPolicyTests(unittest.TestCase):
         self.assertEqual((b.frames, b.tokens, b.embedding_bytes), (5, info.rows, info.rows * 2560 * 4))
         with self.assertRaisesRegex(VideoLimitError, "wire payload"):
             info.charge(VideoRequestBudget(policy(max_embedding_bytes=info.rows * 2560 * 4 + 1)))
+        with self.assertRaisesRegex(VideoLimitError, "decoder-output"):
+            probe_info(probe_data(), policy(max_decoded_bytes=info.decoded_bytes - 1))
         cancel=threading.Event(); cancel.set()
         with self.assertRaises(VideoCancelled):
             VideoRequestBudget(policy(),cancel).check()

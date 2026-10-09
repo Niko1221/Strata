@@ -143,6 +143,14 @@ class EncoderCache(unittest.TestCase):
                 self.assertEqual(read_bundle(source, limits, qwen4=True), bundle)
         self.assertEqual(self.encoder.quota.used, 0)
 
+    def test_encoder_ceiling_negotiation_rejects_before_vset(self):
+        caps = ("CAPS media=2 profile=qwen4_exp_16x2x2_2560_v1 width=2560 "
+                "image_pad=248056 video_pad=248057 vision_start=248053 vision_end=248054 "
+                "video_max_frames=128")
+        self.encoder.configure(caps, lambda *_: self.fail("VSET must not run"),
+                               VideoRequestBudget(self.encoder.policy))
+        self.assertIn("max_frames", self.encoder.reason)
+
     def test_unavailable_video_does_not_touch_legacy_encoder(self):
         e=VideoEncoder({"video":{"enabled":True}},self.directory)
         e.configure("ERR old encoder",lambda *args:self.fail("must not configure an old encoder"),

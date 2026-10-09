@@ -47,6 +47,16 @@ double read_double(std::istream& in) {
     return value;
 }
 
+program::MediaLimits video_media_limits(uint32_t width, const VideoExportLimits& limits) {
+    program::MediaLimits media;
+    media.expected_width = width;
+    media.max_rows = limits.rows;
+    media.max_spans = limits.rows;
+    media.max_bytes = limits.embedding_bytes;
+    media.allowed_pad_ids = {video_pad};
+    return media;
+}
+
 void append_group(MediaBundle& bundle, mtmd_context* ctx, uint32_t w, uint32_t h,
                   const std::vector<unsigned char>& first, const std::vector<unsigned char>& second,
                   double timestamp, const VideoExportLimits& limits) {
@@ -183,19 +193,16 @@ MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t 
         append_group(bundle, ctx, uint32_t(w), uint32_t(h), a, b, (first + last) / 2, limits);
     }
     need(in.peek() == std::char_traits<char>::eof() && in.eof() && !in.bad(), "trailing RGB spool bytes or read error");
-    program::MediaLimits media;
-    media.expected_width = width;
-    media.allowed_pad_ids = {video_pad};
-    program::validate_qwen4_media(bundle, media);
+    program::validate_qwen4_media(bundle, video_media_limits(width, limits));
     return bundle;
 }
 
-void publish_media(const std::string& output, const MediaBundle& bundle) {
+void publish_media(const std::string& output, const MediaBundle& bundle, const VideoExportLimits& limits) {
     const std::string partial = output + ".partial";
     try {
         std::ofstream out(partial, std::ios::binary | std::ios::trunc);
         need(bool(out), "cannot create the media partial file");
-        program::write_media(out, bundle);
+        program::write_media(out, bundle, video_media_limits(bundle.width, limits));
         out.close();
         need(bool(out), "cannot finish the media partial file");
         // Owned callers create an empty destination; replace is atomic on POSIX.

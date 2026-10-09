@@ -22,7 +22,7 @@ struct VideoExportLimits {
 bool supports_video_profile(const std::string& projector, const llama_model* model, int width);
 program::MediaBundle export_video(mtmd_context* ctx, const std::string& packet, uint32_t width,
                                   const VideoExportLimits& limits);
-void publish_media(const std::string& output, const program::MediaBundle& bundle);
+void publish_media(const std::string& output, const program::MediaBundle& bundle, const VideoExportLimits& limits);
 void warm_video(mtmd_context* ctx, uint32_t width, const VideoExportLimits& limits);
 
 }  // namespace strata::vision
