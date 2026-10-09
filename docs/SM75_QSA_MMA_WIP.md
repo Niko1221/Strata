@@ -23,9 +23,20 @@ This candidate is **not bit-exact** to native FP32 attention. Historical main-mo
 
 ## Publication checks and remaining work
 
-- CUDA 13, MSVC 14.51, SM75 translation unit compiled locally. Full engine integration, capture and fallback tests remain pending on this rebased head.
-- Simplify the imported kernel to the single QK/PV variant, review layout/masking, and add reproducible numerical fixtures.
-- Re-run every KV mode on same inputs, including partially masked/empty chunks and non-multiple-of-64 selections.
+### October 9 construction update
+
+- Simplified the imported kernel to QK/PV MMA only, removing unused scalar ablation branches. Page-row address arithmetic now widens before multiplication.
+- Preserved the original attention function signature and added an explicit verifier-role overload, avoiding a shared-header ABI mismatch with the existing SYCL definition. Rebuilt the complete CUDA engine after this fix. SYCL was not built locally.
+- Added a compiled-image check (`cudaFuncAttributes::ptxVersion >= 75`) before enabling MMA. A lower-target PTX image must fall back even on SM75, because its MMA body was compiled out. CUDA 13 rejects SM70 compilation, so an older-toolchain runtime test remains pending.
+- A clean Release SM75 engine and `qsa_mma_parity` build passed with CUDA 13/MSVC 14.51, using the installed ggml source. No old Strata support archive was used in this build.
+- The new reproducible fixture passed 240 cases: all four KV formats; T=1/2/3/4/5; capacities 1/65/129/2051; reversed page mapping; fully valid, partly masked and fully masked pages; per-query widths; initial candidate use during CUDA Graph capture and repeated replay. Maximum absolute error was 0.000244141; worst per-case NRMSE was 0.000308676 against native attention. Bounds of 0.005 were specified for this bounded random fixture before execution; they are not model-quality thresholds.
+- T=1/5 fallback was bit-identical within this build. With the opt-in flag set to zero, all 240 comparisons were bit-identical. This does not yet establish byte equivalence against a separately built upstream engine.
+- Reproduce: build `qsa_mma_parity`, then run with `STRATA_QSA_SM75_MMA=1`. CTest sets the flag for the test. This fixture measures correctness, not speed or CI95.
+
+The main release gates remain model-quality checks, current-head performance ablation, upstream default-path comparison, and HIP builds. Do not infer quality from the small synthetic error or infer new performance intervals from the historical table.
+
+- Full CUDA engine integration and synthetic capture/masking checks passed as recorded above; real-model capture and runtime fallback failure injection remain pending.
+- Improve kernel readability and review layout, masking and host dispatch overhead.
 - Test quality with teacher-forced logits/KL, perplexity and long-context retrieval. Small attention error alone does not prove quality equivalence.
 - Measure T=2/3/4 and longer contexts separately on latest upstream; true CPU end-to-end ablation is pending.
 - Build HIP fallback; SYCL implementation is unchanged.
