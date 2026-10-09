@@ -394,7 +394,11 @@ void q2_0_rows(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* cons
 }  // namespace
 
 bool iq128_supported(int type) noexcept {
-    return type == 18 || type == 21 || type == 22 || type == 23;
+    // IQ4_XS (23) is deliberately NOT here: its ggml generic dot auto-vectorizes well and beats the 128-bit
+    // grid kernel (0.7-1.0x in iq_avx1_parity --bench on an E5-2470 v2); the generic stays for that format's
+    // gate/up rows.  Its down rows (IQ4_NL/Q2_0) still take iq128_down_rows.  The kernel itself stays built
+    // and parity-tested.
+    return type == 18 || type == 21 || type == 22;
 }
 
 bool iq128_down_supported(int type) noexcept {
