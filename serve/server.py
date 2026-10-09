@@ -2323,7 +2323,9 @@ def engine_args(cfg: dict) -> list[str]:
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
     # (only when the config has no reserve of its own).
-    if isinstance(cfg.get("vision"), dict) and "--vision" not in args:
+    # A Mac (backend "metal") takes pictures without either flag (strata-vision encodes them; the Metal engine ignores
+    # --vision), and its setup never writes them: the note would be wrong there, and repeated on every start.
+    if isinstance(cfg.get("vision"), dict) and "--vision" not in args and cfg.get("backend") != "metal":
         args.append("--vision")
         note = "added --vision"
         if cfg["vision"].get("gpu") and "--vram-reserve-mib" not in args:

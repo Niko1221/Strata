@@ -2007,6 +2007,14 @@ class PeerDevice(unittest.TestCase):
         self.assertEqual(engine_args({"args": list(done), "vision": {"gpu": True}}), done)
         self.assertEqual(engine_args({"args": list(args)}), args)                # no section: no images
 
+    def test_a_mac_config_gets_no_vision_flags(self):
+        # the Metal engine takes pictures without --vision (it ignores the flag) and setup never writes it there
+        cfg = {"args": ["--gguf", "x"], "backend": "metal", "vision": {"exe": "v", "gpu": True}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(engine_args(cfg), ["--gguf", "x"])
+        self.assertEqual(out.getvalue(), "")                                  # and no note on every start
+
     def test_split_added_for_several_gpus(self):
         self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0, 1]}),
                          ["--native", "x", "--layer-split", "auto"])
