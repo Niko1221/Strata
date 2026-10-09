@@ -2253,6 +2253,42 @@ class CancelledRead(unittest.TestCase):
         self.assertEqual(m["totals"]["prompt_tokens"], 8 + 2 * total)
 
 
+class HeldBackArgKeepalive(unittest.TestCase):
+    """#1666: with stream_tools a tool call's array or object argument is held until it is whole, so a big one
+    left the stream silent for minutes while tokens were generated - a client's idle timeout (Forge's is 120 s)
+    then ended a healthy request.  The token loop now sends the engine's own keep-alive ping whenever nothing has
+    gone out for KEEPALIVE_S; a quick answer is untouched."""
+
+    TOOLS = [{"name": "f", "parameters": {"properties": {}}}]
+
+    def test_a_held_back_call_still_pings(self):
+        tok = ByteTokenizer()
+        clock = [0.0]
+
+        class HeldEngine(MockEngine):   # ~1 s to generate each token, none of it leaving the stream
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                for t in super().generate(ids, max_new, sampling, cancel):
+                    clock[0] += 1.0
+                    yield t
+
+        # a call inside the thinking is held whole until </tool_call> (the frontend's rcall state): every token
+        # after the opener produces no stream event - the same silence a long array argument makes
+        svc = Service(HeldEngine(tok, "<tool_call><function=f>" + "x" * 30, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with mock.patch("serve.server.time.perf_counter", lambda: clock[0]):
+            kinds = [k for k, _ in svc.run(tok.encode("hi"), True, self.TOOLS, 60, {}, threading.Event())]
+        self.assertIn("ping", kinds)
+        self.assertIn("done", kinds)
+
+    def test_an_ordinary_answer_does_not_ping(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        kinds = [k for k, _ in svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event())]
+        self.assertNotIn("ping", kinds)
+        self.assertIn("done", kinds)
+
+
 class LiveRate(unittest.TestCase):
     """The Monitor's Speed readout: live.tok_s is a rate, and a request that never got a DONE keeps no counters.
 
