@@ -174,7 +174,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=RAM64, version="0.1.40", found=None, amd=(), answers=None, free=500.0, source="local",
-             runs_small=True):
+             runs_small=True, f16_mtp=False):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others).
         -> (exit code, printed text, the config written or None)."""
         def fake_input(prompt=""):
@@ -186,8 +186,10 @@ class Base(unittest.TestCase):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": source}))
-        # runs_small: the engine names qwen35moe's keys (this checkout's); False: a ready-made 0.1.40 or an older build
-        (eng / setup.EXE).write_bytes(b"\0" + (setup.SMALL_ENGINE_MARK if runs_small else b"qwen4exp.block_count"))
+        # runs_small: qwen35moe's engine-owned keys; f16_mtp: the additional patched draft-loader capability.
+        # Separate markers let Huihui's tests distinguish stock PR engines from patched ones at the same version.
+        mtp_mark = setup.MTP_F16_ENGINE_MARK if f16_mtp else b""
+        (eng / setup.EXE).write_bytes(b"\0" + (setup.SMALL_ENGINE_MARK if runs_small else b"qwen4exp.block_count") + mtp_mark)
         self.builds = []
 
         def fake_build(*a, **k):                                         # a compile here: this checkout's engine
@@ -195,7 +197,7 @@ class Base(unittest.TestCase):
             if json.loads((eng / "BUILD.json").read_text()).get("source") == "local":
                 return eng                                               # compiled here, same source: kept as is
             (eng / "BUILD.json").write_text(json.dumps({"version": "0.1.40", "source": "local"}))
-            (eng / setup.EXE).write_bytes(setup.SMALL_ENGINE_MARK)
+            (eng / setup.EXE).write_bytes(setup.SMALL_ENGINE_MARK + mtp_mark)
             return eng
         found = nvidia() if found is None else found
         for old in self.t.glob("strata-*.json"):                          # this run's config only

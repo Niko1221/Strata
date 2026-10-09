@@ -21,7 +21,7 @@ What the first run does (each step is skipped when it is already done):
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
 Options: --family qwen|swift|coder|unsloth|qwen36|ornith|huihui, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S
-(qwen36: UD-IQ4_XS|UD-IQ3_S; ornith: IQ4_XS|IQ3_XXS; huihui: Q2_K|Q3_K|Q4_K|Q5_K|Q6_K, MTP off),
+(qwen36: UD-IQ4_XS|UD-IQ3_S; ornith: IQ4_XS|IQ3_XXS; huihui: Q2_K|Q3_K|Q4_K|Q5_K|Q6_K, MTP if supported),
 --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
@@ -210,6 +210,8 @@ QWEN36_ENGINE = (0, 1, 41)
 # A GGUF key only the engine's own qwen35moe support names (src/core/layout.cpp).  Not the bare architecture name: the
 # image encoder links llama.cpp, whose table of architectures has it.
 SMALL_ENGINE_MARK = b"qwen35moe.block_count"
+# Kept in src/core/mtp.cpp's F16 conversion log, not llama.cpp: version numbers do not distinguish patched engines.
+MTP_F16_ENGINE_MARK = b"strata-capability:mtp-f16-draft-v1"
 
 MODELS = {
     # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
@@ -381,18 +383,23 @@ FAMILIES = {
                 "vision": False, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
     # Huihui's abliterated Qwen3.6: the same qwen35moe engine, pack and expert profile.  The repository also has
-    # mmproj-model-f16.gguf, but this architecture's vision path is not wired in yet.  Its quantized nextn projection
-    # cannot serve as the draft (BF16/F32 required): no --mtp and no fallback to Flash-Next's separate draft.
+    # mmproj-model-f16.gguf, but this architecture's vision path is not wired in yet.  Its draft routers are F16:
+    # the 0f69ff0 patch loads them (and F16 norms); stock PR engines refuse them.  Setup gates on the capability marker,
+    # never falling back to Flash-Next's separate draft.  Menu slot 5 deliberately moves qwen36/ornith to 6/7;
+    # named --family choices and the automatic recommendation are unchanged.
     "huihui": {"title": "Huihui Qwen3.6 abliterated (35B-A3B)", "by": "huihui-ai's abliterated Qwen3.6",
-               "about": "Q2_K-Q6_K single-file GGUFs (13-29 GB downloads); MTP off, no images yet",
+               "about": "Q2_K-Q6_K single-file GGUFs (13-29 GB downloads); MTP if supported, no images yet",
                "hf": hf("huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF"),
                "file": "Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-{q}.gguf", "shards": 1, "tag": "huihui-",
                "mmproj_hf": hf("huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF"), "mmproj": None,
                "name": "huihui-qwen3.6-35b-a3b-abliterated", "vision": False,
                "pack_args": ["--compat-bf16"], "sha256": HUIHUI_FILES, "profile": "expert-profile-qwen36.bin",
-               "architecture": "qwen35moe", "own_mtp": False, "mtp": False,
-               "mtp_note": "MTP is off: these GGUFs' draft projection is quantized, but the engine needs BF16/F32; "
-                           "no separate draft is downloaded.",
+               "license": "Abliterated derivative of an Apache-2.0 base: "
+                          "https://huggingface.co/huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF",
+               "architecture": "qwen35moe", "own_mtp": True, "mtp": True, "mtp_engine_mark": MTP_F16_ENGINE_MARK,
+               "mtp_note": "MTP is off: this engine has no F16-draft capability marker. The GGUF's F16 draft "
+                           "routers need the 0f69ff0 patch (stock PR engines refuse them); compile this "
+                           "checkout with --build to enable MTP. No separate draft is downloaded.",
                "ple": False, "one_gpu": True, "nvidia_only": True},
     # Qwen3.6-35B-A3B (general.architecture qwen35moe): one GGUF file, no PLE table (no --ple-gguf), its MTP draft
     # layer inside the file (blk.40: --mtp is the model file, nothing else is fetched), the pack built like Unsloth's
@@ -1253,12 +1260,17 @@ def small_family(family: str) -> bool:
     return FAMILIES.get(family, {}).get("architecture") == "qwen35moe"
 
 
-def engine_runs_small(eng: Path) -> bool:
-    """Does the engine in `eng` run the 35B-A3B families (qwen35moe): its program names SMALL_ENGINE_MARK."""
+def engine_has_mark(eng: Path, mark: bytes) -> bool:
+    """An engine-owned capability string in the executable; missing/unreadable files fail closed."""
     try:
-        return SMALL_ENGINE_MARK in (eng / EXE).read_bytes()
+        return mark in (eng / EXE).read_bytes()
     except OSError:
         return False
+
+
+def engine_runs_small(eng: Path) -> bool:
+    """Does the engine in `eng` run the 35B-A3B families (qwen35moe): its program names SMALL_ENGINE_MARK."""
+    return engine_has_mark(eng, SMALL_ENGINE_MARK)
 
 
 def small_model(d: dict) -> bool:
@@ -4820,7 +4832,7 @@ def main() -> int:
                                                              "Coder, unsloth = Unsloth's 4-bit files, qwen36 = "
                                                              "Qwen3.6-35B-A3B (for 16-32 GB of RAM), ornith = "
                                                              "Ornith-1.5-35B-A3B, huihui = Huihui's abliterated "
-                                                             "Qwen3.6-35B-A3B (Q2_K-Q6_K, MTP off)")
+                                                             "Qwen3.6-35B-A3B (Q2_K-Q6_K, MTP if supported)")
     ap.add_argument("--model", choices=model_choices(), help="this family's published size name (huihui: Q2_K, "
                                                             "Q3_K, Q4_K, Q5_K or Q6_K)")
     ap.add_argument("--context", type=int)
@@ -5237,7 +5249,7 @@ def main() -> int:
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
     if small_family(family) and 0 < gpu["vram_gb"] < SMALL_MODEL_VRAM_GB:
-        warn(small_model_vram_note(gpu["vram_gb"]) if fam.get("mtp", True) else
+        warn(small_model_vram_note(gpu["vram_gb"]) if fam.get("mtp", True) and not fam.get("mtp_engine_mark") else
              f"{fam['title']} has not been measured on a {gpu['vram_gb']:.0f} GB card: setup recommends its "
              "smallest size and an 8K context, but it may not fit")
     if fam.get("license"):
@@ -5510,8 +5522,8 @@ def main() -> int:
     pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    use_mtp = bool(fam.get("mtp", True))              # Huihui: the quantized draft cannot be used (no fallback fetch)
-    own_mtp = use_mtp and bool(fam.get("own_mtp"))    # Qwen3.6 / Ornith: in the model file, nothing fetched
+    use_mtp = bool(fam.get("mtp", True))              # final capability check after step 4 selects the engine
+    own_mtp = use_mtp and bool(fam.get("own_mtp"))    # 35B-A3B families: in the model file, nothing fetched
     need = to_fetch + (1 if own_mtp or not use_mtp else 2 if mtp_have else 8) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
@@ -5573,6 +5585,10 @@ def main() -> int:
         fail(f"{fam['title']} {size_of(model)} needs an engine with the qwen35moe support (Strata "
              f"{'.'.join(map(str, QWEN36_ENGINE))} source or newer); this one ({meta.get('version')}) has none",
              "update Strata and run setup again with --build")
+    if use_mtp and fam.get("mtp_engine_mark") and not engine_has_mark(eng, fam["mtp_engine_mark"]):
+        # A stock qwen35moe engine runs the main model but refuses Huihui's F16 draft routers. No version guess,
+        # forced rebuild or separate draft fetch: leave --mtp out unless the selected executable advertises it.
+        use_mtp, own_mtp = False, False
     ok(f"engine: {eng / EXE}")
 
     # ---- 5. the model files

@@ -310,6 +310,7 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
             return dense.data() + x.off;
         };
         const int64_t N = g.n_embd;
+        bool used_f16 = false;
         const strata::TensorInfo* t = nullptr;
         // the RMSNorm weights, used as stored (llama.cpp's qwen35moe graph multiplies by them directly)
         const char* norms[][2] = {{"nextn.enorm.weight", "pre_fc_norm_embedding.weight"},
@@ -327,6 +328,7 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
             if (t->type == kF32) {
                 std::memcpy(put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4), src, t->elements() * 4);
             } else if (t->type == kF16) {
+                used_f16 = true;
                 float* dst = (float*) put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4);
                 for (uint64_t i = 0; i < t->elements(); ++i) {
                     uint16_t h;
@@ -355,6 +357,7 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
                     dst[i] = f32_bits_to_bf16(u);
                 }
             } else if (t->type == kF16) {
+                used_f16 = true;
                 for (uint64_t i = 0; i < n; ++i) {
                     uint16_t h;
                     std::memcpy(&h, src + 2 * i, 2);
@@ -365,6 +368,10 @@ bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g
                 return false;
             }
         }
+        // setup.py scans this engine-owned marker, retained in the executable by the F16-only log. It covers
+        // draft norms/routers, not F16 projections or experts; no extra log on the existing BF16/F32 paths.
+        if (used_f16)
+            std::fprintf(stderr, "strata mtp: F16 draft norms/routers loaded [strata-capability:mtp-f16-draft-v1]\n");
         // the projections, rows of `cols` inputs: Q8_0 as the rt files hold them, or another type the native GEMV
         // reads (the smaller Unsloth files keep the MTP layer's projections at Q5_K / Q6_K), kept as stored
         const char* projs[][2] = {{"attn_q.weight", "self_attn.q_proj.weight"}, {"attn_k.weight", "self_attn.k_proj.weight"},

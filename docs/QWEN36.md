@@ -145,7 +145,8 @@ difference is the draft layer itself, which the fine-tune did not retrain. The a
 ## Huihui abliterated
 
 [Huihui-Qwen3.6-35B-A3B-abliterated](https://huggingface.co/huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF)
-is huihui-ai's abliterated variant of Qwen3.6-35B-A3B. It uses the same `qwen35moe` engine path, native pack and
+is huihui-ai's abliterated derivative of Qwen3.6-35B-A3B (Apache-2.0 base; see the Huihui repository above).
+It uses the same `qwen35moe` engine path, native pack and
 Qwen3.6 expert profile, on one GPU, without images yet (the repository's `mmproj-model-f16.gguf` is not used).
 
 ```
@@ -167,10 +168,36 @@ These are single files, pinned by revision, byte count and SHA-256. Setup picks 
 conservatively use the entire GGUF size, plus the same 10 GB of RAM headroom as Qwen3.6. Q8_0 (37.8 GB) and f16
 (71.1 GB) are published too, but are not offered in this small-PC setup menu.
 
-**MTP is off for this family.** Despite the repository's `MTP-GGUF` name, these quantized files' draft projection
-cannot be used: the engine needs BF16/F32. Setup writes no `--mtp` or draft-vocabulary flag and fetches no separate
-draft. It still writes `--spec 4`, because the native-pack/API path requires a verify window even without MTP.
+**MTP works with the F16-draft loader patch (`0f69ff0`, included in this engine).** The previous refusal was the
+F16 draft router (`blk.40.ffn_gate_inp.weight`), not an unusable quantized projection. The patch accepts F16 routers
+and norms (the tested Q4_K file's norms are F32); F16 projections and experts are still unsupported. A stock
+PR-engine build without this patch still refuses the F16 router as "neither BF16 nor F32".
+
+Setup checks the selected executable for the engine-owned marker `strata-capability:mtp-f16-draft-v1`. When it is
+present, setup writes `--mtp <the same model GGUF> --mtp-draft-vocab data/draft_vocab.bin` (absolute paths in the
+config), or the chosen `--draft-vocab` subset. Without the marker MTP stays off: no `--mtp`, no draft-vocabulary
+flag, and no fallback draft download. Compile this checkout with `--build` to get a marked engine. A build with
+`0f69ff0` alone but without the marker can run MTP manually with these exact additional engine flags:
+
+```
+--mtp /path/to/Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf --mtp-draft-vocab data/draft_vocab.bin
+```
+
+Keep `--native` pointing at that same GGUF. Setup still writes `--spec 4` with MTP off, because the native-pack/API
+path requires a verify window even without a draft. MTP has been run on Q4_K, not the other offered sizes here.
 This family is opt-in: Qwen3.6 remains the automatic suggestion for a PC whose RAM does not fit Flash-Next.
+
+**Reproducibility caveat (Q4_K, Windows, RTX 3080 10 GB, 128 greedy tokens, MTP off):** `--expert-cache auto` is not
+byte-reproducible across runs. Two identical commands got 2,974 and 3,494 slots as free VRAM changed and diverged at
+output token index 104 of 128 (zero-based). Resident GPU experts round differently from CPU experts, so a different
+resident set can change the continuation. A fixed `--expert-cache 2048` budget produced 2,200 actual slots in both
+runs and byte-identical output over all 128 tokens. Pin the cache budget and check the logged geometry for a
+reproducibility comparison; this is not a promise across hardware or different MTP verify-window shapes.
+
+In those two 2,200-slot runs, the greedy continuation of "The capital of France is" repeated itself, while the
+larger-cache runs varied the capitals. That is a quality caveat from one prompt, not a proven cache-size cause or
+a general claim about this family. With MTP on, changing the verify-window shape can also change greedy output
+at rounding margins, even with a fixed cache; matched-window parity was checked separately, not assumed.
 
 ## What is different from Flash-Next
 

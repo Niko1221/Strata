@@ -1,4 +1,4 @@
-"""Setup's Huihui abliterated Qwen3.6 family: pins, RAM recommendations, selection, output names and local reuse.
+"""Setup's Huihui abliterated Qwen3.6 family: pins, RAM recommendations, selection, local reuse and gated MTP.
 The qwen36 harness mocks the GPU, downloads, builds and pack tools; all writes stay in a temporary directory.
 Filesystem assertions use pathlib / os.path.join so the same tests work on Windows and Linux.
 
@@ -45,18 +45,39 @@ class Tables(unittest.TestCase):
         self.assertEqual(list(setup.FAMILIES)[:4], ["qwen", "swift", "coder", "unsloth"])
         self.assertEqual(list(setup.FAMILIES)[-2:], ["qwen36", "ornith"])
         for field, value in {"tag": "huihui-", "name": "huihui-qwen3.6-35b-a3b-abliterated",
-                             "architecture": "qwen35moe", "mtp": False, "own_mtp": False, "ple": False,
+                             "architecture": "qwen35moe", "mtp": True, "own_mtp": True, "ple": False,
+                             "mtp_engine_mark": setup.MTP_F16_ENGINE_MARK,
                              "one_gpu": True, "nvidia_only": True, "vision": False, "mmproj": None,
                              "profile": "expert-profile-qwen36.bin", "shards": 1}.items():
             self.assertEqual(fam[field], value, field)
         self.assertEqual(fam["hf"], BASE)
         self.assertEqual(fam["mmproj_hf"], BASE)
         self.assertEqual(fam["pack_args"], ["--compat-bf16"])
-        self.assertIn("BF16/F32", fam["mtp_note"])
+        self.assertIn("F16", fam["mtp_note"])
+        self.assertIn("stock PR engines refuse", fam["mtp_note"])
+        self.assertIn("Abliterated derivative", fam["license"])
+        self.assertIn("Apache-2.0 base", fam["license"])
+        self.assertIn(REPO, fam["license"])
         for family in ("huihui", "qwen36", "ornith"):
             self.assertTrue(setup.small_family(family), family)
         for family in ("qwen", "swift", "coder", "unsloth", "unknown"):
             self.assertFalse(setup.small_family(family), family)
+
+    def test_f16_mtp_engine_marker(self):
+        mark = setup.MTP_F16_ENGINE_MARK
+        # It is Strata's live F16-loader string, not a type name from the linked llama.cpp library.
+        self.assertIn(mark.decode(), (q36.ROOT / "src" / "core" / "mtp.cpp").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = Path(tmp)
+            self.assertFalse(setup.engine_has_mark(eng, mark))  # absent file: fail closed
+            exe = eng / setup.EXE
+            exe.write_bytes(setup.SMALL_ENGINE_MARK + b"\0F16 BF16 GGML_TYPE_F16")
+            self.assertTrue(setup.engine_runs_small(eng))
+            self.assertFalse(setup.engine_has_mark(eng, mark))  # stock PR engine, even with llama.cpp F16 strings
+            exe.write_bytes(exe.read_bytes() + b"\0" + mark + b"\0")
+            self.assertTrue(setup.engine_has_mark(eng, mark))
+            with mock.patch.object(Path, "read_bytes", side_effect=OSError("unreadable")):
+                self.assertFalse(setup.engine_has_mark(eng, mark))
 
     def test_sizes_and_estimates(self):
         models = [m for m, d in setup.MODELS.items() if "huihui" in d.get("families", ())]
@@ -183,7 +204,60 @@ class Install(q36.Base):
                 self.assertNotIn("vision", cfg)
                 self.assertNotIn("draft_vocab", cfg)
                 self.assertIn("MTP is off", out)
-                self.assertIn("BF16/F32", out)
+                self.assertIn("F16-draft capability marker", out)
+
+    def test_all_sizes_with_mtp(self):
+        # No separate Flash-Next draft exists: the capability must select this file, never fetch a fallback.
+        (self.t / "data" / "mtp" / "rt" / "experts.bin").unlink()
+        for size in SIZES:
+            with self.subTest(size=size):
+                self.downloads.clear()
+                self.runs.clear()
+                self.verified.clear()
+                code, out, cfg = self.main(["--family", "huihui", "--model", size],
+                                           version="0.1.41", f16_mtp=True, source="release")
+                self.assertEqual(code, 0, out)
+                gguf = self.t / "data" / "models" / f"huihui-{size}" / filename(size)
+                pack = self.t / "data" / "packs" / f"huihui-{size.lower()}"
+                self.assertEqual(cfg["args"], [
+                    "--pack", str(pack), "--native", str(gguf),
+                    "--expert-profile", str(self.t / "data" / "expert-profile-qwen36.bin"), "--expert-cache", "auto",
+                    "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
+                    "--mtp", str(gguf), "--mtp-draft-vocab", str(self.t / "data" / "draft_vocab.bin"),
+                    "--max-context", "32768", "--kv", "int8"])
+                self.assertEqual(self.downloads, [BASE + filename(size)])
+                self.assertEqual(self.verified, [(filename(size), *PINS[size])])
+                self.assertEqual(self.runs, [[sys.executable, str(self.t / "tools" / "iq_pack.py"),
+                                              "--gguf", str(gguf), "--out", str(pack), "--compat-bf16"]])
+                self.assertEqual(self.builds, [])  # the marker, not source=local or a version guess, enables it
+                self.assertNotIn("vision", cfg)
+                self.assertNotIn("draft_vocab", cfg)  # default CJK subset, no explicit saved preference
+                self.assertIn("MTP draft layer: the model file's own", out)
+                self.assertNotIn("MTP is off", out)
+
+    def test_enabled_draft_vocab_choice(self):
+        code, out, cfg = self.main(["--family", "huihui", "--model", "Q4_K", "--draft-vocab", "en"],
+                                   f16_mtp=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(q36.arg(cfg, "--mtp"), q36.arg(cfg, "--native"))
+        self.assertEqual(q36.arg(cfg, "--mtp-draft-vocab"), str(self.t / "data" / "draft_vocab_en.bin"))
+        self.assertEqual(cfg["draft_vocab"], "en")
+
+    def test_enabled_saved_draft_vocab(self):
+        with mock.patch.object(setup, "saved_draft_vocab", return_value="en") as saved:
+            code, out, cfg = self.main(["--family", "huihui", "--model", "Q4_K"], f16_mtp=True)
+        self.assertEqual(code, 0, out)
+        saved.assert_called_once_with(self.t / "strata-huihui-q4_k.json")
+        self.assertEqual(q36.arg(cfg, "--mtp-draft-vocab"), str(self.t / "data" / "draft_vocab_en.bin"))
+        self.assertEqual(cfg["draft_vocab"], "en")
+
+    def test_stock_engine_version_does_not_enable_mtp(self):
+        code, out, cfg = self.main(["--family", "huihui", "--model", "Q4_K"], version="99.0.0", source="release")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.builds, [])  # main-model support is present; don't force a build just for MTP
+        self.assertNotIn("--mtp", cfg["args"])
+        self.assertNotIn("--mtp-draft-vocab", cfg["args"])
+        self.assertIn("MTP is off", out)
 
     def test_explicit_family_uses_ram_recommendation(self):
         code, out, cfg = self.main(["--family", "huihui"], ram=q36.RAM32)
@@ -234,6 +308,21 @@ class Install(q36.Base):
         self.assertEqual(q36.arg(cfg, "--native"), str(gguf))
         self.assertEqual(q36.arg(cfg, "--pack"), str(self.t / "data" / "packs" / "huihui-q4_k"))
         self.assertNotIn("--mtp", cfg["args"])
+
+    def test_gguf_dir_mtp_uses_the_same_local_file(self):
+        folder = self.t / "existing-ggufs"
+        folder.mkdir()
+        gguf = folder / filename("Q4_K")
+        gguf.write_bytes(b"")
+        with mock.patch.object(setup, "whole_shard", return_value=True):
+            code, out, cfg = self.main(["--family", "huihui", "--model", "Q4_K", "--gguf-dir", str(folder)],
+                                       f16_mtp=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual(q36.arg(cfg, "--native"), str(gguf))
+        self.assertEqual(q36.arg(cfg, "--mtp"), str(gguf))
+        self.assertEqual(q36.arg(cfg, "--mtp-draft-vocab"), str(self.t / "data" / "draft_vocab.bin"))
+        self.assertEqual(len(self.runs), 1)  # iq_pack only
 
     def test_gguf_dir_hints_at_the_family(self):
         folder = self.t / "existing-ggufs"
@@ -340,7 +429,7 @@ class Install(q36.Base):
         self.assertIsNone(cfg)
         help_text = " ".join(out.split())  # argparse wraps at the terminal width
         self.assertIn("huihui = Huihui's abliterated", help_text)
-        self.assertIn("Q2_K-Q6_K, MTP off", help_text)
+        self.assertIn("Q2_K-Q6_K, MTP if supported", help_text)
         self.assertIn("the chosen single file", help_text)
 
 
