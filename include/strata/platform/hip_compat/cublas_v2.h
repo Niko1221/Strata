@@ -1,7 +1,7 @@
-// cublas_v2.h for a STRATA_ENABLE_HIP build: the cuBLAS names src/prefill/gemm.cu uses, on hipBLAS.
+// cuBLAS names for the separate STRATA_HIP_GFX906 compat build, on hipBLAS.
 #pragma once
 #include "strata_hip.h"
-#ifndef HIPBLAS_V2
+#if HIP_VERSION_MAJOR >= 6 && !defined(HIPBLAS_V2)
 #define HIPBLAS_V2
 #endif
 #include <hipblas/hipblas.h>
@@ -16,10 +16,18 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N
 #define CUBLAS_OP_T HIPBLAS_OP_T
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
+#if HIP_VERSION_MAJOR < 6
+// The 5.7 SDK's GemmEx takes hipblasDatatype_t for storage and compute.
+#define CUBLAS_COMPUTE_32F HIPBLAS_R_32F
+#define CUDA_R_32F HIPBLAS_R_32F
+#define CUDA_R_16F HIPBLAS_R_16F
+#define CUDA_R_16BF HIPBLAS_R_16B
+#else
 #define CUBLAS_COMPUTE_32F HIPBLAS_COMPUTE_32F
 #define CUDA_R_32F HIP_R_32F
 #define CUDA_R_16F HIP_R_16F
 #define CUDA_R_16BF HIP_R_16BF
+#endif
 // rocBLAS picks its own math and workspace; the NVIDIA-only knobs are accepted and ignored
 #define CUBLAS_DEFAULT_MATH 0
 #define cublasSetMathMode(handle, mode) HIPBLAS_STATUS_SUCCESS

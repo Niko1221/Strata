@@ -1,6 +1,6 @@
 // strata_hip.h - the CUDA runtime/cuBLAS names Strata uses, mapped onto HIP/hipBLAS for AMD GPUs (gfx906).
 //
-// This directory is put FIRST on the include path of a STRATA_ENABLE_HIP build only; its `cuda_runtime.h`,
+// This directory is put FIRST on the include path of a STRATA_HIP_GFX906 build only; its `cuda_runtime.h`,
 // `cuda_fp16.h` and `cublas_v2.h` include this header instead of the NVIDIA ones, so the engine's sources stay
 // one tree.  The mapping list follows llama.cpp's ggml-cuda/vendors/hip.h (MIT) where the two overlap.
 //
@@ -14,6 +14,11 @@
 
 #ifndef HIP_DISABLE_WARP_SYNC_BUILTINS
 #define HIP_DISABLE_WARP_SYNC_BUILTINS 1
+#endif
+#if defined(_WIN32) && !defined(__AMDGCN_WAVEFRONT_SIZE)
+// Legacy Windows HIP headers also read this macro in the host pass. This header
+// belongs exclusively to the gfx906 wave64 build.
+#define __AMDGCN_WAVEFRONT_SIZE 64
 #endif
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
@@ -128,6 +133,8 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery
