@@ -120,6 +120,9 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                             void* stream);
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
                           float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
+/// SYCL: publishes launched or recorded while `on` store the payload with plain stores instead of uncached ones, for
+/// a caller that reads the payload only after the publishing kernel has ended (the stepped verify window).
+void doorbell_plain_payload(bool on);
 
 /// The ring can reach the host before its payload on some GPUs: the payload stores and the ring store are not ordered
 /// by the fences alone (measured on an Arc A770: 14 of 2,832 rings in one run were stale, and the CPU pool then

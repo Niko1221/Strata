@@ -601,14 +601,24 @@ __dpct_inline__ void dbx_ring_commit(uint32_t* seq, uint32_t part, bool group_ok
         strata::sys_store(seq, ring);
     }
 }
+// The payload store: uncached (sycl_doorbell.hpp) so a host that polls the ring while the kernel still runs reads a
+// whole payload, or a plain store when every reader waits for the kernel to end (doorbell_plain_payload: the stepped
+// verify window reads a segment's payload only after the segment has drained, and the end of a kernel makes its
+// stores visible). The host checksum (doorbell_payload_ready) still guards every read.
+template<class T> inline void pub_store(T* p, T v, bool plain) {
+    if (plain) *p = v; else strata::sys_store_mapped(p, v);
+}
+std::atomic<bool> g_plain_payload{false};
 }  // namespace
+
+void doorbell_plain_payload(bool on) { g_plain_payload.store(on, std::memory_order_relaxed); }
 
 __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
                                              const int32_t *__restrict__ ids,
                                              const float *__restrict__ w, int n,
                                              int k, float *x_out,
                                              int32_t *ids_out, float *w_out,
-                                             uint32_t *seq) {
+                                             uint32_t *seq, bool plain) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item_ct1.get_local_id(2);
     const int nt = (int) item_ct1.get_local_range(2);
@@ -616,16 +626,16 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
 #pragma unroll
     for (int j = i; j < n; j += nt) {
         const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
+        pub_store(x_out + j, v, plain);
         part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
     if (i < k) {
         const int32_t id = ids[i];
-        strata::sys_store_mapped(ids_out + i, id);
+        pub_store(ids_out + i, id, plain);
         part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
         if (w_out != nullptr) {
             const float wv = w[i];
-            strata::sys_store_mapped(w_out + i, wv);
+            pub_store(w_out + i, wv, plain);
             part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
         }
     }
@@ -641,7 +651,7 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
 __dpct_inline__ void doorbell_publish_res_kernel(
     const float *__restrict__ x, const int32_t *__restrict__ ids,
     const int32_t *__restrict__ d_res, int n_expert, int n, int k, float *x_out,
-    int32_t *ids_out, uint32_t *seq) {
+    int32_t *ids_out, uint32_t *seq, bool plain) {
     // d_res/n_expert decided whether x was copied; the payload is now published whole and the checksum covers x and
     // the ids (this variant publishes no weights), so the two are unused.
     (void) d_res;
@@ -653,12 +663,12 @@ __dpct_inline__ void doorbell_publish_res_kernel(
 #pragma unroll
     for (int j = i; j < n; j += nt) {
         const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
+        pub_store(x_out + j, v, plain);
         part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
     if (i < k) {
         const int32_t id = ids[i];
-        strata::sys_store_mapped(ids_out + i, id);
+        pub_store(ids_out + i, id, plain);
         part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
     }
     const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
@@ -675,7 +685,7 @@ __dpct_inline__ void doorbell_publish_res_kernel(
 __dpct_inline__ void doorbell_publish_value_kernel(
     const float *__restrict__ x, const int32_t *__restrict__ ids,
     const float *__restrict__ w, int n, int k, float *x_out, int32_t *ids_out,
-    float *w_out, uint32_t *seq, uint32_t value) {
+    float *w_out, uint32_t *seq, uint32_t value, bool plain) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item_ct1.get_local_id(2);
     const int nt = (int) item_ct1.get_local_range(2);
@@ -683,15 +693,15 @@ __dpct_inline__ void doorbell_publish_value_kernel(
 #pragma unroll
     for (int j = i; j < n; j += nt) {
         const float v = x[j];
-        strata::sys_store_mapped(x_out + j, v);
+        pub_store(x_out + j, v, plain);
         part += dbx_payload_mix(sycl::bit_cast<uint32_t>(v), (uint32_t) j);
     }
     if (i < k) {
         const int32_t id = ids[i];
-        strata::sys_store_mapped(ids_out + i, id);
+        pub_store(ids_out + i, id, plain);
         part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
         const float wv = w[i];
-        strata::sys_store_mapped(w_out + i, wv);
+        pub_store(w_out + i, wv, plain);
         part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
     }
     const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
@@ -713,6 +723,7 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
+        const bool plain = g_plain_payload.load(std::memory_order_relaxed);
         strata::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class doorbell_publish_value_kernel_9bdb22>>(
@@ -721,7 +732,7 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     doorbell_publish_value_kernel(x, ids, weights, (int)n,
                                                   (int)k, x_out, ids_out,
-                                                  weights_out, d_seq, value);
+                                                  weights_out, d_seq, value, plain);
                 });
     }
 }
@@ -738,6 +749,7 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
+        const bool plain = g_plain_payload.load(std::memory_order_relaxed);
         strata::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class doorbell_publish_kernel_8b5bad>>(
@@ -745,7 +757,7 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
                                   sycl::range(1, 1, 1024)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     doorbell_publish_kernel(x, ids, weights, (int)n, (int)k,
-                                            x_out, ids_out, weights_out, d_seq);
+                                            x_out, ids_out, weights_out, d_seq, plain);
                 });
     }
     check_launch("doorbell_publish");
@@ -763,6 +775,7 @@ void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_r
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
+        const bool plain = g_plain_payload.load(std::memory_order_relaxed);
         strata::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class doorbell_publish_res_kernel_85b9b3>>(
@@ -770,7 +783,7 @@ void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_r
                                   sycl::range(1, 1, 1024)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     doorbell_publish_res_kernel(x, ids, d_res, n_expert, (int)n,
-                                                (int)k, x_out, ids_out, d_seq);
+                                                (int)k, x_out, ids_out, d_seq, plain);
                 });
     }
     check_launch("doorbell_publish_res");

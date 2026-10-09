@@ -20,6 +20,7 @@
 // Requires the default native decode configuration (native projections, fused GR, fused GDN, fast attention and
 // selection, native indexer) and a profile-filled VRAM expert tier with its residency table on the device.
 #pragma once
+#include <functional>
 
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
@@ -354,6 +355,18 @@ private:
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
     bool record_window(int T, dpct::queue_ptr cs, std::string &err);
+    // STRATA_VERIFY_STEPPED=1 (opt-in; Arc A-series / DG2): DG2 has no usm_atomic_host_allocations, so a running
+    // kernel does not see the host's flag stores and the host sees the GPU's ring late (the doorbell wait is most of
+    // a window there).  Stepped mode records the window as one graph per segment between host serves and serves each
+    // layer group's CPU experts at a queue boundary: every flag a segment waits on is raised before it is submitted.
+    // step_hook_ is called after a group's doorbell publish (a serve point), step_hook2_ after its VRAM expert groups
+    // (a split point: the next segment is submitted as soon as the pool publishes its plan, while the CPU rows run).
+    std::function<bool(int64_t, int)> step_hook_;
+    std::function<bool(int64_t, int)> step_hook2_;
+    std::vector<dpct::experimental::command_graph_exec_ptr> seg_[9];
+    std::vector<std::pair<int64_t, int>> seg_at_[9];   ///< the (layer, group) after segment i; the last has none
+    std::vector<char> seg_kind_[9];                    ///< 1: a serve point, 0: a split point
+    bool capture_segments(int T, std::string& err);
     // #649: STRATA_VERIFY_TRACE=1 - a host event ring (trace_ev) and GPU breadcrumbs: the profiler's stamp points,
     // per layer and token group, written to mapped memory (null when the trace is off)
     void trace_ev(const char* what, int64_t step, int64_t layer, int64_t aux) const;
