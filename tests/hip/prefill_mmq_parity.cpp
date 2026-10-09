@@ -229,6 +229,25 @@ std::vector<std::vector<uint8_t>> synthetic_of_type(ggml_type type, int experts,
     return w;
 }
 
+// A synthetic matrix of a block-quantized type with NO host quantizer (e.g. IQ1_S, whose from_float_ref is
+// NULL): every row is deterministic pseudo-random bytes and each block's fp16 scale is 0.5 so the decoded
+// reference stays finite.  Any bit pattern is a valid block for these types, and the check decodes the exact
+// bytes through ggml's to_float.
+std::vector<std::vector<uint8_t>> synthetic_raw(ggml_type type, int experts, int64_t out_rows, int64_t cols,
+                                                uint32_t seed) {
+    const size_t rb = row_bytes(type, cols);
+    const size_t ts = ggml_type_size(type);
+    std::vector<std::vector<uint8_t>> w;
+    for (int e = 0; e < experts; ++e) {
+        std::vector<uint8_t> blocks((size_t) out_rows * rb);
+        uint32_t s = seed * 2654435761u + 12345u;
+        for (size_t i = 0; i < blocks.size(); ++i) { s = s * 1664525u + 1013904223u; blocks[i] = (uint8_t) (s >> 16); }
+        for (size_t off = 0; off + ts <= blocks.size(); off += ts) { blocks[off] = 0x00; blocks[off + 1] = 0x38; }  // d = 0.5
+        w.push_back(std::move(blocks));
+    }
+    return w;
+}
+
 bool run_real_iq3_first_expert(Context & ctx, hipStream_t stream, const std::string & pack) {
     std::ifstream meta(pack + "/native_experts.txt");
     if (!meta) throw std::runtime_error("cannot open native_experts.txt: " + pack);
@@ -294,6 +313,17 @@ int main(int argc, char ** argv) {
                             2560, 640, synthetic_q2(n, 2560, 640, trial + 9), counts,
                             make_activations(rows, 640, trial + 3), src, dst);
                 ++trial;
+            }
+            // IQ1_S (GGML type 19): Unsloth UD-IQ1_S's gate/up.  It has no host quantizer, so random valid
+            // blocks (the reference decodes them through ggml's to_float).  IQ1_S is a gate/up type only: its
+            // inner dim must be a multiple of QK_K, which rules out the 640-wide down matrix.
+            if (supported(GGML_TYPE_IQ1_S)) {
+                const int rows = 5;
+                const std::vector<int> counts{rows};
+                const auto src = permutation(rows, 5, false), dst = permutation(rows, 4, true);
+                run_product(ctx, stream, "synthetic-IQ1_S-GU", GGML_TYPE_IQ1_S, 1280, 2560,
+                            synthetic_raw(GGML_TYPE_IQ1_S, 1, 1280, 2560, 11), counts,
+                            make_activations(rows, 2560, 13), src, dst);
             }
             // The K-quant instances a STRATA_MMQ_KQUANTS build adds (the dense GGUF projections of the
             // mixed-quant packs through Gemm::native).  Skipped when the build does not have them.

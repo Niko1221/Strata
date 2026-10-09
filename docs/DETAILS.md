@@ -242,6 +242,14 @@ the staging variant is worth trying only on a 32 GB-class box. **iGPU caveat:** 
 adaptive tier (`--adapt-every`, on by default) under memory pressure reset the GPU in about 7 of 9 runs (the engine
 prints a warning and runs as asked); with `--adapt-every 100000` there were no resets in ~40 runs. The cause is not found.
 
+**IQ1_S experts:** Unsloth's UD-IQ1_S keeps the routed gate/up experts in IQ1_S (GGML type 19, 1.5625 bpw, 50 bytes per
+256-value block), which earlier engines could not run on the GPU: the dequantizer, the MMVQ dot and the grouped expert
+kernels now cover it (`src/kernels/cuda/iq_kernels.cu`), and so does the AVX-2 multi-token kernel for AVX2 CPUs
+(`src/kernels/cpu/iq_avx2.cpp`, IQ1_S and IQ1_M both). `iq_parity` measures 0.00e+00 dequant relative error against
+gguf-py; `iq_multi_parity` and `native_grouped_parity` are bitwise equal to the per-column and v1 kernels. Its down
+experts are IQ4_NL and its PLE table `per_layer_token_embd.weight` (IQ4_NL) is read by the n-gram reader
+(`src/kernels/ngram.cpp`), already supported.
+
 **A RAM budget (engine 0.1.31, `--resident-budget-gib N`):** the resident variant for a model whose experts do not all
 fit: the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied into RAM at
 start (locked; page-locked when the driver allows the whole budget), and the rest are read from the files.
@@ -489,6 +497,15 @@ More tasks can reduce imbalance between cores, but also add scheduling overhead:
 the same worker count and workload. This does not change kernels, phase barriers, or PCIe placement, and
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
+
+**The PCIe share measures itself (native packs, `--serve`).** The link probe can only tell the engine how wide the
+link is; the best share also depends on the CPU and the GPU. On a Ryzen 7 3800X + Radeon PRO W7800 (x16, 28 GB/s) the
+GPU taking *every* miss measured 39-40 tok/s against the probed 0.55's 26 (a slower CPU wants the GPU to take more),
+while in the RDNA2 x8 bench `--pcie-frac 0` beat the probed 0.39. So a `--serve` sweeps a few shares over its first
+verify windows - the probed one first, then 0 and 1.0 - keeps the one with the lowest (CPU pool + GPU wait) per routed
+expert, and holds it for the rest of the process (a later request does not re-measure). `--pcie-frac <value>` pins a
+share and skips the sweep; `--pcie-frac auto` asks a CLI run for the same (a one-shot pays for the sweep, so it is not
+the CLI default). `STRATA_PCIE_AUTO_DEBUG=1` logs each point's cost.
 
 ### Running it at startup (Task Scheduler)
 

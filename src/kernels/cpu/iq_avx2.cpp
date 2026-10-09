@@ -9,7 +9,7 @@
 // with one, `vpsignb`.  The arithmetic is ggml's (ggml-cpu/quants.c, the `_generic` references) - only the
 // order of the float additions differs.
 //
-// Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23).  IQ1_M stays on ggml-cpu.
+// Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ1_S (19), IQ3_S (21), IQ2_S (22), IQ4_XS (23), IQ1_M (29).
 //
 // IQ3_XXS, IQ3_S and IQ2_S also have a gathered decode (Fmt32<118>, <121>, <122>): the grid indices built in a
 // register and read with one vpgather, the same words into the same lanes, so the same bits.  Where it is faster

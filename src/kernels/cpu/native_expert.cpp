@@ -34,11 +34,11 @@ bool native_experts_available() noexcept { return true; }
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
 bool iq512_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
+    return type == 16 || type == 17 || type == 18 || type == 19 || type == 21 || type == 22 || type == 29;
 }
 
 bool iq256_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
+    return type == 16 || type == 17 || type == 18 || type == 19 || type == 21 || type == 22 || type == 23 || type == 29;
 }
 
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
