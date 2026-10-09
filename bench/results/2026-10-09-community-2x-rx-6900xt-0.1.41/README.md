@@ -1,8 +1,9 @@
-# Community benchmark: 2x AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB RAM - Strata 0.1.41, layer split, and the decode window
+# Community benchmark: 2x AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB RAM - Strata 0.1.41: one card, layer split, expert helper, and the decode window
 
 Measured on 2026-10-08/09 on the same Linux desktop as the [2026-10-05](../2026-10-05-community-2x-rx-6900xt/README.md)
-and [2026-10-06 (0.1.40.1)](../2026-10-06-community-2x-rx-6900xt-0.1.40.1/README.md) reports. This one covers only the
-two-card layer split (the mode this machine runs in production) and asks three questions:
+and [2026-10-06 (0.1.40.1)](../2026-10-06-community-2x-rx-6900xt-0.1.40.1/README.md) reports. It covers the three ways
+the two cards can be used - one card alone, the layer split (this machine's production mode) and one card with the other
+as an expert helper - and asks three questions:
 
 1. What does **0.1.41 as released** do on this card family against 0.1.40.1 - stock, and with the two gfx103x switches
    it ships (`STRATA_HIP_PROMPT_F16=1 STRATA_SH_STREAM=1`)?
@@ -66,6 +67,12 @@ and 25-47 on the second in every arm** (6,176 + 4,829 expert slots).
 
 | arm | tree | environment | prompt lengths |
 | --- | --- | --- | --- |
+| `single-stock` | stock | none (one card, PCI 0f; GFXOFF default) | 4K, 32K, 128K |
+| `single-sw` | stock | `STRATA_HIP_PROMPT_F16=1 STRATA_SH_STREAM=1` | 4K, 32K, 128K |
+| `single-prs` | PRs | the production environment (as `split-prs-kc` below, without kernel-copy) | 4K, 32K, 128K |
+| `helper-stock` | stock | `STRATA_HIP_ADAPT_KERNEL_COPY=1`; the other card as expert helper (`--expert-cache-device1 auto --remote-expert-opt`, probed PCIe share 0.39) | 4K, 32K, 128K |
+| `helper-sw` | stock | the two switches + kernel-copy, helper as above | 4K, 32K, 128K |
+| `helper-prs` | PRs | the production environment + kernel-copy, helper as above | 4K, 32K, 128K |
 | `split-stock` | stock | none | 4K, 32K (128K left out: at the GFXOFF default a stock split stalled on its first 128K request in the 0.1.40.1 report, #884) |
 | `split-stock-kc` | stock | `STRATA_HIP_ADAPT_KERNEL_COPY=1` | 4K, 32K, 128K |
 | `split-sw-kc` | stock | `STRATA_HIP_PROMPT_F16=1 STRATA_SH_STREAM=1 STRATA_HIP_ADAPT_KERNEL_COPY=1` | 4K, 32K, 128K |
@@ -90,14 +97,48 @@ TTFT is streaming over loopback. `reasoning_effort: none`, temperature 0. The re
 not repeated: the 0.1.40.1 report found 54 of 54 on this machine and nothing in these arms changes the model's
 numerics beyond the FP16 prompt route already covered there.
 
-The five servers ran one after the other between 23:47 and 00:13 local time; each folder has `config.json`,
+The eleven servers ran one after the other: the five split arms between 23:47 and 00:13 local time, the one-card and
+helper arms between 03:09 and 04:03 (the one-card and helper configurations are the 0.1.40.1 report's, with the paths
+of this machine and `--ple-io ram` added to match the split arms; the helper arms ran with the kernel-copy switch
+because the debugfs GFXOFF knob the 0.1.40.1 report used needs root); each folder has `config.json`,
 `summary.json`, `results.json` (request hashes, every output text, the engine's per-request accounting) and
 `BUILD.txt` (tree, binary SHA-256, environment, GFXOFF reading at start). The full engine logs and one-second telemetry
 are in the companion repository's `bench/results/e388/`.
 
 ## Results
 
-Each cell is the median **[minimum-maximum]** of two runs. No request failed, was cancelled or stalled.
+Each cell is the median **[minimum-maximum]** of two runs. No request of the eleven arms failed, was cancelled or
+stalled.
+
+### One card (PCI 0f), GFXOFF default
+
+| | Prompt tokens | Prompt tok/s | Decode tok/s | TTFT seconds | Total seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| stock | 4,096 | 472.9 [471.8-474.0] | 45.6 [42.5-48.7] | 8.70 [8.68-8.72] | 14.30 [13.90-14.71] |
+| stock | 32,768 | 502.1 [502.0-502.2] | 48.0 [46.6-49.4] | 65.32 [65.30-65.33] | 70.62 [70.46-70.79] |
+| stock | 128,000 | 486.3 [486.3-486.3] | 46.6 [45.3-47.9] | 263.29 [263.29-263.30] | 268.76 [268.61-268.92] |
+| switches | 4,096 | 849.9 [827.3-872.5] | 49.0 [46.2-51.8] | 4.86 [4.73-4.98] | 10.07 [9.64-10.49] |
+| switches | 32,768 | 1,102.4 [1,100.8-1,103.9] | 51.6 [49.0-54.1] | 29.77 [29.73-29.81] | 34.72 [34.43-35.01] |
+| switches | 128,000 | 1,026.9 [1,026.6-1,027.2] | 49.3 [45.6-53.0] | 124.74 [124.71-124.78] | 129.93 [129.58-130.29] |
+| PRs + ggml | 4,096 | 976.2 [958.7-993.7] | 49.0 [46.7-51.2] | 4.23 [4.15-4.31] | 9.44 [9.12-9.76] |
+| PRs + ggml | 32,768 | 1,173.6 [1,171.9-1,175.3] | 50.9 [48.8-53.0] | 27.97 [27.93-28.01] | 32.98 [32.81-33.14] |
+| PRs + ggml | 128,000 | 1,146.6 [1,146.2-1,147.0] | 49.8 [49.8-49.9] | 111.73 [111.69-111.77] | 116.83 [116.79-116.87] |
+
+### One card with the other as expert helper, `STRATA_HIP_ADAPT_KERNEL_COPY=1`
+
+| | Prompt tokens | Prompt tok/s | Decode tok/s | TTFT seconds | Total seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| stock + kernel-copy | 4,096 | 477.5 [473.7-481.2] | 67.7 [62.8-72.6] | 8.61 [8.54-8.68] | 12.38 [12.04-12.73] |
+| stock + kernel-copy | 32,768 | 503.2 [503.1-503.4] | 66.5 [66.4-66.5] | 65.16 [65.14-65.17] | 68.98 [68.97-69.00] |
+| stock + kernel-copy | 128,000 | 486.8 [486.7-486.9] | 65.2 [60.5-69.9] | 263.03 [262.97-263.09] | 266.96 [266.73-267.18] |
+| switches + kernel-copy | 4,096 | 858.6 [834.6-882.5] | 69.0 [63.8-74.2] | 4.80 [4.67-4.94] | 8.51 [8.09-8.93] |
+| switches + kernel-copy | 32,768 | 1,103.5 [1,102.4-1,104.6] | 74.9 [70.6-79.1] | 29.74 [29.71-29.77] | 33.14 [32.92-33.37] |
+| switches + kernel-copy | 128,000 | 1,027.9 [1,027.7-1,028.1] | 70.7 [70.5-70.9] | 124.61 [124.59-124.63] | 128.21 [128.20-128.22] |
+| PRs + ggml + kernel-copy | 4,096 | 986.3 [964.0-1,008.6] | 72.5 [67.5-77.5] | 4.18 [4.09-4.28] | 7.71 [7.37-8.05] |
+| PRs + ggml + kernel-copy | 32,768 | 1,172.5 [1,171.9-1,173.1] | 75.2 [70.5-79.8] | 27.99 [27.97-28.00] | 31.38 [31.16-31.61] |
+| PRs + ggml + kernel-copy | 128,000 | 1,147.2 [1,146.7-1,147.7] | 75.1 [74.9-75.3] | 111.66 [111.61-111.71] | 115.05 [115.00-115.09] |
+
+### Layer split across both cards
 
 | | Prompt tokens | Prompt tok/s | Decode tok/s | TTFT seconds | Total seconds |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -128,6 +169,12 @@ What the table shows:
   65.1) and the stock split read its 128K prompts without a stall at the GFXOFF default, which it did not in the
   0.1.40.1 report.
 - **Decode**: the engine version and the pull requests leave it at 61-75 tok/s, as in the two earlier reports. `--spec 3 --spec-min-p 0.7 --pipeline-windows 2` on the PRs tree: 64.7 → 77.2 at 4K, 68.8 → 82.3 at 32K, 68.3 → 75.7 at 128K (+19 / +20 / +11%), prompt speed unchanged (±0.7%), draft acceptance 83% instead of 68% (`results.json`, `drafts_accepted / drafts_offered`). Measured on 2026-10-08 as well with the vision encoder loaded (three server starts, two runs each at 4K and 32K): 66 → 73-77 and 74 → 80-83. Each knob alone had been neutral or worse on this machine (`--pipeline-windows 2` with the default draft +1-6%; `--spec 3 --spec-min-p 0.7` without it flat to -3%; a 16-point spec × min-p grid at `--pipeline-windows 1` found 4 / 0.5 best): the shorter draft is accepted almost whole, so the speculative second window hits. See the limitations for what it does to reproducibility.
+- **One card and helper against 0.1.40.1**: stock 458 / 473 / 459 → 473 / 502 / 486 (+3 / +6 / +6%), the two
+  switches 811 / 973 / 913 → 850 / 1,102 / 1,027 (+5 / +13 / +12%), the pull requests 969 / 1,152 / 1,126 → 976 /
+  1,174 / 1,147 (+1 / +2 / +2%) - the same pattern as the split: part of what the pull requests added on 0.1.40.1 is in
+  the 0.1.41 release. One-card decode is 46-52 in every arm (a 16 GB card holds about 4,500 expert slots, hit rate
+  82-83%); the helper mode decodes 65-75, with the pull requests 72.5 / 75.2 / 75.1 (the 0.1.40.1 report had 72 / 72 /
+  66), reading prompts at one card's speed.
 - Prompt readings at 32K and 128K are within 0.3% between the two runs in every arm; decode spreads up to 10% at 4K
   with draft acceptance.
 
@@ -166,6 +213,8 @@ accepted). Throughput numbers only; the session's content is not part of this re
 - One machine, one quantization, one context size, a small synthetic greedy workload with a 256-token output cap;
   no recall, vision, concurrency, sampling or thermal run. Warmed-cache and reused-prefix conditions were not run as
   separate arms (the observation above is from production use, not from the harness).
+- The one-card and helper arms ran four hours after the split arms, after the box had run other work in between;
+  the stock split's 4K / 32K rows and the one-card rows are the only two-way check across the two sessions.
 - The "PRs" arm bundles the three open pull requests with two local commits (the rocBLAS solution cache) and a
   modified ggml; only the bundle was measured here. The pull requests do not change attention or selection values
   beyond FP32 summation order; the FP16 prompt route does (checked in
