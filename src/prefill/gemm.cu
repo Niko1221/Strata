@@ -674,10 +674,32 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
+#if !defined(__HIPCC__)
+    const auto f16_gemm = [&](cublasGemmAlgo_t algo) {
+        return cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha,
+                            W, CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
+                            CUBLAS_COMPUTE_32F, algo);
+    };
+    // Issue #1650: with a second CUDA device initialized in the process, cuBLAS 12 answers the default algorithm of a
+    // few shapes - narrow ones, and the set moves with K - with CUBLAS_STATUS_INTERNAL_ERROR; a fixed algorithm keeps
+    // a kernel that state does not break.  Only the shapes that fail are moved (the failing call itself is harmless);
+    // the wide shapes, for which the fixed algorithms are markedly slower, stay on the default.
+    const int64_t shape = ((int64_t) K << 32) | (uint32_t) N;
+    cublasGemmAlgo_t algo = CUBLAS_GEMM_DEFAULT;
+    for (int i = 0; i < f16_algo_n_; ++i)
+        if (f16_algo_shape_[i] == shape) { algo = CUBLAS_GEMM_ALGO2; break; }
+    cublasStatus_t st = f16_gemm(algo);
+    if (st == CUBLAS_STATUS_INTERNAL_ERROR && algo == CUBLAS_GEMM_DEFAULT) {
+        if (f16_algo_n_ < kF16AlgoSlots) f16_algo_shape_[f16_algo_n_++] = shape;
+        st = f16_gemm(CUBLAS_GEMM_ALGO2);
+    }
+    ck(st, "cublasGemmEx f16");
+#else
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
+#endif
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
