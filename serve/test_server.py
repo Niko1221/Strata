@@ -142,6 +142,7 @@ class MaxTokens(unittest.TestCase):
                 s, b, _, _ = self.call(api, max_tokens=CTX)
                 self.assertEqual(s, 400)
                 self.assertIn("exceeds the context", b["error"]["message"])
+                self.assertIn("exceeds the available context size", b["error"]["message"])   # #1615: harnesses match
                 self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
                 self.assertRegex(b["error"]["message"], r"at most \d+ here")
 
@@ -239,6 +240,8 @@ class VisionTempFiles(unittest.TestCase):
                 svc.prepare(self.MSGS, None, {}, 16)
             engine.max_context = 64                                  # the prompt alone fills it
             with self.assertRaisesRegex(ValueError, "no room to answer"):
+                svc.prepare(self.MSGS, None, {})
+            with self.assertRaisesRegex(ValueError, "exceeds the available context size"):   # #1615
                 svc.prepare(self.MSGS, None, {})
             engine.max_context = CTX
             with self.assertRaisesRegex(ValueError, "exceeds the context"):

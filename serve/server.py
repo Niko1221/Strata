@@ -3262,15 +3262,19 @@ class Service:
             if ctx <= 0:
                 raise EngineStarting("the engine is starting (a minute or two); try again shortly")
         room = ctx - CTX_SLACK - len(ids)
+        # #1615: both refusals also say llama.cpp's phrase ("exceeds the available context size"), which agent
+        # harnesses match to recognize a context overflow and run their compact-and-retry.
         if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
             if room < 1:
                 raise ValueError(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                 f"({ctx}); requests are never truncated")
+                                 f"({ctx}): the request exceeds the available context size; "
+                                 "requests are never truncated")
             max_new = room
         elif max_new > room:
             if not self.fit_max_tokens:
                 raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                 f"({ctx}); requests are never truncated. Send a smaller "
+                                 f"({ctx}): the request exceeds the available context size; "
+                                 "requests are never truncated. Send a smaller "
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
