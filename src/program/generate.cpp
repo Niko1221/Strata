@@ -9032,6 +9032,7 @@ int main(int argc, char** argv) {
                 } else if (media_v2) {
                     try {
                         strata::program::MediaLimits limits;
+                        limits.max_spans = limits.max_rows;
                         limits.expected_width = uint32_t(g.n_embd);
                         limits.max_tokens = std::min<uint64_t>(limits.max_tokens, uint64_t(cells));
                         limits.max_position = int32_t(std::min<int64_t>(cells - 1, std::numeric_limits<int32_t>::max()));

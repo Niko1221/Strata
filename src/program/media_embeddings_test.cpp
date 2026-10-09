@@ -146,6 +146,21 @@ void tests(const char* fixture) {
     const auto qr = bytes(q);
     std::istringstream qi(qr, std::ios::binary);
     check(bytes(read_media(qi, {}, true)) == qr, "Qwen4 profile read/roundtrip");
+    MediaBundle many;
+    many.width = 2560;
+    for (size_t i = 0; i < 129; ++i) {
+        auto span = group;
+        span.start = many.tokens.size() + 2;
+        many.tokens.insert(many.tokens.end(), q.tokens.begin(), q.tokens.end());
+        many.spans.push_back(std::move(span));
+    }
+    MediaLimits video_limits;
+    video_limits.max_spans = video_limits.max_rows;
+    const auto many_wire = bytes(many, video_limits);
+    refused([&] { parse(many_wire); }, "generic span cap remains 128");
+    std::istringstream many_input(many_wire, std::ios::binary);
+    auto decoded = read_media(many_input, video_limits, true);
+    check(decoded.spans.size() == 129 && decoded.tokens == many.tokens, "video span budget accepts 129 groups");
     auto wrong_profile = q;
     wrong_profile.tokens[1] = 17;
     const auto short_wrong = bytes(wrong_profile).substr(0, 64 + q.tokens.size() * 4 + 64 + 24);

@@ -130,6 +130,19 @@ class EncoderCache(unittest.TestCase):
             self.assertEqual(owned.reserved,self.encoder.quota.used)
         self.assertEqual(self.encoder.quota.used,0)
 
+    def test_video_span_limit_follows_visual_rows(self):
+        count = 258
+        self.encoder.policy = replace(self.encoder.policy, max_frames=count, max_duration_s=130)
+        info = ClipInfo(count, 2., 128, 64, 129, tuple(range(count)),
+                        tuple(i / 2 for i in range(count)), 128, 64)
+        bundle = synthetic_video(info, self.tok)
+        limits = self.encoder.limits()
+        self.assertGreaterEqual(limits.max_spans, len(bundle.spans))
+        with self.encoder.request_artifact(bundle, limits) as owned:
+            with owned.path.open("rb") as source:
+                self.assertEqual(read_bundle(source, limits, qwen4=True), bundle)
+        self.assertEqual(self.encoder.quota.used, 0)
+
     def test_unavailable_video_does_not_touch_legacy_encoder(self):
         e=VideoEncoder({"video":{"enabled":True}},self.directory)
         e.configure("ERR old encoder",lambda *args:self.fail("must not configure an old encoder"),

@@ -90,7 +90,8 @@ class VideoEncoder:
     def limits(self, *, tokens=1 << 20, position=(1 << 31) - 1, vocab=(1 << 31)):
         p = self.policy
         return MediaLimits(expected_width=2560, max_tokens=min(tokens, 1 << 20), max_rows=p.max_tokens,
-                           max_bytes=p.max_embedding_bytes, max_position=position, vocab_size=vocab,
+                           max_spans=p.max_tokens, max_bytes=p.max_embedding_bytes,
+                           max_position=position, vocab_size=vocab,
                            allowed_pad_ids=(248056, 248057))
 
     def key(self, source_hash):
