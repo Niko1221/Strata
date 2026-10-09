@@ -1,6 +1,6 @@
 # WIP: SM75 IQ4_XS four-row activation reuse and three-warps specialization
 
-Latest October9 continuation: complete CUDA13 and HIP7.0.2 engine compilation passes; global B6 rows4 parity passes with NW3 off/on. High-resolution three-pair T4 layer testing gives GDN prefix reduction0.196 +/-0.591% and QSA0.241 +/-0.454% (CI95), neither significant. Targeted matrix8–10% NW3 increment remains the performance claim; no layer/production tok/s gain claimed. WDDM Compute Sanitizer, #1418 dependency coordination and independent review remain open. Keep Draft/default off.
+Latest October9 continuation: complete CUDA13, HIP7.0.2 and SYCL2026.1 engine compilation passes; global B6 rows4 parity passes with NW3 off/on. High-resolution three-pair T4 layer testing gives GDN prefix reduction0.196 +/-0.591% and QSA0.241 +/-0.454% (CI95), neither significant. Real MTP T≤4 finishes18/18 processes with exact output/rounds/draft counts across all nine pairs; no topic establishes a significant throughput gain. Targeted matrix8–10% NW3 increment remains the performance claim. WDDM Compute Sanitizer, #1418 dependency coordination and independent review remain open. Keep Draft/default off. Further testing/builds/smoke checks are paused by the user.
 
 ## Latest: October 9 B6 convergence (code c97e698)
 
@@ -19,7 +19,7 @@ Fresh isolated performance uses six independent rotated process rounds, CUDA-eve
 
 T=1/2/3/4 were exercised, but T=1 retains the native dispatch. Differences measured there are process noise, not a specialization benefit. The three affected shapes show an isolated T=4 NW3 increment; the negative control is compatible with zero. Historical tables below refer to earlier implementations and must not be combined with these intervals.
 
-Cross-binary default parity passed after capping the nominal cache budget: both the upstream-based reference diagnostic and converged diagnostic have 6528 actual resident experts, and their complete logits files share SHA256 90282b6de653c5bf9ab26cb40a3f25f8f5a25e8acf8ccd64bab789dc00cc5d23 (short prompt, 128 fixed scored targets, flags disabled). A nominal `--expert-cache` value is a maximum-expert-size byte budget, not a physical slot count. An earlier VRAM-trimmed cross-binary run differed by one initial resident expert and is excluded from default numerical attribution. Remaining review gates: HIP build/fallback qualification; register/dispatch review; current-head layer and end-to-end measurements. Both flags remain opt-in and the PR remains Draft.
+Cross-binary default parity passed after capping the nominal cache budget: both the upstream-based reference diagnostic and converged diagnostic have 6528 actual resident experts, and their complete logits files share SHA256 90282b6de653c5bf9ab26cb40a3f25f8f5a25e8acf8ccd64bab789dc00cc5d23 (short prompt, 128 fixed scored targets, flags disabled). A nominal `--expert-cache` value is a maximum-expert-size byte budget, not a physical slot count. An earlier VRAM-trimmed cross-binary run differed by one initial resident expert and is excluded from default numerical attribution. Subsequent backend and performance evidence is below. Both flags remain opt-in and the PR remains Draft.
 
 ## Archived construction notes (superseded by the latest section)
 
@@ -114,3 +114,19 @@ Forced-follow throughput has acceptance 100% by construction and is not producti
 # October 9 HIP compile qualification
 
 Full engine HIP compilation passed on exact head04b96551cde2992e86d9e6723bfdea06e16e19c9 in the official ROCm7.0.2 Ubuntu24.04 container. CI: https://github.com/Unmaple/Strata/actions/runs/37923593706 , job113797153433 (7m52s). This is compile qualification only; no matching AMD GPU runtime or sanitizer pass is implied. IQ4 source remained unchanged during this test.
+
+## Final real-MTP and SYCL results, October 9
+
+Full SYCL engine compile passed with official Intel oneAPI2026.1, production head04177b85408642bd7515db77b4bf23f5dc88d8a8 (documentation-only changes after the HIP-tested code). [CI job](https://github.com/Unmaple/Strata/actions/runs/37941691677/job/113857403896) succeeded in10m15s. This is not Intel GPU runtime qualification.
+
+Real MTP T≤4, up to three drafts, greedy seed20261009: three topics × three balanced AB/BA independent process pairs,512 output tokens each. Both variants use shared B6 rows4 with QSA MMA disabled; only IQ4 NW3 switches. CPU experts enabled,14 participants,default42 tasks,PCIe.14,actual6528 cache slots. Adaptive expert swaps, prompt cache, lookup and suffix drafts are disabled; prefill CPU sharing is zero. No oracle/follow or logits export. All18 processes exit successfully; no slow runs excluded.
+
+|Topic|B6 NW4 tok/s|B6 NW3 tok/s|Paired change %|CI95 % (n3,df2)|
+|---|---:|---:|---:|---:|
+|code|34.243|35.916|+5.329|[-15.067,25.725]|
+|systems|42.789|43.998|+3.477|[-25.961,32.915]|
+|long16k|39.171|38.434|−1.633|[-16.010,12.745]|
+
+No topic establishes a significant end-to-end gain. All nine pairs have identical output token sequences, verification rounds, accepted/proposed draft counts, output token counts and resident cache slots. Unlike the QSA MMA experiment, changed acceptance/output is not a confound in these tested pairs. Total CPU sampling every2s covers the whole process and includes external work; pair mean differences range−3.280 to+2.311 percentage points and cannot isolate external interference. GPU clocks are unlocked. This qualifies the NW3 increment under this bounded nonadaptive configuration, not the full adaptive deployment or B6's total improvement versus native.
+
+The user requested no further tests, compilation or smoke checks after this batch. Remaining work is sanitizer instrumentation (current WDDM initialization failure is not a pass), independent review and #1418 coordination. Keep Draft/default off.
