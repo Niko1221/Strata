@@ -235,7 +235,12 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
     if (lay.native) {
         strata::kernels::quantize_q8_1_rows(d_x_, n_tok, H, d_q8_, s);
         const auto& f = lay.fmt[(size_t) layer];
-        const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+        // `f.swiglu_limit` LAST, and not the default 0: it is a property of the MODEL, stamped on every layer's
+        // format by `expert_layout()` from the pack's own `swiglu_clamp_exp` - and the CPU row kernels already
+        // apply it (`native_expert.cpp`).  A glm5-next layer's limit is 10.0, so a peer-expert call that dropped
+        // it would compute `silu(gate) * up` unclamped on the card where the pool clamps - the same disagreement
+        // `--glm-gpu-experts` had, on a path that has its own card.
+        const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff, f.swiglu_limit);
         strata::kernels::native_expert_grouped(L, dm->ptr, dm->start, dm->count, dm->dst, dm->tok, groups, rows, d_q8_,
                                                d_scratch_, d_out_, s);
     } else {

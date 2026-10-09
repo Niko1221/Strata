@@ -1339,12 +1339,21 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
     }
 }
 
+/// **THE REFERENCE'S SWIGLU WITH THE ROUTED EXPERTS' LIMIT** (`NativeExpertLayout::swiglu_limit`): the SILU'S
+/// OUTPUT is what is clamped and above only, the up is clamped on both sides of its raw value - clamping the raw
+/// gate instead is the misreading `glm_elt.cu`'s header calls out, and the CPU's `native_gu_rows_ptrs` spells
+/// out the same two lines.  `lim <= 1e-6` is the guard the reference itself uses, so a pack that carries no
+/// `swiglu_clamp_exp` (every family but glm5-next) takes the branch that has no clamp in it.
+__device__ __forceinline__ float swiglu_limit_apply(float g, float u, float lim) {
+    const float s = g / (1.0f + __expf(-g));
+    return lim > 1e-6f ? fminf(s, lim) * fminf(fmaxf(u, -lim), lim) : s * u;
+}
+
 __global__ void swiglu_entries_kernel(const float* __restrict__ gate, const float* __restrict__ up, float* __restrict__ h,
-                                      long long n) {
+                                      long long n, float lim) {
     const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    const float g = gate[i];
-    h[i] = (g / (1.0f + __expf(-g))) * up[i];
+    h[i] = swiglu_limit_apply(gate[i], up[i], lim);
 }
 
 template<int TD>
@@ -1559,18 +1568,19 @@ __global__ void __launch_bounds__(256) swiglu_q8_1_entries_kernel(const float* _
                                                                   const float* __restrict__ up,
                                                                   const int32_t* __restrict__ grp_start,
                                                                   const int32_t* __restrict__ n_groups, int n_ff,
-                                                                  block_q8_1* __restrict__ hq) {
+                                                                  float lim, block_q8_1* __restrict__ hq) {
 #if defined(__HIPCC__)
 #pragma clang fp contract(off)
 #endif
     const long long lo = (long long) grp_start[0] * n_ff, hi = (long long) grp_start[*n_groups] * n_ff;
     for (long long i = lo + (long long) blockIdx.x * blockDim.x + threadIdx.x; i < hi;
          i += (long long) gridDim.x * blockDim.x) {
-        const float g = gate[i];
 #if defined(__HIPCC__)
-        const float h = (g / (1.0f + __expf(-g))) * up[i];
+        const float h = swiglu_limit_apply(gate[i], up[i], lim);
 #else
-        const float h = __fmul_rn(g / (1.0f + __expf(-g)), up[i]);
+        const float g = gate[i];
+        const float s = g / (1.0f + __expf(-g));
+        const float h = lim > 1e-6f ? __fmul_rn(fminf(s, lim), fminf(fmaxf(up[i], -lim), lim)) : __fmul_rn(s, up[i]);
 #endif
         q8_1_store(h, hq, i);
     }
@@ -2350,7 +2360,7 @@ void s26_launch_l(const NativeExpertLayout& L, int64_t cap_groups, cudaStream_t 
     if (FQ) {
         s26_swiglu_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, hq, nh);
     } else {
-        swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh);
+        swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh, L.swiglu_limit);
         quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
     }
     const dim3 gd((unsigned) (L.n_embd / (8 * RD)), (unsigned) cap_groups);
@@ -2804,12 +2814,14 @@ bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_
            n_embd % 256 == 0 && (n_ff * n_embd) % 256 == 0;
 }
 
-NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) {
+NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff,
+                                        float swiglu_limit) {
     NativeExpertLayout L;
     L.gu_type = gu_type;
     L.d_type = d_type;
     L.n_embd = n_embd;
     L.n_ff = n_ff;
+    L.swiglu_limit = swiglu_limit;   // 0 = the unclamped arithmetic; see the field's note in the header
     L.gu_row = iq_row_bytes(gu_type, n_embd);
     L.d_row = iq_row_bytes(d_type, n_ff);
     L.up_off = (size_t) n_ff * L.gu_row;
@@ -3398,7 +3410,7 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         __syncthreads();
         if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
             const float gg = res[warp][lane], uu = res[warp][32 + lane];
-            const float xi = (gg / (1.0f + __expf(-gg))) * uu;
+            const float xi = swiglu_limit_apply(gg, uu, L.swiglu_limit);
             float amax = fabsf(xi), sum = xi;
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) {
@@ -3578,11 +3590,11 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const bool sw_v1 = v1;
 #endif
     if (sw_v1) {
-        swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh);
+        swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh, L.swiglu_limit);
         quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
     } else {
         swiglu_q8_1_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, grp_start, n_groups,
-                                                                                (int) L.n_ff, hq);
+                                                                                (int) L.n_ff, L.swiglu_limit, hq);
     }
     check("native_expert_grouped/swiglu");
     }

@@ -306,7 +306,11 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     if (lay.native) {
         strata::kernels::quantize_q8_1_rows(zero_copy_ ? z_x_ : d_x_, n_tok, H, d_q8_, s);
         const auto& fmt = lay.fmt[(size_t) layer];
-        auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
+        // `fmt.swiglu_limit` LAST, and not the default 0 - see the note in `peer_experts.cpp`: the field is the
+        // model's own `swiglu_clamp_exp`, the CPU row kernels apply it, and a card that does not is computing a
+        // different function from the pool on the same bytes.
+        auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff,
+                                                       fmt.swiglu_limit);
         strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
                                                groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     } else {
