@@ -1,6 +1,29 @@
 # WIP: SM75 IQ4_XS four-row activation reuse and three-warps specialization
 
-This draft carries a narrowly scoped experiment, not a new default. `STRATA_IQ4_ACT_REUSE=1` selects four output rows per block for native/exact IQ4_XS calls at 2-4 columns, on SM75 only. `STRATA_IQ4_NW3=1` additionally uses three warps for K=2560 and output rows 6144, 10240 or 12288. Other calls retain their existing dispatch. TSUM and non-exact calls also retain their existing dispatch. HIP does not compile the candidate.
+## Latest: October 9 B6 convergence (code c97e698)
+
+This implementation now uses the generic B6 framework from imanu86's PR #1418 (8cae814), preserving the original author in commit 4d547bb. Our separate row-reuse kernel has been removed. The additional contribution is the restricted SM75 IQ4_XS NW3 specialization. This branch explicitly depends on #1418 until that PR is merged; its generic reuse mechanism should not be credited to this increment. `STRATA_IQ4_ACT_REUSE=1` remains a compatibility selector for four rows through the shared B6 kernel; `STRATA_B6_MMVQ_ROWS=4` also selects it. All switches unset retains the native default. NW3 requires exact layout, TSUM off, T=2–4, K=2560 and R=6144/10240/12288; other shapes retain NW4 or native fallback. HIP does not compile the SM75 specialization.
+
+A fresh complete CUDA 13/MSVC Release engine build and expanded synthetic parity passed: 980,113 exact outputs, zero bit differences/nonfinite values. The deliberately non-exact control has 290,059 differences. Three target shapes and an incomplete row tile are covered. Six fixed-continuation full-model runs (9-token and 16,384-token prompts, native/NW4/NW3, 128 scored positions each) have byte-identical complete logits files within each input. This is numerical validation on two samples, not general quality equivalence or an end-to-end speed claim. Diagnostic executable SHA256: fcaa6c7348ec2a04f21ef2e9e0200ba75d5b50aa3c44827ef2f9586dc4274da6.
+
+Fresh isolated performance uses six independent rotated process rounds, CUDA-event 100-call graphs and weight copies exceeding L2. Intervals are paired Student-t CI95, df=5; clocks are not locked and CPU has other work. Graph capture/replay and same-input checks passed in this tested harness. T=4 results:
+
+| IQ4_XS K,R | Native us +/- CI95 | Shared B6 NW4 us +/- CI95 | Shared B6 NW3 us +/- CI95 | NW3 reduction vs NW4 % +/- CI95 |
+|---|---:|---:|---:|---:|
+|2560,6144|44.45 +/- 0.36|26.34 +/- 0.21|23.73 +/- 0.29|9.90 +/- 1.18|
+|2560,10240|71.17 +/- 0.67|40.19 +/- 0.21|36.89 +/- 1.57|8.21 +/- 4.02|
+|2560,12288|84.61 +/- 0.64|47.37 +/- 0.21|42.77 +/- 0.18|9.71 +/- 0.54|
+|6144,2560 (NW4 control)|38.73 +/- 0.36|24.43 +/- 0.10|24.41 +/- 0.12|0.10 +/- 0.30|
+
+T=1/2/3/4 were exercised, but T=1 retains the native dispatch. Differences measured there are process noise, not a specialization benefit. The three affected shapes show an isolated T=4 NW3 increment; the negative control is compatible with zero. Historical tables below refer to earlier implementations and must not be combined with these intervals.
+
+Remaining review gates: a cross-binary default check with identical actual cache residency; HIP build/fallback qualification; register/dispatch review; current-head layer and end-to-end measurements. A nominal `--expert-cache` value is a maximum-expert-size byte budget, not a physical slot count. A VRAM-trimmed cross-binary run differed by one initial resident expert and is excluded from default numerical attribution. Both flags remain opt-in and the PR remains Draft.
+
+## Archived construction notes (superseded by the latest section)
+
+The following preserves the evidence and limitations of earlier implementations. Statements that convergence or full-model checks are pending describe those earlier checkpoints.
+
+The original draft carried a narrowly scoped experiment, not a new default. `STRATA_IQ4_ACT_REUSE=1` selected four output rows per block for native/exact IQ4_XS calls at 2-4 columns, on SM75 only. `STRATA_IQ4_NW3=1` additionally used three warps for K=2560 and output rows 6144, 10240 or 12288. Other calls retained their existing dispatch. TSUM and non-exact calls also retained their existing dispatch. HIP did not compile the candidate.
 
 PR #1418 already proposes general activation reuse across rows for several formats. The four-row mechanism here overlaps it. The intended additional contribution is the measured three-warp specialization: ten IQ4_XS K blocks leave the fourth warp empty. This PR must be reconciled with #1418 before merging; two competing row-reuse frameworks should not be retained.
 
