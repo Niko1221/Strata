@@ -38,9 +38,10 @@ uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);
 void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream);
 
+/// main_model permits the opt-in SM75 MMA path for verifier calls only; MTP/prefill leave it false.
 /// Plan v0.3 P5: `n_q` queries at once, each with its own selection: q [n_q, n_head, 256], ids [n_q, cap], steps
 /// [n_q, kStepCount], attn [n_q, n_head, 256]; scratch is `n_q` times the single-query size.
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream, bool main_model = false);
 
 }  // namespace strata::kernels

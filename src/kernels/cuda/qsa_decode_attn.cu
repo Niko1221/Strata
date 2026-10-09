@@ -5,6 +5,9 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#if !defined(__HIPCC__)
+#include <mma.h>
+#endif
 
 #include <cfloat>
 #include <cstdio>
@@ -523,10 +526,25 @@ bool pre75_attn() {
 #define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M>
 #endif
 
+#if !defined(__HIPCC__)
+#include "qsa_padded_mma.cuh"
+
+// Draft: enable only on the architecture used in the historical experiments.
+// No CUDA-only candidate is compiled into the HIP path.
+bool qsa_mma_sm75_device() {
+    int dev = 0, major = 0, minor = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess)
+        return false;
+    return major == 7 && minor == 5;
+}
+#endif
+
 }  // namespace
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream, bool main_model) {
     if (n_q <= 0) return;
     if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
         !pools.page_table || n_q > 65535) {
@@ -547,6 +565,32 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     // S25: STRATA_ATTN_LANECELL=1 - the score phase one cell per thread (bit-identical scores, no shuffle reductions)
     static const bool lane_cell = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
 #define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+#if !defined(__HIPCC__)
+    static const bool mma = [] {
+        const char* e = std::getenv("STRATA_QSA_SM75_MMA");
+        return e && e[0] == '1';
+    }();
+    // Explicit caller role keeps MTP and prompt processing on their old path.
+    // T=1 and other architectures remain native pending further measurements.
+    bool mma_ready = mma && main_model && n_q >= 2 && n_q <= 4 && qsa_mma_sm75_device();
+    if (mma_ready) {
+        cudaError_t attr;
+        if (kv_mode == 3) attr = cudaFuncSetAttribute(qsa_padded_mma_kernel<3, CHUNK, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, 10496);
+        else if (kv_mode == 2) attr = cudaFuncSetAttribute(qsa_padded_mma_kernel<2, CHUNK, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, 10496);
+        else if (kv_mode == 1) attr = cudaFuncSetAttribute(qsa_padded_mma_kernel<1, CHUNK, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, 10496);
+        else attr = cudaFuncSetAttribute(qsa_padded_mma_kernel<0, CHUNK, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, 10496);
+        mma_ready = attr == cudaSuccess;
+        if (!mma_ready) (void) cudaGetLastError();
+    }
+    if (mma_ready) {
+#define STRATA_QSA_MMA(M) qsa_padded_mma_kernel<M, CHUNK, 3><<<grid, THREADS, 10496, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+        if (kv_mode == 3) STRATA_QSA_MMA(3);
+        else if (kv_mode == 2) STRATA_QSA_MMA(2);
+        else if (kv_mode == 1) STRATA_QSA_MMA(1);
+        else STRATA_QSA_MMA(0);
+#undef STRATA_QSA_MMA
+    } else
+#endif
     if (lane_cell) {
         if (kv_mode == 3) STRATA_ATTN_LC(3);
         else if (kv_mode == 2) STRATA_ATTN_LC(2);
