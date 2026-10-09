@@ -135,6 +135,255 @@ $("metrics").innerHTML = METRICS.map((m) => `
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
 
+// GPU energy and token costs in the Monitor, with an accessible details dialog.
+const energyCostStyle = document.createElement("style");
+energyCostStyle.textContent = `
+  #energy-cost-dialog { width:min(900px,calc(100vw - 24px)); max-height:calc(100dvh - 30px); overflow:auto;
+    padding:0; border:1px solid var(--st-line,#dce2e8); border-radius:var(--st-r-lg,14px); color:var(--st-ink,inherit);
+    background:var(--st-surface-2,#f5f7fa); box-shadow:var(--st-sh-pop,0 20px 60px rgb(0 0 0 / .25)); }
+  #energy-cost-dialog::backdrop { background:rgb(0 0 0 / .46); }
+  #energy-cost-dialog:focus { outline:none; }
+  .energy-cost__head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px;
+    border-bottom:1px solid var(--st-line-soft,#e2e7eb); background:var(--st-surface,#fff); }
+  .energy-cost__head h3 { margin:0; font-size:var(--st-fs-lg,18px); }
+  .energy-cost__head p { margin:3px 0 0; font-size:var(--st-fs-xs,12px); line-height:1.4;
+    color:var(--st-ink-muted,#63707e); overflow-wrap:anywhere; }
+  .energy-cost__close { width:36px; height:36px; padding:0; flex:none; }
+  .energy-cost__body { padding:12px 16px 16px; }
+  .energy-cost__grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .energy-cost__section { min-width:0; padding:12px 14px; border:1px solid var(--st-line,#dce2e8);
+    border-radius:var(--st-r-md,10px); background:var(--st-surface,#fff); }
+  .energy-cost__section h4 { margin:0 0 8px; font-size:var(--st-fs-sm,14px); color:var(--st-ink,inherit); }
+  .energy-cost__section dl { margin:0; display:grid; grid-template-columns:minmax(0,1fr) auto;
+    gap:5px 10px; font-size:var(--st-fs-sm,13px); line-height:1.35; }
+  .energy-cost__section dt { color:var(--st-ink-muted,#63707e); white-space:nowrap; }
+  .energy-cost__section dd { margin:0; text-align:right; white-space:nowrap; color:var(--st-ink-soft,inherit);
+    font-variant-numeric:tabular-nums; }
+  .energy-cost__note { margin:12px 0 0; padding-top:10px; border-top:1px solid var(--st-line-soft,#e2e7eb);
+    color:var(--st-ink-muted,#63707e); font-size:var(--st-fs-xs,12px); line-height:1.45;
+    overflow-wrap:anywhere; white-space:normal; }
+  .energy-cost-card { cursor:pointer; }
+  .energy-cost-card:hover { border-color:var(--st-accent,#1aa578); }
+  .energy-cost-card:focus:not(:focus-visible) { outline:none; }
+  .energy-cost-card:focus-visible { outline:2px solid var(--st-focus,var(--st-accent,#1aa578)); outline-offset:2px; }
+  .energy-power-values { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; min-width:0; }
+  .energy-power-main { display:flex; flex-direction:column; min-width:0; gap:4px; }
+  .energy-power-main .st-metric__sub { white-space:nowrap; }
+  .energy-power-right { display:flex; flex-direction:column; align-items:flex-end; min-width:0; gap:4px; text-align:right; }
+  .energy-power-values .st-metric__value { font-size:clamp(20px,2.2vw,var(--st-fs-stat)); }
+  .energy-power-cost { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .energy-power-cost small { font-size:var(--st-fs-md); font-weight:var(--st-fw-medium);
+    color:var(--st-ink-muted); margin-left:4px; }
+  .energy-power-units { font-size:var(--st-fs-xs,12px); line-height:1.3; color:var(--st-ink-muted,#63707e);
+    white-space:nowrap; font-variant-numeric:tabular-nums; min-height:1em; }
+  @media (max-width:790px) {
+    .energy-cost__grid { grid-template-columns:1fr; }
+    #energy-cost-dialog { width:min(560px,calc(100vw - 16px)); }
+  }
+  @media (max-width:430px) {
+    .energy-cost__body { padding:10px; }
+    .energy-cost__section { padding:10px; }
+    .energy-cost__section dt { white-space:normal; }
+    .energy-cost__section dl { grid-template-columns:minmax(0,1fr) auto; }
+    .energy-power-values .st-metric__value { font-size:20px; }
+  }
+`;
+document.head.appendChild(energyCostStyle);
+const energyCostDialog = document.createElement("dialog");
+energyCostDialog.id = "energy-cost-dialog";
+energyCostDialog.tabIndex = -1; // Put initial focus on dialog, not its close icon.
+energyCostDialog.setAttribute("aria-labelledby", "energy-cost-title");
+energyCostDialog.innerHTML = `<div class="energy-cost__head">
+  <div><h3 id="energy-cost-title">Energy & token costs</h3>
+    <p>Since server start · GPU only (excludes CPU, RAM, mainboard, fans and PSU losses).</p></div>
+  <button class="st-btn st-btn--icon energy-cost__close" id="energy-cost-close" type="button" title="Close" aria-label="Close energy and token cost details"><svg class="st-icon st-icon--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
+</div><div class="energy-cost__body"><div class="energy-cost__grid">
+  <section class="energy-cost__section"><h4>Overall</h4><dl id="energy-cost-overall"></dl>
+    <p class="energy-cost__note" id="energy-cost-note"></p></section>
+  <section class="energy-cost__section"><h4>Energy</h4><dl id="energy-cost-energy"></dl></section>
+  <section class="energy-cost__section"><h4>Input / Prefill</h4><dl id="energy-cost-input"></dl></section>
+  <section class="energy-cost__section"><h4>Output / Decode</h4><dl id="energy-cost-output"></dl></section>
+</div></div>`;
+document.body.appendChild(energyCostDialog);
+const energyPowerCard = $("mv-power").closest(".metric-card");
+energyPowerCard.classList.add("energy-cost-card");
+energyPowerCard.tabIndex = 0;
+energyPowerCard.setAttribute("role", "button");
+energyPowerCard.setAttribute("aria-label", "Open energy and token cost details");
+energyPowerCard.title = "Energy and token cost details";
+// Reuse the existing value/limit DOM nodes; do not add a row to the metric card.
+const energyPowerValue = $("mv-power"), energyPowerSub = $("ms-power");
+const energyPowerColumns = document.createElement("div");
+energyPowerColumns.className = "energy-power-values";
+const energyPowerMain = document.createElement("div");
+energyPowerMain.className = "energy-power-main";
+const energyPowerRight = document.createElement("div");
+energyPowerRight.className = "energy-power-right";
+const energyPowerCost = document.createElement("span");
+energyPowerCost.className = "st-metric__value energy-power-cost";
+const energyPowerAmount = document.createElement("span");
+const energyPowerCurrency = document.createElement("small");
+energyPowerCost.append(energyPowerAmount, energyPowerCurrency);
+const energyPowerUnits = document.createElement("span");
+energyPowerUnits.className = "energy-power-units";
+energyPowerValue.before(energyPowerColumns);
+energyPowerColumns.append(energyPowerMain, energyPowerRight);
+energyPowerMain.append(energyPowerValue, energyPowerSub);
+energyPowerRight.append(energyPowerCost, energyPowerUnits);
+function openEnergyCosts() {
+  if (energyCostDialog.open) return;
+  if (typeof energyCostDialog.showModal === "function") {
+    energyCostDialog.showModal();
+    energyCostDialog.focus({preventScroll: true});
+  }
+  else energyCostDialog.setAttribute("open", "");
+}
+energyPowerCard.addEventListener("click", openEnergyCosts);
+energyPowerCard.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openEnergyCosts(); }
+});
+$("energy-cost-close").addEventListener("click", () => energyCostDialog.close());
+energyCostDialog.addEventListener("click", (e) => {
+  const r = energyCostDialog.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) energyCostDialog.close();
+});
+energyCostDialog.addEventListener("close", () => {
+  // Modal focus restoration can happen after the close event.
+  requestAnimationFrame(() => energyPowerCard.blur());
+});
+function energyMoney(value, currency, compact=false) {
+  if (value == null || !Number.isFinite(value) || value < 0) return null;
+  const digits = compact ? (value >= 10 ? 2 : 3) : 4;
+  const shown = compact && value > 0 && value < .001 ? .001 : value;
+  try {
+    const formatted = new Intl.NumberFormat(undefined, {style:"currency", currency:currency || "EUR",
+      minimumFractionDigits:digits, maximumFractionDigits:digits}).format(shown);
+    return compact && value > 0 && value < .001 ? `< ${formatted}` : formatted;
+  } catch (e) {
+    const formatted = `${shown.toFixed(digits)} ${currency || "EUR"}`;
+    return compact && value > 0 && value < .001 ? `< ${formatted}` : formatted;
+  }
+}
+function energyMoneyDisplay(value, currency) {
+  // The Power card needs a large number and a smaller currency unit (like W).
+  if (value == null || !Number.isFinite(value) || value < 0) return null;
+  const digits = value >= 10 ? 2 : 3;
+  const tiny = value > 0 && value < .001;
+  const shown = tiny ? .001 : value;
+  try {
+    const symbol = new Intl.NumberFormat(undefined, {style:"currency", currency:currency || "EUR"})
+      .formatToParts(shown).find((part) => part.type === "currency")?.value || currency || "EUR";
+    const amount = new Intl.NumberFormat(undefined, {minimumFractionDigits:digits,
+      maximumFractionDigits:digits}).format(shown);
+    return {amount:(tiny ? "< " : "") + amount, symbol};
+  } catch (e) {
+    return {amount:(tiny ? "< " : "") + shown.toFixed(digits), symbol:currency || "EUR"};
+  }
+}
+function energyRuntime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return "< 1 min";
+  const mins = Math.floor(seconds / 60);
+  return `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+}
+function energyUnits(kwh) {
+  if (kwh == null || !Number.isFinite(kwh)) return null;
+  if (kwh < 1) return `${fmt(kwh * 1000, kwh * 1000 < 10 ? 2 : 1)} Wh`;
+  return `${fmt(kwh, 3)} kWh`;
+}
+function energyEfficiency(tokens, joules) {
+  return tokens > 0 && joules > 0 ? `${fmt(tokens / (joules / 3600000))} tok/kWh` : null;
+}
+function renderEnergyCosts(hw, st, totals) {
+  totals = totals || {};
+  const energyKwh = Number.isFinite(hw.gpu_energy_kwh) ? hw.gpu_energy_kwh : null;
+  const price = Number.isFinite(st.electricity_price_per_kwh) ? st.electricity_price_per_kwh : null;
+  const currency = st.electricity_currency || "EUR";
+  const totalCost = energyKwh != null && price != null ? energyKwh * price : null;
+  const energyText = energyUnits(energyKwh);
+  const costText = energyMoney(totalCost, currency);
+  const limitText = hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "";
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", limitText);
+  const displayCost = energyMoneyDisplay(totalCost, currency);
+  energyPowerAmount.textContent = displayCost?.amount || "";
+  energyPowerCurrency.textContent = displayCost?.symbol || "";
+  energyPowerCost.hidden = !displayCost;
+  energyPowerUnits.textContent = energyText || "";
+
+  const prompt = totals.prompt_tokens || 0, reused = totals.reused || 0;
+  const fresh = totals.prompt_read != null ? totals.prompt_read : Math.max(0, prompt - reused);
+  const output = totals.output_tokens || 0, reasoning = totals.reasoning_tokens || 0;
+  const ppJ = totals.prefill_energy_j || 0, decJ = totals.decode_energy_j || 0;
+  const measured = totals.energy_requests || 0;
+  // Numerators and denominators MUST be from the same measured requests.
+  const measuredPrompt = totals.energy_prompt_tokens || 0;
+  const measuredFresh = totals.energy_prompt_read || 0;
+  const measuredOutput = totals.energy_output_tokens || 0; // API-visible output
+  // Native token totals match the measured prefill and decode energy.
+  const measuredNativePP = totals.energy_native_prompt_read || 0;
+  const measuredNativeOutput = totals.energy_native_output_tokens || 0;
+  const nativeRead = totals.native_prompt_read || 0;
+  const nativeMs = totals.native_prompt_ms || 0;
+  const nativeOutput = totals.native_output_tokens || 0;
+  const nativeDecodeMs = totals.native_decode_ms || 0;
+  const inferenceJ = ppJ + decJ;
+  const otherKwh = energyKwh == null ? null : Math.max(0, energyKwh - inferenceJ / 3600000);
+  const ppCost = measured > 0 && ppJ > 0 && price != null ? ppJ / 3600000 * price : null;
+  const decCost = measured > 0 && decJ > 0 && price != null ? decJ / 3600000 * price : null;
+  const activeCost = measured > 0 && price != null && inferenceJ > 0 ? inferenceJ / 3600000 * price : null;
+  const elapsed = hw.gpu_energy_elapsed_s;
+  const avgPower = energyKwh != null && elapsed > 0 ? energyKwh * 3600000 / elapsed : null;
+  const pct = (a, b) => b > 0 ? `${fmt(100 * a / b, 1)}%` : null;
+  const perM = (cost, tokens) => cost != null && tokens > 0 ? energyMoney(cost * 1000000 / tokens, currency) : null;
+  const source = st.gpu_energy_source === "nvml_total_energy" ? "NVML energy counter" :
+                 st.gpu_energy_source === "power_integral" ? "Power × time (estimated)" : null;
+
+  facts($("energy-cost-overall"), [
+    ["Monitoring runtime", energyRuntime(elapsed)],
+    ["Total GPU cost", costText],
+    ["Inference / 1M output", perM(activeCost, measuredOutput)],
+    ["All-in / 1M output", perM(totalCost, output)],
+    ["Cost / measured request", measured > 0 && activeCost != null ? energyMoney(activeCost / measured, currency) : null],
+    ["Energy-measured requests", totals.requests ? `${fmt(measured)} / ${fmt(totals.requests)}` : null],
+  ]);
+  const skipped = totals.energy_skipped_requests || 0;
+  $("energy-cost-note").textContent =
+    "All-in includes total GPU energy since start, including idle and unassigned GPU work." +
+    (skipped ? ` ${fmt(skipped)} requests have no phase-energy attribution.` : "") +
+    (st.gpu_energy_source === "power_integral" ? " Phase costs require a hardware energy counter." : "");
+  facts($("energy-cost-energy"), [
+    ["Total GPU energy", energyText],
+    ["Average GPU power", avgPower == null ? null : `${fmt(avgPower)} W`],
+    ["Attributed inference", measured && inferenceJ > 0 ? energyUnits(inferenceJ / 3600000) : null],
+    ["Idle / unassigned", energyUnits(otherKwh)],
+    ["Energy source", source],
+    ["Electricity price", price == null ? null : `${energyMoney(price, currency)} / kWh`],
+  ]);
+  facts($("energy-cost-input"), [
+    ["Prompt tokens", fmt(prompt)],
+    ["Fresh input tokens", fmt(fresh)],
+    ["Cached input tokens", fmt(reused)],
+    ["Input cache reuse", pct(reused, prompt)],
+    ["Native prefill speed", nativeMs > 0 && nativeRead > 0 ? `${fmt(nativeRead / (nativeMs / 1000))} tok/s` : null],
+    ["Measured PP tokens", measured > 0 ? fmt(measuredNativePP) : null],
+    ["Attributed PP energy", measured > 0 && ppJ > 0 ? energyUnits(ppJ / 3600000) : null],
+    ["Native PP / 1M", perM(ppCost, measuredNativePP)],
+    ["Fresh API input / 1M", perM(ppCost, measuredFresh)],
+    ["All input / 1M", perM(ppCost, measuredPrompt)],
+    ["PP efficiency", energyEfficiency(measuredNativePP, ppJ)],
+  ]);
+  facts($("energy-cost-output"), [
+    ["Output tokens", fmt(output)],
+    ["Reasoning tokens", reasoning ? `${fmt(reasoning)} (${pct(reasoning, output)})` : null],
+    ["Other output tokens", output > 0 ? fmt(Math.max(0, output - reasoning)) : null],
+    ["Decode speed", nativeDecodeMs > 0 && nativeOutput > 0 ? `${fmt(nativeOutput / (nativeDecodeMs / 1000), 1)} tok/s` : null],
+    ["Native output tokens", nativeOutput > 0 ? fmt(nativeOutput) : null],
+    ["Attributed decode", measured > 0 && decJ > 0 ? energyUnits(decJ / 3600000) : null],
+    ["Native output / 1M", perM(decCost, measuredNativeOutput)],
+    ["Decode efficiency", energyEfficiency(measuredNativeOutput, decJ)],
+  ]);
+}
+
 function spark(id, values, max) {
   const svg = $(id);
   const v = (values || []).map((x) => (x == null ? 0 : x));
@@ -288,7 +537,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  renderEnergyCosts(hw, st, totals);
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",

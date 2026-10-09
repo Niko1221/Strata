@@ -2633,9 +2633,17 @@ class Service:
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
-        self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+        # Monitor totals: API tokens, native work, and energy measured during requests.
+        self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "prompt_read": 0,
+                       "output_tokens": 0, "reasoning_tokens": 0, "prompt_ms": 0.0, "decode_ms": 0.0,
+                       "prefill_energy_j": 0.0, "decode_energy_j": 0.0, "energy_requests": 0,
+                       "energy_skipped_requests": 0,
+                       "energy_prompt_tokens": 0, "energy_prompt_read": 0,
+                       "energy_output_tokens": 0,
+                       "energy_native_prompt_read": 0, "energy_native_output_tokens": 0,
+                       "native_prompt_read": 0, "native_prompt_ms": 0.0,
+                       "native_output_tokens": 0, "native_decode_ms": 0.0,
+                       "drafts_offered": 0, "drafts_accepted": 0}
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         from serve.prometheus import Latencies
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
@@ -2981,11 +2989,22 @@ class Service:
                                                     "prefill_tok_s_mean": self._prefill_tok_s_mean()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
-                                       amd=getattr(self, "backend", None) == "hip")
+                                       amd=getattr(self, "backend", None) == "hip",
+                                       electricity=getattr(self, "electricity", None))
             if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
                 self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
+
+    def _gpu_energy_joules(self):
+        """GPU energy since telemetry start, or None when telemetry is unavailable."""
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return None
+        try:
+            return telemetry.energy_joules(phase=True)
+        except Exception:  # telemetry must never fail a request
+            return None
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -3457,6 +3476,9 @@ class Service:
         # #465: with "parallel" (the engine's batch slots) requests run at once: each keeps its own status and rate
         # window (self.status says busy while any runs); one at a time they are self.status / self.rate, as before
         par = bool(getattr(self.engine, "batch", 0))
+        # Measure each native generation pass separately, including reasoning continuations.
+        energy_segments = []
+        energy_segments_valid = True
         st = {} if par else self.status
         rate = collections.deque(maxlen=32) if par else self.rate
         with self.status_lock:
@@ -3483,6 +3505,8 @@ class Service:
                             self.status.update(st)
                         self.last_request_at = time.time()
                         rate.clear()                    # the previous request's samples must not leak into this one
+                    energy_segments.clear()
+                    energy_segments_valid = True
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
@@ -3490,6 +3514,9 @@ class Service:
                         yield "event", ev
                     while True:
                         segment_before = getattr(self.engine, "last", None)
+                        segment_energy_start = self._gpu_energy_joules() if not par else None
+                        segment_energy_first = None
+                        segment_energy_had_output = False
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
                         recover_prompt = None
@@ -3502,6 +3529,10 @@ class Service:
                                     yield "ping", None
                                     continue
                                 n += 1
+                                if not segment_energy_had_output:
+                                    segment_energy_had_output = True
+                                    if segment_energy_start is not None:
+                                        segment_energy_first = self._gpu_energy_joules()
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
@@ -3580,6 +3611,19 @@ class Service:
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
+                            # The next native pass can prefill again: split this pass on its own first token.
+                            if segment_energy_start is None:
+                                energy_segments_valid = False
+                            else:
+                                segment_energy_end = self._gpu_energy_joules()
+                                split = (segment_energy_first if segment_energy_had_output
+                                         else segment_energy_end)
+                                if (segment_energy_end is None or split is None
+                                        or not segment_energy_start <= split <= segment_energy_end):
+                                    energy_segments_valid = False
+                                else:
+                                    energy_segments.append((split - segment_energy_start,
+                                                            segment_energy_end - split))
                         if recover_prompt is not None and not cancel.is_set() and n < max_new:
                             recovery_count += 1
                             # Only the two settings that keep the same words coming are raised (temperature to at
@@ -3667,6 +3711,13 @@ class Service:
                     finish = "disconnect"
                     raise
                 finally:
+                    prefill_energy_j = decode_energy_j = None
+                    # Count only complete, counter-backed native passes; never mix measured
+                    # joules with token totals from partly unmeasured continuations.
+                    if (not par and energy_segments_valid and energy_segments
+                            and len(energy_segments) == len(segments) and finish != "error"):
+                        prefill_energy_j = sum(item[0] for item in energy_segments)
+                        decode_energy_j = sum(item[1] for item in energy_segments)
                     # #266: settle this request's status, history and totals while still holding the fifo: once
                     # it is released the next request sets its own status, which this must not record or clear
                     with self.status_lock:
@@ -3682,6 +3733,13 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            # Native tokens include each generation pass, not injected API tokens.
+                            native_read = (sum(int(s["prompt_read"]) for s in segments)
+                                           if segments and all(s.get("prompt_read") is not None for s in segments)
+                                           else None)
+                            native_generated = (sum(int(s["generated"]) for s in segments)
+                                                if segments and all(s.get("generated") is not None for s in segments)
+                                                else None)
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
@@ -3689,6 +3747,8 @@ class Service:
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
+                                "reasoning_tokens": thinking_n, "prefill_energy_j": prefill_energy_j,
+                                "decode_energy_j": decode_energy_j,
                                 "reasoning_recoveries": recovery_count,
                                 "reasoning_repeat_coverage": round(repeat_coverage, 3),
                                 "engine_generated": last.get("generated"),
@@ -3701,12 +3761,51 @@ class Service:
                                 "drafts_offered": last.get("drafts_offered"),
                                 "drafts_accepted": last.get("drafts_accepted")})
                             t = self.totals
+                            acc_reused = int(last.get("reused") or 0)
+                            acc_read = last.get("prompt_read")
+                            if acc_read is None:
+                                acc_read = max(0, seen - acc_reused)
+                            acc_read = int(acc_read or 0)
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
-                            t["reused"] += last.get("reused") or 0
+                            t["reused"] += acc_reused
+                            t["prompt_read"] += acc_read
+                            # A native rate needs paired tokens and duration for EVERY pass.
+                            # request_stats() totals available times even when a pass omitted one.
+                            if native_read is not None and all(
+                                    isinstance(s.get("prompt_ms"), (int, float))
+                                    and math.isfinite(s["prompt_ms"]) and s["prompt_ms"] >= 0
+                                    for s in segments):
+                                elapsed_ms = sum(s["prompt_ms"] for s in segments)
+                                if elapsed_ms > 0:
+                                    t["native_prompt_read"] += native_read
+                                    t["native_prompt_ms"] += elapsed_ms
+                            if native_generated is not None and all(
+                                    isinstance(s.get("decode_ms"), (int, float))
+                                    and math.isfinite(s["decode_ms"]) and s["decode_ms"] >= 0
+                                    for s in segments):
+                                elapsed_ms = sum(s["decode_ms"] for s in segments)
+                                if elapsed_ms > 0:
+                                    t["native_output_tokens"] += native_generated
+                                    t["native_decode_ms"] += elapsed_ms
                             t["output_tokens"] += n
+                            t["reasoning_tokens"] += thinking_n
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
                             t["decode_ms"] += last.get("decode_ms") or 0.0
+                            if (prefill_energy_j is not None and decode_energy_j is not None
+                                    and native_read is not None and native_generated is not None):
+                                t["prefill_energy_j"] += prefill_energy_j
+                                t["decode_energy_j"] += decode_energy_j
+                                t["energy_prompt_tokens"] += seen
+                                t["energy_prompt_read"] += acc_read
+                                t["energy_output_tokens"] += n  # API-visible output, including injected tokens
+                                t["energy_native_prompt_read"] += native_read
+                                t["energy_native_output_tokens"] += native_generated
+                                t["energy_requests"] += 1
+                            else:
+                                # Batch/parallel requests deliberately stay unassigned: the same joules cannot be
+                                # attributed to several overlapping requests without double counting.
+                                t["energy_skipped_requests"] += 1
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
@@ -5822,6 +5921,7 @@ def main() -> int:
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
+    svc.electricity = cfg.get("electricity") or {}      # optional price_per_kwh + currency for Monitor costs
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
     if a.config:                                        # the Chat settings shared with other apps, from last time

@@ -66,6 +66,14 @@ class _Nvml:
         except (AttributeError, OSError):
             return None
 
+    # Prefer cumulative GPU board energy over integrating sampled power.
+    def energy_mj(self):
+        v = ctypes.c_ulonglong()
+        try:
+            return v.value if self.lib.nvmlDeviceGetTotalEnergyConsumption(self.dev, ctypes.byref(v)) == 0 else None
+        except (AttributeError, OSError):
+            return None
+
     def name(self):
         buf = ctypes.create_string_buffer(96)
         try:
@@ -264,7 +272,7 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, electricity=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
@@ -278,6 +286,21 @@ class Telemetry:
         self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
+        electricity = electricity if isinstance(electricity, dict) else {}
+        try:
+            price = float(electricity.get("price_per_kwh")) if electricity.get("price_per_kwh") is not None else None
+            if price is not None and not (0 <= price < float("inf")):
+                price = None
+        except (TypeError, ValueError):
+            price = None
+        currency = str(electricity.get("currency") or "EUR").upper()
+        self._energy_hw_start_j = self._raw_energy_joules()
+        self._energy_fallback_j = 0.0
+        self._energy_last_t = time.monotonic()
+        self._energy_start_t = self._energy_last_t
+        self._energy_last_hw_j = 0.0
+        self._energy_has_power_sample = False
+        self._energy_lock = threading.Lock()
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
@@ -291,6 +314,9 @@ class Telemetry:
             # dashboard said "not readable (NVML)" or showed empty tiles with no word why
             "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
                          "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
+            "electricity_price_per_kwh": price,
+            "electricity_currency": currency,
+            "gpu_energy_source": "nvml_total_energy" if self._energy_hw_start_j is not None else "power_integral",
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
@@ -299,6 +325,36 @@ class Telemetry:
         self._disk_prev = None
         self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def _raw_energy_joules(self):
+        values = []
+        for _, gpu in self.gpus:
+            fn = getattr(gpu, "energy_mj", None)
+            if fn is None:
+                return None
+            value = fn()
+            if value is None:
+                return None
+            values.append(value / 1000.0)
+        return sum(values) if values else None
+
+    def energy_joules(self, *, phase=False):
+        """Cumulative GPU joules. Phase measurements require a working HW counter.
+
+        A read failure must never switch units/baselines. For the dashboard,
+        retain the last valid reading. For phase attribution, report unavailable.
+        """
+        with self._energy_lock:
+            if self._energy_hw_start_j is not None:
+                raw = self._raw_energy_joules()
+                delta = None if raw is None else raw - self._energy_hw_start_j
+                if delta is None or delta < self._energy_last_hw_j:
+                    return None if phase else self._energy_last_hw_j
+                self._energy_last_hw_j = delta
+                return delta
+            if phase or not self._energy_has_power_sample:
+                return None
+            return self._energy_fallback_j
 
     def _disk(self):
         if not self.ps:
@@ -358,6 +414,21 @@ class Telemetry:
     def _loop(self):
         while not self._stop.is_set():
             s = self.sample()
+            now = time.monotonic()
+            dt = max(0.0, now - self._energy_last_t)
+            self._energy_last_t = now
+            power = s.get("gpu_power")
+            if self._energy_hw_start_j is None:
+                with self._energy_lock:
+                    if isinstance(power, (int, float)) and (power == power and power != float("inf")) and power >= 0:
+                        # A valid sample establishes the estimate; missing power is not 0 W.
+                        if self._energy_has_power_sample:
+                            self._energy_fallback_j += power * dt
+                        self._energy_has_power_sample = True
+            energy_j = self.energy_joules()
+            s["gpu_energy_j"] = energy_j
+            s["gpu_energy_kwh"] = energy_j / 3_600_000.0 if energy_j is not None else None
+            s["gpu_energy_elapsed_s"] = max(0.0, now - self._energy_start_t)
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
