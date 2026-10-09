@@ -26,6 +26,8 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-07: 2x NVIDIA Quadro RTX 4000 8 GB, Xeon E5-2620 v3, 96 GB RAM](../bench/results/2026-10-07-community-2x-rtx-4000/README.md):
   Strata 0.1.38, Swift-Qwen3.8-Flash-Next IQ2_XS, 131,072-token context, layer split across dual GPUs with RAM-tiered expert cache;
   measured deep-context prompt ingestion (73k–74k tokens at 100–250 tok/s, 18–23 tok/s decode) and production pipeline comparison against a 12B model.
+- [2026-10-09: RTX 3060 12 GB, Core i7-12700, 64 GB RAM](../bench/results/2026-10-09-community-rtx-3060-0141/README.md):
+  Strata v0.1.41 official Windows release, original Flash-Next Q2_0, IQ2_XS, IQ3_XXS and IQ3_S; prompt sweep from 128 to 128K tokens (260K for three of the four), plus recall, HumanEval 0-39, cache, MTP and concurrency checks.
 
 ## What to record
 
