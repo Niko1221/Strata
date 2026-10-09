@@ -21,8 +21,8 @@ grid lands on can differ by one where time-based and index-based rules disagree.
 pinned index-linspace rule for the trace fixtures and is no longer the serving path.
 
 `max_frames` counts unique frames emitted after repeated PTS selections are removed, not grid points. A clip that
-selects too many frames is rejected without reducing its cadence. The grid itself is bounded to 36,001 points by
-the supported 3,600 s / 10 FPS ceilings. Duration has its own limit: a sparse VFR clip may use more grid points
+selects too many frames is rejected without reducing its cadence. The grid itself is bounded to 86,401 points by
+the supported 3,600 s / 24 FPS ceilings. Duration has its own limit: a sparse VFR clip may use more grid points
 than emitted frames. At the default 2 FPS, 1,024 densely sampled frames cover about 512 s.
 
 ## Compatibility

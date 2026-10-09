@@ -24,8 +24,10 @@ class VideoPolicyTests(unittest.TestCase):
         for cfg in (None, False, {}, {"enabled": False}):
             self.assertIsNone(VideoPolicy.from_config(cfg))
         self.assertEqual(VideoPolicy.from_config({"enabled": True}), VideoPolicy())
+        self.assertEqual(VideoPolicy.from_config({"enabled": True, "fps": 24}).fps, 24)
         for cfg in (True, {"enabled": "yes"}, {"enabled": True, "typo": 1},
-                    {"enabled": True, "fps": float("nan")}, {"enabled": True, "max_frames": 4097},
+                    {"enabled": True, "fps": float("nan")}, {"enabled": True, "fps": 25},
+                    {"enabled": True, "max_frames": 4097},
                     {"enabled": True, "max_tokens": False}, {"enabled": True, "max_tokens": 65537},
                     {"enabled": True, "max_embedding_bytes": (768 << 20) + 1},
                     {"enabled": True, "max_disk_bytes": 1},
@@ -103,12 +105,13 @@ class VideoPolicyTests(unittest.TestCase):
         self.assertEqual(sample_times([0.0, 300.0, 600.0], 2.0, 3),
                          ((0, 1, 2), (0.0, 300.0, 600.0)))
         self.assertEqual(sample_times([0.0], 2.0, 1), ((0,), (0.0,)))
+        self.assertEqual(len(sample_times([i / 24 for i in range(97)], 24.0, 1024)[0]), 97)
         with self.assertRaisesRegex(VideoLimitError, "selected frames"):
             sample_times([i / 2 for i in range(300)], 2.0, 128)
         with self.assertRaisesRegex(VideoLimitError, "selected frames"):
             sample_times([0.0, 300.0, 600.0], 2.0, 2)
         with self.assertRaisesRegex(VideoLimitError, "sampling grid"):
-            sample_times([0.0, 3601.0], 10.0, 2)
+            sample_times([0.0, 3601.0], 24.0, 2)
         with self.assertRaises(VideoError):
             sample_times([0.0, 0.5, 0.5], 2.0, 128)
         with self.assertRaises(VideoError):

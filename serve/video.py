@@ -85,7 +85,7 @@ class VideoPolicy:
                     raise VideoError(f"vision.video.{f.name} must be finite and positive")
             elif isinstance(v, bool) or not isinstance(v, int) or v <= 0:
                 raise VideoError(f"vision.video.{f.name} must be a positive integer")
-        if not (p.fps <= 10 and p.max_duration_s <= 3600 and p.deadline_s <= 3600):
+        if not (p.fps <= 24 and p.max_duration_s <= 3600 and p.deadline_s <= 3600):
             raise VideoError("video FPS/duration/deadline exceeds the supported ceiling")
         if not (max(8, image_min or 0) <= p.min_group_tokens <= p.max_group_tokens <= min(1024, image_max or 4096)):
             raise VideoError("video group tokens must fit the existing image encoder's min/max token policy (8..1024)")
@@ -180,7 +180,7 @@ def sample_times(times: list, target_fps: float, max_frames: int) -> tuple[tuple
         raise VideoError("video frame timestamps must be finite and strictly increasing")
     start, span = times[0], times[-1] - times[0]
     grid = span * target_fps
-    if not math.isfinite(grid) or grid > 36000:
+    if not math.isfinite(grid) or grid > 86400:
         raise VideoLimitError("video sampling grid exceeds the supported duration/FPS ceiling")
     count = int(grid) + 1
     step = 1 / target_fps
