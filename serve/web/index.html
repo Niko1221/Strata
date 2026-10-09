@@ -83,14 +83,26 @@
             <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
             <span class="st-badge st-badge--error" data-s="error">Error</span>
           </span>
+          <div class="gpu-selector" id="gpu-selector" hidden>
+            <div class="gpu-selector__seg">
+              <span class="muted small" id="gpu-seg-label">GPU to show</span>
+              <div class="seg gpu-seg" id="gpu-seg" role="radiogroup" aria-label="GPU to show" hidden></div>
+            </div>
+            <label class="gpu-select-wrap" id="gpu-select-wrap" hidden>
+              <span class="muted small">GPU to show</span><select id="gpu-select" aria-label="GPU to show"></select>
+            </label>
+          </div>
         </div>
         <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
       </div>
 
-      <div class="metrics" id="metrics">
-        <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU, Disk read -->
+      <div class="metric-area" id="metrics">
+        <!-- filled by app.js: one grid of every card (METRIC_CARDS); drag a card to any position -->
+        <div class="metric-toolbar" hidden><button class="metric-order-reset" id="reset-card-order" type="button">Reset layout</button></div>
+        <div class="metric-grid" id="metric-cards"></div>
       </div>
+      <span id="card-position-live" class="visually-hidden" aria-live="polite" aria-atomic="true"></span>
 
       <div class="monitor-row">
         <div class="st-card ctx-card">
@@ -110,15 +122,22 @@
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
           <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>CPU temperature</span><span class="muted" id="cpu-temp-text">&ndash;</span></div>
+          <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="cpu-temp-bar" style="width:0%"></div></div>
         </div>
         <div class="st-card req-card">
           <div class="req-head"><span class="card-title">Recent requests</span>
-            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
+            <div class="req-actions"><button class="st-btn st-btn--secondary" id="req-clear">Clear</button>
+              <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div></div>
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
-              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
+              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th>
+                <th class="num" title="time spent reading the new prompt tokens">Prefill</th>
+                <th class="num">Output</th>
+                <th class="num">Tok/s</th><th class="num">Drafts</th>
+                <th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th>
+                <th class="num">Duration</th></tr></thead>
+              <tbody id="req-body"><tr><td colspan="10" class="muted">No requests yet</td></tr></tbody>
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>

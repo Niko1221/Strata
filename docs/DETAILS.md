@@ -440,7 +440,8 @@ app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
-  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
+  VRAM, temperature, power and PCIe traffic, per GPU on multi-GPU machines; CPU, RAM and disk; the context in use; the
+  last requests. Cards can be rearranged and hidden.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
@@ -920,6 +921,29 @@ The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
 `/metrics` has the same under `"conversation_cache"`.
+
+The Monitor's GPU selector (in the Model state card, on machines with more than one GPU) focuses the GPU, power and
+PCIe cards on one GPU, including cards outside the engine, which are marked "not in use" (the model does not run on
+them). Other cards show draft acceptance, prompt reuse, prefill time, free VRAM, all-NVIDIA-card power and session
+time; the VRAM warning thresholds are display hints only. Drag a card to reorder it (press and hold on touch,
+Alt+Left/Right from the keyboard); its x hides it. Order and hidden cards are kept in the browser, and **Reset layout**
+above the cards brings back the defaults. **Clear** on Recent requests empties the table on that page only.
+
+Two optional sources, both localhost-only:
+
+- **CPU temperature and power** from LibreHardwareMonitor's web server (Options > Remote Web Server, port 8085), read
+  every 2 s from `http://127.0.0.1:8085/data.json`; `STRATA_LHM_URL` points elsewhere, and an empty value turns it off.
+  It uses the first CPU's package sensors (Intel and AMD). On Windows without it, the CPU temp card says "Needs
+  LibreHardwareMonitor". On Linux the CPU temperature is read from the kernel's hwmon files without it (k10temp or
+  zenpower on AMD, coretemp on Intel; no root, no lm-sensors); a system with neither hides the card.
+- **Forge**, a VS Code coding assistant for local models: with `STRATA_FORGE_URL=http://127.0.0.1:8799`, a card shows
+  the active Forge chat's turns, tool calls and tokens from Forge's read-only `/stats`. Off unless the variable is set.
+
+`/metrics` adds `power_limit`, `pcie_rx_mb`, `pcie_tx_mb`, `pcie_gen`, `pcie_gen_max` and `pcie_width` to
+`hardware.gpus[*]`, per-card readings over time in `history.gpus`, other NVIDIA cards in `hardware.other_gpus`,
+`hardware.all_gpu_power`, `hardware.cpu_temp` (LibreHardwareMonitor, or hwmon on Linux) and `hardware.cpu_power`
+(LibreHardwareMonitor), `hardware_static.os`,
+and `forge` (`null` when off). Every one of them is optional.
 
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts

@@ -33,6 +33,18 @@ CTX = 4096
 ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
 #                                                one token repeated, which the server ends at 256)
 
+_forge_env = None
+
+
+def setUpModule():
+    global _forge_env
+    _forge_env = mock.patch.dict(os.environ, {"STRATA_FORGE_URL": ""})
+    _forge_env.start()
+
+
+def tearDownModule():
+    _forge_env.stop()
+
 
 class RecordingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
@@ -3878,7 +3890,7 @@ class AmdTelemetry(unittest.TestCase):
         from serve import telemetry
         with tempfile.TemporaryDirectory() as d:
             self.tree(d)
-            with mock.patch.object(telemetry, "SYSFS", d):
+            with mock.patch.object(telemetry, "SYSFS", d), mock.patch.dict(os.environ, {"STRATA_LHM_URL": ""}):
                 self.assertTrue(telemetry.amd_device_dir(0).endswith(os.path.join("renderD129", "device")))
                 self.assertTrue(telemetry.amd_device_dir(1).endswith(os.path.join("renderD128", "device")))
                 self.assertIsNone(telemetry.amd_device_dir(2))
@@ -3896,6 +3908,7 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(t.static["gpu_name"], "AMD Radeon AI PRO R9700 + AMD Radeon AI PRO R9700")
                 self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
                                  (8 << 30, 68.0, 64.0, 205.0))
+                self.assertNotIn("other_gpus", s)
         with tempfile.TemporaryDirectory() as d:                    # no amdgpu: nothing, and nothing breaks
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())
@@ -3910,6 +3923,136 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class NvidiaTelemetry(unittest.TestCase):
+    """Per-card and all-NVIDIA-card telemetry can be checked without a GPU."""
+
+    class Reader:
+        def __init__(self, index, power):
+            self.index, self.power = index, power
+            self.reads = 0
+            self.unreadable = False
+
+        def ok(self):
+            return True
+
+        def name(self):
+            return f"Fake GPU {self.index}"
+
+        def read(self):
+            self.reads += 1
+            if self.unreadable:
+                raise OSError("fake NVML read failure")
+            return {"util": 10 + self.index, "mem_used": (2 + self.index) << 30, "mem_total": 8 << 30,
+                    "temp": 50 + self.index, "power": self.power, "power_limit": 200 + self.index,
+                    "pcie_rx_mb": 1.5 + self.index, "pcie_tx_mb": 2.5 + self.index, "pcie_gen": 4,
+                    "pcie_gen_max": 5, "pcie_width": 16}
+
+    def make(self, indices, count, readers):
+        from serve import telemetry
+        def reader(index, amd=False):
+            return readers[index]
+        with mock.patch.dict(os.environ, {"STRATA_LHM_URL": ""}), \
+                mock.patch.object(telemetry, "gpu_reader", side_effect=reader), \
+                mock.patch.object(telemetry._Nvml, "count", return_value=count), \
+                mock.patch.object(telemetry.threading.Thread, "start"):
+            instance = telemetry.Telemetry(gpu_index=indices[0], gpu_indices=indices)
+        return instance
+
+    def test_multi_card_fields_totals_and_history(self):
+        from serve import telemetry
+        readers = {i: self.Reader(i, 30 + i) for i in range(2)}
+        t = self.make([0, 1], 2, readers)
+        s = t.sample()
+        self.assertEqual(s["gpu_power"], 61)
+        self.assertEqual(s["gpu_util"], 10.5)
+        self.assertEqual(s["gpus"][1], {"index": 1, "util": 11, "mem_used": 3 << 30, "mem_total": 8 << 30,
+                                          "temp": 51, "power": 31, "power_limit": 201, "pcie_rx_mb": 2.5,
+                                          "pcie_tx_mb": 3.5, "pcie_gen": 4, "pcie_gen_max": 5, "pcie_width": 16})
+        for _ in range(3):
+            t.record(s)
+        history = t.snapshot()["history"]
+        self.assertEqual(len(history["gpus"]["1"]["power"]), 3)
+        self.assertEqual(history["gpu_pcie_tx_mb"], [6.0, 6.0, 6.0])
+        self.assertEqual(readers[0].reads, 1)
+        self.assertEqual(readers[1].reads, 1)
+
+    def test_single_card_has_no_per_card_container(self):
+        t = self.make([0], 1, {0: self.Reader(0, 30)})
+        s = t.sample()
+        t.record(s)
+        self.assertNotIn("gpus", s)
+        self.assertNotIn("gpus", t.snapshot()["history"])
+        self.assertNotIn("all_gpu_power", t.snapshot()["history"])
+
+    def test_other_card_power_is_in_all_card_total(self):
+        t = self.make([0], 2, {0: self.Reader(0, 30), 1: self.Reader(1, 40)})
+        s = t.sample()
+        self.assertEqual(s["gpus"][0]["index"], 0)
+        self.assertEqual(s["other_gpus"], [{"index": 1, "util": 11, "mem_used": 3 << 30, "mem_total": 8 << 30,
+                                             "temp": 51, "power": 40, "power_limit": 201, "pcie_rx_mb": 2.5,
+                                             "pcie_tx_mb": 3.5, "pcie_gen": 4, "pcie_gen_max": 5,
+                                             "pcie_width": 16}])
+        self.assertEqual(s["all_gpu_power"], 70)
+        self.assertEqual(t.static["other_gpu_names"], ["Fake GPU 1"])
+        t.record(s)
+        no_power = dict(s)
+        no_power.pop("all_gpu_power")
+        t.record(no_power)
+        self.assertEqual(t.snapshot()["history"]["all_gpu_power"], [70, None])
+        self.assertEqual(t.gpus[0][1].reads, 1)
+        history = t.snapshot()["history"]["gpus"]
+        self.assertEqual(history["0"]["power"], [30, 30])
+        self.assertEqual(history["1"]["power"], [40, 40])
+        self.assertEqual(history["1"]["pcie_rx_mb"], [2.5, 2.5])
+        self.assertEqual(t.other_gpus[0][1].reads, 1)
+
+    def test_unreadable_other_card_is_reported_with_null_fields(self):
+        readers = {0: self.Reader(0, 30), 1: self.Reader(1, 40)}
+        readers[1].unreadable = True
+        t = self.make([0], 2, readers)
+        card = t.sample()["other_gpus"][0]
+        self.assertEqual(card, {"index": 1, "util": None, "mem_used": None, "mem_total": None,
+                                "temp": None, "power": None, "power_limit": None, "pcie_rx_mb": None,
+                                "pcie_tx_mb": None, "pcie_gen": None, "pcie_gen_max": None, "pcie_width": None})
+
+    def test_eight_engine_cards_and_two_other_cards(self):
+        readers = {i: self.Reader(i, 30 + i) for i in range(10)}
+        t = self.make(list(range(8)), 10, readers)
+        sample = t.sample()
+        self.assertEqual(len(sample["gpus"]), 8)
+        self.assertEqual([g["index"] for g in sample["other_gpus"]], [8, 9])
+        self.assertEqual(sample["all_gpu_power"], sum(range(30, 40)))
+        t.record(sample)
+        self.assertEqual(set(t.snapshot()["history"]["gpus"]), {str(i) for i in range(10)})
+
+    def test_count_failure_does_not_stop_sampling(self):
+        from serve import telemetry
+        for result in (0, RuntimeError("NVML unavailable")):
+            with self.subTest(result=result):
+                with mock.patch.dict(os.environ, {"STRATA_LHM_URL": ""}), \
+                        mock.patch.object(telemetry, "gpu_reader", return_value=self.Reader(0, 30)), \
+                        mock.patch.object(telemetry._Nvml, "count", side_effect=result if isinstance(result, Exception)
+                                          else None, return_value=result), \
+                        mock.patch.object(telemetry.threading.Thread, "start"):
+                    t = telemetry.Telemetry(gpu_index=0)
+                sample = t.sample()
+                self.assertNotIn("other_gpus", sample)
+                self.assertEqual(sample["gpu_power"], 30)
+
+    def test_nvml_count_error_code_returns_zero(self):
+        from serve import telemetry
+        class FakeLib:
+            @staticmethod
+            def nvmlInit_v2():
+                return 0
+
+            @staticmethod
+            def nvmlDeviceGetCount_v2(_ptr):
+                return 3
+        with mock.patch.object(telemetry.ctypes, "CDLL", return_value=FakeLib()):
+            self.assertEqual(telemetry._Nvml.count(), 0)
 
 
 class SilentEngine(unittest.TestCase):

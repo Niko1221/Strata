@@ -2609,6 +2609,7 @@ class Service:
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
+        self.forge_stats = None                         # optional read-only Forge /stats cache
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.config_lock = threading.Lock()
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
@@ -2975,6 +2976,9 @@ class Service:
 
     def start_telemetry(self):
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
+        if getattr(self, "forge_stats", None) is None:
+            from serve.forge_stats import ForgeStats
+            self.forge_stats = ForgeStats()
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
             self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
@@ -3098,12 +3102,13 @@ class Service:
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+        forge = self.forge_stats.snapshot() if getattr(self, "forge_stats", None) else None
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "time": now, "forge": forge}
 
     def v1_status(self) -> dict:
         """GET /v1/status: what this server is and does, for a client that would rather ask than guess (a front-end
@@ -5226,9 +5231,10 @@ class Server(ThreadingHTTPServer):
     def server_close(self):
         # the hardware sampler serve() started for this server stops with it (test isolation: every Service a test
         # started used to leave its sampler running, 21 of them after test_responses, which slowed test_parallel's timing)
-        tel = getattr(getattr(self, "svc", None), "telemetry", None)
-        if tel is not None and hasattr(tel, "close"):
-            tel.close()
+        svc = getattr(self, "svc", None)
+        for sampler in (getattr(svc, "telemetry", None), getattr(svc, "forge_stats", None)):
+            if sampler is not None and hasattr(sampler, "close"):
+                sampler.close()
         super().server_close()
 
 
