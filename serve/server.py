@@ -1213,6 +1213,10 @@ class StrataEngine:
             ac = tune.get("aux_cpus")
             if isinstance(ac, bool) or (isinstance(ac, (int, float)) and ac in (0, 1)):
                 keys += f" aux_cpus={int(ac)}"
+            block = tune.get("dflash_block")
+            if isinstance(block, int) and not isinstance(block, bool) and 1 <= block <= 7:
+                keys += f" dflash_block={block}"
+
         # "strata_checkpoint": false - a one-shot call (a classification, a probe) whose turn no later request
         # extends: no conversation checkpoint for it (#830).  It still reuses a cached prefix.  Absent = as before.
         if sampling.get("strata_checkpoint") is False:
