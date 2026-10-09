@@ -1,0 +1,236 @@
+===== engine start 1: next7 (next7); two warm-up requests, then the 9 measured ones =====
+engine args: <strata-0.1.40.4-next7-sm60.exe> --serve --pack <swift-iq3_xxs> --native <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --ple-gguf <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --expert-profile <expert-profile.bin> --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.85 --mtp <rt> --max-context 1048576 --kv int8 --layer-split 12,24,36 --mtp-window 8192 --conversation-cache-mib 16384 --conversation-cache-slots 3 --rope-scaling yarn --rope-scale 4
+strata generate: layer split across 4 GPUs: CUDA0, then CUDA1,2,3 (split 12,24,36)
+strata generate: PCIe probe: 3.3 GB/s host->device (best of 3.3 3.3 3.3 3.3) -> pcie_frac 0.09 (default 0.55)
+strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144
+strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)
+strata q8 sm60: packed output head (248320 x 2560, 644 MiB more VRAM)
+strata mtp: 9 of 9 projections on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1, 68.7 MiB more VRAM)
+strata mtp: draft layer loaded, 2046 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1839 MiB/s)
+strata generate: GPU 0: NVIDIA PH402 SKU 200, compute capability 6.0
+strata generate: expert arena read through the file cache (31 of 32 probe reads from the file cache; 165.0 GiB available, 74.3 GiB of files)
+strata generate: loaded 39.97 GiB at 6.76 GiB/s
+strata generate: expert cache auto: 20.43 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 6144 slots
+strata generate: session is up (engine 0.1.40.4)
+strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata verify: window up to 6 tokens, 75.5 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3), one hand-off per window
+strata mtp: draft head over 106299 tokens (275.7 MiB)
+strata mtp: the draft head on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1)
+strata serve: 8379 MiB of VRAM free with everything loaded
+strata decode timing: 8 windows, avg T 2.38, 2.00 tokens/window, 48.01 ms/window = verify 44.81 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.23) + commit/emit 0.06 + draft 3.13; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 59 tokens = 0 reused + 59 read in 996 ms (59.2 tok/s), 16 generated in 384 ms (41.7 tok/s), drafts accepted 9 of 11, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 3 drafts accepted
+strata serve: conversation cache: parked 75 tokens in 64.1 ms; parked=1 bytes=239505448 evictions=0 snapshot_bytes=239505448 reused_kv_bytes=0
+strata prefill: 1154 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 6 windows, avg T 3.17, 2.67 tokens/window, 54.60 ms/window = verify 50.90 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.09) + commit/emit 0.06 + draft 3.63; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1159 tokens = 0 reused + 1159 read in 5036 ms (230.1 tok/s), 16 generated in 328 ms (48.8 tok/s), drafts accepted 13 of 13, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 3 of 3 drafts accepted
+strata serve: conversation cache: parked 1177 tokens in 101.1 ms; parked=2 bytes=495897584 evictions=0 snapshot_bytes=256392136 reused_kv_bytes=0
+strata decode timing: 164 windows, avg T 1.64, 1.56 tokens/window, 38.72 ms/window = verify 36.41 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.22) + commit/emit 0.04 + draft 2.27; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 90 tokens = 0 reused + 90 read in 1378 ms (65.3 tok/s), 256 generated in 6349 ms (40.3 tok/s), drafts accepted 95 of 105, 1 checkpoints
+strata serve: suffix drafts: 4 windows, 16 of 18 drafts accepted
+strata serve: conversation cache: parked 348 tokens in 84.5 ms; parked=3 bytes=739565848 evictions=0 snapshot_bytes=243668264 reused_kv_bytes=0
+strata decode timing: 147 windows, avg T 1.87, 1.74 tokens/window, 40.96 ms/window = verify 38.36 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.20) + commit/emit 0.05 + draft 2.55; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 112 tokens = 0 reused + 112 read in 1596 ms (70.2 tok/s), 256 generated in 6021 ms (42.5 tok/s), drafts accepted 111 of 128, 1 checkpoints
+strata serve: suffix drafts: 3 windows, 0 of 8 drafts accepted
+strata serve: conversation cache: parked 369 tokens in 69.6 ms; parked=3 bytes=744089544 evictions=1 snapshot_bytes=244029144 reused_kv_bytes=0
+strata decode timing: 244 windows, avg T 2.16, 2.10 tokens/window, 44.22 ms/window = verify 41.24 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.21) + commit/emit 0.07 + draft 2.91; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 87 tokens = 0 reused + 87 read in 1353 ms (64.3 tok/s), 512 generated in 10790 ms (47.5 tok/s), drafts accepted 268 of 282, 1 checkpoints
+strata serve: suffix drafts: 4 windows, 15 of 15 drafts accepted
+strata serve: conversation cache: parked 598 tokens in 73.5 ms; parked=3 bytes=735210008 evictions=2 snapshot_bytes=247512600 reused_kv_bytes=0
+strata prefill: 1153 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 30 windows, avg T 2.43, 2.13 tokens/window, 47.36 ms/window = verify 44.36 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.15) + commit/emit 0.04 + draft 2.95; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1158 tokens = 0 reused + 1158 read in 5063 ms (228.7 tok/s), 64 generated in 1421 ms (45.0 tok/s), drafts accepted 34 of 43, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 5 drafts accepted
+strata serve: conversation cache: parked 1221 tokens in 81.8 ms; parked=3 bytes=748606184 evictions=3 snapshot_bytes=257064440 reused_kv_bytes=0
+strata prefill: 34830 tokens in 3584-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 35 windows, avg T 1.83, 1.83 tokens/window, 42.49 ms/window = verify 39.63 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.21) + commit/emit 0.04 + draft 2.81; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 34835 tokens = 0 reused + 34835 read in 50971 ms (683.4 tok/s), 64 generated in 1487 ms (43.0 tok/s), drafts accepted 29 of 29, 2 checkpoints
+strata serve: conversation cache: parked 34898 tokens in 306.3 ms; parked=3 bytes=1396206856 evictions=4 snapshot_bytes=891629816 reused_kv_bytes=0
+strata decode timing: 31 windows, avg T 2.10, 2.06 tokens/window, 48.16 ms/window = verify 44.92 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.21) + commit/emit 0.07 + draft 3.17; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301108 tokens = 0 reused + 301108 read in 368376 ms (817.4 tok/s), 64 generated in 1493 ms (42.9 tok/s), drafts accepted 33 of 34, 6 checkpoints
+strata serve: conversation cache: parked 301171 tokens in 2248.1 ms; parked=3 bytes=6607182728 evictions=5 snapshot_bytes=5458488472 reused_kv_bytes=0
+strata decode timing: 128 windows, avg T 2.10, 2.00 tokens/window, 47.80 ms/window = verify 44.70 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.22) + commit/emit 0.04 + draft 3.06; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301130 tokens = 301103 reused + 27 read in 2787 ms (9.7 tok/s), 256 generated in 6118 ms (41.8 tok/s), drafts accepted 130 of 141, 6 checkpoints
+strata serve: suffix drafts: 5 windows, 15 of 17 drafts accepted
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=2
+strata serve: conversation cache: parked 301387 tokens in 2081.5 ms; parked=3 bytes=6611369048 evictions=5 snapshot_bytes=5462674792 reused_kv_bytes=0
+strata decode timing: 29 windows, avg T 2.45, 2.21 tokens/window, 47.33 ms/window = verify 44.22 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.18) + commit/emit 0.05 + draft 3.07; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 114 tokens = 0 reused + 114 read in 3942 ms (28.9 tok/s), 64 generated in 1373 ms (46.6 tok/s), drafts accepted 36 of 42, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 4 of 5 drafts accepted
+strata serve: conversation cache: parked 178 tokens in 60.9 ms; parked=3 bytes=1389789688 evictions=5 snapshot_bytes=241095432 reused_kv_bytes=0
+strata serve: conversation cache: restored 301125 tokens (checkpoint) in 1487.8 ms; parked=3 bytes=5990186848
+strata decode timing: 75 windows, avg T 1.72, 1.71 tokens/window, 43.22 ms/window = verify 40.61 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.12) + commit/emit 0.03 + draft 2.58; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301147 tokens = 301125 reused + 22 read in 1992 ms (11.0 tok/s), 128 generated in 3242 ms (39.5 tok/s), drafts accepted 53 of 54, 6 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 1 drafts accepted
+
+===== engine start 2: next8-pw-off (next8); two warm-up requests, then the 9 measured ones =====
+engine args: <strata-0.1.41-pw-sm60.exe> --serve --pack <swift-iq3_xxs> --native <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --ple-gguf <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --expert-profile <expert-profile.bin> --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.85 --mtp <rt> --max-context 1048576 --kv int8 --layer-split 12,24,36 --mtp-window 8192 --conversation-cache-mib 16384 --conversation-cache-slots 3 --rope-scaling yarn --rope-scale 4
+strata generate: layer split across 4 GPUs: CUDA0, then CUDA1,2,3 (split 12,24,36)
+strata generate: PCIe probe: 3.3 GB/s host->device (best of 3.3 3.3 3.3 3.3) -> pcie_frac 0.09 (default 0.55)
+strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144
+strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)
+strata q8 sm60: packed output head (248320 x 2560, 644 MiB more VRAM)
+strata mtp: 9 of 9 projections on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1, 68.7 MiB more VRAM)
+strata mtp: draft layer loaded, 2046 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1811 MiB/s)
+strata generate: GPU 0: NVIDIA PH402 SKU 200, compute capability 6.0
+strata generate: expert arena read through the file cache (31 of 32 probe reads from the file cache; 166.0 GiB available, 74.3 GiB of files)
+strata generate: loaded 39.97 GiB at 7.56 GiB/s
+strata generate: expert cache auto: 20.43 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 6144 slots
+strata generate: session is up (engine 0.1.41)
+strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata verify: window up to 6 tokens, 75.5 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3), one hand-off per window
+strata mtp: draft head over 106299 tokens (275.7 MiB)
+strata mtp: the draft head on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1)
+strata serve: 8450 MiB of VRAM free with everything loaded
+strata decode timing: 8 windows, avg T 2.38, 2.00 tokens/window, 47.58 ms/window = verify 44.64 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.19) + commit/emit 0.05 + draft 2.88; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 59 tokens = 0 reused + 59 read in 950 ms (62.1 tok/s), 16 generated in 381 ms (42.0 tok/s), drafts accepted 9 of 11, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 3 drafts accepted
+strata serve: conversation cache: parked 75 tokens in 66.1 ms; parked=1 bytes=239505448 evictions=0 snapshot_bytes=239505448 reused_kv_bytes=0
+strata prefill: 1154 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 6 windows, avg T 3.17, 2.67 tokens/window, 54.58 ms/window = verify 50.84 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.10) + commit/emit 0.10 + draft 3.63; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1159 tokens = 0 reused + 1159 read in 5047 ms (229.6 tok/s), 16 generated in 327 ms (48.9 tok/s), drafts accepted 13 of 13, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 3 of 3 drafts accepted
+strata serve: conversation cache: parked 1177 tokens in 74.2 ms; parked=2 bytes=495897584 evictions=0 snapshot_bytes=256392136 reused_kv_bytes=0
+strata decode timing: 164 windows, avg T 1.64, 1.56 tokens/window, 38.58 ms/window = verify 36.31 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.20) + commit/emit 0.02 + draft 2.25; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 90 tokens = 0 reused + 90 read in 1339 ms (67.2 tok/s), 256 generated in 6327 ms (40.5 tok/s), drafts accepted 95 of 105, 1 checkpoints
+strata serve: suffix drafts: 4 windows, 16 of 18 drafts accepted
+strata serve: conversation cache: parked 348 tokens in 65.4 ms; parked=3 bytes=739565848 evictions=0 snapshot_bytes=243668264 reused_kv_bytes=0
+strata decode timing: 147 windows, avg T 1.86, 1.74 tokens/window, 40.75 ms/window = verify 38.17 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.18) + commit/emit 0.03 + draft 2.55; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 112 tokens = 0 reused + 112 read in 1500 ms (74.6 tok/s), 256 generated in 5990 ms (42.7 tok/s), drafts accepted 111 of 127, 1 checkpoints
+strata serve: suffix drafts: 3 windows, 0 of 7 drafts accepted
+strata serve: conversation cache: parked 369 tokens in 63.0 ms; parked=3 bytes=744089544 evictions=1 snapshot_bytes=244029144 reused_kv_bytes=0
+strata decode timing: 244 windows, avg T 2.16, 2.10 tokens/window, 44.13 ms/window = verify 41.17 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.19) + commit/emit 0.04 + draft 2.91; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 87 tokens = 0 reused + 87 read in 1335 ms (65.2 tok/s), 512 generated in 10767 ms (47.6 tok/s), drafts accepted 268 of 282, 1 checkpoints
+strata serve: suffix drafts: 4 windows, 15 of 15 drafts accepted
+strata serve: conversation cache: parked 598 tokens in 64.5 ms; parked=3 bytes=735210008 evictions=2 snapshot_bytes=247512600 reused_kv_bytes=0
+strata prefill: 1153 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 30 windows, avg T 2.43, 2.13 tokens/window, 47.27 ms/window = verify 44.28 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.16) + commit/emit 0.03 + draft 2.96; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1158 tokens = 0 reused + 1158 read in 5034 ms (230.1 tok/s), 64 generated in 1418 ms (45.1 tok/s), drafts accepted 34 of 43, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 5 drafts accepted
+strata serve: conversation cache: parked 1221 tokens in 67.4 ms; parked=3 bytes=748606184 evictions=3 snapshot_bytes=257064440 reused_kv_bytes=0
+strata prefill: 34830 tokens in 3584-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata decode timing: 35 windows, avg T 1.83, 1.83 tokens/window, 42.36 ms/window = verify 39.54 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.21) + commit/emit 0.04 + draft 2.78; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 34835 tokens = 0 reused + 34835 read in 51111 ms (681.6 tok/s), 64 generated in 1483 ms (43.2 tok/s), drafts accepted 29 of 29, 2 checkpoints
+strata serve: conversation cache: parked 34898 tokens in 288.1 ms; parked=3 bytes=1396206856 evictions=4 snapshot_bytes=891629816 reused_kv_bytes=0
+strata decode timing: 31 windows, avg T 2.10, 2.06 tokens/window, 47.80 ms/window = verify 44.59 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.19) + commit/emit 0.05 + draft 3.16; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301108 tokens = 0 reused + 301108 read in 370772 ms (812.1 tok/s), 64 generated in 1482 ms (43.2 tok/s), drafts accepted 33 of 34, 6 checkpoints
+strata serve: conversation cache: parked 301171 tokens in 2359.6 ms; parked=3 bytes=6607182728 evictions=5 snapshot_bytes=5458488472 reused_kv_bytes=0
+strata decode timing: 128 windows, avg T 2.12, 2.00 tokens/window, 48.01 ms/window = verify 44.89 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.18) + commit/emit 0.06 + draft 3.06; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301130 tokens = 301103 reused + 27 read in 2905 ms (9.3 tok/s), 256 generated in 6145 ms (41.7 tok/s), drafts accepted 130 of 143, 6 checkpoints
+strata serve: suffix drafts: 5 windows, 15 of 19 drafts accepted
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=2
+strata serve: conversation cache: parked 301387 tokens in 2047.1 ms; parked=3 bytes=6611369048 evictions=5 snapshot_bytes=5462674792 reused_kv_bytes=0
+strata decode timing: 29 windows, avg T 2.45, 2.21 tokens/window, 47.36 ms/window = verify 44.06 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.20) + commit/emit 0.15 + draft 3.14; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 114 tokens = 0 reused + 114 read in 4077 ms (28.0 tok/s), 64 generated in 1373 ms (46.6 tok/s), drafts accepted 36 of 42, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 4 of 5 drafts accepted
+strata serve: conversation cache: parked 178 tokens in 61.2 ms; parked=3 bytes=1389789688 evictions=5 snapshot_bytes=241095432 reused_kv_bytes=0
+strata serve: conversation cache: restored 301125 tokens (checkpoint) in 1473.2 ms; parked=3 bytes=5990186848
+strata decode timing: 75 windows, avg T 1.72, 1.71 tokens/window, 43.12 ms/window = verify 40.52 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.12) + commit/emit 0.03 + draft 2.57; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301147 tokens = 301125 reused + 22 read in 1971 ms (11.2 tok/s), 128 generated in 3234 ms (39.6 tok/s), drafts accepted 53 of 54, 6 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 1 drafts accepted
+
+===== engine start 3: next8-pw-on (next8); two warm-up requests, then the 9 measured ones =====
+engine args: <strata-0.1.41-pw-sm60.exe> --serve --pack <swift-iq3_xxs> --native <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --ple-gguf <Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf> --expert-profile <expert-profile.bin> --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.85 --mtp <rt> --max-context 1048576 --kv int8 --layer-split 12,24,36 --mtp-window 8192 --pipeline-windows 2 --conversation-cache-mib 16384 --conversation-cache-slots 3 --rope-scaling yarn --rope-scale 4
+strata generate: layer split across 4 GPUs: CUDA0, then CUDA1,2,3 (split 12,24,36)
+strata generate: PCIe probe: 3.3 GB/s host->device (best of 3.3 3.3 3.3 3.3) -> pcie_frac 0.09 (default 0.55)
+strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144
+strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)
+strata q8 sm60: packed output head (248320 x 2560, 644 MiB more VRAM)
+strata mtp: 9 of 9 projections on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1, 68.7 MiB more VRAM)
+strata mtp: draft layer loaded, 2047 MiB of VRAM (experts 675, dense 111), files read in 0.52 s (1508 MiB/s)
+strata generate: GPU 0: NVIDIA PH402 SKU 200, compute capability 6.0
+strata generate: expert arena read through the file cache (31 of 32 probe reads from the file cache; 165.4 GiB available, 74.3 GiB of files)
+strata generate: loaded 39.97 GiB at 7.57 GiB/s
+strata generate: --pipeline-windows 2: 216 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 20.43 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 6144 slots
+strata generate: session is up (engine 0.1.41)
+strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata verify: window up to 6 tokens, 75.5 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: layer split: layers 0-11 (CUDA0), 12-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3), one hand-off per window
+strata mtp: draft head over 106299 tokens (275.7 MiB)
+strata mtp: the draft head on the Pascal Q8_0 GEMV (STRATA_Q8_SM60=1)
+strata serve: --pipeline-windows 2: two verifiers per stage, 4 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: 8325 MiB of VRAM free with everything loaded
+strata pipeline: 8 windows in 287 ms (35.87 ms/window): 6 speculative, 3 on the path, 3 rolled back, 1 below the gate (theta 0.20)
+strata pipeline classes: fresh 5 windows 41.82 ms 2.00 tok | speculative 3 windows 25.79 ms 2.33 tok | forced-chain disagreements 1, chain late 2
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/1 0.4:1/2 0.5:1/2 0.8:2/2
+strata decode timing: 8 windows, avg T 2.38, 2.00 tokens/window, 56.55 ms/window = verify 35.87 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.40) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 59 tokens = 0 reused + 59 read in 942 ms (62.6 tok/s), 16 generated in 452 ms (35.4 tok/s), drafts accepted 9 of 11, 1 checkpoints
+strata serve: conversation cache: parked 75 tokens in 61.9 ms; parked=1 bytes=239505448 evictions=0 snapshot_bytes=239505448 reused_kv_bytes=0
+strata prefill: 1154 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata pipeline: 6 windows in 285 ms (47.58 ms/window): 3 speculative, 2 on the path, 1 rolled back, 2 below the gate (theta 0.20)
+strata pipeline classes: fresh 4 windows 52.62 ms 2.50 tok | speculative 2 windows 37.32 ms 4.50 tok | forced-chain disagreements 2, chain late 1
+strata pipeline calibration (p_on decile: on/scored): 0.0:1/2 0.7:1/1 0.8:1/1 0.9:0/1
+strata decode timing: 6 windows, avg T 3.67, 2.67 tokens/window, 47.59 ms/window = verify 47.58 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.27) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1159 tokens = 0 reused + 1159 read in 5034 ms (230.3 tok/s), 16 generated in 286 ms (56.0 tok/s), drafts accepted 13 of 16, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 2 of 2 drafts accepted
+strata serve: conversation cache: parked 1177 tokens in 73.7 ms; parked=2 bytes=495897584 evictions=0 snapshot_bytes=256392136 reused_kv_bytes=0
+strata pipeline: 169 windows in 5003 ms (29.60 ms/window): 153 speculative, 85 on the path, 68 rolled back, 15 below the gate (theta 0.20)
+strata pipeline classes: fresh 84 windows 37.86 ms 1.39 tok | speculative 85 windows 21.44 ms 1.66 tok | forced-chain disagreements 2, chain late 41
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/2 0.1:4/13 0.2:4/18 0.3:11/23 0.4:15/31 0.5:11/20 0.6:9/15 0.7:12/17 0.8:10/15 0.9:14/14
+strata decode timing: 169 windows, avg T 1.59, 1.51 tokens/window, 29.60 ms/window = verify 29.60 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.32) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 90 tokens = 0 reused + 90 read in 1338 ms (67.3 tok/s), 256 generated in 5003 ms (51.2 tok/s), drafts accepted 89 of 99, 1 checkpoints
+strata serve: suffix drafts: 2 windows, 7 of 7 drafts accepted
+strata serve: conversation cache: parked 347 tokens in 220.6 ms; parked=3 bytes=739559688 evictions=0 snapshot_bytes=243662104 reused_kv_bytes=0
+strata pipeline: 151 windows in 4998 ms (33.10 ms/window): 145 speculative, 72 on the path, 73 rolled back, 5 below the gate (theta 0.20)
+strata pipeline classes: fresh 79 windows 43.23 ms 1.65 tok | speculative 72 windows 21.98 ms 1.78 tok | forced-chain disagreements 3, chain late 35
+strata pipeline calibration (p_on decile: on/scored): 0.0:1/3 0.1:0/2 0.2:4/22 0.3:9/27 0.4:7/24 0.5:14/18 0.6:9/14 0.7:11/18 0.8:8/9 0.9:11/13
+strata decode timing: 151 windows, avg T 1.91, 1.70 tokens/window, 33.10 ms/window = verify 33.10 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.33) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 112 tokens = 0 reused + 112 read in 1658 ms (67.6 tok/s), 256 generated in 4998 ms (51.2 tok/s), drafts accepted 107 of 137, 1 checkpoints
+strata serve: suffix drafts: 4 windows, 5 of 20 drafts accepted
+strata serve: conversation cache: parked 369 tokens in 62.9 ms; parked=3 bytes=744083384 evictions=1 snapshot_bytes=244029144 reused_kv_bytes=0
+strata pipeline: 255 windows in 8346 ms (32.73 ms/window): 236 speculative, 146 on the path, 90 rolled back, 18 below the gate (theta 0.20)
+strata pipeline classes: fresh 109 windows 43.83 ms 1.87 tok | speculative 146 windows 24.44 ms 2.11 tok | forced-chain disagreements 8, chain late 73
+strata pipeline calibration (p_on decile: on/scored): 0.0:4/11 0.1:0/7 0.2:4/24 0.3:11/26 0.4:12/30 0.5:17/27 0.6:21/29 0.7:20/32 0.8:21/24 0.9:40/44
+strata decode timing: 255 windows, avg T 2.12, 2.01 tokens/window, 32.73 ms/window = verify 32.73 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.34) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 87 tokens = 0 reused + 87 read in 1374 ms (63.3 tok/s), 512 generated in 8346 ms (61.3 tok/s), drafts accepted 257 of 286, 1 checkpoints
+strata serve: suffix drafts: 3 windows, 9 of 13 drafts accepted
+strata serve: conversation cache: parked 598 tokens in 64.8 ms; parked=3 bytes=735203848 evictions=2 snapshot_bytes=247512600 reused_kv_bytes=0
+strata prefill: 1153 tokens in 768-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata pipeline: 33 windows in 1193 ms (36.16 ms/window): 31 speculative, 17 on the path, 14 rolled back, 1 below the gate (theta 0.20)
+strata pipeline classes: fresh 16 windows 47.96 ms 1.94 tok | speculative 17 windows 24.62 ms 1.94 tok | forced-chain disagreements 1, chain late 9
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/1 0.2:0/2 0.3:1/2 0.4:2/7 0.5:1/2 0.6:0/1 0.7:1/5 0.8:3/3 0.9:9/9
+strata decode timing: 33 windows, avg T 2.33, 1.94 tokens/window, 36.16 ms/window = verify 36.16 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.34) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 1158 tokens = 0 reused + 1158 read in 5030 ms (230.2 tok/s), 64 generated in 1193 ms (53.6 tok/s), drafts accepted 31 of 44, 1 checkpoints
+strata serve: suffix drafts: 1 windows, 1 of 4 drafts accepted
+strata serve: conversation cache: parked 1221 tokens in 69.8 ms; parked=3 bytes=748606184 evictions=3 snapshot_bytes=257064440 reused_kv_bytes=0
+strata prefill: 34830 tokens in 3584-token chunks over 4 stages (--prefill-pipe 768: b/a)
+strata pipeline: 36 windows in 1293 ms (35.92 ms/window): 33 speculative, 13 on the path, 20 rolled back, 2 below the gate (theta 0.20)
+strata pipeline classes: fresh 23 windows 42.55 ms 1.70 tok | speculative 13 windows 24.17 ms 1.92 tok | forced-chain disagreements 0, chain late 7
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/1 0.1:0/1 0.2:1/4 0.3:0/7 0.4:2/6 0.5:2/4 0.6:0/2 0.7:4/5 0.8:1/1 0.9:3/4
+strata decode timing: 36 windows, avg T 1.83, 1.78 tokens/window, 35.92 ms/window = verify 35.92 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.36) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 34835 tokens = 0 reused + 34835 read in 51144 ms (681.1 tok/s), 64 generated in 1293 ms (49.5 tok/s), drafts accepted 28 of 30, 2 checkpoints
+strata serve: conversation cache: parked 34898 tokens in 313.8 ms; parked=3 bytes=1396206856 evictions=4 snapshot_bytes=891629816 reused_kv_bytes=0
+strata pipeline: 32 windows in 1192 ms (37.24 ms/window): 29 speculative, 14 on the path, 15 rolled back, 2 below the gate (theta 0.20)
+strata pipeline classes: fresh 18 windows 49.53 ms 2.17 tok | speculative 14 windows 21.41 ms 1.79 tok | forced-chain disagreements 0, chain late 9
+strata pipeline calibration (p_on decile: on/scored): 0.1:0/2 0.2:0/2 0.3:2/6 0.4:1/6 0.5:0/1 0.6:4/4 0.7:2/3 0.8:2/3 0.9:4/4
+strata decode timing: 32 windows, avg T 2.06, 2.00 tokens/window, 37.24 ms/window = verify 37.24 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.41) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301108 tokens = 0 reused + 301108 read in 371265 ms (811.0 tok/s), 64 generated in 1192 ms (53.7 tok/s), drafts accepted 32 of 34, 6 checkpoints
+strata serve: conversation cache: parked 301171 tokens in 2182.8 ms; parked=3 bytes=6607182728 evictions=5 snapshot_bytes=5458488472 reused_kv_bytes=0
+strata pipeline: 137 windows in 5086 ms (37.12 ms/window): 124 speculative, 66 on the path, 58 rolled back, 12 below the gate (theta 0.20)
+strata pipeline classes: fresh 71 windows 48.81 ms 1.90 tok | speculative 66 windows 24.54 ms 1.86 tok | forced-chain disagreements 3, chain late 34
+strata pipeline calibration (p_on decile: on/scored): 0.0:1/3 0.1:2/9 0.2:2/10 0.3:5/15 0.4:7/18 0.5:6/16 0.6:4/10 0.7:12/19 0.8:12/16 0.9:18/20
+strata decode timing: 137 windows, avg T 2.04, 1.87 tokens/window, 37.12 ms/window = verify 37.12 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.33) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301130 tokens = 301103 reused + 27 read in 2710 ms (10.0 tok/s), 256 generated in 5086 ms (50.3 tok/s), drafts accepted 121 of 142, 6 checkpoints
+strata serve: suffix drafts: 2 windows, 6 of 10 drafts accepted
+strata serve: conversation cache: dropped 1 superseded copy of this conversation; parked=2
+strata serve: conversation cache: parked 301387 tokens in 2122.4 ms; parked=3 bytes=6611369048 evictions=5 snapshot_bytes=5462674792 reused_kv_bytes=0
+strata pipeline: 34 windows in 1160 ms (34.13 ms/window): 32 speculative, 19 on the path, 13 rolled back, 1 below the gate (theta 0.20)
+strata pipeline classes: fresh 15 windows 52.20 ms 2.47 tok | speculative 19 windows 19.84 ms 1.47 tok | forced-chain disagreements 1, chain late 10
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/1 0.2:1/1 0.3:1/4 0.4:1/7 0.5:1/2 0.6:2/3 0.7:4/4 0.8:6/7 0.9:3/4
+strata decode timing: 34 windows, avg T 2.09, 1.88 tokens/window, 34.13 ms/window = verify 34.13 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.35) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 114 tokens = 0 reused + 114 read in 3910 ms (29.2 tok/s), 64 generated in 1160 ms (55.2 tok/s), drafts accepted 31 of 37, 1 checkpoints
+strata serve: conversation cache: parked 178 tokens in 62.3 ms; parked=3 bytes=1389789688 evictions=5 snapshot_bytes=241095432 reused_kv_bytes=0
+strata serve: conversation cache: restored 301125 tokens (checkpoint) in 1482.8 ms; parked=3 bytes=5990186848
+strata pipeline: 83 windows in 2766 ms (33.33 ms/window): 75 speculative, 44 on the path, 31 rolled back, 7 below the gate (theta 0.20)
+strata pipeline classes: fresh 39 windows 43.90 ms 1.56 tok | speculative 44 windows 23.89 ms 1.52 tok | forced-chain disagreements 4, chain late 20
+strata pipeline calibration (p_on decile: on/scored): 0.0:0/5 0.1:2/2 0.2:0/6 0.3:6/13 0.4:2/10 0.5:5/8 0.6:7/10 0.7:8/11 0.8:4/4 0.9:13/13
+strata decode timing: 83 windows, avg T 1.72, 1.54 tokens/window, 33.33 ms/window = verify 33.33 (GPU-reach wait 0.00 + per-layer host 0.00 [plan 0.00 actq 0.00 jobs 0.00 CPU 0.00] + stage 0.23) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.00 (0.00 entries), VRAM hits 0.00, PCIe 0.00
+strata serve: prompt 301147 tokens = 301125 reused + 22 read in 1974 ms (11.1 tok/s), 128 generated in 2766 ms (46.3 tok/s), drafts accepted 45 of 60, 6 checkpoints
+strata serve: suffix drafts: 2 windows, 3 of 4 drafts accepted
