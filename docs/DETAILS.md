@@ -233,7 +233,7 @@ reads; `STRATA_IO_STATS=1` (or prefetch on) adds the page-cache hit / miss split
 Measured (interleaved A/B, 10 pairs, 200-token greedy medians, page cache dropped before each run, memory limit by cgroup):
 
 | box, lane | default (fill) | `STRATA_IO_PF_STAGE=1` |
-|---|---|---|
+| --- | --- | --- |
 | RTX 3060, 32 GB, IQ3_XXS | -3.4% | **+25.7%** |
 | RTX 3060, 16 GB, IQ3_XXS | -1.8% | -32.6% |
 | Radeon 780M iGPU, 16 GB, Q2_0 (adaptive tier off) | -0.7% (story +3.8%, code +4.1%) | -19% |
@@ -336,11 +336,11 @@ card gains depends on its PCIe link (the experts stream over it), so they are st
 | GPU | Model | 1K | 4K | 32K | 64K | 128K | 262K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RTX 5060 Ti 16GB | Q2_0 | ~341 / ~80 | ~472 / ~87 | ~501 / ~81 | ~492 / ~72 | ~476 / ~62 | ~435 / ~53 |
-|  | IQ2_XS | ~291 / ~80 | ~406 / ~77 | ~434 / ~63 | ~426 / ~62 | ~413 / ~51 | ~383 / ~47 |
-|  | IQ3_XXS | ~249 / ~66 | ~359 / ~65 | ~381 / ~56 | ~374 / ~54 | ~363 / ~45 | - |
+| | IQ2_XS | ~291 / ~80 | ~406 / ~77 | ~434 / ~63 | ~426 / ~62 | ~413 / ~51 | ~383 / ~47 |
+| | IQ3_XXS | ~249 / ~66 | ~359 / ~65 | ~381 / ~56 | ~374 / ~54 | ~363 / ~45 | - |
 | RTX 3090 24GB | Q2_0 | ~355 / ~128 | ~491 / ~140 | ~521 / ~130 | ~512 / ~115 | ~495 / ~100 | ~453 / ~85 |
-|  | IQ2_XS | ~303 / ~131 | ~422 / ~128 | ~451 / ~103 | ~444 / ~102 | ~430 / ~85 | ~398 / ~78 |
-|  | IQ3_XXS | ~260 / ~106 | ~374 / ~103 | ~396 / ~89 | ~390 / ~85 | ~378 / ~71 | - |
+| | IQ2_XS | ~303 / ~131 | ~422 / ~128 | ~451 / ~103 | ~444 / ~102 | ~430 / ~85 | ~398 / ~78 |
+| | IQ3_XXS | ~260 / ~106 | ~374 / ~103 | ~396 / ~89 | ~390 / ~85 | ~378 / ~71 | - |
 
 More VRAM matters more than a faster GPU: every extra GB holds ~700 more experts, and every expert on the GPU is one the
 CPU does not have to compute. A 3090's 24 GB takes most of the CPU work away. (Since 0.1.14 the expert profile ranks
@@ -375,7 +375,7 @@ the shipped ranking mapped onto the kept experts through the release's `rco-allo
 reads hit the GPU on a 12 GB card). Images work; the experimental speed projection loads and runs on it (it was made
 for the full model).
 
-```
+```bat
 START-HERE.bat --setup --family coder
 ```
 
@@ -393,7 +393,7 @@ Our small check (8 reasoning questions, default thinking, IQ2_XS): both models g
 output tokens in 28 s, the original **2,682** in 46 s - most of the difference from one question the original
 thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
 
-```
+```bat
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
@@ -446,6 +446,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
+
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
@@ -458,7 +459,7 @@ app. It has three tabs:
 **Every time after that**, `START-HERE.bat` just starts the model (30-90 s to load 34-43 GB into RAM). Nothing is
 downloaded again. Closing the window stops the model.
 
-```
+```bat
 START-HERE.bat --setup                          install another model, or change context / images
 SETUP.bat                                       the same (double-click it)
 START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
@@ -503,8 +504,8 @@ For the server, add `"--pool-tasks", "192"` to the existing `args` list in its c
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
 throttles such contexts, and the model's ~40 GB expert load then crawls at **~0.05 GiB/s (13-14 minutes)**
-instead of **~1.4-1.5 GiB/s (~35 seconds)** - a 24x slower start. Measured on an RTX 5070 Ti + Ryzen 7 9800X3D
-+ NVMe, same binary, same args, same cache state:
+instead of **~1.4-1.5 GiB/s (~35 seconds)** - a 24x slower start. Measured on an RTX 5070 Ti + Ryzen 7 9800X3D +
+NVMe, same binary, same args, same cache state:
 
 | How the serve starts | Expert load |
 | --- | ---: |
@@ -525,7 +526,7 @@ slowly, the engine prints a hint under its `loaded ... GiB at ...` line naming t
 
 ### Chat in the terminal (optional)
 
-```
+```bat
 .venv\Scripts\python chat.py
 ```
 
@@ -1455,7 +1456,7 @@ encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
 
-```
+```text
 you> /image C:\Users\me\Pictures\receipt.jpg
 (picture attached: receipt.jpg - now type your question)
 you> What is the total on this receipt?
@@ -1542,7 +1543,7 @@ differently - and answer differently - from one run to the next (a resumed conve
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
 | machine | 512 tokens | 1,000 tokens | 2K / 4K / 16K |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | RTX 5070, Ryzen 5 7600, Q2_0 | 1,376 / 1,019 (-26%) | 1,788 / 1,392 (-22%) | unchanged |
 | RTX 3060, Core Ultra 7 265, IQ3_XXS | 1,620 / 1,159 (-28%) | 2,196 / 1,770 (-19%) | unchanged |
 | Tesla P100, Xeon E5-2690 v4, IQ3_XXS | 4,805 / 3,126 (-35%) | 6,821 / 5,085 (-25%) | unchanged |
@@ -1552,7 +1553,7 @@ Up to 3,072 tokens and with mapped experts, fresh prompts read after an 8K prewa
 expert here: none was page-locked):
 
 | machine | 512 tokens | 1,000 tokens | 2,000 tokens | 3,000 tokens |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | RTX 5070 Ti (PCIe 3.0 x8), Swift 1.5 IQ3_XXS (huihui-ai's build) | 3,322 / 1,706 (-49%) | 3,990 / 2,357 (-41%) | 5,413 / 3,354 (-38%) | 5,525 / 4,309 (-22%) |
 | RTX 3060 + RTX 5070 Ti (layers 0-11 / 12-47, both PCIe 3.0 x8), IQ3_S | 3,452 / 2,037 (-41%) | 4,506 / 2,680 (-41%) | 6,376 / 3,869 (-39%) | 6,733 / 5,138 (-24%) |
 
@@ -1783,7 +1784,7 @@ so measure it on your own prompts; the Monitor marks every request ESP or stock.
 no), or pass `--experimental-speed-projection on` (`off`, or a path to another vector GGUF). Only for the original
 Qwen3.8-Flash-Next, not Swift 1.5. It writes these engine flags (llama.cpp's) into `strata-<model>.json`:
 
-```
+```text
 --control-vector-scaled <Strata>\data\experimental-speed-projection\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0
 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer
 ```
@@ -1836,7 +1837,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 
 ## How it works
 
-<p align="center"><img src="paper/tiers.svg" width="760" alt="memory tiers"></p>
+![memory tiers](paper/tiers.svg)
 
 - **GPU (VRAM):** attention and DeltaNet mixers, the gated-residual weights, routers, shared experts, output head, the MTP
   draft layer, the KV cache (from 64K: only its most-read part, the rest streams from RAM), and an **expert cache** that fills the rest of VRAM with the most-used experts (it adapts to
