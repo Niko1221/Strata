@@ -104,6 +104,47 @@ def listen_problem(host: str, port: int, e: OSError) -> str:
     return f"cannot listen on {host}:{port}: {what} [{code}]. {hint}"
 
 
+def port_holders(port: int) -> list[tuple[int, str]]:
+    """The processes listening on `port` as (pid, command line), from lsof and ps; [] where those are missing (Windows)."""
+    try:
+        pids = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True,
+                              timeout=10).stdout.split()
+        return [(int(p), subprocess.run(["ps", "-o", "command=", "-p", p], capture_output=True, text=True,
+                                        timeout=10).stdout.strip()) for p in dict.fromkeys(pids)]
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return []
+
+
+def is_strata_server(command: str) -> bool:
+    """A Strata server's command line (only such a process is ever stopped to free a port)."""
+    return "serve/server.py" in command.replace("\\", "/")
+
+
+def stop_server(pid: int, port: int, wait_s: float = 30.0) -> bool:
+    """Stop a Strata server so its port is free: SIGCONT first (one suspended with Ctrl+Z cannot act on anything),
+    then SIGTERM, which ends its engine too; after wait_s, SIGKILL for it and its children.  True once the port is free."""
+    def free():
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return False
+        except OSError:
+            return True
+    kids = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    for sig in (signal.SIGCONT, signal.SIGTERM):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, sig)
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if free() and subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode != 0:
+            return True
+        time.sleep(0.5)
+    for p in [pid, *map(int, kids)]:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(p, signal.SIGKILL)
+    time.sleep(1)
+    return free()
+
+
 def combined_embeddings_path(vision_dir: Path, nbytes: int) -> Path:
     """#874: where one request's combined image-embeddings file goes.  Every request with images rewrites it (it is
     deleted after the request), which on a disk is steady heavy writing: on Linux it goes to /dev/shm when that has
@@ -6044,6 +6085,8 @@ def main() -> int:
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
     ap.add_argument("--port", type=int, default=8095)
+    ap.add_argument("--replace", action="store_true",
+                    help="if another Strata server holds the port, stop it and start this one (without it: asked in a terminal)")
     ap.add_argument("--gpu", help="the GPU to run on, as nvidia-smi numbers them, or several for a layer split "
                                   "(\"0,2\"; also \"gpu\" in the config)")
     ap.add_argument("--tokenizer", default=str(ROOT / "pack/full/tokenizer"),
@@ -6089,7 +6132,28 @@ def main() -> int:
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
-        ap.error(listen_problem(a.host, a.port, e))
+        # another Strata server on it (a model started earlier): offer to stop that one; anything else is left alone
+        holders = port_holders(a.port) if "already in use" in listen_problem(a.host, a.port, e) else []
+        ours = [(pid, cmd) for pid, cmd in holders if is_strata_server(cmd)]
+        if not ours or len(ours) != len(holders):
+            others = "; ".join(f"pid {pid}: {cmd[:120]}" for pid, cmd in holders if not is_strata_server(cmd))
+            ap.error(listen_problem(a.host, a.port, e) + (f" (held by {others})" if others else ""))
+        pid, cmd = ours[0]
+        config = cmd.split("--config", 1)[1].split()[0].strip('"') if "--config" in cmd else "?"
+        print(f"[strata] port {a.port} is held by another Strata server: pid {pid}, {Path(config).name}", flush=True)
+        if not a.replace:
+            if not (sys.stdin.isatty() and sys.stderr.isatty()):
+                ap.error(listen_problem(a.host, a.port, e) + " (--replace stops that Strata server and starts this one)")
+            try:
+                answer = input("Stop it and start this one? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer not in ("y", "yes"):
+                ap.error(f"port {a.port} is still in use; nothing was stopped")
+        print(f"[strata] stopping pid {pid} ...", flush=True)
+        if not stop_server(pid, a.port):
+            ap.error(f"could not free port {a.port} (pid {pid} did not stop)")
+        print(f"[strata] port {a.port} is free", flush=True)
     if cfg.get("tokenizer"):
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()
