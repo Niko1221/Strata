@@ -5252,7 +5252,12 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
                     const int64_t flat = row * K + k0;            // a multiple of 32
                     const int64_t ibs = flat >> 8;
                     const int o32 = (int) (flat & 255), o = o32 + 8 * sub;
-                    const int tid = ty == 42 ? ((o >> 6) * 8 + ((o & 63) >> 3)) : (sub * 8 + (o32 >> 5));
+                    // the decoder thread that writes values [o, o + 8) of the superblock: the IQ2/IQ3/IQ4_NL/IQ1_M and
+                    // Q2_0 decoders write [8 tid, 8 tid + 8) (coalesced runs); IQ4_XS and the rest keep the
+                    // (sub-run, 32-block) split
+                    const bool run8 = ty == 16 || ty == 17 || ty == 18 || ty == 20 || ty == 21 || ty == 22 ||
+                                      ty == 29 || ty == 42;
+                    const int tid = run8 ? (o >> 3) : (sub * 8 + (o32 >> 5));
                     dq_dispatch<sycl::half>(ty, base, ibs, pb + r * LDB - o32, tid);
                 }
                 it.barrier(sycl::access::fence_space::local_space);
