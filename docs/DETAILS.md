@@ -1400,7 +1400,9 @@ layer split every stage has the pool and one stage at a time takes it for a chun
 When on, the CPU's rows are computed in the CPU's own activation format, so the output changes in the last bits (first
 token KL against off: mean 0.006, max 0.026 nats over 22 prompts; about half of the 32-token greedy answers on 500 and
 1,000-token prompts are identical, the rest part at a near tie after about 23 tokens). Chunks of 3,072 tokens and more
-read the same either way.
+read the same either way. `auto` picks the share from wall-clock timings, so the same request can be split
+differently - and answer differently - from one run to the next (a resumed conversation's re-read differed in 31 of
+1,536 teacher-forced argmax tokens, #1684); a fixed share repeats, `0` gives the exact bytes of a run without it.
 
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
