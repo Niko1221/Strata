@@ -287,6 +287,11 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  # device-event timing of the BF16/F32 MMVF paths, with bitwise/guard/oracle checks
+  add_executable(sycl_bf16_event_bench ${CMAKE_CURRENT_SOURCE_DIR}/probe/bf16_event_bench.cpp)
+  target_link_libraries(sycl_bf16_event_bench PRIVATE strata_kernels)
+  add_test(NAME sycl_bf16_event_default COMMAND sycl_bf16_event_bench --quick --rows 0)
+  add_test(NAME sycl_bf16_event_rows COMMAND sycl_bf16_event_bench --quick --rows 1)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
