@@ -182,3 +182,42 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+/* the request-detail row the chat meta's chevron opens: one muted line, the same rhythm as the meta */
+.st-msg__detail { font-size: 12px; opacity: .7; padding: 0 12px 6px; }
+[data-msg-detail] .st-icon { transition: transform .15s ease; }
+[data-msg-detail].open .st-icon { transform: rotate(180deg); }
+
+/* compact: the turns a fold marker took out of the context stay on the page, muted */
+.st-msg--folded { opacity: .55; }
+.st-compact { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 2px 4px; }
+.st-compact details { flex: 1 1 auto; min-width: 0; }
+
+/* the "Compacting..." placeholder row in the message flow */
+.st-msg--compacting { padding: 6px 12px; }
+.st-compacting { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; opacity: .8; }
+.st-compacting .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: st-pulse 1.2s ease-in-out infinite; }
+@keyframes st-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+
+/* the context-usage pill in the composer bar: fill bar + count, warns at 70%, hot at 90% */
+.st-composer__bar .st-ctx { display: inline-flex; align-items: center; gap: 8px; padding: 2px 10px; border-radius: 999px;
+          border: 1px solid #8884; background: transparent; cursor: default; font-size: 12px; }
+.st-ctx__bar { width: 28px; height: 5px; border-radius: 3px; background: #8883; overflow: hidden; }
+.st-ctx__fill { display: block; height: 100%; background: currentColor; opacity: .8; width: 0; }
+.st-ctx.warn { color: var(--st-warn, #c90); }
+.st-ctx.hot { color: var(--st-error, #c33); }
+.st-compact__stats { font-size: 12px; opacity: .65; margin-top: 6px; }
+
+/* a fresh fold marker flashes once so it is not missed */
+.st-compact--new .st-compact { animation: st-flash 2.4s ease-out; }
+@keyframes st-flash { 0% { background: #8882; border-radius: 8px; } 100% { background: transparent; } }
+
+/* a long user paste is clamped to ~10 lines with a fade; Show all expands it in place */
+.st-msg--user .st-bubble--clamped { max-height: 21em; overflow: hidden;
+  mask-image: linear-gradient(#000 82%, transparent); -webkit-mask-image: linear-gradient(#000 82%, transparent); }
+.st-msg__more { margin: 6px 0 0; padding: 2px 10px; font-size: 12px; }
+
+
+
+/* long unbroken strings (URLs, paths, hashes) must wrap inside bubbles and summary bodies */
+.st-bubble, .st-collapse__body, .st-msg__detail { overflow-wrap: anywhere; word-break: break-word; }
