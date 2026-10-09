@@ -17,7 +17,7 @@ Fresh isolated performance uses six independent rotated process rounds, CUDA-eve
 
 T=1/2/3/4 were exercised, but T=1 retains the native dispatch. Differences measured there are process noise, not a specialization benefit. The three affected shapes show an isolated T=4 NW3 increment; the negative control is compatible with zero. Historical tables below refer to earlier implementations and must not be combined with these intervals.
 
-Remaining review gates: a cross-binary default check with identical actual cache residency; HIP build/fallback qualification; register/dispatch review; current-head layer and end-to-end measurements. A nominal `--expert-cache` value is a maximum-expert-size byte budget, not a physical slot count. A VRAM-trimmed cross-binary run differed by one initial resident expert and is excluded from default numerical attribution. Both flags remain opt-in and the PR remains Draft.
+Cross-binary default parity passed after capping the nominal cache budget: both the upstream-based reference diagnostic and converged diagnostic have 6528 actual resident experts, and their complete logits files share SHA256 90282b6de653c5bf9ab26cb40a3f25f8f5a25e8acf8ccd64bab789dc00cc5d23 (short prompt, 128 fixed scored targets, flags disabled). A nominal `--expert-cache` value is a maximum-expert-size byte budget, not a physical slot count. An earlier VRAM-trimmed cross-binary run differed by one initial resident expert and is excluded from default numerical attribution. Remaining review gates: HIP build/fallback qualification; register/dispatch review; current-head layer and end-to-end measurements. Both flags remain opt-in and the PR remains Draft.
 
 ## Archived construction notes (superseded by the latest section)
 
