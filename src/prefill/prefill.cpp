@@ -954,8 +954,8 @@ const MmqPlan& mmq_plan() {
             const int gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42, dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
             // #420: a tile on every GPU for these shapes (gate+up: 1280 rows, down: N rows), else the FP16 path
             if (!mmq::fits(gt, 1280) || !mmq::fits(dt, N)) {
-                // pf_wmma: a format dq_dispatch takes (IQ1_M) rides the MMQ grouping, computed by the WMMA tiles only
-                if (pf_wmma() && lay.native && dt == 42 && strata::kernels::iq_row_bytes(gt, N) > 0) {
+                // pf_wmma: a format dq_dispatch takes (IQ1_M, an IQ4_NL down) rides the MMQ grouping, computed by the WMMA tiles only
+                if (pf_wmma() && lay.native && (dt == 42 || dt == 20) && strata::kernels::iq_row_bytes(gt, N) > 0) {
                     p.layer[(size_t) l] = 1;
                     p.wmma_only[(size_t) l] = 1;
                     p.any = true;
@@ -3260,9 +3260,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 return true;
                             });
                         }
-                        // pf_wmma: this layer's groups on the FP16 tensor-core tiles (single GPU, native pack, Q2_0 down)
+                        // pf_wmma: this layer's groups on the FP16 tensor-core tiles (single GPU, native pack, Q2_0 / IQ4_NL down)
                         const bool wmma_l = use_mmq && pf_wmma() && !fused_l && on_peer.empty() && lay.native &&
-                                            mmq_dt == 42 && strata::kernels::iq_row_bytes(mmq_gt, N) > 0;
+                                            (mmq_dt == 42 || mmq_dt == 20) && strata::kernels::iq_row_bytes(mmq_gt, N) > 0;
                         if (use_mmq && mmq_plan().wmma_only[(size_t) l] && !wmma_l) {
                             err = "prefill: an IQ1_M layer in the MMQ grouping needs the WMMA tiles, which this chunk cannot take";
                             return false;
