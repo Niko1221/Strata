@@ -3900,6 +3900,13 @@ def carry_over(old: dict, cfg: dict) -> list[str]:
             nv["mmproj"] = mm
             kept.append("vision mmproj")
     kept += carry_profile_args(old, cfg)
+    # A safety limit survives a rerun; an explicit --vram-cap 1 writes 1.0 and opts out instead.
+    oargs, nargs = old.get("args"), cfg.get("args")
+    if isinstance(oargs, list) and isinstance(nargs, list) and "--vram-frac" not in nargs:
+        frac = last_flag_value(oargs, "--vram-frac")
+        if frac is not None:
+            nargs += ["--vram-frac", frac]
+            kept.append("args --vram-frac")
     return kept
 
 
@@ -3909,6 +3916,22 @@ def flag_value(args: list, flag: str):
         if a == flag:
             return str(args[i + 1])
     return None
+
+
+def last_flag_value(args: list, flag: str):
+    """The last value for a repeated flag, as the engine's option loop resolves it."""
+    for i in range(len(args) - 2, -1, -1):
+        if args[i] == flag:
+            return str(args[i + 1])
+    return None
+
+
+def set_vram_cap(args: list, fraction: float) -> None:
+    """Set a validated setup fraction once (including 1.0 to override an environment cap)."""
+    while "--vram-frac" in args:
+        i = args.index("--vram-frac")
+        del args[i:i + 2]
+    args += ["--vram-frac", str(fraction)]
 
 
 def carry_profile_args(old: dict, cfg: dict) -> list[str]:
@@ -4021,6 +4044,7 @@ def choices_from_config(cfg_path: Path) -> dict:
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
+    cap_frac = last_flag_value(a, "--vram-frac")
     return {"family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
@@ -4028,6 +4052,7 @@ def choices_from_config(cfg_path: Path) -> dict:
             "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
             "layer_split": cfg.get("layer_split"), "cuda": 12 if config_toolkit(cfg) == 12 else None,
+            "vram_cap": float(cap_frac) if cap_frac is not None else None,
             # #493: --vram-reserve-mib given at setup (images write the default 700 themselves)
             "vram_reserve_mib": int(val("--vram-reserve-mib")) if (val("--vram-reserve-mib") or "").isdigit() and (
                 vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
@@ -4280,7 +4305,7 @@ def settings_summary(cfg: dict, port=None) -> str:
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
-    --vram-reserve-mib)."""
+    --vram-reserve-mib, --vram-cap)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
@@ -4295,6 +4320,11 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             args += ["--vram-reserve-mib", str(reserve)]
         write_config(cfg_path, cfg)
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
+    cap = keep.pop("vram_cap", None)
+    if cap is not None:
+        set_vram_cap(cfg["args"], cap)
+        write_config(cfg_path, cfg)
+        ok(f"saved for this model: VRAM cap {cap:g} of total (--vram-frac; 1 = cap off)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
         write_config(cfg_path, cfg)
@@ -4920,6 +4950,10 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
+    ap.add_argument("--vram-cap", type=float, metavar="F",
+                    help="optional fraction of total VRAM the engine may use, 0 < F <= 1 (0.8 = 80%%; default: cap off). "
+                         "Writes --vram-frac into the run config, shrinks auto or fixed expert caches; a larger "
+                         "--vram-reserve-mib still wins. Remembered for this model; 1 turns the cap off (CUDA/HIP)")
     ap.add_argument("--parallel", type=int, metavar="N",
                     help="up to N requests decode together (batch slots, opt-in; default: one at a time, the others "
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
@@ -4934,6 +4968,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.vram_cap is not None and not 0 < a.vram_cap <= 1:
+        ap.error("--vram-cap takes a finite fraction, 0 < F <= 1, e.g. --vram-cap 0.8 (1 = cap off)")
+    if a.backend == "sycl" and a.vram_cap is not None:
+        ap.error("--vram-cap is available on the CUDA/HIP engine, not the separate SYCL engine")
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -4984,6 +5022,8 @@ def main() -> int:
                 a.port = a.port or ch["port"]
                 if a.vram_reserve_mib is None:          # #493: an explicit reserve set up before
                     a.vram_reserve_mib = ch.get("vram_reserve_mib")
+                if a.vram_cap is None:
+                    a.vram_cap = ch.get("vram_cap")
                 if a.cuda is None and ch.get("cuda") == 12:   # the experimental CUDA 12 engine, as before
                     a.cuda = "12"
                 if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
@@ -5007,20 +5047,24 @@ def main() -> int:
             for i, c in enumerate(have, 1):
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
+        if a.vram_cap is not None:                    # tuning must not launch an uncapped engine first
+            cfg = json.loads(pick_cfg.read_text(encoding="utf-8-sig"))
+            set_vram_cap(cfg["args"], a.vram_cap)
+            write_config(pick_cfg, cfg)
         if not calibrate_config(pick_cfg):             # #447: said again where it is not lost above the start
             say()
             warn("this PC is NOT tuned: the tuning failed (the reason is above); the model "
                  + ("keeps" if a.no_start else "starts with") + " the default settings")
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
@@ -5029,7 +5073,7 @@ def main() -> int:
         if pick <= len(have):
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "vram_cap": a.vram_cap, "open_browser": a.browser})
 
     # ---- 1. the PC
     step(1, "checking your PC")
@@ -5841,6 +5885,9 @@ def main() -> int:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
+    if a.vram_cap is not None:
+        set_vram_cap(args, a.vram_cap)
+        ok(f"VRAM cap: {a.vram_cap:g} of total (--vram-frac; 1 = cap off; the larger reserve wins)")
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.

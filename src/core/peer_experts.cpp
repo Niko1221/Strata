@@ -1,5 +1,6 @@
 // src/core/peer_experts.cpp - see include/strata/core/peer_experts.hpp.
 #include "strata/core/peer_experts.hpp"
+#include "strata/program/vram_cap.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -80,7 +81,7 @@ void PeerExperts::close() {
 
 bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
                        ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
-                       std::string& err) {
+                       std::string& err, double vram_frac, uint64_t cap_margin_bytes) {
     close();
     int count = 0;
     if (!ck(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err)) return false;
@@ -135,8 +136,12 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     // the pairs the primary does not hold, in rank order, as many as fit
     size_t free_b = 0, total_b = 0;
     if (!ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) { close(); return false; }
-    const uint64_t reserve = (uint64_t) std::max(reserve_mib, 128) << 20;
-    const uint64_t budget = free_b > reserve ? free_b - reserve : 0;
+    const int64_t effective_reserve = strata::program::vram_cap::reserve_mib(std::max(reserve_mib, 128), (uint64_t) total_b, vram_frac);
+    const uint64_t late = vram_frac < 1.0 ? (600ull << 20) + cap_margin_bytes : 0;   // the prompt path's peer buffers load later
+    const uint64_t budget = strata::program::vram_cap::cache_room(free_b, effective_reserve, late);
+    if (vram_frac < 1.0)
+        std::fprintf(stderr, "strata generate: peer CUDA%d: --vram-frac %.6g, reserve %lld MiB (+%llu MiB for late buffers/WDDM headroom)\n",
+                     device, vram_frac, (long long) effective_reserve, (unsigned long long) (late >> 20));
     std::vector<std::pair<int32_t, int32_t>> pick;
     std::vector<int64_t> sizes;
     uint64_t used = 0;
