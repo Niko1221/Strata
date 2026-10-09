@@ -48,3 +48,7 @@ T=1/2/3/4 were tested, with same-input bit comparisons passing in all runs. K=61
 - Keep default disabled until review and architecture/shape qualification complete.
 
 Fresh isolated harness check (October 9): expanded synthetic parity passes with 980,113 exact-layout outputs, zero bit differences and zero non-finite outputs. The non-exact control finds 290,059 differences. The current-head native_mmvq and verify_kernels translation units were compiled and linked to the existing lab support library; this is not a full clean engine build. Both opt-in flags were enabled. Test GPU: RTX 2080 Ti, driver 616.92.
+
+### October 9 reconciliation prototype
+
+A local patch against #1418 head 8cae814e6e819736e47c95f3b5e8b056c7528c0f parameterizes the existing B6 row-reuse kernel with NW (default unchanged) and adds only the restricted SM75 IQ4_XS four-row NW3 dispatch. This avoids retaining a second generic row-reuse framework. CUDA compilation/linking passed; direct native-vs-prototype comparisons across four IQ4 shapes and T=1/2/3/4 are bit-identical with NW3 both off and on (16 cases each, no nonfinite outputs). Thirty repetitions only establish a smoke check; no new performance interval is claimed. The prototype is not yet the published branch and has not had a complete #1418 engine/HIP build. Published performance intervals above refer to this PR's current implementation. Official code convergence must state its #1418 dependency and be requalified before review.
