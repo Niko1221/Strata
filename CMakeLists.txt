@@ -896,6 +896,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(route_window_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME route_window_parity COMMAND route_window_parity)
 
+  # STRATA_ROUTE_RESIDENT's swap: the warp-per-token kernel against a scalar reference of the same semantics,
+  # bitwise on the ids, the weights and the four counters (GPU, synthetic, no model)
+  add_executable(route_resident_parity src/kernels/route_resident_parity.cu)
+  target_include_directories(route_resident_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(route_resident_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME route_resident_parity COMMAND route_resident_parity)
+  set_tests_properties(route_resident_parity PROPERTIES TIMEOUT 120)
+
   add_executable(router_top10_parity src/kernels/router_top10_parity.cpp)
   target_include_directories(router_top10_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(router_top10_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
