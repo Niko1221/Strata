@@ -84,8 +84,11 @@ If setup stops, it says what is missing and the command that fixes it.
   |---|---:|---:|---:|
   | GPT-OSS 120B, 900-word answer | 35 | 46-53 | 93-100 |
   | GPT-OSS, a short answer right after it | 33 | 49 | 93 |
-  | Q2_0, 900-word answer | | | 60-67 |
+  | Q2_0 (MTP on) | 24-27 (233-353-token answers\*) | not measured | 60-67 (900-word answers) |
   | GPU clock / busy | 364-807 MHz / 23-37% | 880-1,150 MHz / 39-55% | 1,200-1,620 MHz / 72-100% |
+
+  \* From [IQ3_S compared with Q2_0](#iq3_s-compared-with-q2_0): the same MTP settings and thinking off, but shorter
+  answers, so not exactly the 900-word test.
 
   The cause was not isolated. Both adapters were negotiated at the same 94 W over the USB-C cable used (20 V, 4.69 A: a
   140 W USB-C adapter gives 140 W only over a 240 W cable or MagSafe 3), the slow runs drew only about 46 W in all, and with
