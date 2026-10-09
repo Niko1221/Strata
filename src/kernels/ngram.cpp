@@ -175,6 +175,8 @@ const PleFormatInfo kPleFormats[] = {
     // BF16 (#586): the checkpoint's own table at full precision, 320-byte rows; self-describing, so no scale and no
     // metadata to trust (tools/ple_fp8_pack.py writes the FP8 form of the same table)
     {PleFormat::BF16, "BF16", "BF16", PLE_ROW_BYTES_BF16, false, dequant_bf16},
+    // MXFP4 (llama-quantize's MXFP4_MOE files): 85-byte rows of 17-byte blocks (one E8M0 exponent + 16 nibble bytes)
+    {PleFormat::MXFP4, "MXFP4", "MXFP4", PLE_ROW_BYTES_MXFP4, false, dequant_blocks<strata::dequantize_mxfp4, 17>},
 };
 constexpr int kPleFormatCount = (int) (sizeof kPleFormats / sizeof kPleFormats[0]);
 }  // namespace
