@@ -140,6 +140,18 @@ the second card's expert cache is larger (4,829 slots instead of 3,968, hit rate
 32K is 68.8. The 4K decode is the same either way. So the split point moves decode by about 8% at 32K on this
 machine, independently of the cache hit rate; it was not swept here (`layer_split` can be given by hand).
 
+### Reused prefix: an observation, not an arm
+
+The arms above read every prompt in full. docs/COMMUNITY_BENCHMARKS.md asks for the warmed-cache and reused-prefix
+conditions to be kept apart; they were not measured as arms here (the second run at each length is on a warmed expert
+cache, the first 4K run is the only cold one). What a reused prefix does on this configuration is visible in the engine's
+own accounting of one real agent session on 2026-10-09 (the production server, the same binary and decode configuration,
+with the vision encoder loaded, `reasoning_effort` at the template's default, a coding agent as the client): eight
+requests growing from 8.8K to 93.7K tokens of context, 0-99% of each prompt reused from the conversation cache,
+the freshly read remainder (122-26,627 tokens) at 970-1,550 tok/s, decode 70.5-85.5 tok/s on replies of 287-1,960
+tokens and **97.1 tok/s over a 14,821-token reply** at 93.7K context (expert cache hit rate 94%, 88% of drafts
+accepted). Throughput numbers only; the session's content is not part of this report.
+
 ## Stalls, memory, power
 
 - Zero stalls in the five arms (`stall report` / `timed out at layer` / `no progress for` in each `engine.log`: 0),
@@ -152,7 +164,8 @@ machine, independently of the cache hit rate; it was not swept here (`layer_spli
 ## Limitations
 
 - One machine, one quantization, one context size, a small synthetic greedy workload with a 256-token output cap;
-  no recall, vision, concurrency, sampling or thermal run.
+  no recall, vision, concurrency, sampling or thermal run. Warmed-cache and reused-prefix conditions were not run as
+  separate arms (the observation above is from production use, not from the harness).
 - The "PRs" arm bundles the three open pull requests with two local commits (the rocBLAS solution cache) and a
   modified ggml; only the bundle was measured here. The pull requests do not change attention or selection values
   beyond FP32 summation order; the FP16 prompt route does (checked in
