@@ -118,6 +118,28 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
 }
+
+// After the authoritative pools are written, what a layer's mode keeps in VRAM still holds the outgoing session:
+// resolve must refill it before any attention reads.
+bool refill_residency(const QsaState& st, const ModelGeometry& g, int64_t upto, std::string& error) {
+    if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
+    if (st.kv_mode == 2 && upto > 0) {
+        auto shapes = strata::kernels::qsa_real_shapes();
+        shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
+        const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
+        strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
+                                        std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
+    }
+    const auto status = cudaGetLastError();
+    if (status == cudaSuccess) return true;
+    error = std::string("conversation snapshot residency restore: ") + cudaGetErrorString(status);
+    return false;
+}
+
+// The session's own QSA states by owned index (the same carve as conversation_state.cpp's `owned`).
+const QsaState& session_qsa(const SessionState& ss, size_t j) {
+    return ss.qsa_states[(size_t) ss.qsa_ord0 + j];
+}
 } // namespace
 
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
@@ -200,6 +222,62 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     return true;
 }
 
+bool conversation_kv_validate_meta(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
+                                   int64_t upto, bool index, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error)) return false;
+    if (!valid(st, l, upto, error)) return false;
+    if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
+        image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
+        image.idx_dim != g.idx_key_dim) {
+        error = "conversation snapshot: incompatible K/V geometry";
+        return false;
+    }
+    const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    const auto dst = pools(st);
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
+    return true;
+}
+
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& ss, const ModelGeometry& g,
+                             const QsaState* draft, std::vector<ConversationKvTarget>& targets, std::string& error) {
+    targets.clear();
+    const size_t layers = (size_t) std::max<int64_t>(ss.qsa_alloc, 0);
+    if (image.kv.size() != layers + (draft ? 1 : 0)) { error = "conversation snapshot: invalid K/V layer count"; return false; }
+    const int64_t upto = (int64_t) image.live.ids.size();
+    targets.reserve(image.kv.size());
+    for (size_t j = 0; j < image.kv.size(); ++j) {
+        const bool index = j < layers;
+        const QsaState& st = index ? session_qsa(ss, j) : *draft;
+        if (!conversation_kv_validate_meta(image.kv[j], st, g, upto, index, error)) return false;
+        ConversationKvTarget t;
+        t.state = &st; t.geometry = &g; t.upto = upto; t.index = index;
+        const auto dst = pools(st);
+        for (size_t i = 0; i < 5; ++i) t.pool[i] = static_cast<uint8_t*>(dst[i]);
+        if (!conversation_kv_part_sizes(st, g, upto, index, t.sizes, error)) return false;
+        targets.push_back(t);
+    }
+    return true;
+}
+
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& ss, const ModelGeometry& g,
+                             const QsaState& draft, std::vector<ConversationKvTarget>& targets, std::string& error) {
+    return conversation_kv_targets(image, ss, g, &draft, targets, error);
+}
+
+bool ConversationKvTarget::apply(size_t part, uint64_t offset, const void* data, size_t n, std::string& error) const {
+    if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) {
+        error = "conversation snapshot: K/V block outside its part";
+        return false;
+    }
+    return transfer(pool[part] + offset, data, n, error);
+}
+
+bool ConversationKvTarget::finish(std::string& error) const {
+    return refill_residency(*state, *geometry, upto, error);
+}
+
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                              int64_t upto, bool index, std::string& error) {
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
@@ -209,20 +287,7 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
-    // VRAM slots still contain the outgoing conversation. Resolve must refill
-    // them from the restored authoritative pools before any attention reads.
-    if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
-    if (st.kv_mode == 2 && upto > 0) {
-        auto shapes = strata::kernels::qsa_real_shapes();
-        shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
-        const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
-        strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
-                                        std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
-    }
-    const auto status = cudaGetLastError();
-    if (status == cudaSuccess) return true;
-    error = std::string("conversation snapshot residency restore: ") + cudaGetErrorString(status);
-    return false;
+    return refill_residency(st, g, upto, error);
 }
 
 bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,

@@ -275,7 +275,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -285,17 +285,17 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
-                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -309,24 +309,38 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
-    l.max_kv_layers = layers + 1;
+    l.max_kv_layers = layers + (draft ? 1 : 0);
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
     l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
-    l.max_kv_bytes.assign(layers + 1, {});
+    l.max_kv_bytes.assign(layers + (draft ? 1 : 0), {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
         const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
         if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
     }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    if (draft) {
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft->max_cells, 0));
+        if (!conversation_kv_part_sizes(*draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    }
     limits = std::move(l);
     return true;
 }
 
-bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
-                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
+}
+
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
+                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error) {
+    return conversation_session_read_limits(limits, ss, g, &draft, max_tokens, max_checkpoints, error);
+}
+
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& ss,
+                                         const ModelGeometry& g, const QsaState* draft, std::string& error) {
     if (!image.live.stage_parts.empty())
         return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
@@ -337,6 +351,16 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
     const size_t layers = owned_qsa(ss);
     if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
+    const int64_t upto = (int64_t) image.live.ids.size();
+    for (size_t j = 0; j < layers; ++j)
+        if (!conversation_kv_validate_meta(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
+    return !draft || conversation_kv_validate_meta(image.kv.back(), *draft, g, upto, false, error);
+}
+
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
+                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+    if (!conversation_snapshot_validate_meta(image, ss, g, draft, error)) return false;
+    const size_t layers = owned_qsa(ss);
     const int64_t upto = (int64_t) image.live.ids.size();
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
@@ -376,6 +400,11 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     // the whole-session form: a layer split's image (stage images) is restored stage by stage, never through here
     if (!image.stage_images.empty()) return fail(error, "a layer split's image restored as a single session");
     return conversation_snapshot_validate(image, ss, g, &draft, error);
+}
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& ss,
+                                         const ModelGeometry& g, const QsaState& draft, std::string& error) {
+    if (!image.stage_images.empty()) return fail(error, "a layer split's image restored as a single session");
+    return conversation_snapshot_validate_meta(image, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
                                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {

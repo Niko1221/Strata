@@ -106,6 +106,20 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     if (!zero_qsa) { image.kv.push_back(first.image(g, true)); image.kv.push_back(last.image(g, true)); }
     image.kv.push_back(draft.image(g, false));
     check(conversation_snapshot_validate(image, ss, g, draft.st, error), "complete image validates without CUDA");
+    // Non-MTP sessions own no draft ring: limits and restore must use exactly
+    // the main model's layers, including the zero-QSA case.
+    SessionReadLimits no_draft_limits;
+    check(conversation_session_read_limits(no_draft_limits, ss, g, nullptr, 96, 4, error),
+          "non-MTP read limits omit uninitialized draft state");
+    check(no_draft_limits.max_kv_layers == (size_t) g.n_qsa_layers() &&
+          no_draft_limits.max_kv_bytes.size() == (size_t) g.n_qsa_layers(),
+          "non-MTP limits count only owned QSA layers");
+    auto no_draft_image = image;
+    no_draft_image.kv.pop_back();
+    check(conversation_snapshot_validate(no_draft_image, ss, g, nullptr, error),
+          "non-MTP snapshot validates without a draft layer");
+    check(!conversation_snapshot_validate(image, ss, g, nullptr, error),
+          "MTP snapshot cannot be restored into non-MTP state");
     size_t estimate = 0;
     check(conversation_snapshot_bytes({image.live.ids,image.live.imgs,image.checkpoints,true},ss,g,draft.st,estimate,error),
           "capture estimate works without CUDA");
@@ -218,6 +232,16 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         check(incremental.kv[i].k==full.kv[i].k && incremental.kv[i].v==full.kv[i].v &&
               incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&
               incremental.kv[i].pooled==full.kv[i].pooled, "incremental and full capture agree across every payload");
+    SavedConversation streamed;
+    std::vector<SessionKvSource> streamed_sources;
+    check(conversation_snapshot_sources(streamed, streamed_sources, view, ss, g, nullptr, error),
+          "non-MTP streaming capture succeeds without an initialized draft");
+    check(streamed_sources.size() == (size_t) g.n_qsa_layers() && streamed.live.ids == view.ids,
+          "non-MTP streaming capture publishes only main-model sources");
+    check(conversation_snapshot_sources(streamed, streamed_sources, view, ss, g, draft.st, error),
+          "MTP streaming capture retains the draft layer");
+    check(streamed_sources.size() == (size_t) g.n_qsa_layers() + 1,
+          "MTP streaming capture includes exactly one draft source");
     reuse = {full.kv,9,9};
     reuse.kv.back().k.pop_back();
     copy_calls = sync_calls = 0;

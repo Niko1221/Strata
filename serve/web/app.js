@@ -206,7 +206,9 @@ function renderConvCache(c) {
   $("cc-card").hidden = !c;
   if (!c) return;                                  // an older server
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
-  $("cc-bars").hidden = !c.enabled;
+  $("cc-bars").hidden = !c.enabled || c.disk_only;
+  $("cc-disk-bars").hidden = !c.disk_only;
+  if (c.disk_only) return renderDiskCache(c, pct);
   if (c.enabled) {
     $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
     $("cc-slots-bar").style.width = pct(c.parked, c.slots);
@@ -226,6 +228,31 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+}
+
+// --conversation-cache-disk-only: no RAM cache; the spill directory holds every conversation that is not live
+function renderDiskCache(c, pct) {
+  const mib = 1048576, budget = (c.disk_budget_mib || 0) * mib;
+  $("cc-disk-text").textContent = c.disk_mib != null ? `${fmt(c.disk_files)} files · ${gb(c.disk_mib * mib)} / ${gb(budget)} GB` : "–";
+  $("cc-disk-bar").style.width = pct((c.disk_mib || 0) * mib, budget);
+  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
+  const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
+  const event = c.last_event ? `${c.last_event === "disk-saved" ? "Saved" : c.last_event === "disk-restored" ? "Restored" : c.last_event} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : "None yet";
+  facts($("cc-facts"), [
+    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
+    ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : "0"],
+    ["Saved / restored", `${fmt(c.disk_saves)} / ${fmt(c.disk_restores)}`],
+    ["Tokens saved", fmt(c.disk_saved_tokens)],
+    ["Written to disk", `${gb(c.disk_written_mib * mib)} GB`],
+    ["Shared prefixes", c.prefixes != null ? fmt(c.prefixes) : "0"],
+    ["Refused", c.disk_refused ? `${fmt(c.disk_refused)} (last: ${c.last_refusal})` : "0"],
+    ["Discarded as unusable", fmt(c.disk_discarded)],
+    ["Last switch", event],
+  ]);
+  $("cc-note").textContent = c.disk_ready === false
+    ? `The spill directory did not open (${c.disk_error}), so nothing is kept. Disk-only mode needs "--conversation-cache-disk-only", "--conversation-cache-spill-dir" DIR and "--conversation-cache-disk-mib" N > 0.`
+    : "Disk only: a conversation the engine leaves is written to the spill directory and read back when it returns; nothing is kept in RAM. " +
+      "Refused counts reads or saves skipped for RAM or disk space; if it climbs, free memory or lower --conversation-cache-min-free-mib.";
 }
 
 function renderTotals(t) {
