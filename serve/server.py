@@ -142,6 +142,10 @@ VISION_START = "<|vision_start|>"
 # broken state that answers one token forever (an issue saw 36,689 tokens of "!"). The config's "repeat_stop_tokens"
 # sets it; 0 turns it off.
 REPEAT_STOP_TOKENS = 256
+# The same guard for a short phrase repeated back to back ("[unclear] " forever, 3 tokens a time), opt-in: with the
+# config's "repeat_stop_period": N (2-64; 16 is a good choice), a run of repeat_stop_tokens tokens that repeats with
+# a period of 2 to N tokens ends the reply the same way.  1 (the default) keeps only the one-token guard.
+REPEAT_STOP_PERIOD = 1
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
 # #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
@@ -2653,6 +2657,7 @@ class Service:
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+        self.repeat_stop_period = REPEAT_STOP_PERIOD     # ... and a phrase of up to this many tokens repeated (1: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
@@ -3415,6 +3420,11 @@ class Service:
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
+        stop_cause = None                               # why the generator ended a reply itself ("done": stop_cause)
+        # a short phrase repeated back to back ("[unclear] " forever): for each period p in 2..repeat_stop_period, how
+        # many tokens in a row equal the one p back; the run is p tokens longer than that count
+        period_max = max(1, min(int(self.repeat_stop_period or 1), 64))
+        period_tail, period_run, period_hit = [], [0] * (period_max + 1), 0
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
         stops = StopMatcher(stop_list) if stop_list else None
@@ -3517,6 +3527,17 @@ class Service:
                                 if self.repeat_stop_tokens and run_len >= self.repeat_stop_tokens:
                                     repeated = True     # #606: a degenerate output, not an answer: end it here
                                     break
+                                if self.repeat_stop_tokens and period_max > 1:
+                                    for p in range(2, period_max + 1):
+                                        same = len(period_tail) >= p and period_tail[-p] == t
+                                        period_run[p] = period_run[p] + 1 if same else 0
+                                        if same and period_run[p] + p >= self.repeat_stop_tokens:
+                                            period_hit = p
+                                    period_tail.append(t)
+                                    del period_tail[:-period_max]
+                                    if period_hit:
+                                        repeated = True  # the same short phrase over and over: end it as above
+                                        break
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
                                 evs = cut(parser.feed(piece))
@@ -3655,10 +3676,19 @@ class Service:
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
+                        stop_cause = "reasoning_loop"
                         print(f"[strata] the thinking repeated the same passages (coverage={repeat_coverage:.3f}) at "
                               f"{n} tokens: ended as \"length\" (reasoning_loop_recovery: \"stop\" in "
                               "strata-<model>.json; remove it to turn this off)", flush=True)
+                    elif repeated and period_hit:
+                        stop_cause = "repetition"
+                        phrase = self.tok.decode(period_tail[-period_hit:])
+                        print(f"[strata] the reply repeated the same {period_hit} tokens ({phrase!r}) "
+                              f"{(period_run[period_hit] + period_hit) // period_hit} times in a row: ended as "
+                              "\"length\" with stop_cause \"repetition\" (repeat_stop_tokens / repeat_stop_period in "
+                              "strata-<model>.json; 0 / 1 turn this off)", flush=True)
                     elif repeated:
+                        stop_cause = "repetition"
                         print(f"[strata] the reply repeated one token ({self.tok.decode([run_tok])!r}) "
                               f"{run_len} times in a row: ended as \"length\" (repeat_stop_tokens in "
                               "strata-<model>.json; 0 turns this off). If a new request with a short prompt does the "
@@ -3759,6 +3789,8 @@ class Service:
                 "reasoning_recoveries": recovery_count}
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
+        if stop_cause is not None and finish == "length":
+            done["stop_cause"] = stop_cause             # "length" that a larger max_tokens would not have changed
         yield "done", done
 
 
@@ -4000,6 +4032,10 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if x.get("stop_cause"):
+                # Strata's own field beside finish_reason: "length" because the reply repeated itself ("repetition")
+                # or the thinking looped ("reasoning_loop"), so a larger max_tokens would not have helped
+                last["choices"][0]["stop_cause"] = x["stop_cause"]
             yield last
 
 
@@ -4042,6 +4078,8 @@ def openai_collect(chunks) -> dict:
     out = {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
            "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
            "usage": last["usage"]}
+    if last["choices"][0].get("stop_cause"):
+        out["choices"][0]["stop_cause"] = last["choices"][0]["stop_cause"]
     if last.get("timings"):
         out["timings"] = last["timings"]
     return out
@@ -4061,7 +4099,8 @@ def structured_chunks(chunks, validator):
                 yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
-        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
+        content = validated_json(choice["message"]["content"], validator, choice["finish_reason"],
+                                 choice.get("stop_cause"))
         yield buffered[0]
         delta = {"content": content}
         if choice["message"].get("reasoning_content"):
@@ -5034,8 +5073,10 @@ def make_handler(svc: Service):
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
 
+            ended = {}                                       # the generator's "done": its stop_cause for check()
+
             def check(text, finish):
-                return validated_json(text, validator, finish)
+                return validated_json(text, validator, finish, ended.get("stop_cause"))
 
             def events():
                 yield from asm.start()
@@ -5047,6 +5088,7 @@ def make_handler(svc: Service):
                         yield from asm.feed(x)
                     elif kind == "done":
                         done = x
+                        ended.update(x)
                 if done is not None and done["finish"] != "cancel" and not cancel.is_set():
                     yield from asm.finish(done, check)
             items = self._capture(events(), "responses")
@@ -5802,6 +5844,11 @@ def main() -> int:
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
+    rp = cfg.get("repeat_stop_period", REPEAT_STOP_PERIOD)   # a short phrase repeated: up to this many tokens long
+    if isinstance(rp, bool) or not isinstance(rp, int) or not 1 <= rp <= 64:
+        raise SystemExit(f"[strata] config \"repeat_stop_period\" must be a whole number from 1 to 64 (1 = only one "
+                         f"repeated token, as #606), not {rp!r}")
+    svc.repeat_stop_period = rp
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:

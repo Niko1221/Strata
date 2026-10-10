@@ -2004,11 +2004,13 @@ class LearnedProfile(unittest.TestCase):
 class RepeatStop(unittest.TestCase):
     """#606: one token repeated repeat_stop_tokens times in a row ends the reply as "length"; 0 turns it off."""
 
-    def run_reply(self, script, limit=None):
+    def run_reply(self, script, limit=None, period=None):
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         if limit is not None:
             svc.repeat_stop_tokens = limit
+        if period is not None:
+            svc.repeat_stop_period = period
         ids = tok.encode("hi")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             done = [x for kind, x in svc.run(ids, False, None, 3000, {}, threading.Event()) if kind == "done"][0]
@@ -2026,8 +2028,39 @@ class RepeatStop(unittest.TestCase):
         done, log = self.run_reply("!" * 1000, limit=0)
         self.assertEqual((done["finish"], done["completion_tokens"]), ("stop", 1001))
         self.assertNotIn("repeated one token", log)
-        done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens are not one run
+        done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens: not one run (period 1)
         self.assertEqual(done["finish"], "stop")
+        done, _ = self.run_reply("abcd" * 3, limit=16, period=16)   # a phrase repeated, but shorter than the limit
+        self.assertEqual(done["finish"], "stop")
+
+    def test_a_repeated_phrase_is_ended(self):
+        # "[unclear] " forever: a phrase of several tokens repeated, which the one-token run never sees
+        done, _ = self.run_reply("ok " + "[unclear] " * 100 + " never")      # off by default (period 1)
+        self.assertEqual(done["finish"], "stop")
+        done, log = self.run_reply("ok " + "[unclear] " * 100 + " never", period=16)
+        self.assertEqual((done["finish"], done["stop_cause"]), ("length", "repetition"))
+        # the run starts at the space that ends "ok " (" [unclear]" repeats from there): 256 tokens after "ok"
+        self.assertEqual(done["completion_tokens"], 2 + 256)
+        self.assertIn("repeated the same 10 tokens", log)
+        done, _ = self.run_reply("ab" * 400, limit=8, period=16)   # alternating tokens: a phrase of two
+        self.assertEqual((done["finish"], done["stop_cause"]), ("length", "repetition"))
+        self.assertEqual(done["completion_tokens"], 8)
+
+    def test_period_one_keeps_only_the_one_token_rule(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ab" * 400, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.repeat_stop_tokens, svc.repeat_stop_period = 8, 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            done = [x for kind, x in svc.run(tok.encode("hi"), False, None, 3000, {}, threading.Event())
+                    if kind == "done"][0]
+        self.assertEqual(done["finish"], "stop")
+        self.assertNotIn("stop_cause", done)
+
+    def test_a_long_reply_that_does_not_repeat_runs_to_the_end(self):
+        varied = "".join("abcdefghijklmnopqrstuvwxyz "[(i * i * 7 + i * 3) % 27] for i in range(2000))
+        done, _ = self.run_reply(varied, period=16)
+        self.assertEqual(done["finish"], "stop")
+        self.assertNotIn("stop_cause", done)
 
 
 class LayerSplit(unittest.TestCase):

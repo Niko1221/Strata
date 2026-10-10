@@ -725,6 +725,12 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+  A short phrase repeated back to back can be ended the same way (opt-in): with `"repeat_stop_period": N` (2 to
+  64; 16 is a good choice), a run of `repeat_stop_tokens` tokens that repeats with a period of 2 to N tokens ends the
+  reply (seen on a scanned page: `[unclear] ` written until `max_tokens` ran out, 12,000 tokens and 229 s). The
+  default, 1, keeps only the one-token rule. A reply either rule ends keeps `finish_reason` `"length"` (what OpenAI
+  clients expect), and its choice says why with Strata's own field `"stop_cause": "repetition"` (`"reasoning_loop"`
+  for the thinking guard below): a larger `max_tokens` would not have helped.
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
@@ -1626,6 +1632,8 @@ tools/MCP are refused explicitly. Without `response_format`, ordinary text and t
 
 Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
+An answer the server ended because it repeated itself (`stop_cause` `"repetition"`, above) fails with a message that
+says so, instead of "increase the output budget", which only fits an answer that ran out of `max_tokens`.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
 ### API request monitor
