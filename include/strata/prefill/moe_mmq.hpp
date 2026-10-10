@@ -46,6 +46,9 @@ struct Product {
     int64_t total_rows = 0, max_rows = 0;
     float* dst = nullptr;
     int64_t ld_dst = 0;
+    /// Set: expert i's matrix is at w_ptrs[i] (a device table) instead of w + i * expert_bytes - the experts are read
+    /// in place.  Needs llama.cpp's MMQ with the build's pointer-table patch (inplace_ok()).
+    const void* const* w_ptrs = nullptr;
 };
 
 /// The launch context (llama.cpp's MMQ keeps a small scratch pool for its stream-k fixup).  One per prompt path.
@@ -75,6 +78,11 @@ struct GatherGroup {
 };
 bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_bytes, size_t down_off, size_t d_bytes,
                          void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream);
+/// This build's MMQ reads Product::w_ptrs (CMake patched llama.cpp's mmq.cuh: STRATA_MMQ_X_PTRS).
+bool inplace_ok();
+/// table[q] for q in [g.first, g.n): the group's gate/up matrices, each blob itself (`copied` false: read in place,
+/// gate rows then up rows) or its copy at gu_dst + q * gu_stride (gathered there by gather_native_group).
+void group_ptrs(const GatherGroup& g, const void* gu_dst, size_t gu_stride, bool copied, const void** table, void* stream);
 /// A Strata-pack Q2_0 expert blob (codes and fp16 scales in separate planes, gate/up rows interleaved) into GGUF
 /// Q2_0 blocks: gate/up [1280, 2560] at `gu_dst` (rows stay interleaved), down [2560, 640] at `d_dst`.  Same values.
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream);
