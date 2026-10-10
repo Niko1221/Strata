@@ -1,0 +1,210 @@
+# 2026-10-10T13:26:34+02:00 driver 615.78.08, iommu identity, profile performance
+  Loading the model for the measurements ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.15 GiB/s (17 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    round 1/3 PCIe share: 0 72.1  0.2 73.5  0.35 65.5  0.55 54.2  0.75 46.3  0.9 44.2  1 39.4
+    round 2/3 PCIe share: 0 68.9  0.2 73.6  0.35 68.1  0.55 55.3  0.75 46.0  0.9 44.7  1 39.8
+    round 3/3 PCIe share: 0 69.1  0.2 72.3  0.35 66.1  0.55 53.3  0.75 47.1  0.9 43.0  1 40.3
+    PCIe share, median of 3: 0: 69.1 (68.9-72.1), 0.2: 73.5 (72.3-73.6), 0.35: 66.1 (65.5-68.1), 0.55: 54.2 (53.3-55.3), 0.75: 46.3 (46.0-47.1), 0.9: 44.2 (43.0-44.7), 1: 39.8 (39.4-40.3) -> best 0.2
+    round 1/3 draft floor: 0.3 76.8  0.5 72.1  0.7 74.2
+    round 2/3 draft floor: 0.3 68.5  0.5 71.5  0.7 75.1
+    round 3/3 draft floor: 0.3 75.5  0.5 75.2  0.7 75.4
+    draft floor, median of 3: 0.3: 75.5 (68.5-76.8), 0.5: 72.1 (71.5-75.2), 0.7: 75.1 (74.2-75.4) -> best 0.3
+  Measuring with 23 CPU workers (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.20 GiB/s (15 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    23 workers: 70.3 tok/s
+  Measuring with 15 CPU workers (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.24 GiB/s (16 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    15 workers: 66.4 tok/s
+  Measuring with 12 CPU workers (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.23 GiB/s (15 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    12 workers: 63.1 tok/s
+  Measuring with 6 CPU workers (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.24 GiB/s (15 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    6 workers: 57.3 tok/s
+  Measuring with 7 CPU workers (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.21 GiB/s (15 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    7 workers: 60.6 tok/s
+  Measuring the expert tier (the engine default) (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.27 GiB/s (15 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    76.1 tok/s
+  Measuring the expert tier every 1, 80 swaps, decay 0.97 (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.26 GiB/s (16 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    79.8 tok/s
+  Measuring the expert tier every 1, 160 swaps, decay 0.97 (restarts the engine) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 46.84 GiB at 6.27 GiB/s (16 s so far)
+[strata] filling the GPU's expert cache (3897 experts, 7.44 GiB of VRAM) ...
+[strata] almost ready ...
+    78.9 tok/s
+{
+ "settings": {
+  "--pcie-frac": "0.20",
+  "--spec-min-p": "0.30",
+  "--adapt-every": "1",
+  "--adapt-swaps": "80",
+  "--adapt-decay": "0.97"
+ },
+ "report": {
+  "default": {
+   "pcie_frac": 0.55,
+   "spec_min_p": 0.5,
+   "pool_workers": 23
+  },
+  "pcie_sweep": {
+   "0.0": [
+    72.14519219930109,
+    68.89128094725511,
+    69.13313529570618
+   ],
+   "0.2": [
+    73.50829839774882,
+    73.5843633227939,
+    72.32047008305554
+   ],
+   "0.35": [
+    65.54355061703107,
+    68.12859271875665,
+    66.09180564878402
+   ],
+   "0.55": [
+    54.22809693272326,
+    55.33220939782993,
+    53.288925895087424
+   ],
+   "0.75": [
+    46.292947558770344,
+    46.00675724246999,
+    47.10384926768234
+   ],
+   "0.9": [
+    44.235554326790165,
+    44.74116536754168,
+    43.01653448044092
+   ],
+   "1.0": [
+    39.424646564203655,
+    39.824523194673475,
+    40.274369139764644
+   ]
+  },
+  "min_p_sweep": {
+   "0.3": [
+    76.83073229291718,
+    68.5334903892488,
+    75.52067968611718
+   ],
+   "0.5": [
+    72.14519219930109,
+    71.50039101776338,
+    75.2410063484599
+   ],
+   "0.7": [
+    74.23732745621157,
+    75.05570540635628,
+    75.36948713419302
+   ]
+  },
+  "confirm": {
+   "0.55/0.5": [
+    54.58189416229585,
+    54.41251487842203,
+    54.810945060591784
+   ],
+   "0.2/0.3": [
+    72.5993987862288,
+    75.14824164856455,
+    69.84230916134665
+   ]
+  },
+  "workers": {
+   "23": [
+    70.6791827719492,
+    69.90333679209219
+   ],
+   "15": [
+    67.08947009801352,
+    65.74554419846936
+   ],
+   "12": [
+    63.795853269537474,
+    62.46949731576379
+   ],
+   "6": [
+    57.75652016965979,
+    56.840889915182736
+   ],
+   "7": [
+    61.29094043286727,
+    59.9278992462194
+   ]
+  },
+  "adapt": {
+   "default": [
+    75.65039984512516,
+    76.48376485782899
+   ],
+   "1/80/0.97": [
+    79.53313880783661,
+    80.14693604942394
+   ],
+   "1/160/0.97": [
+    79.79303681077205,
+    78.10169015567685
+   ]
+  },
+  "seconds": 669,
+  "tok_s": 79.8
+ }
+}
+# exit 0 2026-10-10T13:37:44+02:00
