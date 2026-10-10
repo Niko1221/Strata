@@ -20,6 +20,16 @@ if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
 
+# Ninja + MSVC leaves CMAKE_SYSTEM_PROCESSOR empty (the compiler ABI check is skipped for cl.exe), and ggml then prints
+# "Unknown CPU architecture. Falling back to generic implementations." and builds its quant and CPU kernels without
+# AVX2.  Measured on an AMD Ryzen with MSVC 14.44 and CMake 4.4.3: the same picture at 1,024 image tokens took over
+# 300 s with the generic kernels and 13 s with the AVX2 ones.  A build here is for this PC, so name its architecture
+# when the generator did not (#1299).
+if(WIN32 AND NOT CMAKE_SYSTEM_PROCESSOR)
+  set(CMAKE_SYSTEM_PROCESSOR "AMD64")
+  message(STATUS "strata-vision: CMAKE_SYSTEM_PROCESSOR was empty, set to AMD64 (Windows x64)")
+endif()
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)

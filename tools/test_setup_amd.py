@@ -465,6 +465,73 @@ class WindowsHipVision(unittest.TestCase):
                     built.assert_called_once()
 
 
+class RememberedVision(unittest.TestCase):
+    """#1299: setup run again for a model that already reads pictures must not quietly take them away."""
+
+    def test_the_mode_of_an_existing_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = root / "strata-qwen3.8-flash-next-ud.json"
+            with mock.patch.object(setup, "ROOT", root):
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))     # no config yet
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe"}}), encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": False}}),
+                               encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")   # what setup writes for the CPU
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": True}}),
+                               encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "gpu")
+                cfg.write_text(json.dumps({"args": []}), encoding="utf-8")
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))         # images were off
+
+
+class ToolFinder(unittest.TestCase):
+    """#1299: pip's cmake launcher in Scripts/ keeps the absolute path of the interpreter it was installed with, so a
+    venv whose folder was moved leaves it dead (exit 1, no message) while the binary under site-packages still works."""
+
+    def test_the_first_candidate_that_answers_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Scripts").mkdir()
+            (root / "Scripts" / "cmake.exe").write_text("")
+            real = root / "site-packages" / "cmake" / "data" / "bin"
+            real.mkdir(parents=True)
+            (real / "cmake.exe").write_text("")
+            class Runs:
+                def run(self, cmd, **kw):
+                    class R:
+                        returncode = 1 if "Scripts" in cmd[0] else 0
+                    return R()
+            with mock.patch.object(setup, "WIN", True), \
+                    mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.object(setup, "subprocess", Runs()), \
+                    mock.patch.object(sys, "executable", str(root / "python.exe")):
+                self.assertEqual(setup.find_tool("cmake"), str(real / "cmake.exe"))
+
+    def test_a_timeout_does_not_escape(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Scripts").mkdir()
+            (root / "Scripts" / "cmake.exe").write_text("")
+
+            real = setup.subprocess
+
+            class Hangs:
+                SubprocessError = real.SubprocessError
+
+                def run(self, cmd, **kw):
+                    raise real.TimeoutExpired(cmd, 15)
+            with mock.patch.object(setup, "WIN", True), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.object(setup, "subprocess", Hangs()), mock.patch.object(sys, "executable", str(root / "python.exe")):
+                self.assertEqual(setup.find_tool("cmake"), str(root / "Scripts" / "cmake.exe"))   # the old answer
+
+    def test_nothing_found_is_still_none(self):
+        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                mock.patch.object(sys, "executable", str(Path("/nonexistent/python.exe"))):
+            self.assertIsNone(setup.find_tool("cmake"))
+
+
 class HipRuntimeBesideExe(unittest.TestCase):
     """#468 #461: the bundled HIP runtime (and amd_comgr) goes next to strata.exe, so an AMD driver's System32 copy is
     not found first; rocBLAS and the rest stay in rocm/bin."""

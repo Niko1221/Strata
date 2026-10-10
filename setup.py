@@ -1285,16 +1285,35 @@ def find_vcvars(cuda_v=None):
 
 
 def find_tool(name):
-    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja)."""
+    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).
+
+    For a wheel whose real binary sits under site-packages (cmake's is `cmake/data/bin/cmake.exe`), the launcher pip
+    writes into Scripts/ records the absolute path of the interpreter it was installed with.  A venv moved to another
+    folder leaves that path dead, and the launcher then exits 1 without saying anything - so every candidate is asked
+    for its version and the first one that answers is used (#1299, seen on a PC whose Strata folder was renamed).
+    """
+    ext = ".exe" if WIN else ""
+    cands = []
     p = shutil.which(name)
     if p:
-        return p
+        cands.append(p)
     for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent,
               Path.home() / ".local" / "bin"):
-        c = d / (name + (".exe" if WIN else ""))
-        if c.exists():
-            return str(c)
-    return None
+        c = d / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for d in (Path(sys.executable).parent.parent / "Lib" / "site-packages",
+              Path(sys.executable).parent / "site-packages"):
+        c = d / name / "data" / "bin" / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for c in cands:
+        try:
+            if subprocess.run([c, "--version"], capture_output=True, timeout=15).returncode == 0:
+                return c
+        except (OSError, subprocess.SubprocessError):      # includes a timeout
+            continue
+    return cands[0] if cands else None
 
 
 def free_gb(path):
@@ -3697,6 +3716,21 @@ SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
+def remembered_vision(tag: str) -> str | None:
+    """The image mode this model's own config already has ("cpu", "gpu" or None), so a setup run again does not take
+    the pictures away from a model that could read them: without --vision, hip_vision answers "none" (#1299)."""
+    p = ROOT / f"strata-{tag.lower()}.json"
+    if not p.is_file():
+        return None
+    try:
+        vis = json.loads(p.read_text(encoding="utf-8-sig")).get("vision")
+    except (OSError, ValueError):
+        return None
+    if isinstance(vis, dict) and vis.get("exe"):
+        return "gpu" if vis.get("gpu") else "cpu"      # a flag: setup writes `vision == "gpu"`, the server tests its truth
+    return None
+
+
 def carry_over(old: dict, cfg: dict) -> list[str]:
     """#629: setup run again for an installed model keeps what the user added to its run config: every key setup does
     not write (`SETUP_KEYS`), the "env" entries setup does not write, and in "vision" the keys setup does not write
@@ -5139,12 +5173,17 @@ def main() -> int:
             warn(f"images are not available with {model} yet: off")
     elif hip:
         vision = hip_vision(a.vision)
-        if WIN and a.vision is None:
-            say()
-            say("  Images: the model can also read pictures (0.9 GB download; the image encoder is compiled here once,")
-            say("  which needs the Visual Studio C++ build tools).  1) no   2) on the CPU (about 10-30 s per picture,")
-            say("  nothing else to install)   3) on the GPU through Vulkan (fast; needs the Vulkan SDK to compile)")
-            vision = {"1": "none", "2": "cpu", "3": "gpu"}[ask("Images?", ["1", "2", "3"], "1", a.yes)]
+        if a.vision is None:
+            kept = remembered_vision(tag)              # setup run again: keep the images this model already has
+            if kept:
+                vision = kept
+                ok(f"images: kept as this model was set up ({'on the GPU' if kept == 'gpu' else 'on the CPU'})")
+            elif WIN:
+                say()
+                say("  Images: the model can also read pictures (0.9 GB download; the image encoder is compiled here once,")
+                say("  which needs the Visual Studio C++ build tools).  1) no   2) on the CPU (about 10-30 s per picture,")
+                say("  nothing else to install)   3) on the GPU through Vulkan (fast; needs the Vulkan SDK to compile)")
+                vision = {"1": "none", "2": "cpu", "3": "gpu"}[ask("Images?", ["1", "2", "3"], "1", a.yes)]
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
