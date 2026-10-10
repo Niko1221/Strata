@@ -9,6 +9,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
+#include "strata/xmx_tile.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
@@ -5191,8 +5192,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 
 
 // A770 port (STRATA_PF_XMX=2): a group of experts' products in ONE launch, the weight tiles decoded straight from
-// the quantized blobs into local memory (no FP16 copy of the expert in global memory).  Sub-group 8, joint_matrix
-// 8x8x16 (DG2), 256 GRF.  Per expert i of the group: Y_i = X_i . W_i^T, rows back to back (cnt[i] each).
+// the quantized blobs into local memory (no FP16 copy of the expert in global memory).  joint_matrix 8x8x16 with
+// sub-group 8 on DG2, 16x16x16 with sub-group 16 on Xe2 (strata/xmx_tile.hpp), 256 GRF.  Per expert i of the group: Y_i = X_i . W_i^T, rows back to back (cnt[i] each).
 // gate/up: up_i != nullptr, virtual row 2r = gate row r, 2r+1 = up row r (iq_dequant_gu_f16's interleave).
 namespace xmxg {
 namespace jm = sycl::ext::oneapi::experimental::matrix;
@@ -5203,10 +5204,12 @@ struct Grp {
     int tstart[kXmxGroupMax + 1];
     int n;
 };
-template <int SGM_, int SGN_, int MT_, int NT_>
+// TM: the joint_matrix tile and sub-group size - 8 (8x8x16, sub-group 8: DG2/Alchemist) or 16 (16x16x16, sub-group
+// 16: Xe2/Battlemage, which has no sub-group 8). strata::xmx_tile() picks it per device.
+template <int SGM_, int SGN_, int MT_, int NT_, int TM_>
 struct Cfg {
-    static constexpr int SGM = SGM_, SGN = SGN_, MT = MT_, NT = NT_, KS = 32, SG = 8;
-    static constexpr int BM = SGM * MT * 8, BN = SGN * NT * 8, WG = SGM * SGN * 8;
+    static constexpr int SGM = SGM_, SGN = SGN_, MT = MT_, NT = NT_, KS = 32, TM = TM_, SG = TM;
+    static constexpr int BM = SGM * MT * TM, BN = SGN * NT * TM, WG = SGM * SGN * TM;
 };
 template <class C, class Name>
 void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, const Grp& gp, int ntiles, int N, int K) {
@@ -5215,9 +5218,11 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
     const int nb = N / BN;
     q.submit([&](sycl::handler& h) {
         sycl::local_accessor<sycl::half, 1> sa(BM * LDA, h), sb(BN * LDB, h);
+        // partial-row scratch, a TM x TM float tile per sub-group: TM 8 reuses the A tile's SLM, TM 16 does not fit there
+        sycl::local_accessor<float, 1> sc(C::TM == 16 ? (size_t) (WG / SG) * 256 : 1, h);
         auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
         h.parallel_for<Name>(sycl::nd_range<2>({(size_t) ntiles, (size_t) nb * WG}, {1, (size_t) WG}), props,
-                             [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(8)]] {
+                             [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(C::SG)]] {
             auto sg = it.get_sub_group();
             const int t = (int) it.get_group(0);
             int e = 0;
@@ -5231,7 +5236,7 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
             const int n0 = (int) it.get_group(1) * BN;
             const int lid = (int) it.get_local_id(1), sgid = lid / SG;
             const int sgm = sgid / C::SGN, sgn = sgid % C::SGN;
-            jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 8, 8> acc[C::MT][C::NT];
+            jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, C::TM, C::TM> acc[C::MT][C::NT];
             for (int i = 0; i < C::MT; ++i)
                 for (int j = 0; j < C::NT; ++j) jm::joint_matrix_fill(sg, acc[i][j], 0.0f);
             sycl::half* pa = sa.template get_multi_ptr<sycl::access::decorated::no>().get();
@@ -5262,36 +5267,37 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
                 }
                 it.barrier(sycl::access::fence_space::local_space);
                 for (int kk = 0; kk < KS; kk += 16) {
-                    jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 8, 16, jm::layout::row_major> am[C::MT];
-                    jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 8, jm::layout::col_major> bm[C::NT];
+                    jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, C::TM, 16, jm::layout::row_major> am[C::MT];
+                    jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, C::TM, jm::layout::col_major> bm[C::NT];
                     for (int i = 0; i < C::MT; ++i)
                         jm::joint_matrix_load(sg, am[i], sa.template get_multi_ptr<sycl::access::decorated::no>() +
-                                                             (sgm * C::MT * 8 + i * 8) * LDA + kk, LDA);
+                                                             (sgm * C::MT * C::TM + i * C::TM) * LDA + kk, LDA);
                     for (int j = 0; j < C::NT; ++j)
                         jm::joint_matrix_load(sg, bm[j], sb.template get_multi_ptr<sycl::access::decorated::no>() +
-                                                             (sgn * C::NT * 8 + j * 8) * LDB + kk, LDB);
+                                                             (sgn * C::NT * C::TM + j * C::TM) * LDB + kk, LDB);
                     for (int i = 0; i < C::MT; ++i)
                         for (int j = 0; j < C::NT; ++j) jm::joint_matrix_mad(sg, acc[i][j], am[i], bm[j], acc[i][j]);
                 }
                 it.barrier(sycl::access::fence_space::local_space);
             }
             for (int i = 0; i < C::MT; ++i) {
-                const int r = sgm * C::MT * 8 + i * 8;
+                const int r = sgm * C::MT * C::TM + i * C::TM;
                 if (r >= rows) continue;
                 for (int j = 0; j < C::NT; ++j) {
-                    const int c = n0 + sgn * C::NT * 8 + j * 8;
-                    if (r + 8 <= rows) {
+                    const int c = n0 + sgn * C::NT * C::TM + j * C::TM;
+                    if (r + C::TM <= rows) {
                         jm::joint_matrix_store(sg, acc[i][j],
                             sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
                                 Ye + (size_t) r * N + c), N, jm::layout::row_major);
                     } else {
-                        float* st = reinterpret_cast<float*>(pa) + sgid * 64;
+                        float* st = C::TM == 16 ? sc.template get_multi_ptr<sycl::access::decorated::no>().get() + sgid * 256
+                                                : reinterpret_cast<float*>(pa) + sgid * 64;
                         jm::joint_matrix_store(sg, acc[i][j],
                             sycl::address_space_cast<sycl::access::address_space::local_space, sycl::access::decorated::no>(st),
-                            8, jm::layout::row_major);
+                            C::TM, jm::layout::row_major);
                         sycl::group_barrier(sg);
                         const int lim = rows - r, ln = (int) sg.get_local_linear_id();
-                        for (int rr = 0; rr < lim; ++rr) Ye[(size_t) (r + rr) * N + c + ln] = st[rr * 8 + ln];
+                        for (int rr = 0; rr < lim; ++rr) Ye[(size_t) (r + rr) * N + c + ln] = st[rr * C::TM + ln];
                         sycl::group_barrier(sg);
                     }
                 }
@@ -5299,9 +5305,10 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
         });
     });
 }
-class k_xg_small; class k_xg_big;
-using Small = Cfg<2, 8, 4, 2>;   // 64 x 128
-using Big = Cfg<4, 4, 4, 4>;     // 128 x 128
+template <int TM> class k_xg_small;
+template <int TM> class k_xg_big;
+template <int TM> using Small = Cfg<2, 8, 4, 2, TM>;   // TM 8: 64 x 128, TM 16: 128 x 256
+template <int TM> using Big = Cfg<4, 4, 4, 4, TM>;     // TM 8: 128 x 128, TM 16: 256 x 256
 template <class C>
 int fill(Grp& gp, const int32_t* cnt, int n) {
     int t = 0, o = 0;
@@ -5309,11 +5316,23 @@ int fill(Grp& gp, const int32_t* cnt, int n) {
     gp.off[n] = o; gp.tstart[n] = t; gp.n = n;
     return t;
 }
+template <int TM>
+void run(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, Grp& gp, const int32_t* cnt, int n,
+         int64_t tot, int N, int K) {
+    if (tot / n < 96) {
+        const int nt = fill<Small<TM>>(gp, cnt, n);
+        launch<Small<TM>, k_xg_small<TM>>(q, ty, gu, X, Y, gp, nt, N, K);
+    } else {
+        const int nt = fill<Big<TM>>(gp, cnt, n);
+        launch<Big<TM>, k_xg_big<TM>>(q, ty, gu, X, Y, gp, nt, N, K);
+    }
+}
 }  // namespace xmxg
 
 void iq_xmx_grouped(int ty, const uint8_t* const* a, const uint8_t* const* b, const int32_t* cnt, int n,
                     const uint16_t* X, float* Y, int N, int K, void* stream) {
     if (n <= 0) return;
+    // the tile's width: 128 columns at TM 8, 256 at TM 16 (the model's 1280-wide gate/up and 2048-wide down qualify)
     if (n > kXmxGroupMax || N % 128 != 0 || K % 32 != 0 || !is_iq(ty)) {
         std::fprintf(stderr, "iq_xmx_grouped: bad arguments (type %d, n %d, N %d, K %d)\n", ty, n, N, K);
         std::exit(1);
@@ -5325,13 +5344,18 @@ void iq_xmx_grouped(int ty, const uint8_t* const* a, const uint8_t* const* b, co
     sycl::queue& q = *strata::q_of(stream);
     const auto* Xh = reinterpret_cast<const sycl::half*>(X);
     const bool gu = b != nullptr;
-    if (tot / n < 96) {
-        const int nt = xmxg::fill<xmxg::Small>(gp, cnt, n);
-        xmxg::launch<xmxg::Small, xmxg::k_xg_small>(q, ty, gu, Xh, Y, gp, nt, N, K);
-    } else {
-        const int nt = xmxg::fill<xmxg::Big>(gp, cnt, n);
-        xmxg::launch<xmxg::Big, xmxg::k_xg_big>(q, ty, gu, Xh, Y, gp, nt, N, K);
+    static const int tile = strata::xmx_tile_for(q.get_device());
+    if (tile == 16 && N % 256 != 0) {
+        std::fprintf(stderr, "iq_xmx_grouped: N %d is not a multiple of the 16x16 tile's 256 columns\n", N);
+        std::exit(1);
     }
+#if defined(STRATA_XMX_TILE16)
+    if (tile == 16) xmxg::run<16>(q, ty, gu, Xh, Y, gp, cnt, n, tot, N, K);
+#endif
+#if defined(STRATA_XMX_TILE8)
+    if (tile == 8) xmxg::run<8>(q, ty, gu, Xh, Y, gp, cnt, n, tot, N, K);
+#endif
+    (void) tile;
     check("iq_xmx_grouped");
 }
 

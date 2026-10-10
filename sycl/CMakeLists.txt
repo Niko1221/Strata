@@ -45,6 +45,12 @@ if(STRATA_SYCL_AOT)
 else()
   set(_sycl_link -fsycl)
 endif()
+# The grouped XMX GEMMs (STRATA_PF_XMX, include/strata/xmx_tile.hpp) have an 8x8x16 / sub-group-8 kernel for DG2 and a
+# 16x16x16 / sub-group-16 one for Xe2. ocloc refuses the 8x8 one on Xe2, so an AOT build (an Xe2 card: the A-series
+# runs JIT, docs/INTEL.md) keeps only the 16x16 one. A JIT build keeps both and picks per device.
+if(STRATA_SYCL_AOT)
+  add_compile_definitions(STRATA_XMX_TILE16=1)
+endif()
 # The Intel GPU's fp32 divide is not correctly rounded by default (OpenCL allows 2.5 ulp). Strata's quantizers
 # are byte-exact against ggml through `amax / 127`, so the device compiler is told to round divides and sqrt
 # properly; measured: quantize_act_parity goes from 303k mismatches to byte-exact. (Same as
