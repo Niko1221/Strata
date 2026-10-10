@@ -3922,8 +3922,9 @@ class Service:
                                       f"({literal_retries} of {LITERAL_THINK_RETRIES}, literal_think_guard)",
                                       flush=True)
                                 if parser.state == "content":       # the tag was text: it belongs to the reasoning
-                                    for ev in [Event("reasoning", THINK_END)]:
-                                        self._note(n, [ev], st, rate)
+                                    parser.reopen_reasoning()       # ... and the thinking was not over:
+                                    for ev in [Event("reasoning", THINK_END)]:   # the close below then lands as the
+                                        self._note(n, [ev], st, rate)            # marker, not as answer text
                                         yield "event", ev
                                 for t in extra:
                                     n += 1

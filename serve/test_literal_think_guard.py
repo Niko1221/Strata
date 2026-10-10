@@ -58,6 +58,21 @@ class SpecimenEngine(ThinkingEngine):
             yield t
 
 
+class ContentFlipEngine(SpecimenEngine):
+    """The other side of the same end: the model writes the tag as ordinary text and stops, so the parser takes it for
+    the marker.  The guard has to put the tag back into the reasoning before the close is appended - otherwise the tag
+    lands in the answer."""
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        done = self.tok.decode(ids).endswith(REASONING_CLOSE)
+        text = self.ANSWER if done else (self.raw + THINK_END)
+        for t in (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+            if cancel.is_set():
+                return
+            yield t
+
+
 class AlwaysStopsEngine(SpecimenEngine):
     """Every pass ends inside the thinking with no answer, and nothing is ever handed to the client (only the newlines
     the answer parser holds back): the cap's test, with `answered` false on every pass."""
@@ -182,6 +197,14 @@ class Guard(unittest.TestCase):
                 full = self.chat_full()
                 self.assertNotIn("ended_inside_thinking", full)
                 self.assertNotIn("ended_inside_thinking", self.svc.totals)
+
+    def test_the_tag_written_as_text_does_not_leak_into_the_answer(self):
+        self.close()
+        self.boot(ContentFlipEngine, NO_ANSWER[0]["raw"])
+        c = self.chat()
+        self.assertEqual(c["message"]["content"], ContentFlipEngine.ANSWER)   # the answer, nothing else
+        self.assertNotIn(THINK_END, c["message"]["content"])
+        self.assertIn(THINK_END, c["message"]["reasoning_content"])           # the tag stayed reasoning
 
     def test_the_retries_are_capped(self):
         self.close()
