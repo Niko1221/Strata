@@ -3480,9 +3480,15 @@ class Service:
             # the same heartbeat as while the engine is quiet (FIFO_PING_S; --batch requests do not hold the fifo).
             fifo_ctx = contextlib.nullcontext()
             if not par:
-                while not self.fifo.acquire(False):      # acquire(blocking=False): a short wait, a ping, retry
-                    yield "ping", None
-                    time.sleep(FIFO_PING_S)
+                try:
+                    if not self.fifo.acquire(False):      # acquire(blocking=False): a short wait, a ping, retry
+                        yield "ping", None
+                        while not self.fifo.acquire(timeout=FIFO_PING_S):
+                            yield "ping", None
+                except GeneratorExit:
+                    with self.status_lock:
+                        self.status["queued"] -= 1
+                    raise
                 fifo_ctx = _acquired(self.fifo)
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
             with fifo_ctx:

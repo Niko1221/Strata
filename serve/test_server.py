@@ -2274,6 +2274,63 @@ class QueuedHeartbeat(unittest.TestCase):
                 svc.fifo.release()
         self.assertFalse(svc.fifo.locked())                    # released when the request ended
 
+    def test_releasing_the_turn_wakes_the_waiter_before_the_next_ping(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        waiting, out, errors = threading.Event(), [], []
+
+        def consume():
+            try:
+                with contextlib.closing(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event())) as gen:
+                    for kind, value in gen:
+                        if kind == "ping":
+                            waiting.set()
+                        else:
+                            out.append((kind, value))
+            except Exception as exc:
+                errors.append(exc)
+
+        svc.fifo.acquire()
+        held = True
+        waiter = threading.Thread(target=consume, daemon=True)
+        with mock.patch("serve.server.FIFO_PING_S", 5.0):
+            waiter.start()
+            try:
+                self.assertTrue(waiting.wait(1), "the request never queued")
+                svc.fifo.release()
+                held = False
+                waiter.join(1)
+                self.assertFalse(waiter.is_alive(), "the ping interval delayed the next request")
+                self.assertEqual(errors, [])
+                self.assertEqual(out[-1][0], "done")
+            finally:
+                if held:
+                    svc.fifo.release()
+                waiter.join(6)
+        self.assertEqual(svc.status["queued"], 0)
+        self.assertFalse(svc.fifo.locked())
+
+    def test_closing_a_queued_request_restores_its_queued_count(self):
+        for pings in (1, 2):
+            with self.subTest(pings=pings):
+                tok = ByteTokenizer()
+                svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                              ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                svc.fifo.acquire()
+                gen = svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event())
+                try:
+                    with mock.patch("serve.server.FIFO_PING_S", 0.01):
+                        for _ in range(pings):
+                            self.assertEqual(next(gen)[0], "ping")
+                        self.assertEqual(svc.status["queued"], 1)
+                        gen.close()
+                    self.assertEqual(svc.status["queued"], 0)
+                    self.assertTrue(svc.fifo.locked())
+                    self.assertEqual(svc.totals["requests"], 0)
+                finally:
+                    gen.close()
+                    svc.fifo.release()
+
 
 class LiveRate(unittest.TestCase):
     """The Monitor's Speed readout: live.tok_s is a rate, and a request that never got a DONE keeps no counters.
@@ -3599,8 +3656,8 @@ class StatusHandover(unittest.TestCase):
             def __init__(self):
                 self.lock, self.armed = threading.Lock(), False
 
-            def acquire(self, blocking=True):
-                return self.lock.acquire(blocking)
+            def acquire(self, blocking=True, timeout=-1):
+                return self.lock.acquire(blocking, timeout)
 
             def __enter__(self):
                 self.lock.acquire()
