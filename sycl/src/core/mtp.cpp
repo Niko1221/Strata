@@ -1193,16 +1193,31 @@ catch (sycl::exception const &exc) {
 }
 }  // namespace
 
+// SYCL port, STRATA_VERIFY_EAGER=1: the OpenCL adapter has no command-graph backend, so the bodies the
+// capture_* functions record are replayed on the queue instead (the launch sites call these directly).
+bool eager_replay() {
+    static const bool eager = std::getenv("STRATA_VERIFY_EAGER") != nullptr;
+    return eager;
+}
+
+bool MtpDrafter::record_prefill(int T, bool dev_inputs, std::string &err) {
+    using namespace strata::kernels;
+    if (!dev_inputs) {   // the E-4 path copies tok_/step_/pos_ on the device; this one stages them in mapped memory
+        copy_i32_from_mapped(tok_, m_tok_, T, cs_);
+        copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
+        copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
+    }
+    return record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
+}
+
 bool MtpDrafter::capture_prefill(int T, std::string &err) try {
     if (prefill_exec_[T]) return true;
+    if (eager_replay()) return true;   // SYCL port: no graph, prefill() replays the body
     using namespace strata::kernels;
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "mtp: begin capture"; return false;
     }
-    copy_i32_from_mapped(tok_, m_tok_, T, cs_);
-    copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
-    copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
-    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
+    const bool ok = record_prefill(T, false, err);
     return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
 }
 catch (sycl::exception const &exc) {
@@ -1213,10 +1228,11 @@ catch (sycl::exception const &exc) {
 
 bool MtpDrafter::capture_prefill_dev(int T, std::string &err) try {
     if (prefill_dev_exec_[T]) return true;
+    if (eager_replay()) return true;   // SYCL port: no graph, prefill() replays the body
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "mtp: begin capture"; return false;
     }
-    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
+    const bool ok = record_prefill(T, true, err);
     return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
 }
 catch (sycl::exception const &exc) {
@@ -1225,14 +1241,11 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
-    dpct::experimental::command_graph_exec_ptr& exec = coupled ? round_exec_c_[T] : round_exec_[T];
-    if (exec) return true;
+// SYCL port (STRATA_VERIFY_EAGER): capture_round's body as a replayable function - the capture records it into
+// the round graph, and where there is no graph backend the launch site replays it on the queue instead.
+bool MtpDrafter::record_round(int T, bool coupled, std::string &err) {
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
-    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
-    }
     bool ok = true;
     // coupled: the request's chain and the penalty history's base, for this round's drafts
     if (coupled) coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
@@ -1268,6 +1281,17 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
     if (ok && force_on_ && !coupled) force_token(tok_, m_force_, 0, cs_);   // chain_launch: step 1's input
+    return ok;
+}
+
+bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
+    dpct::experimental::command_graph_exec_ptr& exec = coupled ? round_exec_c_[T] : round_exec_[T];
+    if (exec) return true;
+    if (eager_replay()) return true;   // SYCL port: no graph, draft() replays the body
+    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
+        err = "mtp: begin capture"; return false;
+    }
+    const bool ok = record_round(T, coupled, err);
     return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
 }
 catch (sycl::exception const &exc) {
@@ -1278,15 +1302,11 @@ catch (sycl::exception const &exc) {
 
 // Chain step j (1..max_t-2): one row at the cell staged in step row `max_t + j - 1`, from the previous step's
 // residual and token (left in Rin_[0] / tok_[0] by mtp_select); draft j and its probability to the mapped outputs.
-bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
-    dpct::experimental::command_graph_exec_ptr& exec = coupled ? step_exec_c_[j] : step_exec_[j];
-    if (exec) return true;
+// Chain step j (1..max_t-2), see capture_step: SYCL port (STRATA_VERIFY_EAGER) - the body as a function.
+bool MtpDrafter::record_step(int j, bool coupled, std::string &err) {
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
-    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
-    }
 #if defined(STRATA_USE_HIP)
     copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
     copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
@@ -1301,6 +1321,17 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     coupled_rec_ = false;
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
     if (ok && force_on_ && !coupled) force_token(tok_, m_force_, j, cs_);   // chain_launch: step j+1's input
+    return ok;
+}
+
+bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
+    dpct::experimental::command_graph_exec_ptr& exec = coupled ? step_exec_c_[j] : step_exec_[j];
+    if (exec) return true;
+    if (eager_replay()) return true;   // SYCL port: no graph, draft() replays the body
+    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
+        err = "mtp: begin capture"; return false;
+    }
+    const bool ok = record_step(j, coupled, err);
     return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
 }
 catch (sycl::exception const &exc) {
@@ -1447,8 +1478,10 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
                 DPCT_CHECK_ERROR(
                     cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                 (size_t)T * HCN * sizeof(float))) != 0 ||
-                DPCT_CHECK_ERROR(
-                    (cs_)->ext_oneapi_graph(*prefill_dev_exec_[T])) != 0) {
+                (eager_replay()
+                     ? !record_prefill(T, true, err)   // SYCL port: no graph backend, replay the body
+                     : DPCT_CHECK_ERROR(
+                           (cs_)->ext_oneapi_graph(*prefill_dev_exec_[T])) != 0)) {
                 /*
                 DPCT1009: SYCL reports errors using exceptions and does not
                 use error codes. Please replace the
@@ -1510,7 +1543,9 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
         if (DPCT_CHECK_ERROR(cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                          (size_t)T * HCN * sizeof(float))) !=
                 0 ||
-            DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*prefill_exec_[T])) != 0 ||
+            (eager_replay()
+                 ? !record_prefill(T, false, err)   // SYCL port: no graph backend, replay the body
+                 : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*prefill_exec_[T])) != 0) ||
             DPCT_CHECK_ERROR(cs_->wait()) != 0) {
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
@@ -1581,8 +1616,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 
     int n = 0;
     if (min_p <= 0.0f && max_steps > 0) {
-        if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
-                *(cp ? round_exec_c_[T] : round_exec_[T]))) != 0) {
+        if (eager_replay()
+                ? !record_round(T, cp, err)   // SYCL port: no graph backend, replay the body
+                : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
+                      *(cp ? round_exec_c_[T] : round_exec_[T]))) != 0) {
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
             error codes. Please replace the "get_error_string_dummy(...)" with a
@@ -1597,8 +1634,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             return false;
         }
         for (int j = 1; j < max_steps; ++j) {
-            if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
-                    *(cp ? step_exec_c_[j] : step_exec_[j]))) != 0) {
+            if (eager_replay()
+                    ? !record_step(j, cp, err)   // SYCL port: no graph backend, replay the body
+                    : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
+                          *(cp ? step_exec_c_[j] : step_exec_[j]))) != 0) {
                 /*
                 DPCT1009: SYCL reports errors using exceptions and does not
                 use error codes. Please replace the
@@ -1649,8 +1688,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         prefetch_ple(drafts[last]);
         n = max_steps;
     } else if (max_steps > 0) {
-        if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
-                *(cp ? round_exec_c_[T] : round_exec_[T]))) != 0) {
+        if (eager_replay()
+                ? !record_round(T, cp, err)   // SYCL port: no graph backend, replay the body
+                : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
+                      *(cp ? round_exec_c_[T] : round_exec_[T]))) != 0) {
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
             error codes. Please replace the "get_error_string_dummy(...)" with a
@@ -1689,8 +1730,10 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (probs) probs[0] = pj;
         n = 1;
         for (int j = 1; j < max_steps && pj >= min_p; ++j) {
-            if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
-                    *(cp ? step_exec_c_[j] : step_exec_[j]))) != 0) {
+            if (eager_replay()
+                    ? !record_step(j, cp, err)   // SYCL port: no graph backend, replay the body
+                    : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(
+                          *(cp ? step_exec_c_[j] : step_exec_[j]))) != 0) {
                 /*
                 DPCT1009: SYCL reports errors using exceptions and does not
                 use error codes. Please replace the
@@ -1761,6 +1804,10 @@ catch (sycl::exception const &exc) {
 bool MtpDrafter::prepare_chain(std::string &err) try {
     const OnDevice on_device(device_);
     if (!force_on_ || h_force_ == nullptr) { err = "mtp: chains need set_force_capture before load"; return false; }
+    if (eager_replay()) {   // SYCL port: the chain reports its progress through the events the recorded graphs
+        err = "mtp: --pipeline-windows chains need command graphs (STRATA_VERIFY_EAGER=1 has none)";  // publish
+        return false;                                                                  // (an event per step)
+    }
     for (int T = 1; T <= max_t_; ++T)
         if (!capture_round(T, false, err)) return false;
     for (int j = 1; j <= max_t_ - 2; ++j)

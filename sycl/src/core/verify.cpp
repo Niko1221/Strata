@@ -1832,6 +1832,7 @@ catch (sycl::exception const &exc) {
 
 bool Verifier::capture_commit(std::string &err) try {
     if (commit_exec_ != nullptr) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // SYCL port: no graph, commit() replays the body
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;

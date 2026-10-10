@@ -22,6 +22,8 @@
 // (Written when nothing consumed the slots yet and `--expert-cache` defaulted to 0; setup's configs use `auto`.)
 #pragma once
 
+#include <cstdlib>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -77,6 +79,47 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// files' clean pages and gives way to a device allocation.  There the figure is MemAvailable less 6 GiB for the OS
 /// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
 size_t device_free_bytes();
+
+/// The share of free device memory that `--expert-cache auto` keeps for the session's other buffers instead
+/// of experts (#1549).  Sizing the cache to every byte the card reports free looks right and is not: under WDDM
+/// an over-subscribed allocation does not fail, it pages to system memory and crawls.
+///
+///   Arc Pro B70 (32 GB), IQ3_XXS pack, OpenCL backend, eager, driver 32.0.101.8976, 48-token prompt,
+///   the same 3,668 gate/up and 3,668 down naive GEMM calls at every cache size:
+///     auto -> 17,687 slots (28.82 GiB): 54.05 ms per expert GEMM call, the prompt reads 1,171 s,
+///         and ~15 GiB of GPU memory sits in shared memory while it runs
+///     14,688 slots (23.83 GiB, 7.17 GiB kept free): 2.48 ms per call, the prompt reads 12.8 s
+///     the cliff is between 14,704 and 15,382 slots; above it the times are noisy, and every size
+///         up to 14,704 is stable at ~10 s
+///   Both sizes give identical greedy output tokens on a scrambled prompt, so the cut costs no accuracy.
+///
+/// STRATA_EXPERT_CACHE_HEADROOM="1/6" (or "0.17", or "0" for the old sizing) sets it directly, on any
+/// backend, which is the A/B for a card this has not been measured on.  The default is a sixth where it
+/// has been measured (the SYCL port) and zero everywhere else, so every other build's default path is
+/// byte-identical to the last release until someone measures it on that backend.
+inline double expert_cache_headroom() {
+    static const double v = []() -> double {
+        const char* e = std::getenv("STRATA_EXPERT_CACHE_HEADROOM");
+        if (e && *e) {
+            std::string s(e);
+            size_t slash = s.find('/');
+            if (slash != std::string::npos && slash + 1 < s.size()) {
+                const double n = std::strtod(s.c_str(), nullptr);
+                const double d = std::strtod(s.c_str() + slash + 1, nullptr);
+                if (d > 0.0 && n >= 0.0) return n / d;
+            }
+            const double parsed = std::strtod(s.c_str(), nullptr);
+            if (parsed >= 0.0) return parsed > 1.0 ? 0.0 : parsed;
+            return 0.0;   // an unparseable value: no headroom, never a crash
+        }
+        return 0.0;   // #1549: a pure A/B knob.  Where the free-VRAM figure is live (CUDA's cudaMemGetInfo,
+                      // and the SYCL port's DXGI query - see src/core/expert_cache.cpp) the sizing already
+                      // excludes what is resident, so no extra share should be taken.  The B70's 1/6 was
+                      // standing in for that missing query, not for a real requirement: with the query live,
+                      // 1/6 sizes the Coder 1.9 GiB smaller than it can safely hold and costs decode.
+    }();
+    return v;
+}
 
 class ExpertCache {
 public:
