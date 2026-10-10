@@ -277,6 +277,28 @@ the same explicit zero **additional** return allowance for this bounded shape;
 the general default remains 256 MiB. These separate single runs do not establish
 a causal speed or memory improvement from disabling projection.
 
+## Projection-disabled default return allowance
+
+The [separate component result](default256-return-projection-off-results.json)
+also passed with the ordinary **256 MiB additional VRAM return allowance**.
+Both high-reasoning lookups returned exactly 42, and the four-job compiler passed
+2,096 fixture checks. Native `cvec=0`, absent control-vector arguments and explicit
+projection-disabled requests were checked before and after the model reload.
+
+AUTO selected `none` at tool admission and retained both model processes during
+compilation. On inference return it requested the normal 320 MiB floor plus the
+256 MiB allowance, or **576 MiB**. Cache trimming reached 640 MiB from 672 MiB,
+but sampled free VRAM reached only 374 MiB before the prompt-workspace floor
+prevented further release. The existing fallback then verified full unloading
+and guarded reloading; both old processes were replaced and the answer passed.
+
+The post-tool HTTP request took **71.375 s including reload**; the complete
+model/tool/model cycle took **99.625 s**. Minimum sampled available RAM was
+**9.789 GiB** and native free VRAM **342 MiB**. Cleanup left no owned survivors.
+This is a direct API lifecycle test, not an additional full Hermes run, a speedup
+comparison, or proof that the ordinary allowance permits resident continuation.
+The earlier bounded zero-additional-allowance measurements remain separate.
+
 ## Limits
 
 - The component sections are direct API tests. The separately labeled Hermes

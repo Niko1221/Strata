@@ -293,6 +293,14 @@ the warm model state and add reload/prefill latency. Normal adaptive growth can 
 after the lease ceilings have been cleared and existing stability/rate limits
 permit it; release is not a request for eager full refill.
 
+The projection-disabled IQ3_S Windows [component qualification](../bench/results/2026-10-10-resident-handoff/default256-return-projection-off-results.json)
+exercised this fallback with the default 256 MiB additional allowance. The model
+stayed resident during the four-job build, but its prompt-workspace floor blocked
+the 576 MiB return target. Verified unload/reload then produced the correct answer
+in 71.375 seconds including reload, with at least 342 MiB sampled native free VRAM.
+This establishes bounded fallback correctness; it is not a resident speed result
+or a guarantee against arbitrary external memory pressure.
+
 If the selected action unloaded the processes, ordinary requests instead use
 the recorded full startup footprint and stable fresh capacity. A failed teardown
 retains process handles and measured admission state, so an unverified survivor
