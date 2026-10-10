@@ -149,7 +149,7 @@ MtpDrafter::~MtpDrafter() {
     if (sh_join_) cudaEventDestroy(sh_join_);
     if (owns_weights_ && dense_) cudaFree(dense_);
     if (owns_weights_ && experts_) cudaFree(experts_);
-    if (state_arena_) cudaFree(state_arena_);
+    idle_arena_.release();
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
     if (owns_draft_head_ && dhead_) { strata::kernels::native_q6_k_unpack(dhead_); cudaFree(dhead_); }
@@ -336,20 +336,23 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     qsa_set_kv_hybrid(false);
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
-    if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
+    if (!idle_arena_.allocate(sb, idle_cache_, err)) return false;
+    state_arena_ = idle_arena_.data();
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
         if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
         std::fprintf(stderr, "strata mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
         cudaGetLastError();
-        cudaFree(state_arena_);
+        idle_arena_.release();
         st_ = QsaState{};
         ring = -1;   // fully resident
         sb = qsa_state_bytes(g, max_cells, false, ring);
-        if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
+        if (!idle_arena_.allocate(sb, idle_cache_, err)) return false;
+        state_arena_ = idle_arena_.data();
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    if (idle_cache_ && !idle_arena_.remember_constant(st_.page_table, (size_t) st_.n_pages * sizeof(int32_t), err)) return false;
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
