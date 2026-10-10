@@ -3,7 +3,10 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power; on Windows, AMD's ADLX through the
+  ADLXPybind wheel when it is installed (`pip install adlxpybind`) - load, VRAM, temperature, power - and without
+  that wheel the AMD cards are skipped (nothing can be read from them; the old ADL Overdrive calls answer
+  not-supported on current drivers).
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -246,9 +249,171 @@ class _Amd:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ AMD (Windows)
+_ADLX_WINDOWS = None   # module cache: None = not tried yet, False = unavailable, dict = ready
+
+
+def _amd_windows_cards():
+    """The AMD display adapters of this PC as (name, bus), sorted by PCI bus ascending - the order HIP numbers
+    the cards on Windows and what the engine's GPU numbering and the Monitor's gpu_index use.  Walked with
+    SetupAPI (DIGCF_PRESENT): the registry's Enum keys also hold ghost instances a re-seated card left behind
+    (same name, stale bus), and only the present devices answer here.  Empty when nothing can be read."""
+    out = []
+    try:
+        from ctypes import wintypes
+        setupapi = ctypes.WinDLL("setupapi")
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        class SP_DEVINFO_DATA(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("ClassGuid", GUID), ("DevInst", wintypes.DWORD),
+                        ("Reserved", ctypes.POINTER(ctypes.c_ulong))]
+
+        # {4d36e968-e325-11ce-bfc1-08002be10318}: the display adapters' class
+        display = GUID(0x4D36E968, 0xE325, 0x11CE, (ctypes.c_ubyte * 8)(0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18))
+        setupapi.SetupDiGetClassDevsW.restype = wintypes.HANDLE
+        setupapi.SetupDiGetClassDevsW.argtypes = [ctypes.POINTER(GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD]
+        setupapi.SetupDiEnumDeviceInfo.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(SP_DEVINFO_DATA)]
+        setupapi.SetupDiGetDeviceRegistryPropertyW.argtypes = [wintypes.HANDLE, ctypes.POINTER(SP_DEVINFO_DATA),
+                                                               wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                                               ctypes.c_void_p, wintypes.DWORD,
+                                                               ctypes.POINTER(wintypes.DWORD)]
+        dev = setupapi.SetupDiGetClassDevsW(ctypes.byref(display), None, None, 0x2)   # DIGCF_PRESENT
+        if dev in (None, 0, wintypes.HANDLE(-1).value):
+            return out
+
+        def prop(info, code):
+            buf = ctypes.create_unicode_buffer(512)
+            need = wintypes.DWORD()
+            if setupapi.SetupDiGetDeviceRegistryPropertyW(dev, ctypes.byref(info), code, None, buf,
+                                                          ctypes.sizeof(buf), ctypes.byref(need)):
+                return buf.value
+            return ""
+
+        try:
+            i = 0
+            while True:
+                info = SP_DEVINFO_DATA()
+                info.cbSize = ctypes.sizeof(info)
+                if not setupapi.SetupDiEnumDeviceInfo(dev, i, ctypes.byref(info)):
+                    break
+                i += 1
+                hardware = prop(info, 0x1)          # SPDRP_HARDWAREID: "PCI\VEN_1002&DEV_...&..."
+                if "VEN_1002" not in hardware.upper():
+                    continue
+                desc = prop(info, 0x0)              # SPDRP_DEVICEDESC
+                location = prop(info, 0x0D)         # SPDRP_LOCATION_INFORMATION: "PCI bus 6, device 0, ..."
+                bus = None
+                if "PCI bus" in location:
+                    try:
+                        bus = int(location.split("PCI bus", 1)[1].strip().split(",", 1)[0])
+                    except ValueError:
+                        pass
+                if bus is not None and desc and (desc, bus) not in out:
+                    out.append((desc, bus))
+        finally:
+            setupapi.SetupDiDestroyDeviceInfoList(dev)
+    except Exception:  # noqa: BLE001 - telemetry must never take the server down
+        pass
+    out.sort(key=lambda item: item[1])
+    return out
+
+
+def _adlx_windows():
+    """The ADLX session: AMD's own library through the ADLXPybind wheel (`pip install adlxpybind`), its GPU
+    objects as (name, gpu) pairs.  None when the wheel is not installed or ADLX answers something else than
+    ADLX_OK; the card is then skipped like the AMD Linux path without sysfs.  Initialised once - ADLX is
+    process-wide - and nothing here can stop the server."""
+    global _ADLX_WINDOWS
+    if _ADLX_WINDOWS is not None:
+        return _ADLX_WINDOWS or None
+    try:
+        import ADLXPybind
+        helper = ADLXPybind.ADLXHelper()
+        if not str(helper.Initialize()).endswith("ADLX_OK"):
+            _ADLX_WINDOWS = False
+            return None
+        system = helper.GetSystemServices()
+        performance = system.GetPerformanceMonitoringServices()
+        gpus = []
+        for i in range(system.GetNumberOfGPUs()):
+            gpu = system.GetGPUByIndex(i)
+            gpus.append((str(gpu.Name()), gpu))
+        _ADLX_WINDOWS = {"helper": helper, "performance": performance, "gpus": gpus}
+        return _ADLX_WINDOWS
+    except Exception:  # noqa: BLE001 - telemetry must never take the server down
+        _ADLX_WINDOWS = False
+        return None
+
+
+class _AmdWindows:
+    """#301's Windows counterpart: the readings come from AMD's ADLX library through the ADLXPybind wheel.
+    The old ADL Overdrive calls answer not-supported on current drivers (verified on Adrenalin 32.0.21045) and
+    the raw ADLX entry points are not a stable ctypes client, so the wheel is the supported reader; without it
+    the card reports nothing, exactly as before this backend.  `index` numbers the cards by PCI bus, ascending
+    - the order HIP numbers them on Windows - matching the engine's GPU numbering; the ADLX GPU is matched to
+    that walk by name, so a card the walk cannot name reports nothing rather than another card's numbers."""
+
+    def __init__(self, index=0):
+        self._gpu = None
+        self._name = None
+        self._performance = None
+        state = _adlx_windows()
+        if not state:
+            return
+        gpus = state["gpus"]
+        cards = _amd_windows_cards()
+        pick = None
+        if 0 <= index < len(cards):
+            want = cards[index][0].casefold()
+            for name, gpu in gpus:
+                if name.casefold() == want:
+                    pick = (name, gpu)
+                    break
+        if pick is not None:
+            self._name, self._gpu = pick
+            self._performance = state["performance"]
+
+    def ok(self):
+        return self._gpu is not None
+
+    def name(self):
+        return self._name
+
+    def read(self):
+        out = {}
+        if self._gpu is None:
+            return out
+        try:
+            m = self._performance.GetCurrentGPUMetrics(self._gpu)
+            out["util"] = int(round(float(m.GPUUsage())))
+            total = int(self._gpu.TotalVRAM())
+            if total > 0:
+                out["mem_total"] = total << 20       # MB -> bytes
+            used = int(m.GPUVRAM())
+            if used >= 0:
+                out["mem_used"] = used << 20
+            temp = float(m.GPUTemperature())
+            out["temp"] = temp if temp > 0 else None
+            power = float(m.GPUPower())
+            out["power"] = power if power > 0 else None
+            try:
+                m.Release()
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            return out
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or AMD's ADLX
+    (ADLXPybind) for AMD cards on Windows."""
+    if amd:
+        return _AmdWindows(index) if os.name == "nt" else _Amd(index)
+    return _Nvml(index)
 
 
 def free_vram_mib(index=0, amd=False):
