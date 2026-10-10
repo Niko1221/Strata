@@ -255,8 +255,32 @@ off by default; NVIDIA): the image path has no restriction for this pack, which 
 encoder; not yet run with images.
 
 What is known so far: it packs and runs on a Strix Halo (AMD gfx1151, 128 GB unified memory), where prompts read at
-~820 tokens/s at 8K and 64K and the answers passed the retrieval checks at 8K and 64K. It has **not** been measured on
-NVIDIA yet; please report what you see. One fidelity note that applies to every `--compat-bf16` pack (UD-Q4_K_XL too):
+~820 tokens/s at 8K and 64K and the answers passed the retrieval checks at 8K and 64K.
+
+Measured on NVIDIA too (2x RTX 2080 Ti 22 GB, 46 GiB DDR4 three-channel, NVMe, Linux, engine 0.1.41;
+[#1866](https://github.com/Niko1221/Strata/issues/1866)): on a PC like this neither mode holds all 55.43 GiB of
+experts. The budget mode runs on one GPU (setup strips the budget when several GPUs are asked, #498; the engine has no
+layer split with it): after the dense side, a 262K q4_0 KV cache, the image encoder and the draft head, the expert
+cache held 4,802 experts, 10.82 GiB (`--kv q4_0`; int8 gave 4,087 slots, 9.20 GiB). With `--resident-budget-gib 37`
+(the highest this PC survives; 40 would leave ~2 GiB of MemAvailable), the tiers hold 47.8 of the 55.43 GiB, so ~7.6
+GiB of experts come from the SSD for every request: a cold-topic request read 11-15 GB from storage, the decode
+waiting 8-11 s in expert fetches. Two passes of a 3-lane bench (6 decodes, 6 prefills; sampled, `--spec 4`, the
+defaults otherwise, STRATA_IO_PREFETCH on): decode 16-22 tok/s with no warm-up drift (the VRAM tier hit 79-85%),
+525-token prompts in 6.1-6.5 s (~80-86 tok/s); a repeated topic waits ~1.2 s per request (the page cache serves the
+same misses). For comparison, IQ3_XXS (40 GiB of experts) on the same PC runs the dual-GPU mmap mode (27.7 GiB of
+expert caches, 13.8 main + 13.9 helper, with the pack fully page-cached): 62-92 tok/s decode, 1.5 s for a 525-token
+prompt, so on 46 GiB it is the faster pick. Without a budget on two GPUs the engine keeps every expert resident and
+page-locks part of them, and on this PC that froze the machine during load (mlock pages cannot be reclaimed), so a
+MemAvailable watchdog is advisable for budget runs near the machine's ceiling. Keeping the SSD out needs ~64 GB of RAM
+(a 48 GiB budget plus the 10.8 GiB single-GPU cache cover 55.43); on 46 GiB it would take the budget on a layer split,
+which #1866 asks for (27.7 + 37 GiB would cover it).
+
+| Mode (same PC) | Expert tiers | Decode | 525-token prompt |
+| --- | --- | --- | --- |
+| UD-IQ4_XS, budget 37 GiB, 1 GPU | 10.82 GiB VRAM + 37 GiB RAM, of 55.43 GiB | 16-22 tok/s | 6.1-6.5 s |
+| IQ3_XXS, mmap, 2 GPUs | 27.7 GiB VRAM + all 40 GiB page-cached | 62-92 tok/s | 1.5 s |
+
+One fidelity note that applies to every `--compat-bf16` pack (UD-Q4_K_XL too):
 the pack rounds the file's Q8_0 hyper-connection projections to BF16, and on the Strix Halo that rounding put
 perplexity 6-9% above llama.cpp's on the same file (teacher-forced, short context). Reading the Q8_0 values instead
 closes most of that gap; it is measured on AMD only and not in this release.
