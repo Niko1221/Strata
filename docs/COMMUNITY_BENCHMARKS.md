@@ -12,6 +12,10 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-06: 2x RTX 5090 32 GB, Ryzen 9 9950X, 128 GB RAM](../bench/results/2026-10-06-community-dual-rtx-5090/README.md):
+  Strata 0.1.40, Flash-Next IQ3_S, 262,144-token context; aggregate production observations
+  and separate synthetic layer-split/peer-expert comparisons through 250K prompt tokens, plus a limited Q4 screen.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
