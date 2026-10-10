@@ -536,6 +536,20 @@ class VisionTempFiles(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 popen("x", ["x"])
 
+    def test_no_console_window_on_windows(self):
+        import subprocess
+        from serve.server import popen
+        with mock.patch.object(subprocess, "Popen") as p:
+            popen("the Strata engine", ["strata.exe"], stdin=subprocess.PIPE)
+        kw = p.call_args.kwargs
+        if os.name == "nt":
+            self.assertEqual(kw["creationflags"], subprocess.CREATE_NO_WINDOW)
+        else:
+            self.assertNotIn("creationflags", kw)
+        with mock.patch.object(subprocess, "Popen") as p:          # a caller's own flags are kept
+            popen("x", ["x"], creationflags=0)
+        self.assertEqual(p.call_args.kwargs["creationflags"], 0)
+
 
 class ListenProblem(unittest.TestCase):
     """#769: only an address that is taken is "already in use"."""
