@@ -1272,6 +1272,61 @@ tool descriptions) was 9,443 tokens, read in 10 s; in a tool loop, each later tu
 the cache and read only the new part in 1-2 s. On Windows, Codex's sandbox rejected every shell command in that test
 until it was started with `-c 'windows.sandbox="unelevated"'` (a Codex setting, not Strata's).
 
+**Keeping Codex off the network.** With the config above, the model runs on this PC, but Codex itself still talks
+to OpenAI. Measured on Linux with Codex CLI 0.160.1 by tracing every `connect()` (`strace -f -e trace=connect`): one
+`codex exec` against Strata, with Codex logged in to ChatGPT and default settings, opened 4 HTTPS connections to
+`chatgpt.com` / `ab.chatgpt.com` (analytics and account). The prompts and answers went only to `127.0.0.1:8080`,
+but those 4 connections are encrypted, so their content was not inspected. Turning analytics, feedback and the
+update check off left 1. A separate Codex home with no ChatGPT login left 0. A home made only for the local model,
+used with `CODEX_HOME=~/.codex-strata codex ...`:
+
+```toml
+# ~/.codex-strata/config.toml (no auth.json in this folder: no ChatGPT login)
+model = "strata"
+model_provider = "strata"
+model_context_window = 32768
+show_raw_agent_reasoning = true
+check_for_update_on_startup = false
+
+[model_providers.strata]
+name = "Strata (local)"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+stream_idle_timeout_ms = 600000
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[features]                              # cloud features a local model does not use (they also add tool descriptions)
+apps = false
+plugins = false
+remote_plugin = false
+remote_control = false
+browser_use = false
+browser_use_external = false
+computer_use = false
+image_generation = false
+realtime_conversation = false
+in_app_browser = false
+skill_search = false
+tool_suggest = false
+```
+
+With it, `codex exec` opened no connection outside `127.0.0.1`. Starting the interactive TUI made one more request,
+to `raw.githubusercontent.com/openai/codex/main/announcement_tip.toml` (the start-up tip, which sends nothing of
+yours). The TUI also starts Codex's app-server daemon, whose log shows a "remote control" websocket loop to
+`chatgpt.com`, but without a login it opened no connection. Codex changes quickly, so check again after an update:
+
+```bash
+CODEX_HOME=~/.codex-strata strace -f -qq -e trace=connect -o connect.log \
+    codex exec --skip-git-repo-check -s read-only "Reply with the word: ok" < /dev/null
+grep -oE 'inet_(addr|pton)\((AF_INET6, )?"[^"]+"\)' connect.log | grep -vE '"(127\.0\.0\.1|::1)"' | sort | uniq -c
+# empty output = no connection left this PC (IPv4 and IPv6)
+```
+
 **Codex's compaction (opt-in: `"codex_compaction_cache": true` in `strata-<model>.json`).** When the context fills up (or
 on `/compact`), Codex sends the conversation once more with a request to summarize it, and with `tools: []`. The template
 writes the tools at the top of the prompt, so that prompt would share only its first few tokens with the conversation the
