@@ -506,6 +506,8 @@ void test_host_memory() {
     require(probe("0::/box\n") && m.available == 36 * GiB && m.cgroup_limit == 48 * GiB, "v2 limit");
     put("fs/box/memory.max", "max\n");
     require(probe("0::/box\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 max");
+    // v2, the process in the root group ("0::/": WSL without systemd): the host's root has no memory.max
+    require(probe("0::/\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 root group");
     put("fs/box/memory.max", "48G\n");
     require(!probe("0::/box\n"), "v2 malformed limit accepted");
     fs::remove(t.path / "fs/box/memory.max");
