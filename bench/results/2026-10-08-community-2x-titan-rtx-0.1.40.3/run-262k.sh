@@ -7,7 +7,7 @@
 #   --ple-io ram          n-gram table in RAM
 #   --vision --vram-reserve-mib 700   image encoder resident; costs VRAM the expert cache would take
 #   reasoning_budget_tokens 12000     leaves room for an answer inside the reasoning cap
-#   api_key <your-key>     required, the port is open to the LAN
+#   api_key your-key       required, the port is open to the LAN
 #
 # STRATA_STAGE_TRIM=1 (PR #639): each card loads only its own layers dense weights
 # instead of a full copy, returning ~3.4 GB per card to the expert cache.
