@@ -118,8 +118,56 @@ Run 0, 1/6, 0, 1/6, 0, 1/6.
 A null result is a real result: it would say the default belongs behind an OS check rather than
 everywhere.
 
+## Measured on an RTX 5070 Ti: no difference
+
+One card, Windows 11 (build 26200, WDDM), driver 610.62, 16 GB, i7-13700K, 64 GB RAM. The engine is
+this branch (e4aedea) built with CUDA 13.1 and MSVC 19.44 for sm_120; `generate.cpp` with the change
+compiles without errors. The config is setup's own Coder IQ1_M config (`--expert-cache auto --prefill
+auto --spec 4 --kv int8 --kv-resident 32768 --vram-reserve-mib 700 --max-context 262144`), with
+`--vision` removed so the image encoder is not in either arm. 23.42 GiB of experts, 8.81 GiB of VRAM
+free when the cache is sized.
+
+`tools/ab_engine.py`, three rounds, the arms' order alternating (0, 1/6, 1/6, 0, 0, 1/6), the server
+restarted for every run. The prompt is its long request: 6,345 tokens, greedy, 256 new tokens at most.
+
+| run | headroom | expert cache after the post-write check | prompt, tok/s | decode, tok/s |
+|---|---|---|---|---|
+| 1 | 0 | 3,428 slots, 6.54 GiB | 2,069 | 65.2 |
+| 2 | 1/6 | 3,249 slots, 6.21 GiB | 2,084 | 63.6 |
+| 3 | 1/6 | 3,289 slots, 6.28 GiB | 2,061 | 66.6 |
+| 4 | 0 | 3,383 slots, 6.45 GiB | 2,022 | 64.5 |
+| 5 | 0 | 3,368 slots, 6.43 GiB | 1,823 | 57.5 |
+| 6 | 1/6 | 3,491 slots, 6.66 GiB | 2,064 | 68.4 |
+| **median** | **0** | | **2,022** | **64.5** |
+| **median** | **1/6** | | **2,064** | **66.6** |
+
+2% on the prompt and 3% on decode, inside the spread of either arm (run 5 was slower on every request,
+the short ones too). No cliff: nothing near the tens-of-times slowdown on the B70.
+
+**Why there is none here: the CUDA path already checks.** After the cache's slots are written it reads
+the free VRAM again and shrinks the cache until `--vram-reserve-mib` is really free
+(`src/program/generate.cpp`, "only N MiB free once the slots are written"). With headroom 0 that check
+fired twice in every run ("only 0 MiB free", then 270-385 MiB) and settled at 6.43-6.54 GiB. With 1/6
+it fired once in two runs out of three, even with 2.15 GiB kept back, and settled at 6.21-6.66 GiB.
+So both arms end within 0.3 GiB of each other, and the headroom changes the size the check starts
+from, not the size it ends at. Every run but one still ended with 63-200 MiB of VRAM free and the
+server's "LOW" warning; the free VRAM moved with the desktop's own use (1.4-2.5 GiB during the
+session).
+
+Memory (3-second samples of Windows' GPU Adapter Memory counters): dedicated memory peaks at 15.0-15.2
+GiB in five runs and 15.9 GiB in run 6, and shared memory holds 27.9-28.4 GiB in every run of both
+arms. Almost all of the shared figure is the pinned host memory the engine maps for the GPU (the 23.42
+GiB expert arena and 3.09 GiB of K/V), so it hides any spill of a few hundred MiB. It is the same in
+both arms.
+
+By the table above, CUDA's default stays 0. The SYCL tree has the same post-write check
+(`sycl/src/program/generate.cpp`), and the B70 hit the cliff anyway, so the question there is why the
+check did not see the spill. The free figure the port reads may not show memory that WDDM has paged
+out. Not measured.
+
 ## Not tested
 
-Any NVIDIA card. Linux. Whether the cliff moves with `--prefill`, the KV reservation, or the pack. Any
-model other than IQ3_XXS on the B70. Decode on the B70 with the cache cut. The CUDA and HIP sources
-carry the change but were not compiled where it was written.
+Any NVIDIA card other than the RTX 5070 Ti; any card where the post-write check does not run (an
+explicit `--expert-cache N`). Linux. Whether the cliff moves with `--prefill`, the KV reservation, or
+the pack. Any model other than IQ3_XXS on the B70. Decode on the B70 with the cache cut. The HIP
+sources carry the change but were not compiled.
