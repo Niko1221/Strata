@@ -95,7 +95,13 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
         return include_ple_key && (tensor.type == 42 || tensor.type == 18 || tensor.type == 23 || tensor.type == 8);
     static const char* suffixes[] = {".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight",
         ".attn_q.weight", ".attn_k.weight", ".attn_v.weight", ".attn_output.weight",
-        ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight"};
+        ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight",
+        // MTP/nextn prediction head (qwen4exp.nextn_predict_layers > 0): the three 2-D
+        // projections of the draft block.  They sit in the last block alongside a normal
+        // trunk layer, so without these the loader finds a shape-only pack row and aborts.
+        // The 1-D nextn norms (enorm/hnorm/hc_head_norm) are excluded by the caller's
+        // shape.size() == 2 test, so they stay on the packed fallback.
+        ".nextn.eh_proj.weight", ".nextn.hc_head_down.weight", ".nextn.hc_head_up.weight"};
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }

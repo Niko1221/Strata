@@ -581,8 +581,10 @@ private:
 // refused with a precise error rather than silently mis-run.
 struct Qwen4ExpGuard {
     uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
-             head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
-                                  // fewer experts than the canonical 512; the graph reads the true value
+             head_count_kv = 2, nextn = 0;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately
+                                  // ship fewer experts than the canonical 512; the graph reads the true value.
+                                  // `nextn` is the MTP/nextn prediction blocks the file declares; they sit
+                                  // AFTER the trunk, so block_count = trunk + nextn. 0 = do not constrain it.
 };
 
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
@@ -601,11 +603,31 @@ inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& wa
         {"qwen4exp.attention.head_count", want.head_count},
         {"qwen4exp.attention.head_count_kv", want.head_count_kv},
     };
+    // MTP/nextn blocks are counted by qwen4exp.block_count but are NOT trunk layers:
+    // the kernels' contract is the trunk (ModelGeometry::n_layers), and the MTP head is a
+    // separate subsystem.  Subtracting nextn_predict_layers lets a trunk-identical model
+    // with an extra prediction block load.  A missing key means 0 (no MTP block), not an error.
+    uint64_t nextn = 0;
+    if (const MetaValue* nv = g.get("qwen4exp.nextn_predict_layers")) nextn = nv->u;
+    if (want.nextn && nextn != want.nextn)
+        return std::string("qwen4exp.nextn_predict_layers = ") + std::to_string(nextn) +
+               ", expected " + std::to_string(want.nextn);
+
     for (const auto& r : reqs) {
         const MetaValue* v = g.get(r.key);
         if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+        uint64_t observed = v->u;
+        if (std::string(r.key) == "qwen4exp.block_count") {
+            if (observed < nextn)
+                return std::string("qwen4exp.block_count = ") + std::to_string(observed) +
+                       " is smaller than qwen4exp.nextn_predict_layers = " + std::to_string(nextn);
+            observed -= nextn;   // compare the TRUNK, which is what the kernels are built for
+        }
+        if (r.want && observed != r.want)
+            return std::string(r.key) + " = " + std::to_string(v->u) +
+                   (nextn ? " (trunk " + std::to_string(observed) + " after " +
+                            std::to_string(nextn) + " MTP block(s))" : std::string()) +
+                   ", expected " + std::to_string(r.want);
     }
     return {}; // empty == ok
 }
