@@ -29,4 +29,12 @@ namespace strata::kernels {
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
+/// STRATA_QSA_SPLIT_ATTN=1 (the idea of fork Eddoursul fd23d91): `qsa_decode_attn_batch`'s decode
+/// attention through the int8 tensor-core kernel above with each query's cells split among up to 20 blocks, merged with
+/// the log-sum-exp rescale, its partials in `scratch` (`scratch_floats` available).  False (nothing
+/// launched) unless int8 KV on sm_80+: the caller keeps qsa_decode_attn_batch.  Not bitwise the decode kernel: (b).
+bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                           int64_t cap, const QsaShapes& s, float* scratch, uint64_t scratch_floats, float* attn, int64_t n_q,
+                           void* stream);
+
 }  // namespace strata::kernels
