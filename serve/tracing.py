@@ -128,6 +128,7 @@ class Tracing:
         self._thread = None
         self._lock = threading.Lock()
         self._warned = False
+        self._inflight = 0                    # batches the export thread is posting right now (close() waits)
 
     # ------------------------------------------------------------------ per request
     def begin(self, record: dict, headers) -> TraceContext:
@@ -157,10 +158,11 @@ class Tracing:
             wall = time.perf_counter() - record.get("_clock", time.perf_counter())
         base = int(started * 1_000_000_000)
 
-        def span(name, t0, t1, kind, attrs, span_id=None, parent=None):
+        def span(name, t0, t1, kind, attrs, span_id=None, parent=None, root=False):
             if t1 <= t0:
                 return None
-            parent = parent or ctx.span_id
+            if not root:
+                parent = ctx.span_id          # every child hangs under this request's root span
             return {"traceId": ctx.trace_id, "spanId": span_id or _rand(8), "name": name, "kind": kind,
                     **({"parentSpanId": parent} if parent else {}),
                     "startTimeUnixNano": str(base + int(t0 * 1e9)), "endTimeUnixNano": str(base + int(t1 * 1e9)),
@@ -183,7 +185,7 @@ class Tracing:
             ("strata.time_to_first_token_s", record.get("first_token_s")),
             ("strata.queue_s", record.get("queue_s")), ("strata.load_s", record.get("load_s")),
             ("strata.wallclock_s", record.get("wallclock_s")),
-        ]), span_id=ctx.span_id, parent=ctx.parent_id)
+        ]), span_id=ctx.span_id, parent=ctx.parent_id, root=True)
         if root is None:
             return []
         root["status"] = {"code": 2 if err else 1}
@@ -201,7 +203,11 @@ class Tracing:
             s = span(name, t0, t1, 1, _attrs(attrs))
             if s:
                 out.append(s)
-        # prefill and decode are the engine's own milliseconds: prefill ends at the first token, decode starts there
+        # prefill and decode are the engine's own milliseconds: prefill ends at the first token, decode starts there.
+        # The first-token anchor is clamped into the request's wall window: a cache-hot request can read the prompt
+        # before the wall the record settled, and a stream that is still finishing can end before the engine's
+        # decode_ms claims - a span is drawn inside the window, never as a negative slice
+        first = min(max(first, 0.0), max(wall, 1e-6)) if first is not None else None
         prompt_ms, decode_ms = timings.get("prompt_ms"), timings.get("predicted_ms") or timings.get("decode_ms")
         if first is not None and prompt_ms:
             s = span("strata.prefill", max(0.0, first - prompt_ms / 1000), first, 1, _attrs([
@@ -262,7 +268,9 @@ class Tracing:
                     break
                 batch.append(nxt)
                 spans.extend(nxt["scopeSpans"][0]["spans"])
+            self._inflight += 1
             self._post(batch)
+            self._inflight -= 1
 
     def _post(self, batch: list) -> None:
         """One OTLP request per trace: a trace's spans stay in one payload, which is what a viewer reads as one trace."""
@@ -284,9 +292,11 @@ class Tracing:
                     self._warned = True
 
     def close(self, drain_s: float = 2.0) -> None:
-        """Give queued spans a moment to leave before the process ends (the thread is a daemon, so it would not)."""
-        deadline = time.monotonic() + drain_s
-        while not self._q.empty() and time.monotonic() < deadline:
+        """Give queued spans a moment to leave before the process ends (the thread is a daemon, so it would not).
+        The queue empties the moment the export thread takes a batch out, so this waits for the batch in flight
+        too - close() must never end the process with spans whose POST never finished."""
+        deadline = time.monotonic() + max(drain_s, FLUSH_S + 0.5)
+        while (not self._q.empty() or self._inflight) and time.monotonic() < deadline:
             time.sleep(0.05)
 
 

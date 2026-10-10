@@ -21,7 +21,7 @@ class ClockEngine(MockEngine):
             self.last = {"generated": None, "prompt_tokens": len(ids), "prompt_ms": 120.0,
                          "decode_ms": 90.0, "reused": 0, "finish": "stop"}
             n = 0
-            for t in super().generate(ids, *args, **kwargs):
+            for t in super(ClockEngine, self).generate(ids, *args, **kwargs):
                 n += 1
                 yield t
             self.last["generated"] = n
@@ -38,13 +38,15 @@ class Collector:
     def start(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+        collector = self
+
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):
                 pass
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0))
-                self.received.append(json.loads(self.rfile.read(n)))
+                collector.received.append(json.loads(self.rfile.read(n)))
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -169,7 +171,7 @@ class OneTracePerRequest(unittest.TestCase):
             self.assertLess(int(prefill["startTimeUnixNano"]), int(prefill["endTimeUnixNano"]))
 
     def test_answer_carries_this_request_span(self):
-        code, headers, _ = Request.request(self, self.base, "/v1/chat/completions",
+        code, headers, _ = request(self.base, "/v1/chat/completions",
                                            {"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 8})
         self.assertEqual(code, 200)
         sent = headers.get("traceparent")
@@ -181,7 +183,7 @@ class OneTracePerRequest(unittest.TestCase):
         self.assertEqual(parts[2], root["spanId"])
 
     def test_a_trace_only_record_never_leaves_text(self):
-        code, _, _ = Request.request(self, self.base, "/v1/chat/completions",
+        code, _, _ = request(self.base, "/v1/chat/completions",
                                      {"messages": [{"role": "user", "content": "secret-prompt-xyz"}], "max_tokens": 8})
         self.assertEqual(code, 200)
         self.assertEqual(len(self.svc.api_requests), 0)          # trace-only records are not kept in memory
@@ -199,8 +201,8 @@ class ClientAsParent(unittest.TestCase):
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         trace_id, client_span = "0123456789abcdef0123456789abcdef", "0011223344556677"
         try:
-            code, headers, _ = Request.request(
-                self, base, "/v1/chat/completions",
+            code, headers, _ = request(
+                base, "/v1/chat/completions",
                 {"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 8},
                 headers={"traceparent": f"00-{trace_id}-{client_span}-01"})
             self.assertEqual(code, 200)
@@ -226,7 +228,7 @@ class DeadCollector(unittest.TestCase):
         httpd = serve(svc, port=0)
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         try:
-            code, _, reply = Request.request(self, base, "/v1/chat/completions",
+            code, _, reply = request(base, "/v1/chat/completions",
                                              {"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 8})
             self.assertEqual(code, 200)
             self.assertIn("Hello", json.dumps(reply))
