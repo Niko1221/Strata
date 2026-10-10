@@ -2087,6 +2087,20 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
+def engine_binary(exe: str, cfg: dict | None = None) -> str:
+    """The file that holds the engine's own option strings, for a feature check that reads it.  The Intel launcher
+    (sycl/serve/strata-sycl.sh) is a shell script that runs its repo's STRATA_SYCL_BIN (default build-sycl-aot/strata)
+    in a container, so the check reads that binary, not the script.  Any other `exe` is the engine itself."""
+    p = Path(exe)
+    if p.name == "strata-sycl.sh":
+        rel = ((cfg or {}).get("env") or {}).get("STRATA_SYCL_BIN") or os.environ.get("STRATA_SYCL_BIN") \
+            or "build-sycl-aot/strata"
+        b = p.resolve().parents[2] / rel
+        if b.is_file():
+            return str(b)
+    return exe
+
+
 def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
     """#458 (opt-in): the engine arguments for "effort_position": "end" - the id of "system" as --tail-role-token, so
     the engine checkpoints in front of the trailing effort turn - or None when the config leaves it at the top (the
@@ -2098,7 +2112,7 @@ def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
     if pos == "start":
         return None
     try:
-        with open(exe, "rb") as f:
+        with open(engine_binary(exe, cfg), "rb") as f:
             known = b"--tail-role-token" in f.read()
     except OSError:
         known = False
