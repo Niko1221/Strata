@@ -10215,6 +10215,29 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // A request that continues the live session after a long stretch it generated (a thinking budget's
+            // wrap-up continuation, a forced call's opening) first keeps a checkpoint where it starts.  A later
+            // prompt that leaves this one right there - a wrap-up the client's history does not carry, a call it
+            // renders differently - then goes back to this point instead of to the turn's start, which read the whole
+            // reply again (~12K tokens after a 12288-token budget).  STRATA_LIVE_CKPT_MIN=N: only when the newest
+            // checkpoint below is at least N tokens back (default 1024; 0 = off).
+            static const int64_t live_ckpt_min = [] {
+                const char* v = std::getenv("STRATA_LIVE_CKPT_MIN");
+                return v != nullptr ? (int64_t) std::atoll(v) : (int64_t) 1024;
+            }();
+            if (from_live && live_ckpt_min > 0 && req_ckpt && reread_to <= 0 && resume < n - 1 && !incoming &&
+                slot_source < 0) {
+                int64_t below = 0;
+                for (const ConvCheckpoint& c : checks) below = std::max<int64_t>(below, (int64_t) c.ids.size());
+                if (resume - below >= live_ckpt_min) {
+                    if (!checkpoint_at(resume)) {
+                        std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
+                        return 1;
+                    }
+                    std::fprintf(stderr, "strata serve: checkpoint at the live end: %lld tokens (%lld past the newest "
+                                         "one below)\n", (long long) resume, (long long) (resume - below));
+                }
+            }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
