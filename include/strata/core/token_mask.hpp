@@ -5,12 +5,17 @@
 //   MF cut=<id,...>    free, but the accepted tokens end at the first of these ids (the end of the thinking)
 //   MK <base64>        a one-token window whose head logits outside the mask are set to kMaskedLogit before the
 //                      request's own sampler picks; little-endian uint32 words, bit v = token v allowed
+//   MKN <n> <b0> ...   a constrained window of up to n rows: row i is the mask for the token after the engine's
+//                      i-th draft (the same encoding as MK, one after another).  `token_mask=2` engines send
+//                      "MQ d1 .. dT-1" and the server answers MKN only when it looked the drafts through.
 // Header-only and backend-neutral: the CUDA, HIP and SYCL builds use the same host code.
 #pragma once
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+#include "strata/kernels/verify_kernels.hpp"  // strata::kernels::kVerifyMaxT: the row cap an MKN answer may claim
 
 namespace strata::core {
 
@@ -49,15 +54,46 @@ inline bool mask_b64_words(const char* s, std::vector<uint32_t>& out) {
     return true;
 }
 
-/// The server's answer to MQ.  `masked`: an MK line (its words in `words`); else `cut` holds the MF line's cut ids.
-inline bool mask_parse_reply(const std::string& line, bool& masked, std::vector<uint32_t>& words,
-                             std::vector<int32_t>& cut, std::string& err) {
+/// The server's answer to MQ, multi-row form.  `masked`: the window is constrained and `words` holds `rows` mask
+/// rows back to back (row i starts at words[i * n_words], with n_words = words.size() / rows); every row is encoded
+/// exactly like a single MK line.  MF/MF cut leave `rows` at 0 and fill `cut`.  Errors: rows < 1, rows >
+/// kVerifyMaxT, rows that disagree on their word count (so `words` is not rows * n_words), a bad base64 row.
+inline bool mask_parse_reply_rows(const std::string& line, bool& masked, int& rows,
+                                  std::vector<uint32_t>& words, std::vector<int32_t>& cut, std::string& err) {
     masked = false;
+    rows = 0;
     words.clear();
     cut.clear();
+    if (line.rfind("MKN ", 0) == 0) {
+        const char* p = line.c_str() + 4;
+        char* e = nullptr;
+        const long n = std::strtol(p, &e, 10);
+        if (e == p || *e != ' ') { err = "a bad MKN row count"; return false; }
+        if (n < 1) { err = "MKN with rows < 1"; return false; }
+        if (n > strata::kernels::kVerifyMaxT) { err = "MKN rows above kVerifyMaxT"; return false; }
+        p = e + 1;
+        std::vector<uint32_t> row;
+        int64_t n_words = -1;
+        for (int i = 0; i < n; ++i) {
+            if (!mask_b64_words(p, row) || row.empty()) { err = "a bad MKN mask row"; return false; }
+            if (n_words < 0) n_words = (int64_t) row.size();
+            else if ((int64_t) row.size() != n_words) { err = "MKN rows of different widths"; return false; }
+            words.insert(words.end(), row.begin(), row.end());
+            for (; *p != '\0' && *p != ' '; ++p) {}
+            if (i + 1 < n) {
+                if (*p != ' ') { err = "MKN with fewer rows than its header"; return false; }
+                ++p;
+            }
+        }
+        if (*p != '\0' && *p != '\r' && *p != '\n') { err = "MKN with more rows than its header"; return false; }
+        masked = true;
+        rows = (int) n;
+        return true;
+    }
     if (line.rfind("MK ", 0) == 0) {
         if (!mask_b64_words(line.c_str() + 3, words) || words.empty()) { err = "a bad MK mask"; return false; }
         masked = true;
+        rows = 1;
         return true;
     }
     if (line == "MF") return true;
@@ -73,8 +109,19 @@ inline bool mask_parse_reply(const std::string& line, bool& masked, std::vector<
         }
         return true;
     }
-    err = "expected MK or MF after MQ, got: " + line.substr(0, 40);
+    err = "expected MK, MKN or MF after MQ, got: " + line.substr(0, 40);
     return false;
+}
+
+/// The server's answer to MQ.  `masked`: an MK line (its words in `words`); else `cut` holds the MF line's cut ids.
+/// The thin rows==1 wrapper of mask_parse_reply_rows: an "MKN 1 ..." answer parses as the single row, an MKN with
+/// more rows is an error here (the engine that cannot mask a window should not receive one).
+inline bool mask_parse_reply(const std::string& line, bool& masked, std::vector<uint32_t>& words,
+                             std::vector<int32_t>& cut, std::string& err) {
+    int rows = 0;
+    if (!mask_parse_reply_rows(line, masked, rows, words, cut, err)) return false;
+    if (rows > 1) { err = "MKN with more than one row"; return false; }
+    return true;
 }
 
 /// One row of head logits: every token outside the mask to kMaskedLogit.  Returns how many tokens are allowed.
@@ -98,7 +145,8 @@ inline int mask_cut_accepted(const int32_t* outv, int a, const std::vector<int32
     return a;
 }
 
-/// Whether token v is allowed by the mask.
+/// Whether token v is allowed by the mask.  For row i of an MKN answer pass words.data() + i * n_words; the row is
+/// just a pointer offset, so the word count stays the per-row one.
 inline bool mask_allows(const uint32_t* words, int64_t n_words, int64_t v) {
     return v >= 0 && (v >> 5) < n_words && ((words[v >> 5] >> (v & 31)) & 1u);
 }

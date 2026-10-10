@@ -121,17 +121,24 @@ public:
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
     void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
-    /// serve's constrained decoding (token_mask.hpp): the next run() sets every head logit of row 0 outside the
-    /// mask to kMaskedLogit and samples row 0 again with the request's sampling.  The engine sets it for a T = 1
-    /// window and clears it after (null).  `words` must stay alive until then.
-    void set_token_mask(const uint32_t* words, int64_t n_words) {
+    /// serve's constrained decoding (token_mask.hpp): the next run() sets every head logit of row t outside the
+    /// mask row t (words + t * n_words, the MKN layout of token_mask.hpp) to kMaskedLogit BEFORE the request's
+    /// own sampler runs, so plain sampling, the greedy argmax and the STRATA_SPEC_PROB rejection path all read the
+    /// masked distribution; a pick that still falls outside its row's mask (inverse-CDF rounding) becomes that
+    /// row's masked argmax.  `rows` is how many mask rows `words` holds; run() masks the window's first
+    /// min(rows, T) rows.  The 2-arg form is the old single-row call (rows = 1) - generate.cpp passes the MKN
+    /// row count from Phase 5 on; until then a multi-row window keeps only row 0 constrained.  The engine sets
+    /// it before a constrained window and clears it after (null).  `words` must stay alive until then.
+    void set_token_mask(const uint32_t* words, int64_t n_words, int rows = 1) {
         tmask_ = words;
         tmask_words_ = n_words;
-        if (next_) next_->set_token_mask(words, n_words);
+        tmask_rows_ = words != nullptr ? (rows > 0 ? rows : 1) : 0;
+        if (next_) next_->set_token_mask(words, n_words, rows);
     }
     const uint32_t* tmask_ = nullptr;
     int64_t tmask_words_ = 0;
-    std::vector<float> tmask_row_;
+    int tmask_rows_ = 0;              // mask rows held at tmask_ (1 for the old 2-arg call, 0 when off)
+    std::vector<float> tmask_row_;    // the masked head logits staged host side: tmask_rows_ rows of n_vocab_
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that

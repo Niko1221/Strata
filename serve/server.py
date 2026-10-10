@@ -928,10 +928,15 @@ class StrataEngine:
 
     @property
     def supports_mask(self) -> bool:
-        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots."""
-        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) == "1" and not getattr(self, "batch", 0)
-    def _mask_reply(self, c):
-        line = "MF" if c is None else c.reply()
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots.
+        token_mask=2 also means it can mask a whole MTP window (MQ with drafts -> MKN); the server answers both."""
+        return str((getattr(self, "info", None) or {}).get("token_mask", 0)) in ("1", "2") \
+            and not getattr(self, "batch", 0)
+    def _mask_reply(self, c, line="MQ"):
+        # "MQ d1 d2 ..." (token_mask=2): the drafts become the multi-row lookahead (serve/constrain.py 1-2);
+        # a bare "MQ" is answered as before, so an older engine never sees MKN.
+        drafts = [int(w) for w in line.split()[1:] if w.lstrip("-").isdigit()]
+        line = "MF" if c is None else c.reply(drafts=drafts or None)
         try:
             self.proc.stdin.write(line + "\n")
             self.proc.stdin.flush()
@@ -1551,7 +1556,7 @@ class StrataEngine:
                     stall_state.clear()
                     
                 if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
-                    self._mask_reply(c)
+                    self._mask_reply(c, line)
                     continue
 
                 if line.startswith("T "):
@@ -2699,7 +2704,7 @@ class Service:
             return sampling
         if not getattr(self.engine, "supports_mask", False):
             constrain.note_once("constrained decoding off: the engine does not take token masks (an engine with "
-                                "token_mask=1 in its INFO line is needed); JSON is validated after the turn")
+                                "token_mask=1 or 2 in its INFO line is needed); JSON is validated after the turn")
             return sampling
         if not constrain.available():
             constrain.note_once("constrained decoding off: python -m pip install llguidance to turn it on; JSON is "

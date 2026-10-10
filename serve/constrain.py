@@ -1,7 +1,8 @@
 """serve/constrain.py - constrained decoding for the JSON response formats: a token mask per step, from llguidance.
 
-The engine (strata --serve, `mask=1` on GEN, INFO token_mask=1) asks before every verify window with a line `MQ`; the
-server answers on stdin with one line:
+The engine (strata --serve, `mask=1` on GEN, INFO token_mask=1, or token_mask=2 when it can mask a whole MTP
+window) asks before every verify window with a line `MQ` (or `MQ d1 d2 ...`, the drafts it would verify; only an
+engine that said token_mask=2 sends them); the server answers on stdin with one line:
 
     MF                  free: the window runs as always (drafts, MTP) - the thinking, before the answer
     MF cut=<id,...>     free, but the window's accepted tokens end at the first of these ids (</think>), so no draft
@@ -9,14 +10,17 @@ server answers on stdin with one line:
     MK <base64>         constrained: a one-token window (no drafts), and the head's logits outside the mask are set to
                         -1e30 before the request's own sampler picks (greedy or sampled, penalties as asked).  The mask
                         is little-endian uint32 words, bit v = token v allowed; words past the end are "not allowed".
+    MKN <n> <b0> ...    constrained, n rows: row i is the mask for the token after the engine's i-th draft (the same
+                        encoding as MK).  Only sent in answer to `MQ d...`; an engine that knows only MK never sees it.
 
 The grammar is the request's JSON schema (json_object: any object), and with tools also "<tool_call> + anything": a
 turn that calls tools stays a tool call (the server's own parser reads it), a turn that answers is the schema's JSON
 token for token.  Leading whitespace is allowed before either.  The thinking is not constrained: the mask starts
 after </think> (or at once when the prompt has already closed it, i.e. thinking off).
 
-llguidance is optional (`pip install llguidance`): without it, or with an engine that does not say token_mask=1,
-nothing changes - the prompt directive and the validation after the turn (serve/structured.py) remain the contract.
+llguidance is optional (`pip install llguidance`): without it, or with an engine that does not say token_mask=1 or
+token_mask=2, nothing changes - the prompt directive and the validation after the turn (serve/structured.py) remain
+the contract.
 The validation also stays ON with the mask: it is the check that the mask and the schema agree, not the guarantee.
 """
 from __future__ import annotations
@@ -112,6 +116,10 @@ class Vocab:
         # the window cut while the thinking runs: </think> when it is one token, else every token ending in '>'
         one = self.single(THINK_END.decode())
         self.cut = [one] if one is not None else [i for i, b in enumerate(self.tokens) if b.endswith(b">")]
+        # the cut ids for a draft lookahead (1-1): the think_end cut above, plus <tool_call> when the tokenizer
+        # writes it as one special token - both end the constrained turn, so a draft at or past them is not fed
+        tool = self.single(TOOL_CALL)
+        self.cut_ids = list(self.cut) + ([tool] if tool is not None and tool not in self.cut else [])
 
     def single(self, text: str):
         """The id of `text` when the tokenizer writes it as ONE special token (<tool_call>, </think>), else None."""
@@ -166,6 +174,53 @@ def grammar(rf: dict, with_tools: bool, vocab: Vocab) -> str:
     return _llg.LLMatcher.grammar_from_lark("\n".join(lines) + "\n")
 
 
+# ------------------------------------------------------------------ a masked window with drafts (1-1)
+def masks_for_window(m, drafts, cut_ids):
+    """The masks for rows 0..k of one verify window: row 0 for the token the head picks now, row i for the token
+    after the engine's i-th draft (so an MTP window stays constrained token by token).  The matcher's state is
+    restored to what it was on entry (rollback in a finally); a rollback failure raises RuntimeError (1-5).
+
+    How many drafts are valid is probed on a deep copy, one token at a time: llguidance's validate_tokens reports
+    k=0 for some single-byte tokens that the grammar accepts (':' after a key), and a refused consume leaves the
+    matcher in a permanent error state that rollback cannot undo (measured, llguidance 1.9.1).  The copy takes the
+    error instead; the original only consumes drafts the copy already accepted, so its consume cannot fail.
+    There is one row per token the copy consumed, plus the head's row: when the grammar ends inside the window the
+    last row is the EOS-only mask, which is what lets the window stop there."""
+    drafts = list(drafts)
+    for i, d in enumerate(drafts):            # think_end / tool_call sit outside the grammar: cut before them
+        if d in cut_ids:
+            drafts = drafts[:i]
+            break
+    k = 0
+    if drafts:
+        probe = m.deep_copy()
+        for d in drafts:
+            if not probe.consume_tokens([d]):  # the first token that leaves the grammar: no rows past it
+                break
+            k += 1
+    masks = [m.compute_bitmask()]
+    done = 0
+    try:
+        for d in drafts[:k]:                  # consume one draft at a time, one row of the window per step
+            if not m.consume_tokens([d]):     # accepted on the copy, so this should not happen; keep the rows so far (1-5)
+                note_once("constrained decoding: a validated draft was refused during the mask lookahead; "
+                          "the masked window keeps the rows up to it")
+                break
+            done += 1
+            if m.is_stopped():
+                # the grammar ends here.  Every draft was consumed (the engine will ask for the token after
+                # the last one): its row is the EOS-only mask.  Drafts remain (they sit past the end): the
+                # window is cut at the end - no row past it (test_6; a consume past it would error anyway).
+                if done == k and k == len(drafts):
+                    masks.append(m.compute_bitmask())
+                break
+            masks.append(m.compute_bitmask())
+    finally:
+        if done and not m.rollback(done):
+            raise RuntimeError("llguidance rollback failed")
+    return masks
+
+
 # ------------------------------------------------------------------------------------------------ one turn
 class Constraint:
     """One generation pass of one request: the matcher, and whether the answer (the constrained part) has started."""
@@ -189,8 +244,22 @@ class Constraint:
             return None
         return self.m.compute_bitmask()
 
-    def reply(self) -> str:
-        """The answer to the engine's MQ line (without the newline)."""
+    def reply(self, drafts=None) -> str:
+        """The answer to the engine's MQ line (without the newline).  `drafts` (1-2): the engine's draft tokens
+        for this window, sent only by an engine that said token_mask=2; empty or None keeps the one-row answer."""
+        if drafts and self.armed and self.failed is None and not self.m.is_error():
+            try:
+                masks = masks_for_window(self.m, drafts, self.vocab.cut_ids)
+            except Exception as e:                        # 1-5: rollback or matcher failure - drop the mask, log it
+                self.failed = str(e).splitlines()[0][:160] or "mask lookahead failed"
+                note_once(f"constrained decoding: gave the mask up in a turn ({self.failed}); "
+                          "the turn is validated after")
+            else:
+                self.masked += len(masks)
+                if len(masks) == 1:                       # 1-3: one row keeps the current MK form (old-engine safe)
+                    return "MK " + base64.b64encode(masks[0]).decode("ascii")
+                rows = " ".join(base64.b64encode(b).decode("ascii") for b in masks)
+                return f"MKN {len(masks)} {rows}"
         bits = self.mask()
         if bits is None:
             if not self.armed and self.vocab.cut:

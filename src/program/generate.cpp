@@ -8044,7 +8044,7 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s token_mask=1 engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s token_mask=2 engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -9984,6 +9984,11 @@ int main(int argc, char** argv) {
             const DecSnap ds0 = dec_snap();
             double dt_run = 0, dt_commit = 0, dt_draft = 0;
             int64_t dec_windows = 0, dec_T = 0;
+            // STRATA_MASK_STATS=1 (plan 3-4): this request's mask windows - MQ exchanges, the average rows asked
+            // for and answered, the average tokens adopted, the MQ round-trip ms per exchange
+            static const bool mask_stats = std::getenv("STRATA_MASK_STATS") != nullptr;
+            int64_t mk_exch = 0, mk_asked = 0, mk_rows = 0, mk_take = 0;
+            double mk_ms = 0.0;
             const int64_t decode_hits0 = drive.d.cache_hits;
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
@@ -10609,34 +10614,28 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            // the mask exchange now lives after the window's candidate and its drafts (plan 3-1): the drafts ride
+            // along on the MQ line and the server's row count shrinks the window (INFO token_mask=2).  The state
+            // persists across windows: an MF line's cut list also ends the NEXT window's drafts (plan 1-4).
+            bool gm_on = false;
+            std::vector<uint32_t> gm_words;
+            std::vector<int32_t> gm_cut;
+            int gm_rows = 0;
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                // serve/constrain.py: the server's token mask for this window (token_mask.hpp); MF = free, MK = masked
-                bool gm_on = false;
-                std::vector<uint32_t> gm_words;
-                std::vector<int32_t> gm_cut;
-                if (req_mask) {
-                    std::printf("MQ\n");
-                    std::fflush(stdout);
-                    std::string gm_line, gm_err;
-                    if (!next_line(gm_line)) { finish = "cancel"; break; }   // the server closed stdin
-                    if (!strata::core::mask_parse_reply(gm_line, gm_on, gm_words, gm_cut, gm_err)) {
-                        std::fprintf(stderr, "strata serve: %s; the request ends\n", gm_err.c_str());
-                        finish = "cancel";
-                        break;
-                    }
-                    if (stop_req.load()) { finish = "cancel"; break; }
-                }
-                int T = gm_on ? 1 : (use_mtp ? S_mtp : 1);  // no --mtp: one token a round unless a lookup draft fires
-                if (!gm_on && use_mtp && req_spec_min_p > 0.0) {
+                // serve/constrain.py answers MQ per window (token_mask.hpp); MF = free, MK/MKN = masked.
+                // 3-1: the candidate window and its drafts come first; the mask exchange then trims them.
+                int T = use_mtp ? S_mtp : 1;  // no --mtp: one token a round unless a lookup draft fires
+                if (use_mtp && req_spec_min_p > 0.0) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
                 if (first_window) T = 1;
                 // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
                 // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
+                // (3-2: no !gm_on gate - whatever the drafts' source, they ride on the MQ line and rows cuts them)
                 bool from_sfx = false;
                 int sfx_match = 0;
-                if (!gm_on && o.suffix_draft > 0 && !first_window) {
+                if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
                     if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
@@ -10646,7 +10645,7 @@ int main(int argc, char** argv) {
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
-                if (!gm_on && o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
+                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
                     int csrc = -1;
                     const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                     chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
@@ -10659,14 +10658,59 @@ int main(int argc, char** argv) {
                         chain_n = policy.chain(T, p_mtp, chain_n, cm);
                     }
                 }
-                const int T_mtp = T;
+                int T_mtp = T;
                 T += chain_n;
-                const bool timed_round = !first_window;
-                const Clock::time_point round0 = Clock::now();
-                if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                // 1-4: a draft at a cut id (the end of the thinking, a tool call) ends the candidate there - the row
+                // holding the cut id can still be adopted, nothing past it (12: a think_end inside the window never
+                // lets the rows behind it run unconstrained)
+                if (!gm_cut.empty()) {
+                    for (int i = 1; i < T; ++i) {
+                        bool hit_cut = false;
+                        for (const int32_t c : gm_cut) hit_cut = hit_cut || window[(size_t) i] == c;
+                        if (!hit_cut) continue;
+                        if (i < T_mtp) chain_n = 0;
+                        else chain_n = i - T_mtp + 1;
+                        T = i + 1;
+                        break;
+                    }
+                }
+                // 3-1: the mask exchange, with this window's drafts on the MQ line.  The server looks them through
+                // the grammar and answers one mask row per draft it accepts (MK: one row, MKN: n rows); the row
+                // count is the grammar's own cap on the window.  STOP/cancel keeps its old check position.
+                gm_on = false;
+                gm_words.clear();
+                gm_cut.clear();
+                gm_rows = 0;
+                const Clock::time_point mq0 = Clock::now();
+                int mq_asked = 1;
+                if (req_mask) {
+                    std::printf("MQ");
+                    for (int i = 1; i < T; ++i) std::printf(" %d", (int) window[(size_t) i]);   // T == 1: a bare MQ
+                    std::printf("\n");
+                    std::fflush(stdout);
+                    mq_asked = T;
+                    std::string gm_line, gm_err;
+                    if (!next_line(gm_line)) { finish = "cancel"; break; }   // the server closed stdin
+                    if (!strata::core::mask_parse_reply_rows(gm_line, gm_on, gm_rows, gm_words, gm_cut, gm_err)) {
+                        std::fprintf(stderr, "strata serve: %s; the request ends\n", gm_err.c_str());
+                        finish = "cancel";
+                        break;
+                    }
+                    if (stop_req.load()) { finish = "cancel"; break; }
+                    if (gm_on && T > gm_rows) T = gm_rows;   // 3-1/5: T = min(T_cand, rows)
+                }
+                if (req_mask && mask_stats) {   // 3-4
+                    ++mk_exch;
+                    mk_asked += mq_asked;
+                    mk_rows += gm_on ? gm_rows : 0;
+                    mk_ms += std::chrono::duration<double, std::milli>(Clock::now() - mq0).count();
+                }
+                const bool timed_round = !first_window;
+                const Clock::time_point round0 = Clock::now();
+                if (p + T > o.max_context) break;
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -10697,7 +10741,20 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 tr("window", p, T);
-                ver.set_token_mask(gm_on ? gm_words.data() : nullptr, gm_on ? (int64_t) gm_words.size() : 0);
+                // plan 7 (Phase 5, case A): the mask's rows go to verify whole - verify masks min(rows, T)
+                // rows (4-1/4-2), so every row of a multi-row window, the bonus row a included, picks from the
+                // masked distribution (case C).  No chain fix is needed: a masked request is forced serial
+                // (pl_serial "a JSON response format (token mask)" ~line 9818), so the pipelined
+                // chain_launch/chain_poll/set_source_R (10330-10355) never see a masked window; the serial
+                // drafter reads mtp.draft(T, outv...) ~10610, and outv is ver.run()'s post-mask out[] copy -
+                // the host re-picks land in the mapped h_out_ before that copy (verify.cpp mask block
+                // 2039-2120, plan 4-3), so the next window drafts from the tokens actually emitted, never the
+                // pre-mask argmax (case B does not apply).  R commit: acceptance compares the drafts against
+                // the masked outv below, so a mask rewrite at row t caps a at t and ver.commit(a + 1) commits
+                // exactly the rows whose inputs match the emitted tokens.
+                const int64_t gm_n_words = gm_on && gm_rows > 0 ? (int64_t) gm_words.size() / gm_rows : 0;
+                ver.set_token_mask(gm_on ? gm_words.data() : nullptr, gm_on ? gm_n_words : 0,
+                                   gm_on ? gm_rows : 1);
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
@@ -10747,6 +10804,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
                 draft_accepted += a;
+                if (req_mask && mask_stats) mk_take += a + 1;   // 3-4: adopted tokens per mask window
                 first_window = false;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
@@ -10819,6 +10877,13 @@ int main(int argc, char** argv) {
                 }
             }
             if (drive.d.fs) std::fprintf(stderr, "strata serve: %s\n", drive.d.fs->report().c_str());
+            if (mask_stats && mk_exch > 0) {   // 3-4: one line per request, STRATA_MASK_STATS=1
+                const double w = (double) mk_exch;
+                std::fprintf(stderr, "strata mask stats: %lld MQ exchanges, avg rows asked %.2f, avg rows back %.2f, "
+                                     "avg adopted %.2f, MQ round-trip %.2f ms\n",
+                             (long long) mk_exch, (double) mk_asked / w, (double) mk_rows / w, (double) mk_take / w,
+                             mk_ms / w);
+            }
             if (!cancelled) {
                 // a prompt stopped halfway leaves the session somewhere between two chunks: nothing to continue from
                 // (the checkpoints taken while reading it are still good)
