@@ -11163,7 +11163,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: KV streaming: %.2f%% of %llu block reads hit VRAM, %.1f MiB read "
                                      "from RAM%s\n", look ? 100.0 * (double) (look - miss) / (double) look : 100.0,
                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
-                             over ? " - OVERFLOW (too few resident cells)" : "");
+                             over ? " (more than the resident cells hold: the rest read from RAM in place)" : "");
             }
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",

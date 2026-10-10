@@ -30,6 +30,18 @@ struct QsaAttnPools {
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
     const int32_t* page_table = nullptr;
+    /// KV streaming (kv_stream.hpp): the layer's host copy, same formats in the identity layout `[block][kv_head]
+    /// [page_size]`. A selected cell whose block is not resident (page -1) is read from it in place - a dense
+    /// selection (qwen35moe: every cell) can name more blocks than the VRAM slots hold. All null when the layer is
+    /// not streamed: such a cell is masked, as before.
+    const uint16_t* host_k_pool = nullptr;
+    const uint16_t* host_v_pool = nullptr;
+    const int8_t* host_k_q = nullptr;
+    const int8_t* host_v_q = nullptr;
+    const uint16_t* host_k_scale = nullptr;
+    const uint16_t* host_v_scale = nullptr;
+    const uint8_t* host_k_q4 = nullptr;
+    const uint8_t* host_v_q4 = nullptr;
 };
 
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.

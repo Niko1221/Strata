@@ -898,6 +898,12 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+    if (st.kv_mode == 1) {   // streamed: a selected block the resolve could not make resident is read from RAM in place
+        pools.host_k_pool = st.host.k_pool; pools.host_v_pool = st.host.v_pool;
+        pools.host_k_q = st.host.k_q; pools.host_v_q = st.host.v_q;
+        pools.host_k_scale = st.host.k_scale; pools.host_v_scale = st.host.v_scale;
+        pools.host_k_q4 = st.host.k_q4; pools.host_v_q4 = st.host.v_q4;
+    }
     return pools;
 }
 
