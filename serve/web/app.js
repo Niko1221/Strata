@@ -84,6 +84,17 @@ function showTab(name) {
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+// The Settings tab opens the sampling drawer (it is not a view): it stays lit while the drawer is open,
+// and the four-column layout shows the drawer as a column of its own.
+const settingsTab = $("tab-btn-settings");
+function syncSettingsTab() {
+  const open = $("drawer").dataset.open === "true";
+  for (const b of document.querySelectorAll(".st-tab"))
+    b.setAttribute("aria-selected", String(open ? b === settingsTab : b.dataset.tab === tab));
+}
+const openDrawerBase = openDrawer;
+openDrawer = (open) => { openDrawerBase(open); syncSettingsTab(); };
+if (settingsTab) settingsTab.onclick = () => openDrawer(true);
 
 // ------------------------------------------------------------------ server access
 function headers(json = false) {
@@ -168,7 +179,7 @@ async function poll() {
   } catch (e) {
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
-  if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
+  if (++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
 }
 
@@ -190,9 +201,9 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
-  if (tab === "monitor") renderConvCache(m.conversation_cache);
-  if (tab === "about") renderAbout(eng, hw, st);
+  renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  renderConvCache(m.conversation_cache);
+  renderAbout(eng, hw, st);
 }
 
 // #596: the conversation cache - the prompt's state the engine keeps between requests (always), and the whole
@@ -1080,4 +1091,5 @@ const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=..
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
+loadConfig();   // the Settings card belongs to a column that is always on screen, so it is filled without visiting About
 poll();

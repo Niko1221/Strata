@@ -1,0 +1,157 @@
+/* ============================================================================
+   Strata web app — wide layout (opt-in).
+   ----------------------------------------------------------------------------
+   Two things live here, and both are switched on by the single attribute this
+   patch adds to <body> in index.html:
+
+     * <body data-layout="all"> turns the page into a four-column single-page
+       layout on very wide screens (>= 3200 px): Monitor | Chat | About |
+       Sampling, all visible at once and separated by hairlines;
+     * the same attribute gives the chat, the sampling drawer and the two
+       scrolling sections the same card treatment ("windows") and the same
+       spacing in the tabbed layout too, so the page stops changing shape
+       between the two.
+
+   It is opt-in and reversible: drop data-layout="all" from <body> (or this
+   file's <link>) and the page renders exactly as before.
+
+   Colours, radii and shadows come from tokens.css only, like the rest of the UI.
+   ========================================================================= */
+
+/* --- "windows": the chat and the sampling drawer become cards -------------- */
+
+/* The chat column is a card, centred like the cards above/below it: Monitor is a
+   1240 px column with --st-s-6 of page padding, so its cards come out 1192 px wide;
+   the chat card is 20 px narrower. In the wide layout, below, this width is dropped
+   and the card fills its column instead. */
+body[data-layout="all"] #view-chat {
+  height: auto;
+  flex: none;                                        /* the width is set here, not by stretching */
+  width: calc(1240px - 2 * var(--st-s-6) - 20px);
+  max-width: calc(100% - 2 * var(--st-s-6));
+  margin: var(--st-s-3) auto var(--st-s-6);
+  overflow: hidden;
+  background: var(--st-surface);
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-lg);
+  box-shadow: var(--st-sh-card);
+}
+/* The messages and the composer fill the card. The kit caps .chat and .st-composer at
+   860 px and .st-msg at 720 px, which left the composer a narrow centred column with
+   much bigger left/right insets than the bottom one. */
+body[data-layout="all"] .chat,
+body[data-layout="all"] .st-composer { max-width: none; }
+body[data-layout="all"] .st-msg { max-width: 100%; }
+
+/* The sampling drawer is a floating card in the tabbed layout too (the kit leaves it a
+   full-height panel with a hairline on its left). The closed state is pushed out by the
+   full width plus the gap, so the gap is not left peeking at the right edge. */
+body[data-layout="all"] .st-drawer {
+  top: 6px;
+  right: var(--st-s-2);
+  bottom: var(--st-s-3);
+  max-width: calc(100vw - var(--st-s-2));
+  transform: translateX(calc(100% + var(--st-s-2)));
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-lg);
+  box-shadow: var(--st-sh-card);
+  overflow: hidden;
+}
+body[data-layout="all"] .st-drawer[data-open="true"] { transform: none; }
+body[data-layout="all"] .st-drawer__head { border-bottom: 0; }   /* the card needs no divider under its title */
+
+/* --- spacing: 12 px between the "windows", 12 px of top inset ------------- */
+
+/* The top inset of Monitor and About is halved (24 -> 12 px). The bottom one stays at
+   24 px so their bottom edge keeps meeting the chat card's bottom edge. */
+body[data-layout="all"] .monitor,
+body[data-layout="all"] .about { padding-top: var(--st-s-3); }
+
+/* Vertical gaps between cards: the kit uses 20 px between a column's cards and 16 px
+   inside the metric grids, and 22 px between the drawer's rows. */
+body[data-layout="all"] .monitor,
+body[data-layout="all"] .about { gap: var(--st-s-3); }
+body[data-layout="all"] .metrics { row-gap: var(--st-s-3); }
+body[data-layout="all"] .monitor-row { row-gap: var(--st-s-3); }
+body[data-layout="all"] .st-drawer__body { gap: var(--st-s-3); }
+
+/* --- the brand is a link to the repository, shaped like a tab -------------- */
+body[data-layout="all"] a.st-brand-link {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  color: var(--st-ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+body[data-layout="all"] a.st-brand-link:hover { background: var(--st-surface-2); }
+body[data-layout="all"] a.st-brand-link:focus-visible { outline: 2px solid var(--st-accent, var(--st-line)); outline-offset: 2px; }
+
+/* --- the four-column single page (very wide screens) ---------------------- */
+
+@media (min-width: 3200px) {
+  /* The page becomes a grid: a header row and four columns adding up to 3840 px
+     (1240 + 1340 + 860 + 400; the middle one is the flexible one). */
+  body[data-layout="all"] {
+    display: grid;
+    grid-template-columns: 1240px minmax(660px, 1fr) 860px 400px;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    overflow: hidden;
+  }
+  body[data-layout="all"] > header { grid-column: 1 / -1; grid-row: 1; }
+  /* <main> stops being a container: its sections become grid cells of their own */
+  body[data-layout="all"] main { display: contents; }
+  /* the columns own their width now, so the kit's 1240/860 px caps come off */
+  body[data-layout="all"] .monitor,
+  body[data-layout="all"] .about { max-width: none; }
+
+  body[data-layout="all"] #view-monitor { grid-column: 1; grid-row: 2; }
+  body[data-layout="all"] #view-chat    { grid-column: 2; grid-row: 2; }
+  body[data-layout="all"] #view-about   { grid-column: 3; grid-row: 2; }
+  body[data-layout="all"] .st-drawer    { grid-column: 4; grid-row: 2; }
+
+  /* every section is on screen, so app.js's hidden attribute no longer applies */
+  body[data-layout="all"] .view {
+    display: block !important;
+    min-height: 0;
+    height: 100%;
+    overflow: auto;
+    border-right: 1px solid var(--st-line);
+  }
+  body[data-layout="all"] .view--chat {
+    display: flex !important;                 /* scrolling messages on top, composer at the bottom */
+    flex-direction: column;
+    overflow: hidden;
+    max-width: none;                          /* the card fills its column instead of being 1172 px */
+    margin: var(--st-s-3) var(--st-s-6) var(--st-s-6);
+  }
+  body[data-layout="all"] .view--chat .chat-scroll { flex: 1 1 auto; min-height: 0; }
+  /* The hairline between Chat and About is drawn by About's left edge: the chat is a card
+     inset by 24 px, so its own border sits inside that inset and cannot serve as the divider. */
+  body[data-layout="all"] #view-about { border-left: 1px solid var(--st-line); }
+
+  /* The drawer becomes the fourth column: a card like About's, 24 px from the hairlines,
+     as tall as its content; on a short screen it stops at max-height and its body scrolls. */
+  body[data-layout="all"] .st-drawer {
+    position: static;
+    transform: none !important;
+    width: auto;
+    max-width: none;
+    height: auto;
+    min-height: 0;
+    align-self: start;
+    max-height: calc(100% - 2 * var(--st-s-6));
+    margin: var(--st-s-3) var(--st-s-6) var(--st-s-6);
+  }
+  body[data-layout="all"] .st-drawer__body { overflow: auto; min-height: 0; }
+  /* a column needs no close button and no scrim */
+  body[data-layout="all"] #drawer-close { display: none; }
+  body[data-layout="all"] #scrim { display: none !important; }
+
+  /* cards in the narrow columns must not push their column wider */
+  body[data-layout="all"] .st-card { max-width: 100%; }
+  body[data-layout="all"] .table-wrap { overflow-x: auto; }
+}
