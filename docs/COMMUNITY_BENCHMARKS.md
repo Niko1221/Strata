@@ -26,6 +26,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-07: 2x NVIDIA Quadro RTX 4000 8 GB, Xeon E5-2620 v3, 96 GB RAM](../bench/results/2026-10-07-community-2x-rtx-4000/README.md):
   Strata 0.1.38, Swift-Qwen3.8-Flash-Next IQ2_XS, 131,072-token context, layer split across dual GPUs with RAM-tiered expert cache;
   measured deep-context prompt ingestion (73k–74k tokens at 100–250 tok/s, 18–23 tok/s decode) and production pipeline comparison against a 12B model.
+- [2026-10-10: AMD Radeon RX 9070 16 GB (gfx1201), Ryzen 7 5800X3D, 64 GB RAM](../bench/results/2026-10-10-community-rx-9070/README.md):
+  Strata 0.1.41 prebuilt Windows HIP engine, Flash-Next IQ3_XXS, 131,072-token context; three runs each at 4,195,
+  33,467 and about 130,000 prompt tokens with a 256-token cap, plus six recall checks. Decode 58.7/57.9/57.9 tok/s,
+  prompt 586/804/833 tok/s at those three lengths, needles 6/6 at 33.5k and 130k; one engine session, no clock capture.
 
 ## What to record
 
