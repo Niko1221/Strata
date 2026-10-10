@@ -190,6 +190,10 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
         elems = 32;
         bytes = 18;
         return true;
+    case 39:   // MXFP4: one E8M0 exponent + 16 nibble bytes
+        elems = 32;
+        bytes = 17;
+        return true;
     case 21:   // IQ3_S
         elems = 256;
         bytes = 110;
