@@ -1779,7 +1779,7 @@ class IncrementalPrompts(unittest.TestCase):
             msgs.append({"role": "assistant", "content": b["choices"][0]["message"]["content"]})
 
     def conversation(self, n):
-        """Messages of the n-th conversation: distinct from every other one from their first word on."""
+        """Messages of the n-th conversation: distinct from every other one from the number on."""
         return [{"role": "user", "content": f"conversation {n} says: " + f"topic {n} sentence {n} " * 20}]
 
     def service(self, **info):
@@ -1795,12 +1795,32 @@ class IncrementalPrompts(unittest.TestCase):
             svc.encode_prompt(msgs, None, {})
             texts.append(svc.render_prompt(msgs, None, {}))
         self.assertEqual(len(svc.prompts.entries), 8)
-        self.assertTrue(sorted(e[0] for e in svc.prompts.entries) == sorted(texts), "all eight kept")
+        self.assertEqual(sorted(e[0] for e in svc.prompts.entries), sorted(texts))
         msgs = self.conversation(8)
         svc.encode_prompt(msgs, None, {})
         kept = sorted(e[0] for e in svc.prompts.entries)
         self.assertEqual(len(kept), 8)
-        self.assertTrue(kept == sorted(texts[1:] + [svc.render_prompt(msgs, None, {})]), "only the oldest went")
+        self.assertEqual(kept, sorted(texts[1:] + [svc.render_prompt(msgs, None, {})]))
+
+    def lazy_service(self, args, **info):
+        """A Service over the real StrataEngine class started lazily: no process yet, so no INFO line either."""
+        engine = StrataEngine("strata", args, lazy=True)
+        engine.info.update(info)
+        return Service(engine, self.svc.tok, self.svc.template)
+
+    def test_a_lazy_engine_keeps_the_prompts_its_arguments_ask_for(self):
+        svc = self.lazy_service(["--conversation-cache-slots", "8"])
+        for n in range(10):
+            svc.encode_prompt(self.conversation(n), None, {})
+        self.assertEqual(len(svc.prompts.entries), 8)
+
+    def test_the_slot_argument_wins_over_the_info_line_and_a_bad_one_falls_back(self):
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots", "6"], conversation_cache_slots=3)
+                         .prompts.keep, 6)
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots", "x"], conversation_cache_slots=3)
+                         .prompts.keep, 3)
+        self.assertEqual(self.lazy_service(["--conversation-cache-slots"]).prompts.keep, 4)
+        self.assertEqual(self.lazy_service([]).prompts.keep, 4)
 
     def test_without_a_slot_setting_four_prompts_are_kept(self):
         svc = self.service()
