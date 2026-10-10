@@ -545,6 +545,14 @@ class SwiftIq3s(unittest.TestCase):
     def test_iq3_s_is_a_swift_choice(self):
         self.assertIn("swift", setup.MODELS["IQ3_S"].get("families", ("qwen", "swift")))
 
+    def test_iq3_s_urls_use_the_revision_that_contains_the_shards(self):
+        fam = setup.FAMILIES["swift"]
+        revision = "99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d"
+        repo = "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+        for i in (1, 2):
+            name = setup.model_file(fam, "IQ3_S", i)
+            self.assertEqual(fam["hf"] + name, f"{setup.hf_endpoint()}/{repo}/resolve/{revision}/{name}")
+
     def test_the_published_file_names(self):
         fam = setup.FAMILIES["swift"]
         self.assertEqual(setup.model_shards(fam, "IQ3_S"), 2)
