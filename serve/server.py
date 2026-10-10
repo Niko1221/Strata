@@ -4,7 +4,8 @@
     python -m serve.server --engine strata --config strata.json --port 8080   (the real engine, resident)
 
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
-non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
+non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp, POST /v1beta/models/{model}:generateContent
+and :streamGenerateContent (the Gemini API, serve/gemini.py - what Gemini CLI speaks). One sequence at a time behind a FIFO (plan: one resident sequence).
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
@@ -63,6 +64,10 @@ from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve import gemini as gemini_api  # noqa: E402
+from serve.gemini import (GeminiError, contents_to_messages as gemini_to_messages,  # noqa: E402
+                          error_body as gemini_error_body, gemini_chunks, gemini_collect,
+                          sampling_of as gemini_sampling, tool_choice_of_request as gemini_tool_choice)
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -4444,6 +4449,11 @@ def make_handler(svc: Service):
                 return True
             auth = self.headers.get("Authorization", "")
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+            # @google/genai sends its key as x-goog-api-key (and some Google endpoints use ?key=); only on the
+            # /v1beta/ paths, so the other routes keep accepting exactly what they always did
+            if self.path.split("?")[0].startswith("/v1beta/") and not given:
+                given = (self.headers.get("x-goog-api-key")
+                         or (parse_qs(urlsplit(self.path).query).get("key") or [""])[0])
             if key_matches(given, svc.api_key):
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
@@ -4560,6 +4570,15 @@ def make_handler(svc: Service):
                         model["aliases"] = list(svc.aliases)
                     data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
                     self._json(200, {"object": "list", "data": data if loaded else []})
+            elif path == "/v1beta/models":                # the same list in Gemini's shape (Gemini CLI's --list-models)
+                if self._authorized():
+                    loaded = svc.loaded()
+                    names = [svc.model, *svc.aliases]
+                    self._json(200, {"models": [{"name": f"models/{x}", "displayName": x,
+                                                 "supportedGenerationMethods": ["generateContent",
+                                                    "streamGenerateContent", "countTokens"]}
+                                                for x in (names if loaded else [])],
+                                     "totalResults": len(names) if loaded else 0})
             elif path == "/props":
                 if self._authorized():
                     self._props()
@@ -4598,7 +4617,7 @@ def make_handler(svc: Service):
             if not self._authorized():
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
-            if path.startswith("/v1/") and self._foreign_page():
+            if path.startswith(("/v1/", "/v1beta/")) and self._foreign_page():
                 return
             if path == "/settings":
                 self._settings()
@@ -4672,6 +4691,19 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
+                if path.startswith("/v1beta/models/"):   # Gemini CLI (serve/gemini.py): the name in the path is
+                    spec = path[len("/v1beta/models/"):]  # ignored, as every route ignores a name it does not know
+                    _, _, action = spec.partition(":")    # models/<name>:generateContent
+                    if action not in ("generateContent", "streamGenerateContent", "countTokens"):
+                        self._json(404, gemini_error_body(f"unknown action {action!r}: use generateContent, "
+                                                          "streamGenerateContent or countTokens", 404, "NOT_FOUND"))
+                        return
+                    self.record = svc.begin_request(path, req)
+                    if action == "countTokens":
+                        self._gemini_count(req)
+                    else:
+                        self._gemini(req, action)
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
@@ -4695,8 +4727,12 @@ def make_handler(svc: Service):
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
-                if path == "/v1/responses":
+                if isinstance(e, GeminiError):              # its own code (a bad field is 400, a bad action 404)
+                    self._json(e.code, e.body())
+                elif path == "/v1/responses":
                     self._json(400, responses_error_body(str(e)))
+                elif path.startswith("/v1beta/"):
+                    self._json(400, gemini_error_body(str(e)))
                 else:
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             except ModelBusy as e:
@@ -4716,7 +4752,8 @@ def make_handler(svc: Service):
                       flush=True)
                 body = {"error": {"type": "invalid_request_error",
                                   "message": f"the request is malformed ({type(e).__name__}: {e})"}}
-                self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
+                self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else
+                           gemini_error_body(body["error"]["message"]) if path.startswith("/v1beta/") else body)
             except EngineDied as e:                          # before the answer started (not streamed)
                 self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
             except EngineStuck as e:                         # an unload or restart that could not end the engine
@@ -4918,6 +4955,15 @@ def make_handler(svc: Service):
                             content = item["delta"] if kind == "response.output_text.delta" else ""
                             reasoning = item["delta"] if kind == "response.reasoning_text.delta" else ""
                             usage, timings = (item.get("response") or {}).get("usage"), None
+                        elif api == "gemini":                 # one whole GenerateContentResponse per event
+                            parts = item["candidates"][0]["content"]["parts"]
+                            content = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+                            reasoning = "".join(p.get("text", "") for p in parts if p.get("thought"))
+                            u = item.get("usageMetadata")
+                            usage = ({"prompt_tokens": u.get("promptTokenCount"),
+                                      "completion_tokens": u.get("candidatesTokenCount"),
+                                      "total_tokens": u.get("totalTokenCount")} if u else None)
+                            timings = None
                         else:
                             _, event = item
                             delta = event.get("delta", {})
@@ -5164,6 +5210,61 @@ def make_handler(svc: Service):
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             stop_strings(req)                                 # the same 400 as the request itself would get
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
+
+        def _gemini(self, req, action):
+            """POST /v1beta/models/{model}:generateContent or :streamGenerateContent (serve/gemini.py): the format
+            Gemini CLI speaks, on the same chat path the OpenAI and Anthropic routes take."""
+            svc.load()
+            req = svc.with_shared(req, "openai")
+            req = {**req, **gemini_sampling(req)}              # generationConfig -> the sampling keys run() reads
+            messages, tools, kw = gemini_to_messages(req)
+            self._no_local_images(messages)
+            choice = gemini_tool_choice(req)                   # toolConfig.functionCallingConfig.mode
+            if tool_choice_of(choice)[0] == "none":
+                tools = None
+            force = forced_call(choice, tools)
+            max_new = int(req.get("max_tokens") or 0)          # 0/-1: the rest of the context
+            svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
+            _debug_req("gemini", req, messages, tools, max_new, thinking, len(ids))
+            cancel = threading.Event()
+            self._watch_client(cancel)                       # #430 #431: hang up and the answer is cancelled
+            chunks = gemini_chunks(svc, req, ids, thinking, tools, max_new, cancel, force=force)
+            chunks = self._capture(chunks, "gemini")
+            if action != "streamGenerateContent":
+                return self._json(200, gemini_collect(chunks))
+            self._sse()
+            try:
+                for item in chunks:
+                    if item is None:
+                        # the SDK's SSE reader matches /^\s*data: .../ at the START of its buffer, so a comment line
+                        # (which the OpenAI and Anthropic routes send) would stall it and end the stream with a
+                        # leftover buffer -> "Incomplete JSON segment at the end". A heartbeat here is a real, empty
+                        # response instead: valid Gemini JSON, no parts, nothing for the client to append.
+                        self.wfile.write(b"data: " + json.dumps({"candidates": [],
+                                                                "modelVersion": svc.model_for(req)},
+                                                                ensure_ascii=False).encode() + b"\n\n")
+                    else:
+                        # every event is one whole GenerateContentResponse; the SDK parses each one as JSON and has
+                        # no [DONE] sentinel, so nothing else may be written here
+                        self.wfile.write(b"data: " + json.dumps(item, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+            except OSError:
+                self._note(outcome="disconnected")
+                cancel.set()
+                chunks.close()
+
+        def _gemini_count(self, req):
+            """countTokens: the prompt this server would read for the same request, rendered and tokenized - the
+            model does not run, as /v1/messages/count_tokens does."""
+            req = svc.with_shared(req, "openai")
+            req = {**req, **gemini_sampling(req)}
+            messages, tools, kw = gemini_to_messages(req)
+            stop_strings(req)
+            n = len(svc.encode_prompt(messages, tools, kw))
+            self._json(200, {"usageMetadata": {"promptTokenCount": n, "totalTokenCount": n},
+                             "modelVersion": svc.model_for(req)})
 
         def _anthropic(self, req):
             svc.load()

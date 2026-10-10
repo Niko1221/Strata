@@ -387,6 +387,7 @@ function renderAbout(eng, hw, st) {
   facts($("facts-api"), [
     ["OpenAI base URL", `${base}/v1`, true],
     ["Anthropic base URL", base, true],
+    ["Gemini base URL", base, true],
     ["Model name", eng.model, true],
   ]);
 }

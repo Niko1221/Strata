@@ -173,6 +173,12 @@ line when it is ready; the engine log is `strata-<model>.log` in the Strata fold
   `config.toml`: [DETAILS.md](DETAILS.md#the-responses-api-and-codex-cli)).
 - **Claude Code:** `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`, `ANTHROPIC_MODEL` set to a Claude model name it knows
   (Strata ignores the name), and any `ANTHROPIC_AUTH_TOKEN` (or the configured key).
+- **Gemini CLI:** `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8080` and any `GEMINI_API_KEY` (or the configured key);
+  Strata answers `POST /v1beta/models/{name}:generateContent` ([DETAILS.md](DETAILS.md#the-gemini-api-and-gemini-cli)).
+  Gemini CLI picks its auth method before it reads the base URL, so set it in `~/.gemini/settings.json` first:
+  `{"security": {"auth": {"selectedType": "gemini-api-key"}}}` - without it the client answers
+  "Invalid auth method selected." and never sends a request. Headless runs (`-p`) also need `--skip-trust` or
+  `GEMINI_CLI_TRUST_WORKSPACE=true` when the folder is not already trusted.
 - **Thinking level:** `"reasoning_effort": "none" | "low" | "medium" | "high"` (default high).
 - Strata answers one request at a time; `"parallel": N` in the model's config (or setup `--parallel N`) decodes up to
   N together ([BATCHING.md](BATCHING.md)). API details: [DETAILS.md](DETAILS.md#using-it).
