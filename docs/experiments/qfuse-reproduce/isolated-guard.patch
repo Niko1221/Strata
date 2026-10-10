@@ -1,0 +1,12 @@
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 2811c9cf..fd400783 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -140 +140,3 @@ bool one_token_self_commit() {
+-    return on;
++    // QFUSE writes the activation image but does not advance one-token state.
++    // Capture and commit must use the same decision about who advances it.
++    return on && !g_qfuse();
+@@ -651 +653 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+-    const bool self_commit = T == 1 && !batch_rec_ && !g_qfuse() && one_token_self_commit();   // see Verifier::commit
++    const bool self_commit = T == 1 && !batch_rec_ && one_token_self_commit();   // see Verifier::commit
