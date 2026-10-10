@@ -4062,6 +4062,7 @@ class ModelAliases(unittest.TestCase):
             httpd.server_close()
 
 
+@mock.patch("serve.telemetry.IS_WIN", False)      # these test the Linux sysfs reader; Windows has its own (test_telemetry_amd_windows)
 class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
