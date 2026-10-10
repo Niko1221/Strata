@@ -4265,9 +4265,9 @@ def make_handler(svc: Service):
                 if self.rfile.read(2) != b"\r\n":
                     raise BadBody(400, "malformed chunked request body")
 
-        def _body(self) -> bytes:
+        def _body(self, limit=None) -> bytes:
             self.body_read = True
-            limit = body_limit()
+            limit = body_limit() if limit is None else min(limit, body_limit())
             if self._chunked():
                 return self._read_chunked(limit)
             try:
@@ -4466,6 +4466,24 @@ def make_handler(svc: Service):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path.startswith("/web/vendor/"):
+                # Only the pinned math assets, never arbitrary paths or symlinks outside vendor.
+                vendor = (ROOT / "serve" / "web" / "vendor").resolve()
+                relative = path[len("/web/vendor/"):]
+                f = (vendor / relative).resolve()
+                types = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                         ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf"}
+                if "\\" in relative or not f.is_relative_to(vendor) or f.suffix not in types or not f.is_file():
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                body = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", types[f.suffix])
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path.startswith("/web/"):
                 # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN
                 name = path[len("/web/"):]
@@ -4599,6 +4617,18 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path == "/web/math/render":
+                if not self._own_page("math can be compiled"):
+                    return
+                from serve import tex_math
+                try:
+                    data = self._body(65536)
+                    req = json.loads(data) if len(data) <= 65536 else None
+                    result = tex_math.render(req) if isinstance(req, dict) else {"ok": False, "reason": "invalid"}
+                except (ValueError, UnicodeError):
+                    result = {"ok": False, "reason": "invalid"}
+                self._json(200, result)
                 return
             if path == "/settings":
                 self._settings()
