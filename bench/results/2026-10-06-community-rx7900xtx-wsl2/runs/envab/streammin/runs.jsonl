@@ -1,0 +1,3 @@
+{"kind": "short", "iteration": 1, "prompt_tokens": 75, "cached_tokens": 0, "completion_tokens": 217, "ttft_s": 1.95, "total_s": 8.07, "prefill_tok_s": 38.4, "decode_tok_s": 35.51}
+{"kind": "long", "iteration": 1, "prompt_tokens": 9962, "cached_tokens": 0, "completion_tokens": 256, "ttft_s": 22.06, "total_s": 27.05, "prefill_tok_s": 451.6, "decode_tok_s": 51.24}
+{"kind": "followup", "iteration": 1, "prompt_tokens": 10241, "cached_tokens": 9957, "completion_tokens": 256, "ttft_s": 2.31, "total_s": 5.93, "prefill_tok_s": 122.9, "decode_tok_s": 70.71}

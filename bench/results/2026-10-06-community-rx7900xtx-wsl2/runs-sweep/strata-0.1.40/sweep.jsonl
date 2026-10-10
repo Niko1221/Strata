@@ -1,0 +1,8 @@
+{"length_k": 16, "iteration": 1, "attempt": 1, "chars": 46050, "prompt_tokens": 14699, "completion_tokens": 256, "ttft_s": 196.2, "total_s": 202.87, "prefill_tok_s": 74.9, "decode_tok_s": 38.37, "error": ""}
+{"length_k": 32, "iteration": 1, "attempt": 1, "chars": 96417, "prompt_tokens": 33980, "completion_tokens": 256, "ttft_s": 457.41, "total_s": 462.26, "prefill_tok_s": 74.3, "decode_tok_s": 52.7, "error": ""}
+{"length_k": 64, "iteration": 1, "attempt": 1, "chars": 174220, "prompt_tokens": 63792, "completion_tokens": 256, "ttft_s": 719.84, "total_s": 724.38, "prefill_tok_s": 88.6, "decode_tok_s": 56.36, "error": ""}
+{"length_k": 96, "iteration": 1, "attempt": 1, "chars": 258383, "prompt_tokens": 91319, "completion_tokens": 256, "ttft_s": 1078.98, "total_s": 1083.75, "prefill_tok_s": 84.6, "decode_tok_s": 53.63, "error": ""}
+{"length_k": 128, "iteration": 1, "attempt": 1, "chars": 371503, "prompt_tokens": 124034, "completion_tokens": 256, "ttft_s": 1420.11, "total_s": 1424.72, "prefill_tok_s": 87.3, "decode_tok_s": 55.5, "error": ""}
+{"length_k": 192, "iteration": 1, "attempt": 1, "chars": 609520, "prompt_tokens": 197503, "completion_tokens": 256, "ttft_s": 2113.55, "total_s": 2118.17, "prefill_tok_s": 93.4, "decode_tok_s": 55.5, "error": ""}
+{"length_k": 228, "iteration": 1, "attempt": 1, "chars": 712146, "prompt_tokens": 230912, "completion_tokens": 256, "ttft_s": 2577.93, "total_s": 2582.21, "prefill_tok_s": 89.6, "decode_tok_s": 59.89, "error": ""}
+{"length_k": 256, "iteration": 1, "attempt": 1, "chars": 793582, "prompt_tokens": 254912, "completion_tokens": 256, "ttft_s": 2805.62, "total_s": 2810.95, "prefill_tok_s": 90.9, "decode_tok_s": 47.96, "error": ""}
