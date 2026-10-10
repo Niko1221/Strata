@@ -411,6 +411,13 @@ private:
     cudaEvent_t df_join_[2] = {};
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t exec_nr_[9] = {};   // #871: the doorbell variant of a stage that is all-resident otherwise
+    // fork 34a35db (STRATA_SIDE_MIXER=1): the GDN gates and the QSA indexer on a branch of the window's graph beside the
+    // mixer's projections, joined before the recurrence / the attention
+    cudaStream_t side_ = nullptr;
+    cudaEvent_t mfork_ = nullptr, mjoin_ = nullptr;
+    // fork b063c13 (STRATA_SIDE_MIXER=2): a second branch for the GDN gate projection and the QSA queries' chain
+    cudaStream_t side2_ = nullptr;
+    cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;
     cudaGraphExec_t commit_exec_ = nullptr;
 
     // mapped staging (host pointer, device alias)
