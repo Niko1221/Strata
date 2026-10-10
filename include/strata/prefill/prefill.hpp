@@ -146,6 +146,11 @@ public:
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
 
+    /// An optional per-chunk admission guard, called at the top of every prompt chunk (once per `m.T`-sized
+    /// chunk, after the split): a false return ends the run with `err`.  The VRAM cap uses it so a long
+    /// prefill cannot step past the free-memory floor between its first and its last chunk.
+    std::function<bool(std::string& err)> chunk_guard;
+
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;

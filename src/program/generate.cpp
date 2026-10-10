@@ -9875,6 +9875,7 @@ int main(int argc, char** argv) {
                         const Win& w = wins[l0];
                         for (int t = 0; t < w.T; ++t) w0[(size_t) t] = (int32_t) cur[(size_t) (w.q + t)];
                         strata::core::Verifier& v = *PV[0][l0 & 1];
+                        if (!check_vram_cap("before a pipelined window")) return fail("free VRAM is under the floor (before a pipelined window); cap not relaxed");
                         if (!v.pl_launch(w.T, w0.data(), w.q, e) || !v.pl_commit_async(w.T, e)) return fail(e);
                         ++l0;
                     }
@@ -9894,6 +9895,7 @@ int main(int argc, char** argv) {
                             const strata::core::OnDevice on(mtp.device());
                             cudaStreamWaitEvent(v.stream(), pl_mtp_ev[l1 & 1], 0);
                         }
+                        if (!check_vram_cap("before a pipelined window")) return fail("free VRAM is under the floor (before a pipelined window); cap not relaxed");
                         if (!v.pl_launch(w.T, w1.data(), w.q, e) || !v.pl_commit_async(w.T, e)) return fail(e);
                         ++l1;
                     }
@@ -10292,7 +10294,12 @@ int main(int argc, char** argv) {
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
             std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
-            bool checked_first_chunk = false;
+            if (vram_capped)
+                sp.chunk_guard = [&](std::string& e) -> bool {
+                    if (check_vram_cap("before a prompt chunk")) return true;
+                    e = "free VRAM is under the floor (before a prompt chunk); cap not relaxed";
+                    return false;
+                };
             if (pin_at >= 0) {
                 cuts.push_back(pin_at);
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
@@ -10310,13 +10317,10 @@ int main(int argc, char** argv) {
                     std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
                     return 1;
                 }
-                if (!win && !checked_first_chunk) {
-                    checked_first_chunk = true;
-                    if (!check_vram_cap("before the first prompt chunk")) {
-                        std::printf("ERR free VRAM is under the floor (before the first prompt chunk); cap not relaxed\n");
-                        std::fflush(stdout);
-                        return 1;
-                    }
+                if (!check_vram_cap("before a prompt chunk")) {
+                    std::printf("ERR free VRAM is under the floor (before a prompt chunk); cap not relaxed\n");
+                    std::fflush(stdout);
+                    return 1;
                 }
                 const auto tsp = Clock::now();
                 const bool sp_ok = win ? read_windows(at, to, err) : read_part(at, to, err);
@@ -10365,6 +10369,11 @@ int main(int argc, char** argv) {
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
             std::fflush(stdout);
+            if (!check_vram_cap("before decode")) {   // a fully reused prompt skips the chunk checks: admit the decode here
+                std::printf("ERR free VRAM is under the floor (before decode); cap not relaxed\n");
+                std::fflush(stdout);
+                return 1;
+            }
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
             int32_t x = (int32_t) ids[(size_t) (n - 1)];
@@ -10847,6 +10856,7 @@ int main(int argc, char** argv) {
                         if (A.p + A.T > o.max_context) { ending = true; continue; }
                         if (ajob) a_gap(0);   // --adapt-async: stage 0 is idle until this launch
                         if (!snap_take(A.seq)) return die("the GDN snapshot failed");
+                        if (!check_vram_cap("before a pipelined window")) return die("free VRAM is under the floor (before a pipelined window); cap not relaxed");
                         if (!V0(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.launched = true;
                         tre("L0", A.seq, A.T, 0);
@@ -11649,6 +11659,12 @@ int main(int argc, char** argv) {
             if (!kvg_ensure(n_prompt + o.max_new + 64, [] { cudaDeviceSynchronize(); })) return 1;
         }
         if (!check_vram_cap("before prompt processing")) return 1;
+        if (vram_capped)
+            prefill.chunk_guard = [&](std::string& e) -> bool {
+                if (check_vram_cap("before a prompt chunk")) return true;
+                e = "free VRAM is under the floor (before a prompt chunk); cap not relaxed";
+                return false;
+            };
         const Clock::time_point tp0 = Clock::now();
         if (!prefill.run(o.tokens.data(), n_batched, 0, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
