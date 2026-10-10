@@ -946,11 +946,11 @@ Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
 an incoming snapshot during a switch. After a restore, unchanged K/V pages can be
 retained for the next parking operation; growth appends storage without copying
-the existing pages. Rewinds refresh the affected pages, and running state and
+the existing pages, with room for the next turns of at most an eighth of each
+buffer (and at most 16 MiB), which the budget counts like the rest of the snapshot.
+Rewinds refresh the affected pages, and running state and
 checkpoints are captured again. Retained active K/V counts against the same byte
 budget and is discarded before evicting parked entries under memory pressure.
-If reserving space for growth would evict another conversation, parking uses a
-full capture instead.
 Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
 `--conversation-cache-min-tokens N` (default 0 = park every conversation) parks only conversations of at least N

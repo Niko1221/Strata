@@ -59,6 +59,42 @@ int main() {
         check(segments <= 4,"thousands of small turns do not create thousands of restore transfers");
     }
     {
+        // a parked conversation's K/V buffer (16 MiB, as captured) grows by one turn: the reserve for later turns is
+        // an eighth of the buffer at most, not another 16 MiB segment
+        ConversationBuffer bytes;
+        bytes.resize(ConversationBuffer::segment_bytes, 3);
+        const size_t captured = bytes.bytes();
+        check(captured - bytes.size() < 1024, "a fresh capture reserves nothing");
+        const size_t turn = 1 << 20;
+        const size_t peak = bytes.allocation_peak(bytes.size() + turn);
+        bytes.resize(bytes.size() + turn, 4);
+        check(bytes.bytes() <= peak, "a turn's growth stays within the predicted allocation peak");
+        check(bytes.bytes() - captured <= turn + ConversationBuffer::segment_bytes / 8 + 1024,
+              "the reserve for later turns is at most an eighth of the buffer");
+        const size_t reserved = bytes.bytes();
+        bytes.resize(bytes.size() + turn / 2, 5);
+        check(bytes.bytes() == reserved, "the next small turn fills the reserve instead of allocating");
+        size_t segments = 0;
+        bytes.visit(0, bytes.size(), [&](const uint8_t*, size_t, size_t) { ++segments; return true; });
+        check(segments == 2, "the reserve extends the turn's segment");
+    }
+    {
+        // many turns of 1 MiB onto a 16 MiB buffer: the reserve grows with the buffer, so the segments do not
+        // multiply one per turn, and the reserve never exceeds an eighth of the buffer
+        ConversationBuffer bytes;
+        bytes.resize(ConversationBuffer::segment_bytes, 1);
+        for (int k = 0; k < 256; ++k) {
+            const size_t before = bytes.size();
+            const size_t peak = bytes.allocation_peak(before + (1 << 20));
+            bytes.resize(before + (1 << 20), 2);
+            check(bytes.bytes() <= peak, "each turn stays within the predicted allocation peak");
+            check(bytes.bytes() - bytes.size() <= before / 8 + 4096, "the reserve stays within an eighth");
+        }
+        size_t segments = 0;
+        bytes.visit(0, bytes.size(), [&](const uint8_t*, size_t, size_t) { ++segments; return true; });
+        check(segments <= 64, "256 turns of 1 MiB take far fewer than 256 segments");
+    }
+    {
         ConversationKv layer;
         layer.k.resize(400);
         std::vector<ConversationKv> layers;
