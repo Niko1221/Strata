@@ -802,6 +802,11 @@ class OutputParser:
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
 
+    def reopen_reasoning(self) -> None:
+        """#1814: the tag the parser took as the end of the thinking was ordinary text the model wrote, not the marker.
+        Go back to reasoning, so what the model writes next is reasoning again (Service.run does this and continues)."""
+        self.state, self.lead = "reasoning", False
+
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
         snap = (self.fence, self.line, self.ticks)
