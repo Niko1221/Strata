@@ -104,6 +104,9 @@ constexpr int64_t C = 10240, ZV = 6144, HV = 48;
 // plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below stream_all_min())
+// The staged walk's ring when its MMQ groups take the staged experts too: two groups, so a slot is refilled only after
+// the group that read it was gathered (the walk stages at most STAGE_GRP - MMQ_GROUP - 1 entries ahead)
+constexpr int STAGE_GRP = 32;
 constexpr int kSplitHelpRing = 48;  // layer split help: the helper stage's ring slots it streams through (at most)
 // STRATA_PREFILL_STREAM_AHEAD=0 keeps the previous routed-only upload schedule (A/B).
 inline bool stream_ahead_enabled() {
@@ -296,6 +299,9 @@ inline int ring_slots(size_t T) {
     const int big = r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
 }
+// The staging buffers a layout holds: the ring, and at least STAGE_GRP for the staged walk's grouped gather.  Counted
+// and taken through this one place, so the bytes the prompt path borrows cover every buffer it writes.
+inline int stage_slots(size_t T) { return std::max(ring_slots(T), STAGE_GRP); }
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // The BF16-weight projections (hyper-connection, SSM alpha/beta, indexer, router, shared gate, PLE key/value) take
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
@@ -1234,18 +1240,19 @@ bool Prefill::carve(size_t T, void* alloc) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
     }
     m.ring = ring_slots(T);
+    const int nstage = stage_slots(T);   // the staged walk may use STAGE_GRP of them
     if (o.base == nullptr && m.ring > 0) {
         // OWNED buffers: the ring in ONE allocation.  384 separate 2.7 MiB cudaMallocs each round up to a 2 MiB page
         // (~1.3 MiB a slot, ~0.5 GiB in all) that no count ever saw.  A borrowed region keeps its per-slot layout (and
         // so its price, `bytes_needed`: the loans' slot counts do not move).
-        uint8_t* ring_base = o.take<uint8_t>((size_t) m.ring * (size_t) MAXBLOB(), ok);
-        for (int i = 0; ok && i < m.ring; ++i) {
+        uint8_t* ring_base = o.take<uint8_t>((size_t) nstage * (size_t) MAXBLOB(), ok);
+        for (int i = 0; ok && i < nstage; ++i) {
             m.stage_dev[i] = ring_base + (size_t) i * (size_t) MAXBLOB();
             m.stage_live[i] = false;
             m.used_of[i] = i;
         }
     } else {
-        for (int i = 0; i < m.ring; ++i) {
+        for (int i = 0; i < nstage; ++i) {
             m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
             m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
             m.used_of[i] = i;
@@ -1827,9 +1834,9 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
     if (owned_pages) {
-        if (ring_slots(T) > 0) o.take<uint8_t>((size_t) ring_slots(T) * (size_t) MAXBLOB(), ok);   // one allocation
+        if (stage_slots(T) > 0) o.take<uint8_t>((size_t) stage_slots(T) * (size_t) MAXBLOB(), ok);   // one allocation
     } else {
-        for (int i = 0; i < ring_slots(T); ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
+        for (int i = 0; i < stage_slots(T); ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
     }
     f(T * N);
     f((size_t) strata::kernels::NG_HC_DIM);
@@ -1840,7 +1847,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
 
 uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                         bool src) {
-    return bytes_needed(g, ss, chunk, src) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
+    return bytes_needed(g, ss, chunk, src) - (uint64_t) stage_slots((size_t) chunk) * (uint64_t) MAXBLOB();
 }
 
 int64_t Prefill::ring_default_slots() {
@@ -3589,6 +3596,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             p_release_to(l, (int32_t) m.g->n_expert, m.pp->s);
                             cudaSetDevice(pd);
                         }
+                        // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
+                        static const bool group_env = [] {
+                            const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
+                            return v == nullptr || std::atoi(v) != 0;
+                        }();
+                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
+                                                  MMQ_GROUP <= mmq::kGatherGroupMax;
+                        // The staged walk (a short prompt) groups too, resident and staged experts alike: its ring is
+                        // then STAGE_GRP slots, two groups, and it stages no further ahead than the open group allows,
+                        // so a group's staged slots stay unread-over until its flush (one wait on the last copy, one
+                        // event releasing them all, as in the streamed walk).
+                        const bool group_resident = group_env && !stream_all && use_mmq && lay.native &&
+                                                    MMQ_GROUP <= mmq::kGatherGroupMax;
+                        const bool gg_now = group_gather || group_resident;
+                        const int stage_n = group_resident ? STAGE_GRP : STAGE;
                         // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
                         int stage_next = 0;
                         std::vector<int> stage_of(order.size(), -1);
@@ -3617,7 +3639,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                             if (resident) return true;
                             const int sl = stage_next;
-                            stage_next = (stage_next + 1) % STAGE;
+                            stage_next = (stage_next + 1) % stage_n;
                             const auto th = Clock::now();
                             const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
@@ -3648,12 +3670,6 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // entry the routing skipped inside an open group first gathers what the group holds so far
                         // (`flush`), so no more than a group's entries are ever held back from the issuer.
                         // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
-                        static const bool group_env = [] {
-                            const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
-                            return v == nullptr || std::atoi(v) != 0;
-                        }();
-                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
-                                                  MMQ_GROUP <= mmq::kGatherGroupMax;
                         mmq::GatherGroup gg;
                         int gg_slots[MMQ_GROUP];
                         int gg_nslots = 0;   // ring slots gathered by the next flush
@@ -3689,7 +3705,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (use_mmq) {
                                 // gather the expert into its group slot (GGUF blocks, unchanged or converted)
                                 const size_t q = j % MMQ_GROUP;
-                                if (group_gather) {
+                                if (gg_now) {
                                     gg.blob[q] = blob_dev;
                                     gg.n = (int) q + 1;
                                     if (slot >= 0) gg_slots[gg_nslots++] = slot;
@@ -3703,7 +3719,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 } else {
                                     mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
                                 }
-                                if (slot >= 0 && !group_gather) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
+                                if (slot >= 0 && !gg_now) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
                                 if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
                                 // the group's products: gate/up, swiglu, the group's H to q8_1, down
                                 const size_t j0 = j - q, g = j0 / MMQ_GROUP, n = order.size();
@@ -3754,7 +3770,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             size_t staged = 0;
                             size_t pending = 0;
                             const bool stream_ahead = stream_ahead_enabled();
-                            const size_t lookahead = STAGE - 1;
+                            const size_t lookahead = group_resident ? (size_t) (STAGE_GRP - MMQ_GROUP - 1) : STAGE - 1;
                             for (size_t j = 0; j < order.size(); ++j) {
                                 // Resident experts occupy no staging slot. Keep STAGE actual transfers ahead,
                                 // rather than STAGE positions in the mixed resident/streamed order.
@@ -3768,8 +3784,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     ++stats_.experts_resident;
                                     if (!compute(j, m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]), -1)) return false;
                                 } else {
-                                    pt.mark(kPfWaitCopy, cs);
-                                    cudaStreamWaitEvent(m.cs, m.copied[stage_of[j]], 0);
+                                    if (!group_resident) {   // grouped: the flush waits once, on the group's last copy
+                                        pt.mark(kPfWaitCopy, cs);
+                                        cudaStreamWaitEvent(m.cs, m.copied[stage_of[j]], 0);
+                                    }
                                     if (!compute(j, m.stage_dev[stage_of[j]], stage_of[j])) return false;
                                     --pending;   // compute recorded the slot's release event before any reuse
                                 }
