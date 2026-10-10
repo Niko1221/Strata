@@ -558,6 +558,13 @@ public:
     /// The compact copy's blob of `(layer, expert)`, or null; not counted as a read (any thread).
     const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
+    /// STRATA_RAM_ADAPT: the compact copy gives `out`'s place to `in`, read from the file, so the RAM tier can follow
+    /// the conversation as the VRAM tier does.  Both are experts of `layer` (one blob size), `out` is held by the copy
+    /// and `in` is not, no exchange is staged, and nothing may be reading `out`'s blob: the caller's thread, between
+    /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
+    /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
+    bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    int64_t ram_adapts() const { return ram_adapts_; }
     bool exchange_rotation() const { return exchange_storage_.active(); }
     uint64_t rotated_exchanges() const { return exchange_storage_.exchanges(); }
     uint64_t avoided_exchange_copy_bytes() const { return exchange_storage_.avoided_bytes(); }
@@ -724,6 +731,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
+    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     uint64_t epoch_ = 0;
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
