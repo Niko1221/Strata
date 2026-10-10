@@ -4,11 +4,21 @@ Status: isolated research branch, 2026-10-08. Not a released feature or a proven
 Production configuration is unchanged. The intended objective is correct agentic task completion in less
 wall-clock time while leaving resources available to foreground applications.
 
-The current branch includes upstream **v0.1.40.4**, commit
-[`6674a0065fb96bacde33e3eb10f91a1df86f95f2`](https://github.com/Niko1221/Strata/commit/6674a0065fb96bacde33e3eb10f91a1df86f95f2).
-That update restores the Pascal decode path by retaining restrict-qualified pointers and disabling the
-new PDL prefetch below `sm_70`; it does not establish a speed gain for the RTX 4070 Laptop. Earlier validation
-below retains its original v0.1.40.3 source and binary identity. Results are not transferred to this revision.
+The source port includes upstream **v0.1.42**, commit
+[`61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406`](https://github.com/Niko1221/Strata/commit/61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406).
+Its queue heartbeats and CPU-assignment restart metadata are composed with adaptive admission and lease
+ownership. Replica and helper-GPU modes remain unsupported for the adaptive controller and are rejected
+before native or vision allocation. Ordinary replica serving remains available without adaptive ownership.
+Live memory also requires `--adapt-async 0`: asynchronous expert swaps can still own buffers when a resize
+needs them. The server rejects this combination before startup, matching the existing native guard.
+The upstream route-tail-skip default is retained in source; matched quality comparisons must explicitly use
+`STRATA_ROUTE_TAIL_SKIP=0`. Earlier validation below retains its original source and binary identities.
+Results are not transferred to this revision; port validation is pending.
+
+The vision teardown also adapts [weituotian's PR #1862](https://github.com/Niko1221/Strata/pull/1862):
+close buffered stdin after confirmed process death so a failed `QUIT` does not flush again during garbage
+collection. An encoder that cannot be confirmed stopped still retains its process and blocks replacement.
+See [implementation provenance](ADAPTIVE_PROVENANCE.md) for the exact source and attribution boundary.
 
 ## Scope
 

@@ -9,7 +9,9 @@
 //
 // It is slow per blob (three reads, ~2.7 MB) and that is fine: the profile fill reads each expert once at start,
 // the prefill's lent slots are refilled a few hundred at a time, and with every expert resident the pool never
-// asks. `pinned()` is false and `device_alias()` null, so nothing tries to DMA from it.
+// asks. Before the mirror is built `pinned()` is false and `device_alias()` null, so nothing tries to DMA from it;
+// `mirror()` (below) then makes the experts it holds `pinned()` with a device-readable `device_alias()`, built from
+// several chunks because an Arc A-series card refuses a single USM host allocation past ~3 GiB.
 #pragma once
 
 #include "strata/core/expert_source.hpp"
@@ -69,10 +71,11 @@ private:
     std::mutex mu_;
     int64_t n_layers_ = 0, n_expert_ = 0;
     int64_t reads_ = 0;
-    uint8_t* mirror_ = nullptr;                    ///< USM host (pinned, device-readable)
+    std::vector<uint8_t*> mirror_chunks_;          ///< USM host (pinned, device-readable); several chunks: Alchemist
+                                                   ///< (Arc A-series) refuses a single host allocation past ~3 GiB
     uint64_t mirror_bytes_ = 0;
-    std::vector<int64_t> mirror_off_;              ///< per (layer, expert): offset in mirror_, -1 = not mirrored
-    std::vector<int64_t> layer_first_;             ///< per layer: offset of its first mirrored blob, -1 = none
+    std::vector<uint8_t*> mirror_ptr_;             ///< per (layer, expert): its blob in the chunks, null = not mirrored
+    std::vector<const uint8_t*> layer_first_;      ///< per layer: its first mirrored blob, null = none
 };
 
 }  // namespace strata::core

@@ -178,9 +178,12 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
         if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
         if (swaps.empty()) continue;
         const OnDevice on(r.device_);
-        for (const auto& s : swaps)
-            if (!r.cache_.fill_slot(r.cache_.slot_of(s.layer, s.out), source.blob(s.layer, s.in),
+        for (const auto& s : swaps) {
+            const uint8_t* in_blob = source.blob(s.layer, s.in);
+            if (!r.cache_.fill_slot(r.cache_.slot_of(s.layer, s.out), in_blob,
                                     r.stream_, err, (int64_t) lay.blob_bytes(s.layer))) return false;
+            source.note_async_read(in_blob, r.stream_);   // #1237
+        }
         if (!check(cudaStreamSynchronize(r.stream_), err)) return false;
         for (const auto& s : swaps) {
             r.cache_.replace(s.layer, s.out, s.in);

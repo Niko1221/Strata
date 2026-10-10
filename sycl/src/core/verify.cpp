@@ -56,6 +56,10 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace strata::core {
 namespace {
@@ -94,6 +98,56 @@ const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
+// STRATA_VERIFY_STEPPED=1 (opt-in, Arc A-series): see Verifier::step_hook_.  STRATA_VERIFY_PIPE=0 serves without the
+// helper thread (serial segments) for A/B runs.
+const bool g_stepped = env_on("STRATA_VERIFY_STEPPED");
+
+// STRATA_PIPE_HELPER_SIBLING=1 (opt-in, stepped mode): the host thread is pinned to one logical CPU and a std::thread
+// inherits that mask, so the pipelined serve's pool helper and the main thread's flag-A wait share one CPU and the
+// early segment is mostly submitted only after the pool finished.  With this set the helper runs on the host CPU's SMT
+// sibling instead.  -1: keep the inherited mask (unset, not pinned to one CPU, or no sibling).
+int pipe_helper_cpu() {
+#if defined(__linux__)
+    static const int cpu = [] {
+        if (!env_on("STRATA_PIPE_HELPER_SIBLING")) return -1;
+        cpu_set_t s;
+        CPU_ZERO(&s);
+        if (pthread_getaffinity_np(pthread_self(), sizeof s, &s) != 0 || CPU_COUNT(&s) != 1) {
+            std::fprintf(stderr, "strata verify: STRATA_PIPE_HELPER_SIBLING: host thread is not pinned to one CPU; unchanged\n");
+            return -1;
+        }
+        int host = -1;
+        for (int c = 0; c < CPU_SETSIZE && host < 0; ++c)
+            if (CPU_ISSET(c, &s)) host = c;
+        char path[96];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", host);
+        int sib = -1;
+        if (FILE* f = std::fopen(path, "r")) {
+            char buf[128] = {};
+            if (std::fgets(buf, sizeof buf, f) != nullptr) {
+                for (char* p = buf; *p != 0 && sib < 0;) {   // "0,8" or "0-1"
+                    char* end = nullptr;
+                    const long a = std::strtol(p, &end, 10);
+                    if (end == p) break;
+                    long b = a;
+                    if (*end == '-') { p = end + 1; b = std::strtol(p, &end, 10); }
+                    for (long c = a; c <= b && sib < 0; ++c)
+                        if (c != host) sib = (int) c;
+                    p = (*end == ',') ? end + 1 : end;
+                    if (*end != ',') break;
+                }
+            }
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "strata verify: pipelined pool helper on CPU %d (host thread CPU %d)%s\n", sib, host,
+                     sib < 0 ? ": no SMT sibling, unchanged" : "");
+        return sib;
+    }();
+    return cpu;
+#else
+    return -1;
+#endif
+}
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 
@@ -161,15 +215,28 @@ std::chrono::seconds strata_ring_timeout() {
     return std::chrono::seconds(s);
 }
 
+// STRATA_VERIFY_STEPPED: no kernel of the window reads a host store while it runs, and no host reads a kernel's store
+// while it runs - every flag is raised before the segment that waits on it is submitted, and the host reads a
+// segment's rings and payload after the segment drained. So the window's mapped buffers need no uncached host memory
+// (sycl_queue.hpp) and its doorbell publishes need no uncached payload stores (sycl_doorbell.hpp). Both cost the
+// window time on an A770 (xe, Coder IQ1_M, 8K prompt): the GPU waited ~70 ms a window for the CPU with them, ~42
+// without; decode 22.8-25.0 -> 26.9-28.9 tok/s. STRATA_VERIFY_HOST_UNCACHED=1 keeps both.
+bool window_host_uncached() {
+    static const bool v = !g_stepped || env_on("STRATA_VERIFY_HOST_UNCACHED");
+    return v;
+}
+
 bool mapped(size_t bytes, void **h, void **d) try {
     /*
     DPCT1048: The original value cudaHostAllocMapped is not meaningful in the
     migrated code and was removed or replaced with 0. You may need to check the
     migrated code.
     */
-    if (DPCT_CHECK_ERROR(*h = strata::host_malloc_polled(
-                             bytes, dpct::get_in_order_queue())) !=
-        0 || *h == nullptr) return false;   // polled by the window's kernels: uncached host memory (sycl_queue.hpp)
+    // polled by the window's kernels: uncached host memory (sycl_queue.hpp); a buffer only read or written between
+    // kernels (the stepped window's payload) is ordinary host USM
+    if (DPCT_CHECK_ERROR(*h = window_host_uncached() ? strata::host_malloc_polled(bytes, dpct::get_in_order_queue())
+                                     : sycl::malloc_host(bytes, dpct::get_in_order_queue())) !=
+        0 || *h == nullptr) return false;
     std::memset(*h, 0, bytes);
     return DPCT_CHECK_ERROR(*d = (void *)*h) == 0;
 }
@@ -366,6 +433,9 @@ Verifier::~Verifier() try {
         if (e) delete (e);
     for (auto& e : exec_nr_)
         if (e) delete (e);
+    for (auto& v : seg_)
+        for (auto* e : v)
+            if (e) delete e;
     if (commit_exec_) delete (commit_exec_);
     for (auto& kv : exec_bm_)
         if (kv.second) delete (kv.second);
@@ -602,7 +672,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: copy stream create failed";
         return false;
     }
-    if (ext_stream_ != &dpct::get_in_order_queue()) cs_ =
+    if (ext_stream_ != nullptr) cs_ =
         ext_stream_; // set_stream (pipelined windows): the stage's shared
                      // stream
     /*
@@ -1213,7 +1283,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             const char* e = std::getenv("STRATA_SH_FORK_LATE");
             return !e || e[0] != '0';
         }();
-        const bool sh_fork = sh_stream_on() && !prof_on_ &&
+        const bool sh_fork = sh_stream_on() && !prof_on_ && !g_stepped &&
                              sh_cs_ != &dpct::get_in_order_queue() &&
                              ev_fork_ != nullptr && ev_join_ != nullptr;
         const bool sh_fork_late = sh_fork && sh_fork_late_env && !ar_on();
@@ -1285,6 +1355,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 dpct::sync_barrier(ev_fork_, cs);
                 (sh_cs_)->ext_oneapi_submit_barrier({*ev_fork_});
             }
+            if (step_hook_ && !step_hook_(l, grp)) { if (err.empty()) err = "verify: stepped serve failed"; return false; }
         }
         stamp(l, 17, grp);
         bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
@@ -1382,6 +1453,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out);
             stamp(l, 20, grp);
+            // stepped mode: the plan copy + VRAM groups end a segment, so they run while the CPU computes its rows
+            if (step_hook2_ && !step_hook2_(l, grp)) { if (err.empty()) err = "verify: stepped split failed"; return false; }
             if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
             else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
@@ -1604,7 +1677,57 @@ void Verifier::refresh_ar() {
     }
 }
 
+bool Verifier::capture_segments(int T, std::string& err) try {
+    if (!seg_[T].empty()) return true;
+    // every segment's payload is read after the segment drained: its publishes store plainly (elementwise.dp.cpp)
+    struct PlainPayload {
+        PlainPayload() { strata::kernels::doorbell_plain_payload(!window_host_uncached()); }
+        ~PlainPayload() { strata::kernels::doorbell_plain_payload(false); }
+    } plain_payload;
+    namespace sx = sycl::ext::oneapi::experimental;
+    auto close_segment = [&]() -> bool {
+        dpct::experimental::command_graph_ptr gph = nullptr;
+        dpct::experimental::end_recording(cs_, &gph);
+        if (gph == nullptr) { err = "verify: segment capture produced no graph"; return false; }
+        seg_[T].push_back(new sx::command_graph<sx::graph_state::executable>(gph->finalize()));
+        delete gph;
+        return true;
+    };
+    auto boundary = [&](int64_t l, int grp, char kind) -> bool {
+        if (!close_segment()) return false;
+        seg_at_[T].push_back({l, grp});
+        seg_kind_[T].push_back(kind);
+        dpct::experimental::begin_recording(cs_);
+        return true;
+    };
+    dpct::experimental::begin_recording(cs_);
+    step_hook_ = [&](int64_t l, int grp) { return boundary(l, grp, 1); };
+    static const bool split_on = [] { const char* e = std::getenv("STRATA_VERIFY_SPLIT"); return !(e && e[0] == '0'); }();
+    if (split_on) step_hook2_ = [&](int64_t l, int grp) { return boundary(l, grp, 0); };
+    std::string rerr;
+    const bool ok = record_window(T, cs_, rerr);
+    step_hook_ = nullptr;
+    step_hook2_ = nullptr;
+    const bool closed = close_segment();
+    if (!ok || !closed) {
+        for (auto* e : seg_[T]) delete e;
+        seg_[T].clear(); seg_at_[T].clear(); seg_kind_[T].clear();
+        if (err.empty()) err = "verify: segment capture: " + rerr;
+        return false;
+    }
+    if (std::getenv("STRATA_VERIFY_NODES") != nullptr)
+        std::fprintf(stderr, "strata verify: the %d-token window as %zu graph segments\n", T, seg_[T].size());
+    return true;
+}
+catch (sycl::exception const& exc) {
+    err = std::string("verify: segment capture: ") + exc.what();
+    return false;
+}
+
 bool Verifier::capture(int T, std::string &err) try {
+    // stepped mode: the doorbell window as segments; the all-resident (zero-doorbell) graph has no serves and is
+    // captured whole below, its one host flag raised before launch (run)
+    if (g_stepped && !ar_on() && std::getenv("STRATA_VERIFY_EAGER") == nullptr) return capture_segments(T, err);
     dpct::experimental::command_graph_exec_ptr &exec_t =
         ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
@@ -1810,6 +1933,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
         for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = pos_t;
     }
     *(volatile uint32_t*) h_seq_ = 0;
+    for (int _i = 1; _i <= 8; ++_i) ((volatile uint32_t*) h_seq_)[_i] = 0;   /* + the payload tags/checksums */
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
@@ -1907,9 +2031,122 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         const bool first_or_gap = t_prev_end.time_since_epoch().count() == 0 || (t_launch - t_prev_end) > std::chrono::milliseconds(20);
         if (wmode == 1 || (wmode == 2 && first_or_gap)) dpct::get_current_device().queues_wait_and_throw();
     }
-    const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
-                              ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
-                              : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(ar_off_ ? exec_nr_[T] : exec_[T])));
+    // STRATA_VERIFY_STEPPED (Arc A-series): the doorbell window runs as segments with the CPU experts served at the
+    // queue boundaries between them (no mid-kernel host signalling); the all-resident graph gets its one flag (the PLE
+    // rows are in place) before launch.
+    const bool stepped_run = g_stepped && !ar_on() && std::getenv("STRATA_VERIFY_EAGER") == nullptr && !seg_[T].empty();
+    const bool stepped_ar = g_stepped && ar_on() && !(g_test_stall > 0 && windows + 1 == g_test_stall);
+    if (stepped_ar) {
+        if (do_ple) {
+            const Clock::time_point tp = Clock::now();
+            if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            _mm_sfence();
+            ms_host += ms_since(tp);
+        }
+        *(volatile uint32_t*) h_flag_ = 1;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+    dpct::err0 le = 0;
+    if (stepped_run) {
+        if (remote_opt_) { err = "verify: STRATA_VERIFY_STEPPED does not serve --remote-expert-opt"; return false; }
+        const int Gs = groups_[T] > 0 ? groups_[T] : 1;
+        double st_wait = 0, st_pool = 0;
+        std::vector<char> submitted(seg_[T].size(), 0);
+        // one serve: segment i drained (the ring's payload is in mapped memory); run the pool - on a helper thread
+        // when `nxt` is a split segment, which is submitted as soon as the pool publishes its plan (flag A) - then
+        // raise flags B and M before the following segment is submitted
+        auto serve = [&](int64_t l, int grp, size_t nxt) -> bool {
+            const Clock::time_point a = Clock::now();
+            cs_->wait();
+            const Clock::time_point b = Clock::now();
+            const uint32_t want = (uint32_t) ((l - lb_) * Gs + grp + 1);
+            if (*(volatile uint32_t*) h_seq_ < want) {
+                err = "verify (stepped): layer " + std::to_string(l) + " did not ring after its queue drained (seq " +
+                      std::to_string(*(volatile uint32_t*) h_seq_) + ", want " + std::to_string(want) + ")";
+                return false;
+            }
+            cur_layer_ = want - 1;
+            set_plan_slot(grp);
+            const int tb = grp == 0 ? 0 : (T + 1) / 2, n = (Gs == 2 ? (grp == 0 ? (T + 1) / 2 : T) : T) - tb;
+            auto run_pool = [&]() {
+                if (pool != nullptr)
+                    pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
+                         h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+            };
+            auto empty_plan = [&]() {   // the pool did not publish a plan: an empty one
+                sink_.counts[0] = 0; sink_.counts[1] = 0; sink_.counts[2] = 0;
+                sink_.start[0] = 0; sink_.start2[0] = 0;
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                *(volatile uint32_t*) h_flagA_ = want;
+            };
+            // segment nxt ends at a split point: it is the plan copy + VRAM groups, whose only host wait is flag A
+            const bool split = nxt < seg_kind_[T].size() && seg_kind_[T][nxt] == 0;
+            static const bool pipe = [] { const char* e = std::getenv("STRATA_VERIFY_PIPE"); return !(e && e[0] == '0'); }();
+            if (pipe && split) {
+                std::atomic<bool> done{false};
+                std::string herr;
+                try {
+                    const int helper_cpu = pipe_helper_cpu();
+                    std::thread th([&, helper_cpu]() {
+#if defined(__linux__)
+                        if (helper_cpu >= 0) {
+                            cpu_set_t s;
+                            CPU_ZERO(&s);
+                            CPU_SET(helper_cpu, &s);
+                            (void) pthread_setaffinity_np(pthread_self(), sizeof s, &s);
+                        }
+#endif
+                        try { run_pool(); } catch (const std::exception& e) { herr = e.what(); }
+                        done.store(true, std::memory_order_release);
+                    });
+                    while (!done.load(std::memory_order_acquire) && *(volatile uint32_t*) h_flagA_ != want)
+                        std::this_thread::yield();
+                    if (done.load(std::memory_order_acquire) && *(volatile uint32_t*) h_flagA_ != want) empty_plan();
+                    cs_->ext_oneapi_graph(*seg_[T][nxt]);   // flag A is up: its waits pass
+                    submitted[nxt] = 1;
+                    th.join();
+                } catch (const std::exception& e) { err = std::string("verify: pipelined serve: ") + e.what(); return false; }
+                if (!herr.empty()) { err = "verify: pool: " + herr; return false; }
+            } else {
+                run_pool();
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                if (*(volatile uint32_t*) h_flagA_ != want) empty_plan();
+            }
+            copy_->wait();   // fetch_dma's copies and its flag-B host task
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            raise_flag(h_flagB_, want);
+            if (want == 1 && do_ple) {   // layer 1's pre copies h_ple_ after layer 0's wait on the M flag
+                const Clock::time_point tp = Clock::now();
+                if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
+                ms_host += ms_since(tp);
+            }
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            _mm_sfence();
+            *(volatile uint32_t*) h_flag_ = want;
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            st_wait += std::chrono::duration<double, std::milli>(b - a).count();
+            st_pool += ms_since(b);
+            return true;
+        };
+        try {
+            for (size_t i = 0; i < seg_[T].size() && le == 0; ++i) {
+                const bool has_entry = i < seg_at_[T].size();
+                if (!submitted[i]) cs_->ext_oneapi_graph(*seg_[T][i]);   // (a split segment: its serve submitted it)
+                if (has_entry && seg_kind_[T][i] == 1 && !serve(seg_at_[T][i].first, seg_at_[T][i].second, i + 1)) {
+                    if (err.empty()) err = "verify: stepped serve failed";
+                    le = 1;
+                }
+            }
+        } catch (const std::exception& e) { err = std::string("verify (stepped): ") + e.what(); le = 1; }
+        ms_wait += st_wait;
+        ms_pool += st_pool;
+        if (le != 0) return false;
+    } else {
+        le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
+                 ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
+                 : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(ar_off_ ? exec_nr_[T] : exec_[T])));
+    }
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
     codes. Please replace the "get_error_string_dummy(...)" with a real
@@ -1941,7 +2178,9 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     static const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
     const int64_t steps = (le_ - lb_) * G;
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
-    if (ar_on() && !test_stall) {
+    if (stepped_run || stepped_ar) {
+        // the stepped window already served every layer (or the all-resident one had its flag before launch)
+    } else if (ar_on() && !test_stall) {
         if (do_ple) {
             const Clock::time_point tp = Clock::now();
             if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
@@ -2009,6 +2248,13 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        // the ring can arrive before its payload (elementwise.hpp): the pool must read a whole one
+        if (!strata::kernels::doorbell_wait_payload(h_seq_, h_x_ + (size_t) tb * g.n_embd, (int64_t) n * g.n_embd,
+                                                    h_ids_ + (size_t) tb * ss.k, h_w_ + (size_t) tb * ss.k,
+                                                    (int64_t) n * ss.k, want)) {
+            err = "verify: layer " + std::to_string(l) + " rang but its payload never arrived whole";
+            return false;
+        }
         progress_at("verify window: the CPU experts of layer", l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
@@ -2823,6 +3069,7 @@ bool Verifier::stage_batch(const int *rows, int S, int hbase,
             c[2 + j] = j < t - first ? (int32_t) pos[first + j] : -1;
     }
     *(volatile uint32_t*) h_seq_ = 0;
+    for (int _i = 1; _i <= 8; ++_i) ((volatile uint32_t*) h_seq_)[_i] = 0;   /* + the payload tags/checksums */
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
@@ -3521,6 +3768,13 @@ int Verifier::service(PoolMultiFn pool, void *user, std::string &err) try {
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        // the ring can arrive before its payload (elementwise.hpp): the pool must read a whole one
+        if (!strata::kernels::doorbell_wait_payload(h_seq_, h_x_ + (size_t) tb * g.n_embd, (int64_t) n * g.n_embd,
+                                                    h_ids_ + (size_t) tb * ss.k, h_w_ + (size_t) tb * ss.k,
+                                                    (int64_t) n * ss.k, want)) {
+            err = "verify: layer " + std::to_string(l) + " rang but its payload never arrived whole";
+            return -1;
+        }
         progress_at("verify window (pipelined): the CPU experts of layer", l);
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,

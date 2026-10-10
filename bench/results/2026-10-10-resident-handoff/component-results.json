@@ -1,0 +1,455 @@
+{
+  "scope": "Direct API component tests; known-correct build fixture. Not model-authored code or full agent acceptance.",
+  "base_release": "0.1.41",
+  "local_source_commit": "efb21996fea649622cb84fdedd5765f425dbbe5f",
+  "native_sha256": "ba91a455f3498753a176bd54b8f7c5c4b62cf68d7195cfd61ae3f51181de82a0",
+  "server_sha256": "e74f5089357abe13252e51934c9006b758f7f2da45f3a51951224ae25042fca9",
+  "prompt_sha256": "0bb21f7e4a8d5d279168c53819d561acb786613cf6f197efee03ee4ba5af7bd2",
+  "common": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "cpu": "AMD Ryzen 9 7940HS",
+    "gpu": "NVIDIA RTX 4070 Laptop 8 GiB",
+    "installed_ram_gib": 64,
+    "os": "Windows",
+    "context_limit": 65536,
+    "reasoning_effort": "high",
+    "max_tokens": 12288,
+    "reasoning_budget_tokens": 8192,
+    "resident_budget_gib": 32,
+    "configured_spec": 4,
+    "spec_min_p": 0.5,
+    "pcie_frac": 0.37,
+    "kv": "int8",
+    "configured_kv_resident": 16384,
+    "vision": "enabled, CPU; no image in these component arms",
+    "experimental_speed_projection": true,
+    "pool_workers": 7,
+    "effective_base_free_vram_mib": 320,
+    "sampled_vram_guard_mib": 250,
+    "startup_excluded_from_cycle": true
+  },
+  "qualification": "The explicit zero additional VRAM allowance only covers this bounded already-allocated workspace; default256 return/fallback is qualified separately.",
+  "rows": [
+    {
+      "label": "candidate03-unload-b",
+      "mode": "unload",
+      "scenario": "compile",
+      "selected_action": "unload",
+      "startup_s": 43.84399999998277,
+      "admission_s": 2.9070000000065193,
+      "compiler_wall_s": 2.422000000020489,
+      "release_s": 0.015000000013969839,
+      "cycle_s": 94.51500000001397,
+      "min_sampled_ram_gib": 10.021286010742188,
+      "min_sampled_native_free_mib": 324,
+      "status": "passed",
+      "raw_result_sha256": "f3095b6bb79b483b37c34d9e4aa6d355a8b8244d7e233a85cf67b1e31e127b3d",
+      "checks": "PASS 2096 deterministic cases",
+      "compiler_version": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0",
+      "compiler_flags": [
+        "-std=c++20",
+        "-O2",
+        "-g0",
+        "-march=znver4",
+        "-Wall",
+        "-Wextra"
+      ],
+      "before_tool": {
+        "http_wall_s": 23.51600000000326,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "after_tool": {
+        "http_wall_s": 65.45300000000861,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "native_and_vision_retained": false,
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 6.0,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 6.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      }
+    },
+    {
+      "label": "candidate03-auto-c",
+      "mode": "auto",
+      "scenario": "compile",
+      "selected_action": "none",
+      "startup_s": 42.953000000008615,
+      "admission_s": 1.0940000000118744,
+      "compiler_wall_s": 2.4219999999913853,
+      "release_s": 0.01600000000325963,
+      "cycle_s": 24.296000000002095,
+      "min_sampled_ram_gib": 9.364742279052734,
+      "min_sampled_native_free_mib": 324,
+      "status": "passed",
+      "raw_result_sha256": "7f38f4d6da59afdb27107d65e9ddc276a7a7fa1f428890fe6dea01eded6c6a54",
+      "checks": "PASS 2096 deterministic cases",
+      "compiler_version": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0",
+      "compiler_flags": [
+        "-std=c++20",
+        "-O2",
+        "-g0",
+        "-march=znver4",
+        "-Wall",
+        "-Wextra"
+      ],
+      "before_tool": {
+        "http_wall_s": 15.625,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "after_tool": {
+        "http_wall_s": 4.937000000005355,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 1124
+          }
+        }
+      },
+      "native_and_vision_retained": true,
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 6.0,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      }
+    },
+    {
+      "label": "candidate03-auto-c-r2",
+      "mode": "auto",
+      "scenario": "compile",
+      "selected_action": "none",
+      "startup_s": 43.75,
+      "admission_s": 0.46900000001187436,
+      "compiler_wall_s": 2.4210000000020955,
+      "release_s": 0.0,
+      "cycle_s": 31.562000000005355,
+      "min_sampled_ram_gib": 9.497577667236328,
+      "min_sampled_native_free_mib": 322,
+      "status": "passed",
+      "raw_result_sha256": "2542e66324ea8485e73334ab8e261ac6fded008f44068cc1045de31a44ec8396",
+      "checks": "PASS 2096 deterministic cases",
+      "compiler_version": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0",
+      "compiler_flags": [
+        "-std=c++20",
+        "-O2",
+        "-g0",
+        "-march=znver4",
+        "-Wall",
+        "-Wextra"
+      ],
+      "before_tool": {
+        "http_wall_s": 23.54700000002049,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "after_tool": {
+        "http_wall_s": 4.907000000006519,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 1124
+          }
+        }
+      },
+      "native_and_vision_retained": true,
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 6.0,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      }
+    },
+    {
+      "label": "candidate03-unload-b-r2",
+      "mode": "unload",
+      "scenario": "compile",
+      "selected_action": "unload",
+      "startup_s": 43.82799999997951,
+      "admission_s": 3.0320000000065193,
+      "compiler_wall_s": 2.437000000005355,
+      "release_s": 0.0,
+      "cycle_s": 95.07800000000861,
+      "min_sampled_ram_gib": 9.919200897216797,
+      "min_sampled_native_free_mib": 324,
+      "status": "passed",
+      "raw_result_sha256": "51d87ea0d0bf15485292a9560807040843f3201570ccc64fbb2b11910ee52122",
+      "checks": "PASS 2096 deterministic cases",
+      "compiler_version": "g++.exe (Rev3, Built by MSYS2 project) 16.2.0",
+      "compiler_flags": [
+        "-std=c++20",
+        "-O2",
+        "-g0",
+        "-march=znver4",
+        "-Wall",
+        "-Wextra"
+      ],
+      "before_tool": {
+        "http_wall_s": 23.51600000000326,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "after_tool": {
+        "http_wall_s": 65.92199999999139,
+        "answer": "42",
+        "finish_reason": "stop",
+        "usage": {
+          "prompt_tokens": 1129,
+          "completion_tokens": 73,
+          "total_tokens": 1202,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      },
+      "native_and_vision_retained": false,
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 6.0,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 6.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      }
+    }
+  ],
+  "limits": [
+    "Two runs per mode; first-call HTTP time varied outside native timers.",
+    "Repeated identical prompt deliberately measures cache-sensitive continuation.",
+    "Correct lookup and fixture checks do not establish general agent quality.",
+    "Configured 64K is not a fully occupied 64K test.",
+    "These are 0.1.41-based results, not 0.1.42 performance."
+  ],
+  "separate_qualification_arms": [
+    {
+      "label": "candidate03-relief",
+      "mode": "auto",
+      "scenario": "relief",
+      "selected_action": "relieve",
+      "admission_s": 6.702999999979511,
+      "cycle_s": 37.780999999988126,
+      "min_sampled_ram_gib": 10.012962341308594,
+      "min_sampled_native_free_mib": 322,
+      "raw_result_sha256": "0ac85777f5e131a4af2309d0ab31564ebe618defc8aa7dd6b5cea10949b56ebc",
+      "status": "passed",
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 11.125,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      },
+      "compiler_started": true,
+      "compiler_checks": "PASS 2096 deterministic cases",
+      "compiler_wall_s": 2.437999999994645,
+      "continuation_answer": "42",
+      "continuation_http_s": 5.0,
+      "observed_resident_release_mib": 1134
+    },
+    {
+      "label": "candidate03-strict",
+      "mode": "relieve",
+      "scenario": "strict",
+      "selected_action": "relieve",
+      "admission_s": 1.360000000015134,
+      "cycle_s": 22.10899999999674,
+      "min_sampled_ram_gib": 9.708847045898438,
+      "min_sampled_native_free_mib": 340,
+      "raw_result_sha256": "6e61778c1dad49484e2eb94f8e852980a1778e6e655744136ab1c82f4a02292c",
+      "status": "passed",
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 3.0,
+          "vram_headroom_mib": 2048.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      },
+      "compiler_started": false,
+      "continuation_answer": "42",
+      "continuation_http_s": 5.203000000008615,
+      "expected_strict_refusal": true
+    },
+    {
+      "label": "candidate03-escalate",
+      "mode": "auto",
+      "scenario": "escalate",
+      "selected_action": "unload",
+      "admission_s": 3.437999999994645,
+      "cycle_s": 96.68700000000536,
+      "min_sampled_ram_gib": 9.750511169433594,
+      "min_sampled_native_free_mib": 324,
+      "raw_result_sha256": "e357e03ab1e602302b8af4861b5774eeb06cf9a1ece6fb449689a35970b574d7",
+      "status": "passed",
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 0.0,
+        "resume_allowance_explicit": true,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 3.0,
+          "vram_headroom_mib": 2048.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      },
+      "compiler_started": true,
+      "compiler_checks": "PASS 2096 deterministic cases",
+      "compiler_wall_s": 2.4219999999913853,
+      "continuation_answer": "42",
+      "continuation_http_s": 67.59299999999348
+    },
+    {
+      "label": "candidate03-return-fallback",
+      "mode": "auto",
+      "scenario": "return-fallback",
+      "selected_action": "none",
+      "admission_s": 0.40600000001722947,
+      "cycle_s": 96.34399999998277,
+      "min_sampled_ram_gib": 9.472419738769531,
+      "min_sampled_native_free_mib": 324,
+      "raw_result_sha256": "896ad64a337de3ca89c6f94633bffede2764c1aa1e91fad0f2d2d8dc939c4c89",
+      "status": "passed",
+      "verified_cleanup_survivors": 0,
+      "settings": {
+        "resume_vram_working_mib": 256,
+        "resume_allowance_explicit": false,
+        "observed_native": {
+          "spec": 6,
+          "mtp_max": 4,
+          "lookup": 3,
+          "kv_resident": 20480
+        },
+        "lease_targets": {
+          "ram_headroom_gib": 6.0,
+          "vram_headroom_mib": 250.0,
+          "execution_ram_floor_gib": 3.0,
+          "execution_vram_floor_mib": 250.0
+        }
+      },
+      "compiler_started": true,
+      "compiler_checks": "PASS 2096 deterministic cases",
+      "compiler_wall_s": 2.437000000005355,
+      "continuation_answer": "42",
+      "continuation_http_s": 69.71799999999348
+    }
+  ]
+}

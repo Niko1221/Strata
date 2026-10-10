@@ -18,6 +18,7 @@ GIB = 2**30
 
 
 class BudgetEngine(UnloadableEngine):
+    memory_policy_single_owner = True
     def __init__(self, tok):
         super().__init__(tok, "</think>\n\nok", max_context=4096)
         self.spawn = ("fake", ["--resident-budget-gib", "42", "--vram-reserve-mib", "1536",
