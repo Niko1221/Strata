@@ -9,6 +9,7 @@
 #include "strata/sycl_doorbell.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/resident_plan_mirror.hpp"
+#include "strata/kernels/ep_kernels.hpp"
 #include "strata/kernels/dp4a.hpp"
 
 #include <algorithm>
@@ -2084,7 +2085,8 @@ resident_plan_kernel(const int32_t *__restrict__ ids, int n, int k,
                      const unsigned long long *slot_off, long long blob,
                      int32_t *__restrict__ pl, long long capx, uint32_t *skip,
                      uint32_t ring, const unsigned long long *__restrict__ mir,
-                     volatile uint32_t *plan_err) {
+                     volatile uint32_t *plan_err,
+                     const int32_t *__restrict__ res_other = nullptr, int ep_role = 0) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t[kResidentPlanMax]>(
@@ -2104,12 +2106,17 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t eid = -1;
     int32_t slot = -1;
     unsigned long long maddr = 0;   // SYCL port: a host-mirrored expert (not in VRAM): its pinned mirror, read over PCIe
+    bool foreign = false;           // expert parallelism (ep_kernels.hpp): the other card computes this entry
     if (tid < n) {
         eid = ids[tid];
         s_ids[tid] = eid;
-        slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
-        if (slot < 0 && eid >= 0 && eid < n_expert && mir != nullptr) maddr = mir[eid];
-        if (slot < 0 && maddr == 0)
+        const bool in_range = eid >= 0 && eid < n_expert;
+        slot = in_range ? res[eid] : -1;
+        // card 0 owns what it holds; card 1 owns what card 0 does not hold (`res` is the planning card's own table)
+        if (ep_role == 1 && slot < 0 && in_range) foreign = res_other[eid] >= 0;
+        if (ep_role == 2 && in_range && res_other[eid] >= 0) { foreign = true; slot = -1; }
+        if (slot < 0 && in_range && mir != nullptr && !foreign) maddr = mir[eid];
+        if (slot < 0 && maddr == 0 && !foreign)
             dpct::atomic_fetch_or<sycl::access::address_space::generic_space>(
                 &s_bad, 1);
     }
@@ -2194,7 +2201,7 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
                                  : maddr;
         start[grp_idx] = ent_start;
     }
-    if (tid < n) {
+    if (tid < n && !foreign) {
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
@@ -2206,11 +2213,13 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        const int groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;
-        start[groups] = n;
-        start2[0] = n;
+        const int packed = s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3];
+        const int groups = packed & 0xffff;
+        const int ents = ep_role != 0 ? (packed >> 16) : n;   // without a peer every entry is in a group
+        start[groups] = ents;
+        start2[0] = ents;
         counts[0] = groups;
-        counts[1] = n;
+        counts[1] = ents;
         counts[2] = 0;
         if (skip != nullptr) {
             /*
@@ -2388,6 +2397,29 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                     });
     }
     check("resident_plan");
+}
+void resident_plan_ep(const int32_t* ids, int n_entries, int k, const int32_t* res0, const int32_t* res1, int role,
+                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off, long long blob,
+                      int32_t* plan, long long capx, void* stream, uint32_t* plan_err) {
+    const int32_t* own = role == 1 ? res0 : res1;
+    const int32_t* other = role == 1 ? res1 : res0;
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<dpct_kernel_name<class resident_plan_ep_kernel>>(
+                sycl::nd_range<3>(sycl::range(1, 1, kResidentPlanMax),
+                                  sycl::range(1, 1, kResidentPlanMax)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        resident_plan_kernel(
+                            ids, n_entries, k, own, n_expert, cache_base,
+                            slot_off, blob, plan, capx, nullptr, 0, nullptr, plan_err, other, role);
+                    });
+    }
+    check("resident_plan_ep");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));

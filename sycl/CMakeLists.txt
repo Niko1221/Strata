@@ -211,6 +211,7 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/ep_kernels.dp.cpp)   # port-only: expert parallelism over two cards
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
@@ -318,7 +319,7 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels)
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
   # 0.1.40 (#783): the batched verify-window kernels against the ones they replace, bitwise (synthetic, no model)
-  foreach(p IN ITEMS verify native_multi kv_steps resident_plan gr_multi)
+  foreach(p IN ITEMS verify native_multi kv_steps resident_plan gr_multi resident_plan_ep)   # resident_plan_ep: port-only
     strata_resolve(_src src/kernels/${p}_parity.cpp)
     add_executable(${p}_parity ${_src})
     target_include_directories(${p}_parity PRIVATE ${STRATA_ROOT}/src/kernels)

@@ -729,6 +729,38 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
   has already printed "stopped"); it is not a GPU event.
 
+## Two cards computing each layer's experts together: `--expert-parallel-device` (2026-10-08)
+
+Measured on 2x Arc Pro B70 (32 GB each, `xe`), Flash-Next IQ3_XXS, Ryzen 9 9950X3D, 60 GB RAM, through the server
+(`sycl/serve/server_intel.py`, 131,072 context, INT8 KV with `--kv-resident 32768`, `--vram-reserve-mib 2048`, the
+default drafting), greedy, thinking off, the same request 3 times (the table: the 2nd and 3rd, the 1st reads the prompt):
+
+| | `--layer-split auto` | `--expert-parallel-device 1` |
+|---|---|---|
+| where the experts live | layers 0-28 on card 0, 29-47 on card 1, every expert in VRAM | card 0: 283 per layer, card 1: the other 229, every expert in VRAM |
+| decode, a BST class (600 tokens) | 94.3 tok/s | **107.9 tok/s** (+14.4%) |
+| decode, a 300-word explanation (384 tokens) | 64.2 tok/s | **72.6 tok/s** (+13.1%) |
+| output | | byte-identical to the layer split, all 6 requests of each |
+
+`--expert-parallel-device N` uses two cards, card 0 and card N (N is a card number, not a count). Card 0 runs every
+layer and card N holds the experts card 0 does not; for each layer the two cards compute their own experts at the same
+time, card N writes its rows into card 0's memory, and card 0 combines them as on one card. Only the experts run on
+both cards; the rest of each layer runs on card 0 alone. Each layer's experts are dealt to the two cards hottest
+first, in pairs alternating 0,1 / 1,0, so both serve about the same share of the routing (in a unitrace of 96 decoded
+tokens each card's expert kernels take 160-170 ms of the trace's 1.1 s). The sets are fixed at the start (no prompt
+loans, no adaptive swaps).
+
+- Needs `--stream-experts` and every expert in one of the two cards' VRAM; not with `--layer-split`, `--peer-device`
+  or `--pipeline-windows`. `ONEAPI_DEVICE_SELECTOR=level_zero:*` and `STRATA_MIRROR_MIB=0` in the config's `"env"`.
+- `--batch N` works with it: 4 requests at once give the same outputs as one at a time.
+- The prompt path reads card N's experts from the GGUF on card 0 (a 1,996-token prompt: 719 tok/s against 768 on one
+  card with the mirror). `STRATA_EP_MIRROR=1` mirrors them in pinned RAM as well (18 GB for IQ3_XXS).
+- Checks: `STRATA_EP_VERIFY=1` (with `STRATA_EP_MIRROR=1`) has card 0 compute every row itself and compare card N's
+  rows with them word for word: no row differed in the 448 windows the three runs reported. `STRATA_EP_SELF=1` runs
+  the window on card 0's own rows only; its output is byte-identical to the expert-parallel one.
+- Through `--tokens` (no server, 32K context), 512 tokens of the BST prompt: 107.3 tok/s; one card with the other
+  experts in the RAM mirror: 50.8 (1,024 tokens).
+
 ## Not done
 
 - Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA

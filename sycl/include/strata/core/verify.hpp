@@ -48,6 +48,19 @@ class RemoteExpertOpt;
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
 
+/// SYCL port: expert parallelism (strata/kernels/ep_kernels.hpp).  A second card holds the experts this card does not
+/// and computes their rows of every layer at the same time as this card computes its own.  Set before init.
+struct VerifyEp {
+    int device = -1;                                 ///< the peer card (dpct device id); -1: off
+    const int32_t* h_res1 = nullptr;                 ///< the peer's residency table, host [n_layers * n_expert]
+    const int32_t* res1 = nullptr;                   ///< ... in the peer's memory
+    const int32_t* res1_on0 = nullptr;               ///< ... a copy in this card's memory
+    const int32_t* res0_on1 = nullptr;               ///< this card's table, a copy in the peer's memory
+    const uint8_t* cache_base1 = nullptr;            ///< the peer's expert arena
+    const unsigned long long* slot_off1 = nullptr;   ///< the peer's per-slot offsets, its memory (null: slot * blob1)
+    int64_t blob1 = 0;
+};
+
 struct VerifyHits {
     const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
     const int32_t* h_res = nullptr;      ///< host [n_layers * n_expert] slot or -1 (when all >= 0 in stage: zero-doorbell)
@@ -64,6 +77,8 @@ public:
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    void set_ep(const VerifyEp& ep) { ep_cfg_ = ep; }                          // SYCL port: before init
+    bool ep_on() const { return ep_cfg_.device >= 0; }
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -337,6 +352,43 @@ private:
     /// was all-resident.  refresh_ar() looks at the host table before each window.
     bool ar_off_ = false;
     bool ar_on() const { return all_resident_ && !ar_off_; }
+    // ---- SYCL port: expert parallelism (set_ep).  The peer's half of each window is a graph of its own, recorded
+    // by record_window beside this card's, launched just before it.  Regions the other card writes are EpRegions
+    // (ep_mem.hpp); `*_on1` is how the peer's kernels address a region of this card, `*_on0` the reverse.
+    VerifyEp ep_cfg_;
+    dpct::queue_ptr ep_q_ = nullptr;                  ///< the peer's in-order queue
+    uint32_t* ep_ctr0_ = nullptr;                     ///< this card's window epoch
+    uint32_t* ep_ctr1_ = nullptr;                     ///< the peer's window epoch
+    void* ep_inbox_ = nullptr;                        ///< EpRegion on the peer: per group, ids then q8_1 rows
+    uint8_t* ep_inbox1_ = nullptr;                    ///< ... the peer's address
+    uint8_t* ep_inbox_on0_ = nullptr;                 ///< ... this card's address
+    void* ep_inflag_ = nullptr;                       ///< EpRegion on the peer: one 64-byte line per ring
+    uint32_t* ep_inflag1_ = nullptr;
+    uint32_t* ep_inflag_on0_ = nullptr;
+    void* ep_parts_ = nullptr;                        ///< EpRegion on this card: parts_ (the peer writes its rows there)
+    float* ep_rows0_ = nullptr;
+    float* ep_parts_on1_ = nullptr;
+    void* ep_ret_ = nullptr;                          ///< EpRegion on this card: one 64-byte line per ring
+    uint32_t* ep_ret0_ = nullptr;
+    uint32_t* ep_ret_on1_ = nullptr;
+    uint8_t* ep_in1_ = nullptr;                       ///< the peer's local copy of its inbox (two groups)
+    float* ep_rows1_ = nullptr;                       ///< the peer's rows before ep_send_rows, its memory
+    uint32_t* ep_done1_ = nullptr;                    ///< ep_send_rows' work-group counter, the peer's memory
+    int32_t* ep_plan1_ = nullptr;                     ///< the peer's plans (two groups), its memory
+    uint8_t* ep_scratch1_ = nullptr;                  ///< the peer's native_expert_grouped scratch
+    uint32_t* ep_err0_ = nullptr;                     ///< host words a timed-out wait sets (this card / the peer)
+    uint32_t* ep_err1_ = nullptr;
+    uint32_t* ep_plan_err1_ = nullptr;                ///< the peer's plan error (an expert on neither card), host
+    /// STRATA_EP_VERIFY=1 (a check; needs the peer's experts mirrored, STRATA_EP_MIRROR=1): this card computes every
+    /// row itself and compares the peer's rows with them (ep_compare); the window uses its own rows
+    const bool ep_verify_ = [] { const char* v = std::getenv("STRATA_EP_VERIFY"); return v && v[0] == '1'; }();
+    uint32_t ep_spin_ = 2000000u;                     ///< STRATA_EP_SPIN_MAX: reads before a wait gives up
+    size_t ep_slot_bytes_ = 0, ep_xq_off_ = 0;        ///< inbox: bytes per group, offset of the q8_1 rows
+    dpct::experimental::command_graph_exec_ptr ep_exec_[9] = {};   ///< the peer's graph per window size
+    std::map<std::vector<int>, dpct::experimental::command_graph_exec_ptr> ep_exec_bm_;   ///< ... per batch row layout
+    bool ep_init(std::string& err);
+    void ep_free();
+    bool ep_check(std::string& err);                  ///< after a window: the waits and the peer's plan did not fail
     void refresh_ar();
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
