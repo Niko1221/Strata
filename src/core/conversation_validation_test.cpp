@@ -2,6 +2,7 @@
 // invalid restores must return before the first CUDA call or destination write.
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/qsa.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -165,6 +166,13 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     check(!conversation_state_sizes(bad_geometry,z,error), "zero layer interval rejected before division");
     bad_geometry = g; bad_geometry.n_head_kv = std::numeric_limits<int64_t>::max();
     check(conversation_kv_bytes(draft.st,bad_geometry,9,false)==0, "KV byte overflow rejected");
+    // a remote stage worker's part (docs/remote-stage/CHECKPOINTS.md): no ids, the length given; one past the session's
+    // cells is rejected before any transfer
+    ConversationCheckpoint no_ids = image.live;
+    no_ids.ids.clear(); no_ids.imgs.clear();
+    check(!conversation_checkpoint_restore(no_ids,ss,g,97,error) && unchanged(),
+          "explicit length past the cells rejected before writes");
+    check(!conversation_checkpoint_save(no_ids,ss,g,97,error), "explicit-length save past the cells rejected");
 #if defined(CONVERSATION_TEST_TRANSFERS)
     auto reset = [&] {
         for (auto* p : {&first,&last,&draft}) for (auto& bytes : p->data) std::fill(bytes.begin(),bytes.end(),0xa5);
@@ -193,6 +201,43 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
           "injected host transfer backend completes a valid restore");
     check(gdn==image.live.gdn && history==image.live.ple && ss.ple_prev[0]==8 && ss.ple_prev[1]==9,
           "successful restore publishes correct running state and PLE window");
+    // the explicit-length save / restore (a remote stage worker's part, no ids): the sizes are the carve's, the
+    // restore rewrites each indexer's pooled row at L / idx_block from the dead marker and leaves ple_prev alone;
+    // L on a block boundary and inside one
+    for (size_t L : {(size_t) 8, (size_t) 9}) {
+        reset();
+        ConversationCheckpoint part;
+        check(conversation_checkpoint_save(part,ss,g,L,error), "explicit-length save through the host backend");
+        const size_t q = (size_t) g.n_qsa_layers();
+        ConversationStateSizes zz;   // (`z` was overwritten by the overflow checks above)
+        check(conversation_session_sizes(g,ss,zz,error) && part.ids.empty() && part.gdn.size()==zz.gdn &&
+              part.ple.size()==(ple ? zz.ple : 0) && part.tails.size()==q*zz.tail && part.dead.size()==q*zz.dead &&
+              part.block_pos.size()==q*zz.block_pos && zz.gdn > 0 && (zero_qsa || zz.dead > 0),
+              "explicit-length save sizes are the session's running state");
+        std::fill(part.dead.begin(),part.dead.end(),0x3c); std::fill(part.gdn.begin(),part.gdn.end(),0x3d);
+        ss.ple_prev[0] = 5; ss.ple_prev[1] = 6;
+        check(conversation_checkpoint_restore(part,ss,g,L,error), "explicit-length restore through the host backend");
+        check(std::all_of(gdn.begin(),gdn.end(),[](uint8_t b){return b==0x3d;}),
+              "explicit-length restore writes the state");
+        check(ss.ple_prev[0]==5 && ss.ple_prev[1]==6, "explicit-length restore leaves ple_prev alone");
+        const size_t block = (size_t) strata::kernels::qsa_real_shapes().idx_block;
+        const size_t row_bytes = (size_t) g.idx_key_dim * 4;
+        for (const auto* p : {&first,&last}) {
+            if (zero_qsa) break;
+            const auto& pooled = p->data[4];
+            const size_t row = L / block;
+            bool marked = true, rest = true;
+            for (size_t i = 0; i < pooled.size(); ++i) {
+                if (i / row_bytes == row) marked = marked && pooled[i]==0x3c;
+                else rest = rest && pooled[i]==0xa5;
+            }
+            check(marked && rest, L % block == 0 ? "pooled row L / idx_block rewritten (L on a block boundary)"
+                                                 : "pooled row L / idx_block rewritten (L inside a block)");
+        }
+    }
+    reset();
+    check(conversation_snapshot_restore(image,ss,g,draft.st,error)==ConversationRestore::restored,
+          "the valid restore again (the read-back checks below)");
     uint64_t fingerprint = 0;
     check(conversation_kv_verify(image.kv.back(),draft.st,g,9,false,fingerprint,error), "read-back verifies complete draft payload");
     draft.data[0][0] ^= 1;

@@ -415,16 +415,44 @@ bool StageClient::prefill_recv(float* rows_out, size_t row_floats, int64_t T, in
     return ok;
 }
 
-bool StageClient::reset(std::string& err) {
+bool StageClient::keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
+                             int64_t& reply_a, std::string& err) {
     std::lock_guard<std::mutex> ls(send_mu_);
     std::lock_guard<std::mutex> lr(recv_mu_);
     if (!connected()) { err = "remote stage: not connected"; return false; }
     StageHeader h;
-    h.type = (uint32_t) StageMsg::Reset;
-    if (!send_msg(S(fd_), h, nullptr, 0, nullptr, 0, err)) { break_(); return false; }
-    int64_t wus = 0;
-    ++stats_.resets;
-    return read_reply_(StageMsg::ResetOk, nullptr, 0, wus, err);
+    h.type = (uint32_t) type;
+    h.a = a;
+    h.b = b;
+    h.bytes = keep.size() * sizeof(int64_t);   // (a Reset that keeps nothing is the header alone, as in protocol 3)
+    if (!send_msg(S(fd_), h, keep.data(), (size_t) h.bytes, nullptr, 0, err)) { break_(); return false; }
+    // a Reset is counted as before checkpoints (in `resets`, not in bytes_out); the checkpoint messages' bytes are
+    if (type == StageMsg::Reset) ++stats_.resets;
+    else stats_.bytes_out += sizeof h + h.bytes;
+    return read_reply_(want, nullptr, 0, reply_a, err);
+}
+
+bool StageClient::reset(const std::vector<int64_t>& keep, std::string& err) {
+    int64_t a = 0;
+    return keep_call_(StageMsg::Reset, StageMsg::ResetOk, 0, 0, keep, a, err);
+}
+
+bool StageClient::ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err) {
+    int64_t a = 0;
+    stored = false;
+    if (!keep_call_(StageMsg::CkptSave, StageMsg::CkptSaveOk, id, L, keep, a, err)) return false;
+    stored = a == 1;
+    return true;
+}
+
+bool StageClient::ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing,
+                               std::string& err) {
+    int64_t a = 0;
+    missing = false;
+    if (keep_call_(StageMsg::CkptRestore, StageMsg::CkptRestoreOk, id, L, keep, a, err)) return true;
+    // the worker's own text (read_reply_'s prefix, then the fixed start) - a relay's forwarded error is not this
+    missing = connected() && err.rfind(std::string("remote stage (worker): ") + kStageCkptMissing, 0) == 0;
+    return false;
 }
 
 // ------------------------------------------------------------------------------------------------ serve_stage
@@ -437,6 +465,7 @@ struct Inbox {
     std::vector<int32_t> tok32;
     std::vector<int64_t> tok64;
     std::vector<float> rows;    ///< a window's rows (copied to run_in by the serving thread)
+    std::vector<int64_t> keep;  ///< Reset / CkptSave / CkptRestore: the checkpoint ids the main process holds
     StageHello hello;
     int slot = -1;
     std::string bad;            ///< the message was malformed: reply this error
@@ -470,7 +499,7 @@ bool StageRelay::send(const int64_t* tokens, int64_t T, int64_t pos0, int64_t fl
 }
 
 int serve_stage(const std::string& bind_addr, int port, const std::string& token, const StageHandlers& h,
-                const StageBuffers& buf, StageStats& stats, const bool* stop) {
+                const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop) {
     if (!net_init()) {
         std::fprintf(stderr, "strata stage worker: the sockets did not start (WSAStartup)\n");
         return 1;
@@ -581,7 +610,15 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                                 !recv_all(fd, buf.pf_in[in.slot], rows * 4, in.err))
                                 in.closed = true;
                         }
-                    } else if (type != StageMsg::Commit && type != StageMsg::Reset) {
+                    } else if (type == StageMsg::Reset || type == StageMsg::CkptSave || type == StageMsg::CkptRestore) {
+                        if (in.h.bytes % 8 != 0 || in.h.bytes / 8 > (uint64_t) kStageCkptMax) {
+                            in.bad = "bad checkpoint list";
+                            if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
+                        } else {
+                            in.keep.resize((size_t) (in.h.bytes / 8));
+                            if (!recv_all(fd, in.keep.data(), (size_t) in.h.bytes, in.err)) in.closed = true;
+                        }
+                    } else if (type != StageMsg::Commit) {
                         in.bad = "unknown message type " + std::to_string(in.h.type);
                         if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
                     }
@@ -599,6 +636,9 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
         // ---- the serving thread (this one): the messages in order
         std::string err, pending_err;   // pending_err: a failed one-way message, reported on the next reply
         bool greeted = false;
+        // the position the session holds (a checkpoint is saved only there): a chunk's end, a window's first
+        // position plus its accepted count, 0 after a reset, L after a checkpoint restore
+        int64_t pos = 0, run_pos0 = 0;
         // a prompt chunk's reply goes out on its own thread while the next chunk is read; every later send waits
         // for it (the replies keep their order), and so does the reuse of its output buffer
         std::future<bool> reply_out;
@@ -662,6 +702,14 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                     keep = false;
                     break;
                 }
+                // (after the protocol check: an older peer's hello has its build text here)
+                if (in.hello.ckpt_max < 0 || in.hello.ckpt_max > kStageCkptMax) {
+                    (void) reply_error("the main process keeps " + std::to_string(in.hello.ckpt_max) +
+                                       " conversation checkpoints, a worker at most " + std::to_string(kStageCkptMax) +
+                                       " (--prompt-cache " + std::to_string(kStageCkptMax - 1) + " or less)");
+                    keep = false;
+                    break;
+                }
                 StageHeader r;
                 r.type = (uint32_t) StageMsg::HelloOk;
                 r.bytes = sizeof mine;
@@ -680,6 +728,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 if (!pending_err.empty()) { e = pending_err; pending_err.clear(); ok = false; }
                 else ok = h.run(T, in.tok32.data(), in.h.b, e);
                 if (!ok) { keep = reply_error(e); break; }
+                run_pos0 = in.h.b;
                 StageHeader r;
                 r.type = (uint32_t) StageMsg::RunOk;
                 r.a = (int64_t) (ms_since(t0) * 1000.0);   // the worker's own time, microseconds
@@ -693,6 +742,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             case StageMsg::Commit: {
                 std::string e;
                 if (pending_err.empty() && !h.commit((int) in.h.a, e)) pending_err = e;
+                if (pending_err.empty()) pos = run_pos0 + in.h.a;
                 ++stats.commits;
                 break;
             }
@@ -708,6 +758,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 else ok = h.prefill(in.tok64.data(), T, in.h.b, in.h.c & 0xff, skip, buf.pf_in[in.slot], out, e);
                 release();   // the chunk is read (its rows were uploaded before `prefill` returned)
                 if (!ok) { keep = reply_error(e); break; }
+                pos = in.h.b + T;
                 const double work_ms = ms_since(t0);
                 if (remote_timing())
                     std::fprintf(stderr, "strata stage worker: chunk T=%lld at %lld: read in %.0f ms\n", (long long) T,
@@ -744,11 +795,48 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 // a chunk's reply still going out finishes first (a relay's reply thread reads the next worker's
                 // link, which the reset may make again)
                 if (!replies_out()) { keep = false; break; }
-                if (!h.reset(e)) { keep = reply_error(e); break; }
+                if (!h.reset(in.keep, e)) { keep = reply_error(e); break; }
+                pos = 0;
                 StageHeader r;
                 r.type = (uint32_t) StageMsg::ResetOk;
                 if (!send_msg(fd, r, nullptr, 0, nullptr, 0, err)) keep = false;
                 ++stats.resets;
+                break;
+            }
+            case StageMsg::CkptSave: {
+                // after every chunk's reply and every window before it; a Commit that failed means the session is
+                // not where the main process thinks, and so does another position
+                std::string e;
+                int stored = -1;
+                if (!replies_out()) { keep = false; break; }
+                if (!pending_err.empty()) { e = pending_err; pending_err.clear(); }
+                else if (in.h.b != pos)
+                    e = "a checkpoint at " + std::to_string(in.h.b) + ", the worker's session is at " +
+                        std::to_string(pos);
+                else if (!h.ckpt_save) e = "this worker keeps no conversation checkpoints";
+                else stored = h.ckpt_save(in.h.a, in.h.b, in.keep, e);
+                if (stored < 0) { keep = reply_error(e); break; }
+                StageHeader r;
+                r.type = (uint32_t) StageMsg::CkptSaveOk;
+                r.a = stored;
+                if (!send_msg(fd, r, nullptr, 0, nullptr, 0, err)) keep = false;
+                break;
+            }
+            case StageMsg::CkptRestore: {
+                std::string e;
+                // the session is replaced: a Commit that failed before no longer matters (logged)
+                if (!pending_err.empty()) {
+                    std::fprintf(stderr, "strata stage worker: a commit failed before a checkpoint restore: %s\n",
+                                 pending_err.c_str());
+                    pending_err.clear();
+                }
+                if (!replies_out()) { keep = false; break; }
+                if (!h.ckpt_restore) e = "this worker keeps no conversation checkpoints";
+                if (!h.ckpt_restore || !h.ckpt_restore(in.h.a, in.h.b, in.keep, e)) { keep = reply_error(e); break; }
+                pos = in.h.b;
+                StageHeader r;
+                r.type = (uint32_t) StageMsg::CkptRestoreOk;
+                if (!send_msg(fd, r, nullptr, 0, nullptr, 0, err)) keep = false;
                 break;
             }
             default:

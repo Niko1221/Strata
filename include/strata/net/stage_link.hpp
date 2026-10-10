@@ -7,13 +7,16 @@
 //     each way, then the accepted count (one way, no reply);
 //   - a prompt chunk: T rows of hc * n_embd floats (the residual streams) each way.
 // The worker keeps its own session (its layers' K/V, GDN state), expert cache and CPU expert pool; the main process
-// sends a reset at every fresh prompt.  More than two stages: a relay worker (--stage-end K2 --stage-next HOST:PORT)
+// sends a reset at every fresh prompt.  With an explicit --prompt-cache on the main process the worker also keeps
+// its layers' part of each conversation checkpoint under the main process's id (CkptSave / CkptRestore,
+// docs/remote-stage/CHECKPOINTS.md).  More than two stages: a relay worker (--stage-end K2 --stage-next HOST:PORT)
 // runs [K, K2) and hands its rows to the next worker as the main process hands them to it; the next worker's reply
 // is its reply (main -> A -> B -> A -> main), so the main process sees one worker either way.  Prompt chunks are pipelined: the main process sends chunk c + 1 while the
 // worker reads chunk c (the worker receives on its own thread into two buffers), and takes the replies in order on
 // another thread.  POSIX sockets on Linux, Winsock on Windows.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +30,13 @@
 namespace strata::net {
 
 inline constexpr uint32_t kStageMagic = 0x4d525453u;   // "STRM"
-inline constexpr uint32_t kStageProtocol = 3;
+inline constexpr uint32_t kStageProtocol = 4;
+/// Conversation checkpoints (docs/remote-stage/CHECKPOINTS.md): the most parts a worker keeps; a main process whose
+/// hello asks for more is refused
+inline constexpr int32_t kStageCkptMax = 64;
+/// the start of the worker's CkptRestore error for an id it does not hold - the one restore error the main process
+/// recovers from (it reads the prompt from token 0); every other error means the worker's session is lost
+inline constexpr char kStageCkptMissing[] = "checkpoint not held: ";
 
 enum class StageMsg : uint32_t {
     Hello = 1,
@@ -39,9 +48,13 @@ enum class StageMsg : uint32_t {
                     // float rows[T * D]
     PrefillOk = 7,  // a = the worker's time (us); payload: float rows[(T - skip) * D], the chunk's rows from row `skip`
                     // (the main process needs no earlier ones: the drafter's window does not reach them)
-    Reset = 8,      // a fresh prompt from position 0
+    Reset = 8,      // a fresh prompt from position 0; payload: int64 keep[] (the checkpoint ids the worker keeps)
     ResetOk = 9,
     Error = 10,     // payload: the message
+    CkptSave = 11,  // a = id, b = L (the worker must be at L); payload: int64 keep[] (with id when it is kept)
+    CkptSaveOk = 12,     // a = 1 stored, 0 not stored (the worker's store is as it was)
+    CkptRestore = 13,    // a = id, b = L; payload: int64 keep[]
+    CkptRestoreOk = 14,
 };
 
 #pragma pack(push, 1)
@@ -63,10 +76,13 @@ struct StageHello {
     int64_t chunk = 0;            ///< the largest prompt chunk the main process sends
     int64_t handoff_floats = 0;   ///< floats per verify-window row
     uint64_t pack_hash = 0;       ///< the model pack's fingerprint (both sides must load the same model)
-    char build[64] = {};          ///< engine build id (informational)
+    int32_t ckpt_max = 0;         ///< the main process: the checkpoint parts it may have the worker keep (0: none)
+    char build[60] = {};          ///< engine build id (informational; 60, so the hello keeps protocol 3's size)
     char token[64] = {};          ///< the shared secret (STRATA_STAGE_TOKEN); the worker refuses a wrong one
 };
 #pragma pack(pop)
+// one size across protocols: an older peer's hello is read whole and refused for its protocol, not as malformed
+static_assert(sizeof(StageHello) == 192, "the hello's size");
 
 /// Running totals of one side's traffic (STRATA_REMOTE_TIMING=1 prints them).
 struct StageStats {
@@ -100,14 +116,23 @@ public:
                       size_t row_floats, int64_t skip, std::string& err);
     /// The oldest outstanding chunk's reply: rows [skip, T) into rows_out + skip rows.
     bool prefill_recv(float* rows_out, size_t row_floats, int64_t T, int64_t skip, std::string& err);
-    /// A fresh prompt: the worker zeroes its session.
-    bool reset(std::string& err);
+    /// A fresh prompt: the worker zeroes its session and keeps only the checkpoint parts in `keep`.
+    bool reset(const std::vector<int64_t>& keep, std::string& err);
+    /// Conversation checkpoints: the worker saves its layers' running state at position L under `id` and keeps only
+    /// `keep`; `stored` false: it could not store it (its store is as it was).  An error: the worker's session is lost.
+    bool ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err);
+    /// The worker puts checkpoint `id` (saved at L) back and keeps only `keep`; `missing` (with false): it does not
+    /// hold `id` and nothing changed there.  Any other error: the worker's session is lost.
+    bool ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err);
 
     const StageStats& stats() const { return stats_; }
     std::string peer_name() const { return peer_; }
 
 private:
     bool read_reply_(StageMsg want, void* reply, size_t reply_bytes, int64_t& worker_us, std::string& err);
+    /// a synchronous message with a keep[] payload (Reset, CkptSave, CkptRestore); `reply_a`: the reply's `a`
+    bool keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
+                    int64_t& reply_a, std::string& err);
     /// a failed link: shut down (both directions fail from now on) - the descriptor is closed only by close(), so
     /// the other thread never reads or writes a number the process may have reused
     void break_();
@@ -154,7 +179,13 @@ struct StageHandlers {
     /// optional (a relay worker): fills a chunk's rows_out [skip, T) just before its reply goes out, on the replying
     /// thread, in chunk order - the serving thread reads the next chunk meanwhile.  A failure sends an error instead.
     std::function<bool(float* rows_out, int64_t T, int64_t skip, std::string& err)> prefill_reply;
-    std::function<bool(std::string& err)> reset;
+    /// `keep`: the checkpoint ids the main process holds (prune the rest once the reset succeeded)
+    std::function<bool(const std::vector<int64_t>& keep, std::string& err)> reset;
+    /// Conversation checkpoints (optional; without them a CkptSave / CkptRestore gets an error).  serve_stage has
+    /// already checked the position and reported a failed Commit.  ckpt_save: 1 stored, 0 not stored (the store as
+    /// it was), -1 an error.  ckpt_restore: an id it does not hold is an error starting with kStageCkptMissing.
+    std::function<int(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> ckpt_save;
+    std::function<bool(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> ckpt_restore;
     std::function<void()> disconnected;   ///< the main process went away (the session is stale)
 };
 
@@ -173,6 +204,6 @@ struct StageBuffers {
 /// or listening fails.  `token`: the secret a main process's hello must carry (empty: none - any host that reaches
 /// the port can drive the worker).  Returns 0 when stopped, nonzero on a listen error (the reason on stderr).
 int serve_stage(const std::string& bind_addr, int port, const std::string& token, const StageHandlers& h,
-                const StageBuffers& buf, StageStats& stats, const bool* stop);
+                const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop);
 
 }  // namespace strata::net

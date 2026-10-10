@@ -93,6 +93,41 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
     return true;
 }
 
+// a checkpoint's running state against this session, at `tokens` (its ids' count, or the explicit length of a part
+// that carries no ids - a remote stage worker's)
+bool checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss, const ModelGeometry& g, size_t tokens,
+                         std::string& error) {
+    ConversationStateSizes z;
+    if (!checkpoint_targets(ss, g, tokens, z, error)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
+        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
+        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, tokens))
+        return fail(error, "invalid checkpoint running-state payload");
+    return true;
+}
+
+// the copies back (validated): the running state, and each indexer's pooled row at `tokens` / idx_block rewritten
+// from the saved dead marker; ple_prev and the final synchronize are the callers'
+bool checkpoint_put_back(const ConversationCheckpoint& c, SessionState& ss, const ModelGeometry& g, size_t tokens,
+                         std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    if (!copy(ss.gdn_state, c.gdn.data(), c.gdn.size(), error) ||
+        !copy(ss.ple_hist, c.ple.data(), c.ple.size(), error)) return false;
+    for (size_t j = 0; j < owned_qsa(ss); ++j) {
+        const auto& st = owned(ss, j);
+        if (!copy(st.idx_tail, c.tails.data() + j * z.tail, z.tail, error) ||
+            !copy(st.idx_dead, c.dead.data() + j * z.dead, z.dead, error) ||
+            !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
+        if (tokens > 0) {
+            const size_t row = tokens / strata::kernels::qsa_real_shapes().idx_block;
+            if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
+        }
+    }
+    return true;
+}
+
 bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
     size_t ids = 0, images = 0;
     if (!product(ids, {c.ids.size(), sizeof(int32_t)}) ||
@@ -141,20 +176,18 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& ss, 
 
 bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
                                       const ModelGeometry& g, std::string& error) {
-    ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
-        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
-        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
-        return fail(error, "invalid checkpoint running-state payload");
-    return true;
+    return checkpoint_validate(c, ss, g, c.ids.size(), error);
 }
 
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
+    return conversation_checkpoint_save(c, ss, g, c.ids.size(), error);
+}
+
+bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss, const ModelGeometry& g,
+                                  size_t tokens, std::string& error) {
     ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
+    if (!checkpoint_targets(ss, g, tokens, z, error)) return false;
     const size_t layers = owned_qsa(ss);
     c.gdn.resize(z.gdn); c.ple.resize(ss.ple_hist ? z.ple : 0);
     c.tails.resize(layers * z.tail); c.dead.resize(layers * z.dead); c.block_pos.resize(layers * z.block_pos);
@@ -172,23 +205,16 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
 bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
                                      const ModelGeometry& g, std::string& error) {
     if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
-    ConversationStateSizes z;
-    if (!conversation_session_sizes(g, ss, z, error)) return false;
-    if (!copy(ss.gdn_state, c.gdn.data(), c.gdn.size(), error) ||
-        !copy(ss.ple_hist, c.ple.data(), c.ple.size(), error)) return false;
-    for (size_t j = 0; j < owned_qsa(ss); ++j) {
-        const auto& st = owned(ss, j);
-        if (!copy(st.idx_tail, c.tails.data() + j * z.tail, z.tail, error) ||
-            !copy(st.idx_dead, c.dead.data() + j * z.dead, z.dead, error) ||
-            !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
-        if (!c.ids.empty()) {
-            const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
-            if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
-        }
-    }
+    if (!checkpoint_put_back(c, ss, g, c.ids.size(), error)) return false;
     const size_t tokens = c.ids.size();
     ss.ple_prev[0] = tokens >= 2 ? c.ids[tokens - 2] : -1;
     ss.ple_prev[1] = tokens >= 1 ? c.ids[tokens - 1] : -1;
+    return sync(error);
+}
+
+bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss, const ModelGeometry& g,
+                                     size_t tokens, std::string& error) {
+    if (!checkpoint_validate(c, ss, g, tokens, error) || !checkpoint_put_back(c, ss, g, tokens, error)) return false;
     return sync(error);
 }
 
