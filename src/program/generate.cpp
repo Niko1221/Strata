@@ -490,6 +490,11 @@ struct Options {
     /// `expert_profile_save_min` minutes between requests.  Empty (the default): nothing is counted or written.
     std::string expert_profile_save;
     double expert_profile_save_min = 10.0;
+    /// --routing-counts PATH (--serve, opt-in): how many times each (layer, expert) pair was routed since the start,
+    /// written as JSON (temporary file, then renamed) every `routing_counts_min` minutes between requests and on QUIT.
+    /// The server reads it for /metrics.  Empty (the default): nothing is counted or written.
+    std::string routing_counts;
+    double routing_counts_min = 1.0;
     /// R4.2d: **ON by default**, because the measurement is unambiguous and the alternative is known-broken.
     /// Without it, 17 of 10,562 layers had the hit work done when the pool returned; with it, 9,190.  The
     /// A/B arm is `--no-hit-poke`.
@@ -754,6 +759,8 @@ void usage() {
                  "  --dump-layers PATH   write R after EVERY layer, per position: the C1 bisection ladder\n"
                  "  --dump-halves PATH   write both halves' block_out and inject per layer: the half bisection\n"
                  "  --dump-routing PATH  write the routed expert ids and weights per layer per position (P0.S8)\n"
+                 "  --routing-counts PATH  (--serve) count every (layer, expert) routing and save the counts as JSON\n"
+                 "                       every --routing-counts-every minutes (default 1) between requests and on QUIT\n"
                  "  --no-capture         run the layers directly instead of replaying graphs\n"
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
@@ -965,7 +972,19 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    /// --routing-counts: one counter per (layer, expert) pair, layer-major; empty when not asked
+    std::vector<uint64_t> route_counts;
+    int64_t route_n_expert = 0;
 };
+
+/// --routing-counts: the routed ids of one layer (n ids, any number of tokens) into the per-pair counters
+static void count_routes(Drive* t, int64_t layer, const int32_t* ids, int64_t n) {
+    if (t->route_counts.empty() || layer < 0) return;
+    const size_t base = (size_t) layer * (size_t) t->route_n_expert;
+    if (base + (size_t) t->route_n_expert > t->route_counts.size()) return;
+    for (int64_t i = 0; i < n; ++i)
+        if (ids[i] >= 0 && ids[i] < t->route_n_expert) ++t->route_counts[base + (size_t) ids[i]];
+}
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
                 float* out) {
@@ -974,6 +993,7 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
     strata::core::expert_pool_dispatch(&t->d, x_f, ids, weights, n_embd, k, out);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
+    count_routes(t, t->d.layers - 1, ids, k);   // d.layers was advanced by the dispatch (see the trace below)
     // THE ROUTING TRACE.  Written AFTER the dispatch so the layer index is still this layer's: `d.layers` is
     // advanced by the adapter as it consumes the blob, and reading it after the call is the same value the
     // dispatch used.  Record = int32 layer, int32 k, k int32 ids, k float weights.
@@ -1005,6 +1025,7 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
+    count_routes(t, layer, ids, n_tok * k);
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
     // one record per token.  The multi dispatch fuses the router weights into the kernel and does not surface
     // them, so records carry unit weights: tools/make_profile.py ranks pairs by routed frequency, which is the
@@ -2060,6 +2081,8 @@ int main(int argc, char** argv) {
         else if (a == "--expert-profile-save") o.expert_profile_save = next("--expert-profile-save");
         else if (a == "--expert-profile-save-every")
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
+        else if (a == "--routing-counts") o.routing_counts = next("--routing-counts");
+        else if (a == "--routing-counts-every") o.routing_counts_min = std::atof(next("--routing-counts-every"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
@@ -5515,6 +5538,10 @@ int main(int argc, char** argv) {
         }
         drive.routing = routing;
     }
+    if (!o.routing_counts.empty()) {
+        drive.route_n_expert = (int64_t) g.n_expert;
+        drive.route_counts.assign((size_t) g.n_layers * (size_t) g.n_expert, 0);
+    }
     strata::core::PoolFn pool_fn = o.no_pool ? nullptr : &drive_pool;
     // The hit hook rides the same switch as the pool: with no pool there is no `parts` staging to
     // write into, and a hit path with nowhere to write is a wrong token rather than an error.
@@ -8640,6 +8667,32 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
             profile_saved_at = Clock::now();
         };
+        // --routing-counts: every pair's count as JSON, through a temporary file renamed over the last one, so a
+        // reader never sees half a file
+        Clock::time_point counts_saved_at = Clock::now();
+        auto save_counts = [&]() {
+            counts_saved_at = Clock::now();
+            if (drive.route_counts.empty()) return;
+            const std::string tmp = o.routing_counts + ".tmp";
+            std::FILE* f = std::fopen(tmp.c_str(), "w");
+            if (f == nullptr) {
+                std::fprintf(stderr, "strata serve: cannot write %s\n", tmp.c_str());
+                return;
+            }
+            const int64_t ne = drive.route_n_expert, nl = (int64_t) (drive.route_counts.size() / (size_t) ne);
+            std::fprintf(f, "{\"layers\": %lld, \"experts\": %lld, \"counts\": [", (long long) nl, (long long) ne);
+            for (int64_t l = 0; l < nl; ++l) {
+                std::fputs(l ? ",\n[" : "\n[", f);
+                for (int64_t e = 0; e < ne; ++e)
+                    std::fprintf(f, e ? ",%llu" : "%llu",
+                                 (unsigned long long) drive.route_counts[(size_t) (l * ne + e)]);
+                std::fputc(']', f);
+            }
+            std::fputs("]}\n", f);
+            const bool ok = std::fclose(f) == 0;
+            if (!ok || std::rename(tmp.c_str(), o.routing_counts.c_str()) != 0)
+                std::fprintf(stderr, "strata serve: the routing counts were not saved to %s\n", o.routing_counts.c_str());
+        };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
         std::atomic<bool> stop_req{false};
@@ -9505,6 +9558,9 @@ int main(int argc, char** argv) {
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
+            if (!drive.route_counts.empty() && line != "QUIT" &&
+                Clock::now() - counts_saved_at >= std::chrono::duration<double>(o.routing_counts_min * 60.0))
+                save_counts();
             if (line == "QUIT") break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
@@ -12072,6 +12128,7 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
+        save_counts();
         return 0;
     }
 

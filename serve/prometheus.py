@@ -106,6 +106,9 @@ def render(m: dict, lat: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+TOP_EXPERTS = 8   # per layer, in strata:expert_routed_by_expert_total
+
+
 def strata(m: dict, out: list, lab: str):
     """The JSON's facts vLLM has no name for, under `strata:` and the JSON's key."""
     live, totals = m.get("live") or {}, m.get("totals") or {}
@@ -155,6 +158,26 @@ def strata(m: dict, out: list, lab: str):
                              ("gpu_power_watts", "power", "GPU power draw (hardware.gpu_power).")):
         for g in gpus:                                   # a family's samples together, one per card
             metric(name, "gauge", help_, g.get(key), f',gpu="{g.get("index")}"')
+    ex = m.get("experts") or {}
+    metric("expert_routed_total", "counter", "Expert routings counted since the engine started, all layers "
+           "(experts.routed_total; with \"routing_counts\" in the config).", ex.get("routed_total"))
+    layers = [x for x in ex.get("layers") or [] if isinstance(x, dict)]
+    for name, key, help_ in (("expert_seen", "experts_seen", "Distinct experts routed in a layer since the start "
+                              "(experts.layers[].experts_seen)."),
+                             ("expert_top32_share", "top32_share", "Share of a layer's routings taken by its 32 most "
+                              "routed experts (experts.layers[].top32_share)."),
+                             ("expert_entropy_bits", "entropy_bits", "Entropy of a layer's routing, in bits; log2 of "
+                              "the expert count when spread evenly (experts.layers[].entropy_bits).")):
+        for x in layers:                                 # a family's samples together, one per layer
+            metric(name, "gauge", help_, x.get(key), f',layer="{x.get("layer")}"')
+    # the most routed experts of each layer as their own counters (at most TOP_EXPERTS per layer, not 512): enough to
+    # plot which experts work and when, without one series per (layer, expert) pair
+    for x in layers:
+        for pair in (x.get("top") or [])[:TOP_EXPERTS]:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                metric("expert_routed_by_expert_total", "counter", f"Routings of each layer's {TOP_EXPERTS} most "
+                       "routed experts since the engine started (experts.layers[].top).", pair[1],
+                       f',layer="{x.get("layer")}",expert="{pair[0]}"')
     metric("cpu", "gauge", "CPU busy, percent (hardware.cpu).", hw.get("cpu"))
     metric("ram_used_bytes", "gauge", "RAM in use (hardware.ram_used).", hw.get("ram_used"))
     metric("ram_total_bytes", "gauge", "RAM (hardware.ram_total).", hw.get("ram_total"))
