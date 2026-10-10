@@ -1,9 +1,12 @@
 import copy
+from pathlib import Path
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from serve.routing_costs import RoutingCosts
+from serve.routing_costs import RoutingCosts, runtime_key
+from serve.frontend import ChatTemplate
 from serve.server import Service, StrataEngine, ByteTokenizer
 from serve.test_live_memory import engine
 from serve.test_memory_policy import sample
@@ -112,6 +115,51 @@ class RoutingCostsTests(unittest.TestCase):
         p['records'].append(dict(p['records'][0]))
         with self.assertRaises(ValueError):
             RoutingCosts(p)
+
+
+class RuntimeIdentityTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.binary = Path(directory.name) / "fixture.bin"
+        self.binary.write_bytes(b"runtime identity fixture; never executed")
+        nvml = patch("serve.telemetry._Nvml")
+        nvml.start().return_value.name.return_value = "fixture GPU"
+        self.addCleanup(nvml.stop)
+        cpu = patch("serve.telemetry._cpu_name", return_value="fixture CPU")
+        cpu.start()
+        self.addCleanup(cpu.stop)
+
+    def native(self, cpus=None):
+        return StrataEngine(str(self.binary), ["--max-context", "65536"], lazy=True, cpus=cpus)
+
+    def test_real_lazy_native_metadata_supports_parking_identity_without_loading(self):
+        with patch("serve.server.subprocess.Popen") as popen:
+            native = self.native([0, 2, 4])
+            self.assertEqual(len(native.spawn), 7)
+            svc = Service(native, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+            identity = svc._parking_identity()
+            self.assertEqual(identity, {"runtime": runtime_key(native), "context": 65536, "vision": False})
+            self.assertEqual(len(identity["runtime"]), 64)
+            popen.assert_not_called()
+
+    def test_cpu_assignment_invalidates_identity_but_unpinned_legacy_is_stable(self):
+        unpinned = self.native()
+        legacy = SimpleNamespace(spawn=unpinned.spawn[:5])
+        baseline = runtime_key(unpinned)
+        self.assertEqual(baseline, runtime_key(legacy))
+        first = self.native([0, 2])
+        second = self.native([1, 3])
+        self.assertNotEqual(runtime_key(first), baseline)
+        self.assertNotEqual(runtime_key(first), runtime_key(second))
+        first.spawn = (*first.spawn[:5], True, first.spawn[6])
+        self.assertEqual(runtime_key(first), runtime_key(self.native([0, 2])))
+
+    def test_unknown_restart_metadata_cannot_authorize_identity(self):
+        native = self.native()
+        for metadata in (native.spawn[:4], native.spawn[:6], (*native.spawn, "future-option")):
+            with self.subTest(length=len(metadata)), self.assertRaisesRegex(ValueError, "restart metadata"):
+                runtime_key(SimpleNamespace(spawn=metadata))
 
 
 class NativeCapacityTests(unittest.TestCase):

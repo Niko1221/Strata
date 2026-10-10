@@ -26,7 +26,13 @@ def runtime_key(engine):
     Model assets are identified by path, size and timestamp, not rehashed on every
     startup. The binary is hashed. No paths are exposed in the resulting key.
     """
-    exe, args, cwd, _log, env = engine.spawn
+    spawn = engine.spawn
+    if len(spawn) not in (5, 7):
+        raise ValueError("unsupported engine restart metadata for runtime identity")
+    exe, args, cwd, _log, env = spawn[:5]
+    # .42 stores the lazy restart flag and CPU assignment after the stable
+    # launch fields. Lazy admission does not change inference; affinity can.
+    cpus = spawn[6] if len(spawn) == 7 else None
     assets = []
     for flag in ("--native", "--ple-gguf", "--expert-profile", "--pack", "--mtp", "--control-vector-scaled"):
         if flag not in args:
@@ -56,7 +62,10 @@ def runtime_key(engine):
     if not gpu:
         raise ValueError("routing calibration requires readable GPU identity")
     hardware = [gpu, _cpu_name(), os.cpu_count(), platform.platform()]
-    raw = json.dumps([binary, clean, cwd, settings, assets, hardware], sort_keys=True).encode()
+    identity = [binary, clean, cwd, settings, assets, hardware]
+    if cpus is not None:
+        identity.append({"cpus": list(cpus)})
+    raw = json.dumps(identity, sort_keys=True).encode()
     return hashlib.sha256(raw).hexdigest()
 
 
