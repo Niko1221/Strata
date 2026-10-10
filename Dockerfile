@@ -13,6 +13,7 @@
 # Build:
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
+#   docker build -t strata --build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 #CUDA12 
 #
 # Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
 #   docker run --rm --gpus all \
@@ -39,7 +40,9 @@
 # -e GPUS=0,2. A volume set up for one card switches to the pair on its first start
 # on a two-card host unless GPU or GPUS pins it. LOW_RAM=on runs on one card.
 
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
+ARG CUDA_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04
+
+FROM ${CUDA_IMAGE}
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
 # and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
@@ -56,53 +59,15 @@ COPY . .
 
 # RTX 20 (75), RTX 30 (86), RTX 40 (89), RTX 50 (120), plus 80 for A-series. CMakeLists
 # refuses anything below 75. BUILD_VISION=0 skips the image encoder build.
-ARG CUDA_ARCHITECTURES=75;80;86;89;120
+ARG CUDA_ARCHITECTURES
 ARG BUILD_VISION=1
 
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
     && .venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && chmod +x setup.sh docker-entrypoint.sh
-
-# llama.cpp at the pinned commit, then the engine and the image encoder, built
-# exactly the way setup.py builds them: native code for the CPU that builds the
-# image, so build it on the PC it runs on. BUILD.json is what setup.py reads to
-# decide whether an engine is current: source=local with a matching src hash
-# means the first start reuses it instead of recompiling.
-RUN .venv/bin/python - <<'PYEOF'
-import json, os, pathlib, shutil
-import setup
-
-llama = setup.get_llama_cpp()
-nvcc, _ = setup.find_nvcc()
-arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
-vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
-
-setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
-    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
-     f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
-     f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
-if vision != "none":
-    setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
-        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
-         f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
-
-eng = setup.ROOT / "engine"
-eng.mkdir(exist_ok=True)
-shutil.copy2(setup.ROOT / "build" / setup.EXE, eng / setup.EXE)
-if vision != "none":
-    shutil.copy2(setup.ROOT / "build-vision" / "bin" / setup.VEXE, eng / setup.VEXE)
-bindir = pathlib.Path(nvcc).parent
-meta = {"source": "local", "version": setup.source_version(),
-        "archs": [int(a.split("-")[0]) for a in arch.split(";") if a.split("-")[0].isdigit()], "vision": vision,
-        "cuda_dirs": [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()],
-        "src": setup.source_hash(setup.ENGINE_SOURCES),
-        "vision_src": setup.source_hash(setup.VISION_SOURCES) if vision != "none" else None}
-(eng / "BUILD.json").write_text(json.dumps(meta, indent=1))
-PYEOF
-
-# the cmake trees are build-time only; the engine itself is what the container needs
-RUN rm -rf build build-vision
+    && chmod +x setup.sh docker-entrypoint.sh docker-engine-build-cuda.py \
+    && ./docker-engine-build-cuda.py \
+    && rm -rf build build-vision
 
 VOLUME ["/data"]
 EXPOSE 8080
