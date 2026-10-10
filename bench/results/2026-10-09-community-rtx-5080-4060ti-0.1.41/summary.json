@@ -456,5 +456,463 @@
    "sampled": "every 0.2 s for the whole server session (load, warm-up, benchmark and needles); RSS = the server's process tree"
   },
   "needles_found": "6 of 6"
+ },
+ "v0.1.41, RTX 5080 alone": {
+  "sizes": {
+   "4096": {
+    "runs": 3,
+    "prompt_tokens": [
+     4097,
+     4096,
+     4097
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     148,
+     153,
+     216
+    ],
+    "finish": [
+     "stop",
+     "stop",
+     "stop"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      3407.9,
+      3377.9,
+      3460.0
+     ],
+     "median": 3407.9,
+     "min": 3377.9,
+     "max": 3460.0
+    },
+    "decode_tok_s": {
+     "runs": [
+      114.7,
+      119.4,
+      114.8
+     ],
+     "median": 114.8,
+     "min": 114.7,
+     "max": 119.4
+    },
+    "ttft_s": {
+     "runs": [
+      1.223,
+      1.231,
+      1.202
+     ],
+     "median": 1.223,
+     "min": 1.202,
+     "max": 1.231
+    },
+    "total_s": [
+     2.5,
+     2.5,
+     3.071
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      84,
+      121
+     ],
+     [
+      89,
+      125
+     ],
+     [
+      123,
+      164
+     ]
+    ]
+   },
+   "32768": {
+    "runs": 3,
+    "prompt_tokens": [
+     32768,
+     32774,
+     32769
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     200,
+     168,
+     249
+    ],
+    "finish": [
+     "stop",
+     "stop",
+     "stop"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      4269.7,
+      4189.9,
+      4284.1
+     ],
+     "median": 4269.7,
+     "min": 4189.9,
+     "max": 4284.1
+    },
+    "decode_tok_s": {
+     "runs": [
+      118.3,
+      113.0,
+      115.6
+     ],
+     "median": 115.6,
+     "min": 113.0,
+     "max": 118.3
+    },
+    "ttft_s": {
+     "runs": [
+      7.713,
+      7.861,
+      7.686
+     ],
+     "median": 7.713,
+     "min": 7.686,
+     "max": 7.861
+    },
+    "total_s": [
+     9.39,
+     9.334,
+     9.826
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      115,
+      146
+     ],
+     [
+      97,
+      132
+     ],
+     [
+      151,
+      193
+     ]
+    ]
+   },
+   "128000": {
+    "runs": 3,
+    "prompt_tokens": [
+     128001,
+     128001,
+     128001
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     256,
+     236,
+     256
+    ],
+    "finish": [
+     "length",
+     "stop",
+     "length"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      4163.5,
+      4158.3,
+      4159.4
+     ],
+     "median": 4159.4,
+     "min": 4158.3,
+     "max": 4163.5
+    },
+    "decode_tok_s": {
+     "runs": [
+      109.3,
+      105.8,
+      101.5
+     ],
+     "median": 105.8,
+     "min": 101.5,
+     "max": 109.3
+    },
+    "ttft_s": {
+     "runs": [
+      30.837,
+      30.861,
+      30.846
+     ],
+     "median": 30.846,
+     "min": 30.837,
+     "max": 30.861
+    },
+    "total_s": [
+     33.165,
+     33.076,
+     33.352
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      151,
+      212
+     ],
+     [
+      128,
+      190
+     ],
+     [
+      132,
+      198
+     ]
+    ]
+   }
+  },
+  "memory_guard": {
+   "min_MemAvailable": "35.2GiB",
+   "min_5080_free": "478MiB",
+   "max_tree_RSS": "51.3GiB",
+   "max_swap_used": "0.00GiB",
+   "min_4060Ti_free": "7820MiB",
+   "sampled": "every 0.2 s for the whole server session (load, warm-up, benchmark and needles); RSS = the server's process tree"
+  },
+  "needles_found": "6 of 6"
+ },
+ "private build (v0.1.41 + 27 local patches), RTX 5080 alone": {
+  "sizes": {
+   "4096": {
+    "runs": 3,
+    "prompt_tokens": [
+     4097,
+     4096,
+     4097
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     124,
+     159,
+     186
+    ],
+    "finish": [
+     "stop",
+     "stop",
+     "stop"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      3371.2,
+      3423.3,
+      3470.0
+     ],
+     "median": 3423.3,
+     "min": 3371.2,
+     "max": 3470.0
+    },
+    "decode_tok_s": {
+     "runs": [
+      141.4,
+      135.6,
+      127.8
+     ],
+     "median": 135.6,
+     "min": 127.8,
+     "max": 141.4
+    },
+    "ttft_s": {
+     "runs": [
+      1.234,
+      1.214,
+      1.197
+     ],
+     "median": 1.214,
+     "min": 1.197,
+     "max": 1.234
+    },
+    "total_s": [
+     2.099,
+     2.376,
+     2.641
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      78,
+      107
+     ],
+     [
+      95,
+      134
+     ],
+     [
+      110,
+      164
+     ]
+    ]
+   },
+   "32768": {
+    "runs": 3,
+    "prompt_tokens": [
+     32768,
+     32774,
+     32769
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     232,
+     185,
+     152
+    ],
+    "finish": [
+     "stop",
+     "stop",
+     "stop"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      4273.8,
+      4172.2,
+      4260.7
+     ],
+     "median": 4260.7,
+     "min": 4172.2,
+     "max": 4273.8
+    },
+    "decode_tok_s": {
+     "runs": [
+      124.0,
+      126.3,
+      131.3
+     ],
+     "median": 126.3,
+     "min": 124.0,
+     "max": 131.3
+    },
+    "ttft_s": {
+     "runs": [
+      7.701,
+      7.895,
+      7.727
+     ],
+     "median": 7.727,
+     "min": 7.701,
+     "max": 7.895
+    },
+    "total_s": [
+     9.562,
+     9.347,
+     8.872
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      135,
+      211
+     ],
+     [
+      109,
+      173
+     ],
+     [
+      96,
+      127
+     ]
+    ]
+   },
+   "128000": {
+    "runs": 3,
+    "prompt_tokens": [
+     128001,
+     128001,
+     128001
+    ],
+    "reused_tokens": [
+     0,
+     0,
+     0
+    ],
+    "generated_tokens": [
+     256,
+     236,
+     231
+    ],
+    "finish": [
+     "length",
+     "stop",
+     "stop"
+    ],
+    "prompt_tok_s": {
+     "runs": [
+      4121.5,
+      4134.1,
+      4137.9
+     ],
+     "median": 4134.1,
+     "min": 4121.5,
+     "max": 4137.9
+    },
+    "decode_tok_s": {
+     "runs": [
+      120.0,
+      129.8,
+      127.6
+     ],
+     "median": 127.6,
+     "min": 120.0,
+     "max": 129.8
+    },
+    "ttft_s": {
+     "runs": [
+      31.15,
+      31.038,
+      31.005
+     ],
+     "median": 31.038,
+     "min": 31.005,
+     "max": 31.15
+    },
+    "total_s": [
+     33.273,
+     32.843,
+     32.803
+    ],
+    "drafts_accepted_of_offered": [
+     [
+      149,
+      245
+     ],
+     [
+      136,
+      201
+     ],
+     [
+      133,
+      213
+     ]
+    ]
+   }
+  },
+  "memory_guard": {
+   "min_MemAvailable": "22.5GiB",
+   "min_5080_free": "476MiB",
+   "max_tree_RSS": "63.9GiB",
+   "max_swap_used": "0.00GiB",
+   "min_4060Ti_free": "7820MiB",
+   "sampled": "every 0.2 s for the whole server session (load, warm-up, benchmark and needles); RSS = the server's process tree"
+  },
+  "needles_found": "6 of 6"
  }
 }

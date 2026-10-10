@@ -4,6 +4,7 @@ Measured on 2026-10-09 by KarlGrier. Stock Strata v0.1.41 on the ISTA-DASLab IQ3
 runs each at 4,096, 32,768 and 128,000 prompt tokens, plus `tools/needle_bench.py` at 32k and 128k. Two more sets are
 listed separately because they are **not** v0.1.41 as released: the same runs on a private build (v0.1.41 with local
 patches), and two larger files measured on 2026-10-07/08 on an older private build as stand-ins for a bigger model.
+A section further down repeats the v0.1.41 and private-build runs with the RTX 5080 alone (measured 2026-10-10).
 Main limitation: one machine, one IQ3_S file, three runs per size, temperature 0 with a 256-token output cap.
 
 ## Hardware and software
@@ -91,6 +92,46 @@ of Strata; the numbers are here only so they are not taken for the release's.
 Recall 6 of 6. MemAvailable at least 21.4 GiB (its conversation cache holds parked conversations in RAM), process tree at
 most 64.8 GiB RSS. Prompt reads are within 1 % of the release's; decode is 6–15 % higher. Per-run data: `results-private.json`, `needles-private.json`.
 
+## The RTX 5080 alone
+
+Measured on 2026-10-10, the day after the runs above and after a restart of the PC, with the same prompts, method and
+flags except that the 4060 Ti was not used: `CUDA_VISIBLE_DEVICES` set to the 5080 only and no `--expert-cache-device1`.
+The 5080's own expert cache is unchanged (`auto`, 4,560 slots, 8.70 GiB). Two sets, each on a fresh server with the
+model's page cache dropped first: stock v0.1.41, and the private build from the section above (with its
+`STRATA_PREFILL_CPU_SHARE=0` and conversation cache; not part of Strata).
+
+Stock v0.1.41:
+
+| Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median (range) | Decode tok/s median (range) | TTFT seconds median (range) |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 4K | 4,096–4,097 | 0 | 148, 153, 216 | 3 | 3,408 (3,378–3,460) | 114.8 (114.7–119.4) | 1.22 (1.20–1.23) |
+| 32K | 32,768–32,774 | 0 | 200, 168, 249 | 3 | 4,270 (4,190–4,284) | 115.6 (113.0–118.3) | 7.71 (7.69–7.86) |
+| 128K | 128,001 | 0 | 256, 236, 256 | 3 | 4,159 (4,158–4,164) | 105.8 (101.5–109.3) | 30.85 (30.84–30.86) |
+
+The private build (not v0.1.41 as released):
+
+| Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median (range) | Decode tok/s median (range) | TTFT seconds median (range) |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 4K | 4,096–4,097 | 0 | 124, 159, 186 | 3 | 3,423 (3,371–3,470) | 135.6 (127.8–141.4) | 1.21 (1.20–1.23) |
+| 32K | 32,768–32,774 | 0 | 232, 185, 152 | 3 | 4,261 (4,172–4,274) | 126.3 (124.0–131.3) | 7.73 (7.70–7.89) |
+| 128K | 128,001 | 0 | 256, 236, 231 | 3 | 4,134 (4,122–4,138) | 127.6 (120.0–129.8) | 31.04 (31.00–31.15) |
+
+- Against the two-card runs above: prompt reads within 1.3 % and TTFT within 0.05 s; decode 13–21 % lower on stock
+  v0.1.41 (146.0 / 132.2 / 124.9 → 114.8 / 115.6 / 105.8 tok/s at 4K / 32K / 128K) and 7–17 % lower on the private build
+  (154.7 / 151.4 / 137.6 → 135.6 / 126.3 / 127.6). The two days' runs were not interleaved.
+- Where the decode experts came from (the engine's per-request line, stock, the nine runs): alone, 76–80 % of the routed
+  experts were in the 5080's cache and 20–24 % were computed by the CPU from the RAM arena (`--pcie-frac 0`); with the
+  helper card, 66–70 % on the 5080, 19–21 % on the 4060 Ti and 10–13 % on the CPU. The private build is within a point
+  of these.
+- Recall: `needle_bench.py` 6 of 6 on both sets. Two of the stock 128K runs and one of the private build's stopped at the
+  256-token cap; the others ended on their own.
+- Memory: stock MemAvailable at least 35.2 GiB, process tree at most 51.3 GiB RSS; the private build at least 22.5 GiB
+  and 63.9 GiB; VRAM in use 15,393–15,403 MiB on the 5080 (at least 476 MiB free), the 4060 Ti idle at 15 MiB; no swap
+  in use.
+- Per-run data: `results-5080-stock.json`, `results-5080-private.json`, `needles-5080-stock.json`,
+  `needles-5080-private.json`, and two more entries in `summary.json`. The server config is `config-stock.json` without
+  `--expert-cache-device1 3300` and with `CUDA_VISIBLE_DEVICES=<RTX 5080>`.
+
 ## Stand-ins for a larger model (older private build, 2026-10-07/08)
 
 To see how a model with more experts than this PC's RAM would run, two larger files were measured as stand-ins on
@@ -115,7 +156,8 @@ let through a full session; the local file's session had one 0.2-s sample at 5.6
 
 ## Correctness and limitations
 
-- Needles: 6 of 6 at 32k and 128k on both v0.1.41 sets; 6 of 6 at 120K on the stand-ins.
+- Needles: 6 of 6 at 32k and 128k on all four v0.1.41-based sets (both cards and the 5080 alone); 6 of 6 at 120K on
+  the stand-ins.
 - The answers themselves were not graded: temperature 0, a one-paragraph summary request, a 256-token cap.
 - Not tested: vision, other quantizations of the IQ3_S model, Windows, setup's own configuration for this PC, contexts
-  above 131,072, `--batch` slots, a layer split, and the 5080 without the helper card.
+  above 131,072, `--batch` slots, and a layer split.

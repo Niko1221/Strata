@@ -1,0 +1,426 @@
+{
+ "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+ "warmup": {
+  "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+  "size": "warmup",
+  "rep": 0,
+  "target_tokens": 1000,
+  "started": "2026-10-10T01:15:09",
+  "ttft_s": 1.007,
+  "first_token_kind": "reasoning",
+  "total_s": 2.558,
+  "finish": "stop",
+  "usage": {
+   "prompt_tokens": 1000,
+   "completion_tokens": 169,
+   "total_tokens": 1169,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 1000,
+   "prompt_ms": 971.7,
+   "prompt_per_token_ms": 0.972,
+   "prompt_per_second": 1029.1,
+   "predicted_n": 169,
+   "predicted_ms": 1571.2,
+   "predicted_per_token_ms": 9.297,
+   "predicted_per_second": 107.6,
+   "draft_n": 158,
+   "draft_n_accepted": 106
+  },
+  "answer_chars": 418,
+  "reasoning_chars": 354,
+  "memory_after": {
+   "mem_available_mib": 36955,
+   "swap_used_mib": 0,
+   "gpu_used_mib": {
+    "0": 15403,
+    "1": 15
+   }
+  }
+ },
+ "runs": [
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "4096",
+   "rep": 0,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:15:11",
+   "ttft_s": 1.234,
+   "first_token_kind": "reasoning",
+   "total_s": 2.099,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4097,
+    "completion_tokens": 124,
+    "total_tokens": 4221,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4097,
+    "prompt_ms": 1215.3,
+    "prompt_per_token_ms": 0.297,
+    "prompt_per_second": 3371.2,
+    "predicted_n": 124,
+    "predicted_ms": 877.1,
+    "predicted_per_token_ms": 7.073,
+    "predicted_per_second": 141.4,
+    "draft_n": 107,
+    "draft_n_accepted": 78
+   },
+   "answer_chars": 259,
+   "reasoning_chars": 366,
+   "memory_after": {
+    "mem_available_mib": 36788,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "4096",
+   "rep": 1,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:15:13",
+   "ttft_s": 1.214,
+   "first_token_kind": "reasoning",
+   "total_s": 2.376,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4096,
+    "completion_tokens": 159,
+    "total_tokens": 4255,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4096,
+    "prompt_ms": 1196.5,
+    "prompt_per_token_ms": 0.292,
+    "prompt_per_second": 3423.3,
+    "predicted_n": 159,
+    "predicted_ms": 1172.8,
+    "predicted_per_token_ms": 7.376,
+    "predicted_per_second": 135.6,
+    "draft_n": 134,
+    "draft_n_accepted": 95
+   },
+   "answer_chars": 328,
+   "reasoning_chars": 402,
+   "memory_after": {
+    "mem_available_mib": 36608,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "4096",
+   "rep": 2,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:15:16",
+   "ttft_s": 1.197,
+   "first_token_kind": "reasoning",
+   "total_s": 2.641,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4097,
+    "completion_tokens": 186,
+    "total_tokens": 4283,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4097,
+    "prompt_ms": 1180.7,
+    "prompt_per_token_ms": 0.288,
+    "prompt_per_second": 3470.0,
+    "predicted_n": 186,
+    "predicted_ms": 1454.9,
+    "predicted_per_token_ms": 7.822,
+    "predicted_per_second": 127.8,
+    "draft_n": 164,
+    "draft_n_accepted": 110
+   },
+   "answer_chars": 320,
+   "reasoning_chars": 444,
+   "memory_after": {
+    "mem_available_mib": 36434,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "32768",
+   "rep": 0,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:15:18",
+   "ttft_s": 7.701,
+   "first_token_kind": "reasoning",
+   "total_s": 9.562,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32768,
+    "completion_tokens": 232,
+    "total_tokens": 33000,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32768,
+    "prompt_ms": 7667.2,
+    "prompt_per_token_ms": 0.234,
+    "prompt_per_second": 4273.8,
+    "predicted_n": 232,
+    "predicted_ms": 1871.2,
+    "predicted_per_token_ms": 8.066,
+    "predicted_per_second": 124.0,
+    "draft_n": 211,
+    "draft_n_accepted": 135
+   },
+   "answer_chars": 351,
+   "reasoning_chars": 817,
+   "memory_after": {
+    "mem_available_mib": 36078,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "32768",
+   "rep": 1,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:15:28",
+   "ttft_s": 7.895,
+   "first_token_kind": "reasoning",
+   "total_s": 9.347,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32774,
+    "completion_tokens": 185,
+    "total_tokens": 32959,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32774,
+    "prompt_ms": 7855.4,
+    "prompt_per_token_ms": 0.24,
+    "prompt_per_second": 4172.2,
+    "predicted_n": 185,
+    "predicted_ms": 1464.4,
+    "predicted_per_token_ms": 7.916,
+    "predicted_per_second": 126.3,
+    "draft_n": 173,
+    "draft_n_accepted": 109
+   },
+   "answer_chars": 407,
+   "reasoning_chars": 397,
+   "memory_after": {
+    "mem_available_mib": 35205,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "32768",
+   "rep": 2,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:15:37",
+   "ttft_s": 7.727,
+   "first_token_kind": "reasoning",
+   "total_s": 8.872,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32769,
+    "completion_tokens": 152,
+    "total_tokens": 32921,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32769,
+    "prompt_ms": 7691.0,
+    "prompt_per_token_ms": 0.235,
+    "prompt_per_second": 4260.7,
+    "predicted_n": 152,
+    "predicted_ms": 1157.4,
+    "predicted_per_token_ms": 7.614,
+    "predicted_per_second": 131.3,
+    "draft_n": 127,
+    "draft_n_accepted": 96
+   },
+   "answer_chars": 351,
+   "reasoning_chars": 365,
+   "memory_after": {
+    "mem_available_mib": 34413,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "128000",
+   "rep": 0,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:15:46",
+   "ttft_s": 31.15,
+   "first_token_kind": "reasoning",
+   "total_s": 33.273,
+   "finish": "length",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 256,
+    "total_tokens": 128257,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 31057.1,
+    "prompt_per_token_ms": 0.243,
+    "prompt_per_second": 4121.5,
+    "predicted_n": 256,
+    "predicted_ms": 2134.1,
+    "predicted_per_token_ms": 8.336,
+    "predicted_per_second": 120.0,
+    "draft_n": 245,
+    "draft_n_accepted": 149
+   },
+   "answer_chars": 279,
+   "reasoning_chars": 849,
+   "memory_after": {
+    "mem_available_mib": 33171,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "128000",
+   "rep": 1,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:16:20",
+   "ttft_s": 31.038,
+   "first_token_kind": "reasoning",
+   "total_s": 32.843,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 236,
+    "total_tokens": 128237,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 30962.3,
+    "prompt_per_token_ms": 0.242,
+    "prompt_per_second": 4134.1,
+    "predicted_n": 236,
+    "predicted_ms": 1818.3,
+    "predicted_per_token_ms": 7.705,
+    "predicted_per_second": 129.8,
+    "draft_n": 201,
+    "draft_n_accepted": 136
+   },
+   "answer_chars": 401,
+   "reasoning_chars": 715,
+   "memory_after": {
+    "mem_available_mib": 30938,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "private build (v0.1.41 + 27 local patches), RTX 5080 alone",
+   "size": "128000",
+   "rep": 2,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:16:53",
+   "ttft_s": 31.005,
+   "first_token_kind": "reasoning",
+   "total_s": 32.803,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 231,
+    "total_tokens": 128232,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 30933.5,
+    "prompt_per_token_ms": 0.242,
+    "prompt_per_second": 4137.9,
+    "predicted_n": 231,
+    "predicted_ms": 1810.8,
+    "predicted_per_token_ms": 7.839,
+    "predicted_per_second": 127.6,
+    "draft_n": 213,
+    "draft_n_accepted": 133
+   },
+   "answer_chars": 386,
+   "reasoning_chars": 645,
+   "memory_after": {
+    "mem_available_mib": 28389,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15403,
+     "1": 15
+    }
+   }
+  }
+ ],
+ "note": "memory_after: MemAvailable, swap in use and each GPU's used VRAM right after the request (GPU 0 = RTX 5080, GPU 1 = RTX 4060 Ti, not used in these runs). timings: the server's own (llama.cpp names; cache_n = reused tokens, prompt_n = read tokens)."
+}

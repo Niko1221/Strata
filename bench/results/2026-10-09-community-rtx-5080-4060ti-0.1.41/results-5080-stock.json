@@ -1,0 +1,426 @@
+{
+ "label": "v0.1.41, RTX 5080 alone",
+ "warmup": {
+  "label": "v0.1.41, RTX 5080 alone",
+  "size": "warmup",
+  "rep": 0,
+  "target_tokens": 1000,
+  "started": "2026-10-10T01:10:11",
+  "ttft_s": 1.022,
+  "first_token_kind": "reasoning",
+  "total_s": 2.764,
+  "finish": "stop",
+  "usage": {
+   "prompt_tokens": 1000,
+   "completion_tokens": 172,
+   "total_tokens": 1172,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 1000,
+   "prompt_ms": 984.5,
+   "prompt_per_token_ms": 0.985,
+   "prompt_per_second": 1015.7,
+   "predicted_n": 172,
+   "predicted_ms": 1765.0,
+   "predicted_per_token_ms": 10.262,
+   "predicted_per_second": 97.5,
+   "draft_n": 146,
+   "draft_n_accepted": 107
+  },
+  "answer_chars": 441,
+  "reasoning_chars": 354,
+  "memory_after": {
+   "mem_available_mib": 37035,
+   "swap_used_mib": 0,
+   "gpu_used_mib": {
+    "0": 15393,
+    "1": 15
+   }
+  }
+ },
+ "runs": [
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "4096",
+   "rep": 0,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:10:14",
+   "ttft_s": 1.223,
+   "first_token_kind": "reasoning",
+   "total_s": 2.5,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4097,
+    "completion_tokens": 148,
+    "total_tokens": 4245,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4097,
+    "prompt_ms": 1202.2,
+    "prompt_per_token_ms": 0.293,
+    "prompt_per_second": 3407.9,
+    "predicted_n": 148,
+    "predicted_ms": 1290.3,
+    "predicted_per_token_ms": 8.718,
+    "predicted_per_second": 114.7,
+    "draft_n": 121,
+    "draft_n_accepted": 84
+   },
+   "answer_chars": 270,
+   "reasoning_chars": 424,
+   "memory_after": {
+    "mem_available_mib": 37020,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15393,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "4096",
+   "rep": 1,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:10:17",
+   "ttft_s": 1.231,
+   "first_token_kind": "reasoning",
+   "total_s": 2.5,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4096,
+    "completion_tokens": 153,
+    "total_tokens": 4249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4096,
+    "prompt_ms": 1212.6,
+    "prompt_per_token_ms": 0.296,
+    "prompt_per_second": 3377.9,
+    "predicted_n": 153,
+    "predicted_ms": 1281.4,
+    "predicted_per_token_ms": 8.375,
+    "predicted_per_second": 119.4,
+    "draft_n": 125,
+    "draft_n_accepted": 89
+   },
+   "answer_chars": 346,
+   "reasoning_chars": 376,
+   "memory_after": {
+    "mem_available_mib": 36999,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15393,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "4096",
+   "rep": 2,
+   "target_tokens": 4096,
+   "started": "2026-10-10T01:10:19",
+   "ttft_s": 1.202,
+   "first_token_kind": "reasoning",
+   "total_s": 3.071,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 4097,
+    "completion_tokens": 216,
+    "total_tokens": 4313,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 4097,
+    "prompt_ms": 1184.1,
+    "prompt_per_token_ms": 0.289,
+    "prompt_per_second": 3460.0,
+    "predicted_n": 216,
+    "predicted_ms": 1881.1,
+    "predicted_per_token_ms": 8.709,
+    "predicted_per_second": 114.8,
+    "draft_n": 164,
+    "draft_n_accepted": 123
+   },
+   "answer_chars": 327,
+   "reasoning_chars": 607,
+   "memory_after": {
+    "mem_available_mib": 36991,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "32768",
+   "rep": 0,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:10:22",
+   "ttft_s": 7.713,
+   "first_token_kind": "reasoning",
+   "total_s": 9.39,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32768,
+    "completion_tokens": 200,
+    "total_tokens": 32968,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32768,
+    "prompt_ms": 7674.6,
+    "prompt_per_token_ms": 0.234,
+    "prompt_per_second": 4269.7,
+    "predicted_n": 200,
+    "predicted_ms": 1690.7,
+    "predicted_per_token_ms": 8.454,
+    "predicted_per_second": 118.3,
+    "draft_n": 146,
+    "draft_n_accepted": 115
+   },
+   "answer_chars": 348,
+   "reasoning_chars": 648,
+   "memory_after": {
+    "mem_available_mib": 36838,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "32768",
+   "rep": 1,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:10:32",
+   "ttft_s": 7.861,
+   "first_token_kind": "reasoning",
+   "total_s": 9.334,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32774,
+    "completion_tokens": 168,
+    "total_tokens": 32942,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32774,
+    "prompt_ms": 7822.1,
+    "prompt_per_token_ms": 0.239,
+    "prompt_per_second": 4189.9,
+    "predicted_n": 168,
+    "predicted_ms": 1486.7,
+    "predicted_per_token_ms": 8.849,
+    "predicted_per_second": 113.0,
+    "draft_n": 132,
+    "draft_n_accepted": 97
+   },
+   "answer_chars": 365,
+   "reasoning_chars": 361,
+   "memory_after": {
+    "mem_available_mib": 36647,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "32768",
+   "rep": 2,
+   "target_tokens": 32768,
+   "started": "2026-10-10T01:10:41",
+   "ttft_s": 7.686,
+   "first_token_kind": "reasoning",
+   "total_s": 9.826,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 32769,
+    "completion_tokens": 249,
+    "total_tokens": 33018,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 32769,
+    "prompt_ms": 7648.9,
+    "prompt_per_token_ms": 0.233,
+    "prompt_per_second": 4284.1,
+    "predicted_n": 249,
+    "predicted_ms": 2153.9,
+    "predicted_per_token_ms": 8.65,
+    "predicted_per_second": 115.6,
+    "draft_n": 193,
+    "draft_n_accepted": 151
+   },
+   "answer_chars": 381,
+   "reasoning_chars": 766,
+   "memory_after": {
+    "mem_available_mib": 36753,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "128000",
+   "rep": 0,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:10:51",
+   "ttft_s": 30.837,
+   "first_token_kind": "reasoning",
+   "total_s": 33.165,
+   "finish": "length",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 256,
+    "total_tokens": 128257,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 30743.6,
+    "prompt_per_token_ms": 0.24,
+    "prompt_per_second": 4163.5,
+    "predicted_n": 256,
+    "predicted_ms": 2341.2,
+    "predicted_per_token_ms": 9.145,
+    "predicted_per_second": 109.3,
+    "draft_n": 212,
+    "draft_n_accepted": 151
+   },
+   "answer_chars": 224,
+   "reasoning_chars": 865,
+   "memory_after": {
+    "mem_available_mib": 36304,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "128000",
+   "rep": 1,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:11:24",
+   "ttft_s": 30.861,
+   "first_token_kind": "reasoning",
+   "total_s": 33.076,
+   "finish": "stop",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 236,
+    "total_tokens": 128237,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 30782.2,
+    "prompt_per_token_ms": 0.24,
+    "prompt_per_second": 4158.3,
+    "predicted_n": 236,
+    "predicted_ms": 2230.4,
+    "predicted_per_token_ms": 9.451,
+    "predicted_per_second": 105.8,
+    "draft_n": 190,
+    "draft_n_accepted": 128
+   },
+   "answer_chars": 405,
+   "reasoning_chars": 715,
+   "memory_after": {
+    "mem_available_mib": 36284,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  },
+  {
+   "label": "v0.1.41, RTX 5080 alone",
+   "size": "128000",
+   "rep": 2,
+   "target_tokens": 128000,
+   "started": "2026-10-10T01:11:57",
+   "ttft_s": 30.846,
+   "first_token_kind": "reasoning",
+   "total_s": 33.352,
+   "finish": "length",
+   "usage": {
+    "prompt_tokens": 128001,
+    "completion_tokens": 256,
+    "total_tokens": 128257,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 128001,
+    "prompt_ms": 30773.9,
+    "prompt_per_token_ms": 0.24,
+    "prompt_per_second": 4159.4,
+    "predicted_n": 256,
+    "predicted_ms": 2521.2,
+    "predicted_per_token_ms": 9.848,
+    "predicted_per_second": 101.5,
+    "draft_n": 198,
+    "draft_n_accepted": 132
+   },
+   "answer_chars": 163,
+   "reasoning_chars": 1012,
+   "memory_after": {
+    "mem_available_mib": 36296,
+    "swap_used_mib": 0,
+    "gpu_used_mib": {
+     "0": 15401,
+     "1": 15
+    }
+   }
+  }
+ ],
+ "note": "memory_after: MemAvailable, swap in use and each GPU's used VRAM right after the request (GPU 0 = RTX 5080, GPU 1 = RTX 4060 Ti, not used in these runs). timings: the server's own (llama.cpp names; cache_n = reused tokens, prompt_n = read tokens)."
+}
