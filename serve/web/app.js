@@ -501,9 +501,10 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
 function codeBlock(lang, code) {
+  const copy = `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button>`;
   return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
+    `${copy}</div><pre><code>${esc(code)}</code></pre>` +
+    `<div class="st-code__foot">${copy}</div></div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
