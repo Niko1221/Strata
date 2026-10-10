@@ -1,0 +1,9 @@
+label,warmup,prompt_n,cache_n,prompt_ms,prompt_tok_s,generated,decode_tok_s,draft_n,draft_n_accepted,draft_accepted_pct,finish_reason,wall_s,ram_used_gib,answer_has_passphrase
+short,yes,102,0,1617.4,63.1,256,47.9,202,134,66.3,length,7.0,74.9,
+long,yes,38185,0,28272.7,1350.6,134,46.8,114,80,70.2,stop,31.2,76.2,yes
+short,no,96,0,1355.9,70.8,256,51.8,213,123,57.7,length,6.3,75.1,
+short,no,100,0,1396.3,71.6,256,55.1,218,133,61.0,length,6.0,76.1,
+short,no,100,0,1414.3,70.7,256,54.0,220,132,60.0,length,6.2,74.9,
+long,no,38186,0,28057.1,1361.0,134,46.4,108,81,75.0,stop,31.0,75.1,yes
+long,no,38189,0,28125.8,1357.8,135,54.1,120,81,67.5,stop,30.7,74.7,yes
+long,no,38187,0,28171.9,1355.5,139,57.1,121,82,67.8,stop,30.7,74.7,yes
