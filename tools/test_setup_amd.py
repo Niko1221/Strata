@@ -6,6 +6,7 @@ which TheRock index each family installs from.  No GPU, no ROCm, no downloads.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -430,12 +431,105 @@ class CalibrationKey(unittest.TestCase):
 
 
 class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+    def test_cpu_encoder_on_windows(self):
+        for win in (True, False):
+            with mock.patch.object(setup, "WIN", win), mock.patch.object(setup, "warn", lambda *a: None):
+                self.assertEqual(setup.hip_vision("cpu"), "cpu")
+                self.assertEqual(setup.hip_vision("yes"), "gpu")       # the Vulkan encoder
+                self.assertEqual(setup.hip_vision("gpu"), "gpu")
+                self.assertEqual(setup.hip_vision(None), "none")
+
+    def test_encoder_needs_the_build_tools(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "version": "0.1.40"}))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: None), \
+                    mock.patch.object(setup, "warn", lambda *a: None):
+                self.assertFalse(setup.win_hip_vision(eng, "llama"))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: Path("vcvars64.bat")), \
+                    mock.patch.object(setup, "build_vision_cpu") as built:
+                self.assertTrue(setup.win_hip_vision(eng, "llama"))
+                built.assert_called_once()
+
+    def test_gpu_encoder_needs_the_vulkan_sdk(self):
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "version": "0.1.40"}))
+            with mock.patch.object(setup, "find_vcvars", lambda *a: Path("vcvars64.bat")), \
+                    mock.patch.object(setup, "warn", lambda *a: None):
+                with mock.patch.object(setup, "find_vulkan_sdk", lambda: False):
+                    self.assertFalse(setup.win_hip_vision(eng, "llama", "gpu"))
+                with mock.patch.object(setup, "find_vulkan_sdk", lambda: True), \
+                        mock.patch.object(setup, "build_vision_vulkan") as built:
+                    self.assertTrue(setup.win_hip_vision(eng, "llama", "gpu"))
+                    built.assert_called_once()
+
+
+class RememberedVision(unittest.TestCase):
+    """#1299: setup run again for a model that already reads pictures must not quietly take them away."""
+
+    def test_the_mode_of_an_existing_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = root / "strata-qwen3.8-flash-next-ud.json"
+            with mock.patch.object(setup, "ROOT", root):
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))     # no config yet
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe"}}), encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": False}}),
+                               encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")   # what setup writes for the CPU
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": True}}),
+                               encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "gpu")
+                cfg.write_text(json.dumps({"args": []}), encoding="utf-8")
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))         # images were off
+
+
+class ToolFinder(unittest.TestCase):
+    """#1299: pip's cmake launcher in Scripts/ keeps the absolute path of the interpreter it was installed with, so a
+    venv whose folder was moved leaves it dead (exit 1, no message) while the binary under site-packages still works."""
+
+    def test_the_first_candidate_that_answers_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Scripts").mkdir()
+            (root / "Scripts" / "cmake.exe").write_text("")
+            real = root / "site-packages" / "cmake" / "data" / "bin"
+            real.mkdir(parents=True)
+            (real / "cmake.exe").write_text("")
+            class Runs:
+                def run(self, cmd, **kw):
+                    class R:
+                        returncode = 1 if "Scripts" in cmd[0] else 0
+                    return R()
+            with mock.patch.object(setup, "WIN", True), \
+                    mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.object(setup, "subprocess", Runs()), \
+                    mock.patch.object(sys, "executable", str(root / "python.exe")):
+                self.assertEqual(setup.find_tool("cmake"), str(real / "cmake.exe"))
+
+    def test_a_timeout_does_not_escape(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Scripts").mkdir()
+            (root / "Scripts" / "cmake.exe").write_text("")
+
+            real = setup.subprocess
+
+            class Hangs:
+                SubprocessError = real.SubprocessError
+
+                def run(self, cmd, **kw):
+                    raise real.TimeoutExpired(cmd, 15)
+            with mock.patch.object(setup, "WIN", True), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.object(setup, "subprocess", Hangs()), mock.patch.object(sys, "executable", str(root / "python.exe")):
+                self.assertEqual(setup.find_tool("cmake"), str(root / "Scripts" / "cmake.exe"))   # the old answer
+
+    def test_nothing_found_is_still_none(self):
+        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                mock.patch.object(sys, "executable", str(Path("/nonexistent/python.exe"))):
+            self.assertIsNone(setup.find_tool("cmake"))
 
 
 class HipRuntimeBesideExe(unittest.TestCase):

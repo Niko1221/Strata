@@ -1416,8 +1416,15 @@ def find_vcvars(cuda_v=None):
 
 
 def find_tool(name):
-    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).  A PATH copy that does not run
-    (a pip launcher whose Python is gone) is skipped for the one next to this Python."""
+    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).
+
+    For a wheel whose real binary sits under site-packages (cmake's is `cmake/data/bin/cmake.exe`), the launcher pip
+    writes into Scripts/ records the absolute path of the interpreter it was installed with.  A venv moved to another
+    folder leaves that path dead, and the launcher then exits 1 without saying anything - so every candidate is asked
+    for its version and the first one that answers is used (#1299, seen on a PC whose Strata folder was renamed).
+    """
+    ext = ".exe" if WIN else ""
+    cands = []
     p = shutil.which(name)
     if p:
         try:
@@ -1427,10 +1434,21 @@ def find_tool(name):
             pass
     for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent,
               Path.home() / ".local" / "bin"):
-        c = d / (name + (".exe" if WIN else ""))
-        if c.exists():
-            return str(c)
-    return None
+        c = d / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for d in (Path(sys.executable).parent.parent / "Lib" / "site-packages",
+              Path(sys.executable).parent / "site-packages"):
+        c = d / name / "data" / "bin" / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for c in cands:
+        try:
+            if subprocess.run([c, "--version"], capture_output=True, timeout=15).returncode == 0:
+                return c
+        except (OSError, subprocess.SubprocessError):      # includes a timeout
+            continue
+    return cands[0] if cands else None
 
 
 def free_gb(path):
@@ -2643,12 +2661,13 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
         (meta.get("isa_floor") or "") == floor
-    vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
+    vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc
+                                     and meta.get("vision") == vision)
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
     if engine_ok:
-        return build_vision_cpu(eng, stamp, meta, llama, vsrc)
+        return (build_vision_vulkan if vision == "gpu" else build_vision_cpu)(eng, stamp, meta, llama, vsrc)
     if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
         fail("a C++ compiler and git are needed to compile the AMD engine",
              "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
@@ -2675,23 +2694,64 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
     if vision != "none":
-        return build_vision_cpu(eng, stamp, meta, llama, vsrc)
+        return (build_vision_vulkan if vision == "gpu" else build_vision_cpu)(eng, stamp, meta, llama, vsrc)
     stamp.write_text(json.dumps(meta, indent=1))
     ok(f"engine compiled: {eng / EXE}")
     return eng
 
 
 def hip_vision(asked) -> str:
-    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304); a HIP (GPU) encoder build
-    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them."""
-    if asked in ("yes", "gpu"):
-        warn("the AMD backend has no GPU image encoder yet: images off"
-             + ("" if WIN else " (--vision cpu reads them on the CPU)"))
-    if asked == "cpu" and WIN:
-        warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
-             "image encoder): images off")
-        return "none"
-    return "cpu" if asked == "cpu" else "none"
+    """The image encoder with the AMD backend (--vision): "cpu" (#304; Linux and Windows) or "gpu" (yes/gpu: the encoder
+    compiled with Vulkan, so a Radeon runs it; needs the Vulkan SDK to compile, only the AMD driver to run)."""
+    return {"cpu": "cpu", "gpu": "gpu", "yes": "gpu"}.get(asked, "none")
+
+
+def find_vulkan_sdk() -> bool:
+    """The Vulkan SDK pieces ggml-vulkan's build needs: glslc (the shader compiler) and the headers/loader."""
+    sdk = os.environ.get("VULKAN_SDK")
+    if sdk and (Path(sdk) / ("Bin/glslc.exe" if WIN else "bin/glslc")).exists():
+        return True
+    return shutil.which("glslc") is not None
+
+
+def build_vision_vulkan(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
+    """The image encoder on the GPU through Vulkan (tools/vision with ggml-vulkan), beside the HIP engine."""
+    say("  Compiling the image encoder for the GPU through Vulkan (10-20 minutes, once) ...")
+    cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision-vk", "strata-vision",
+                [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_VISION_VULKAN=ON",
+                 "-DSTRATA_PORTABLE=OFF"],
+                find_vcvars((13, 3)) if WIN else None, "build-vision-vk.bat" if WIN else "")
+    shutil.copy2(ROOT / "build-vision-vk" / "bin" / VEXE, eng / VEXE)
+    stamp.write_text(json.dumps({**meta, "vision": "gpu", "vision_src": vsrc}, indent=1))
+    ok(f"engine: {eng / EXE}, image encoder (GPU, Vulkan): {eng / VEXE}")
+    return eng
+
+
+def win_hip_vision(eng: Path, llama, mode: str = "cpu") -> bool:
+    """AMD on Windows: the ready-made HIP engine ships no image encoder, so it is compiled here, once: "cpu", or "gpu"
+    (Vulkan).  Needs the Visual Studio C++ build tools (and, for the GPU encoder, the Vulkan SDK); cmake and ninja come
+    from setup's pip step.  False: it cannot be had (images off)."""
+    stamp = eng / "BUILD.json"
+    meta = json.loads(stamp.read_text(encoding="utf-8"))
+    vsrc = source_hash(VISION_SOURCES)
+    if (eng / VEXE).exists() and meta.get("vision_src") == vsrc and meta.get("vision") == mode:
+        ok(f"image encoder ({'GPU, Vulkan' if mode == 'gpu' else 'CPU'}) already built: {eng / VEXE}")
+        return True
+    if find_vcvars((13, 3)) is None:               # (13, 3): no CUDA in this build, so Visual Studio 2026 is accepted too
+        warn("images need the Visual Studio C++ build tools to compile the image encoder, and they were not found: "
+             "images off.  Install Visual Studio 2019/2022 (or its Build Tools) with the workload 'Desktop "
+             "development with C++', then run START-HERE.bat --setup again")
+        return False
+    if mode == "gpu":
+        if not find_vulkan_sdk():
+            warn("the GPU image encoder (Vulkan) needs the Vulkan SDK to compile (https://vulkan.lunarg.com/sdk/home), "
+                 "and glslc was not found: images off.  Install it (it sets VULKAN_SDK), open a new terminal, and run "
+                 "START-HERE.bat --setup --vision gpu again; --vision cpu needs no SDK")
+            return False
+        build_vision_vulkan(eng, stamp, meta, llama, vsrc)
+        return True
+    build_vision_cpu(eng, stamp, meta, llama, vsrc)
+    return True
 
 
 def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
@@ -2700,7 +2760,7 @@ def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
         say("  Compiling the image encoder (for the CPU) ...")
         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision", "strata-vision",
                     [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
-                    find_vcvars() if WIN else None,
+                    find_vcvars((13, 3)) if WIN else None,
                     "build-vision-cpu.bat" if WIN else "")   # #881: MSVC's environment on Windows, as the CUDA path has
         shutil.copy2(ROOT / "build-vision" / "bin" / VEXE, eng / VEXE)
     stamp.write_text(json.dumps({**meta, "vision": "cpu", "vision_src": vsrc}, indent=1))
@@ -3872,6 +3932,21 @@ SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
+def remembered_vision(tag: str) -> str | None:
+    """The image mode this model's own config already has ("cpu", "gpu" or None), so a setup run again does not take
+    the pictures away from a model that could read them: without --vision, hip_vision answers "none" (#1299)."""
+    p = ROOT / f"strata-{tag.lower()}.json"
+    if not p.is_file():
+        return None
+    try:
+        vis = json.loads(p.read_text(encoding="utf-8-sig")).get("vision")
+    except (OSError, ValueError):
+        return None
+    if isinstance(vis, dict) and vis.get("exe"):
+        return "gpu" if vis.get("gpu") else "cpu"      # a flag: setup writes `vision == "gpu"`, the server tests its truth
+    return None
+
+
 def carry_over(old: dict, cfg: dict) -> list[str]:
     """#629: setup run again for an installed model keeps what the user added to its run config: every key setup does
     not write (`SETUP_KEYS`), the "env" entries setup does not write, and in "vision" the keys setup does not write
@@ -5009,7 +5084,7 @@ def main() -> int:
             + "   (recommended)")
         say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB{', unified memory' if g.get('uma') else ''})"
                                for g in amd_ok)
-            + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
+            + f"   ({'the ready-made AMD engine, images compiled here' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
@@ -5317,6 +5392,17 @@ def main() -> int:
             warn(f"images are not available with {model} yet: off")
     elif hip:
         vision = hip_vision(a.vision)
+        if a.vision is None:
+            kept = remembered_vision(tag)              # setup run again: keep the images this model already has
+            if kept:
+                vision = kept
+                ok(f"images: kept as this model was set up ({'on the GPU' if kept == 'gpu' else 'on the CPU'})")
+            elif WIN:
+                say()
+                say("  Images: the model can also read pictures (0.9 GB download; the image encoder is compiled here once,")
+                say("  which needs the Visual Studio C++ build tools).  1) no   2) on the CPU (about 10-30 s per picture,")
+                say("  nothing else to install)   3) on the GPU through Vulkan (fast; needs the Vulkan SDK to compile)")
+                vision = {"1": "none", "2": "cpu", "3": "gpu"}[ask("Images?", ["1", "2", "3"], "1", a.yes)]
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
@@ -5442,6 +5528,8 @@ def main() -> int:
                  "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
+        if vision != "none" and not win_hip_vision(eng, llama, vision):
+            vision = "none"
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))

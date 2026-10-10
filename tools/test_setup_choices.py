@@ -318,15 +318,13 @@ class ExperimentalSm60(unittest.TestCase):
 class HipVision(unittest.TestCase):
     """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine."""
 
-    @mock.patch.object(setup, "WIN", False)            # Linux: compiled here (Windows has no AMD image encoder yet)
+    @mock.patch.object(setup, "WIN", False)            # Linux: compiled here (Windows: win_hip_vision does the same)
     def test_the_choice(self):
         self.assertEqual(quiet(setup.hip_vision, "cpu"), ("cpu", ""))
         for asked in (None, "no", "none"):
             self.assertEqual(quiet(setup.hip_vision, asked), ("none", ""))
-        for asked in ("yes", "gpu"):
-            got, out = quiet(setup.hip_vision, asked)
-            self.assertEqual(got, "none")
-            self.assertIn("--vision cpu", out)
+        for asked in ("yes", "gpu"):                    # the Vulkan encoder
+            self.assertEqual(quiet(setup.hip_vision, asked), ("gpu", ""))
 
     def build(self, meta, vision, vexe=False):
         """build_engine_hip with an engine that is already built: only the encoder can be missing."""
