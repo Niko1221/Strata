@@ -53,14 +53,57 @@ Both cards, cold server per run, one 8,275- and one 33,586-token prompt of repos
 
 Decode is the same within the noise in both setups (these short answers: 51-58 tok/s split, 36-42 helper).
 
+## Against the FP32 route (#1006), same card (2026-10-06)
+
+#1006 takes the same gfx103x GEMMs the other way: both inputs widened to FP32 and the product as SGEMM (exact widening,
+FP32 accumulate, `STRATA_RDNA2_SGEMM=0` for the old path). Built at its `63a92c2` and run next to this change's build
+(`6add1a7`, `main` + this) on one RX 6900 XT: the same model and arguments as above, three prompts from one corpus, cold
+server per arm, temperature 0, 8 tokens answered, `STRATA_PREFILL_TIMING=1`. The old path here is #1006's branch with
+its switch off. One run per cell; a second cold run of this change's arm repeated it within 1.3%.
+
+| prompt tokens | old path | #1006 (SGEMM) | this change (FP16 HGEMM) |
+| ---: | ---: | ---: | ---: |
+| 8,368 | 412 tok/s | 622 tok/s (+51%) | 730 tok/s (+77%) |
+| 32,813 | 455 tok/s | 742 tok/s (+63%) | 900 tok/s (+98%) |
+| 104,412 | 456 tok/s | 750 tok/s (+65%) | 904 tok/s (+98%) |
+
+The 32,813-token prompt's GPU timeline, the phases these GEMMs sit in (old / SGEMM / FP16): gdn 22.0 -> 6.2 -> 4.0 s,
+qsa proj 8.6 -> 3.2 -> 2.1 s, hc read 8.1 -> 6.1 -> 4.4 s, router+shared 4.0 -> 2.5 -> 0.7 s; `wait copy` is 1.0 s in
+all three (PCIe 4.0 x8), so the GEMMs are not hidden behind the expert stream here. Per call this is the card's FP32
+rate against its FP16 rate: the N 10240 x K 2560 projection at ~15 TFLOPS as SGEMM (#1006's 27.7 ms at T 8192) and
+37.7 as HGEMM, about 2x on the GEMM itself, 17-21% on the prompt. What the SGEMM route has that this change does not:
+no FP16 output rounding, `beta != 0` and N < 64 covered. The three arms gave the same answer on each prompt.
+
 ## Range check
 
 FP16 ends at 65504 where BF16 reaches 3.4e38, so the precondition is that nothing the prompt path feeds these GEMMs or gets
-out of them leaves FP16's range. Measured on 0.1.38 with a diagnostic counter (not part of this change) over 33.7K tokens of
-English docs, 43.3K of Chinese logs and 32.4K of C++ on one card: every BF16 GEMM's X and W and every FP16 output - **0**
-values beyond 65504, **0** infinities. Non-zero |x| < 6.1e-5 (FP16's subnormal band): 0.008-1.8% of X, 0.1-0.9% of W.
-Out-of-range values would still be finite: the activation writers saturate to +-65504 (`hf_sat`, as the FP16 images
-already did), a NaN stays a NaN.
+out of them leaves FP16's range. The engine now counts it: `STRATA_F16_RANGE=1` records, per device, the largest |value|
+and the count beyond 65504 (or not finite) at the three places a value enters or leaves FP16 - the activation images
+(`hf_sat`, every image writer's one funnel), the BF16 weights converted to FP16 (`bf16_to_f16_rows`) and the FP16 GEMM
+outputs as they are widened (`widen_rows_f16`; an output rocBLAS wrote beyond the range is Inf there, not saturated) -
+and prints one line per prompt (`strata f16 range: ...`). Off, the cost is one flag read per value; on, a 34.4K-token
+prompt read at 889.8 tok/s against 888.5 without it.
+
+Measured on one card over 466K tokens in nine prompts: three 32-34K slices of the earlier corpus (English docs, Chinese
+logs, C++), two prompts (118K and 64K tokens) built to push activations - delimiter floods (`<|im_start|>`, 200 newlines,
+500 spaces), one token repeated 4,000 times, 6,000-character runs, 18-digit numbers, 20K characters of base64, emoji and
+Japanese / Russian / Arabic / Hindi text, 2,000 SQL lines - and four batches (40-49K tokens) of real requests recorded
+from this machine's API:
+
+| | activation images, max abs | BF16 weights, max abs | FP16 GEMM outputs, max abs | beyond 65504 / not finite |
+| --- | ---: | ---: | ---: | ---: |
+| corpus slices (3) | 84.0 / 103.4 / 112.2 | 11.56 | 387.0 / 392.0 / 391.5 | 0 |
+| built to push (2) | 76.6 / 99.0 | 11.56 | 409.5 / 399.2 | 0 |
+| real requests (4) | 73.9 - 92.7 | 11.56 | 374.2 - 382.5 | 0 |
+
+The largest output is 409.5, 160x below 65504; the largest activation 112, 580x below. The prompts built to push
+activations did not: their maxima are below the ordinary corpus's. Offline, the pack's dense BF16 tensors (484 in the
+first GGUF shard) peak at 8.56 (`hc_ffn_up`); 11.56 is in the second shard (the PLE). This is one model (GSQ-RCO IQ3_S);
+the other models setup installs are fine-tunes of the same architecture, so the headroom is the same kind of number
+there but has not been measured. Out-of-range activations would still be finite: the image writers saturate to
++-65504 (`hf_sat`), a NaN stays a NaN; an out-of-range GEMM output would be Inf, which is what the counter is for.
+`to_f16` (the hc image for the FP16-weight GEMMs and the PLE key image) saturates and counts too now, so every FP16
+image writer is under the same rule; three of the prompts rerun with it in gave the same maxima.
 
 ## Distribution check (teacher-forced)
 
@@ -130,6 +173,12 @@ would need `STRATA_HIP_PROMPT_F16=0`.
   row from its end; `Gemm::bf16` converts W row slices to FP16 through the existing dequantization scratch (as
   `native()` does) and takes X as the FP16 image. `bf16x2_mode()` is 0 there (the BF16 low part has no FP16 meaning).
 - No new device memory, no host sync, no fallback branch; CUDA builds are unchanged (`#if defined(__HIPCC__)`).
+- `hip_prefill_gemm` (ctest) runs its shapes a second time with `set_f16_io(true)` on any HIP card: X as the FP16 image
+  for the BF16 products, a scratch of 64 rows so a 96-row weight converts in two slices, `ldy > N`, an odd N, T = 1 and
+  a `beta = 1` f16() call (which keeps the FP32-out GEMM). The FP16-out results are checked against the double reference
+  at FP16's rounding (6e-4 relative per element, rel L2 < 1e-3); row padding and the guards around Y must be untouched.
+  The test's BF16 inputs are now made by hand: `hip_bfloat16(float)` produced 0 in this build, so the two BF16 cases had
+  passed on all-zero inputs (rel L2 printed 0); with real inputs they pass at 1.9e-07 (FP32 out) and 2.2e-04 (FP16 out).
 
 ## Limits
 
