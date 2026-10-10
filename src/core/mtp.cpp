@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/on_device.hpp"
@@ -822,6 +823,9 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
         if (st_.kv_rot) fwht256_inplace_cuda(qcur_, (int64_t) T * NH, cs);
         const QsaAttnPools pools = qsa_attn_pools(st_);
         if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
+        // STRATA_QSA_SPLIT_ATTN=1: the draft layer's attention over its window, split the same way
+        static const bool split_attn = [] { const char* v = std::getenv("STRATA_QSA_SPLIT_ATTN"); return v != nullptr && std::atoi(v) != 0; }();
+        if (!(split_attn && qsa_decode_attn_split(qcur_, pools, ident_, step, cap_, s, attn_scratch_, (uint64_t) attn_scratch_floats_, attn_, T, cs)))
         qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
         if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
         native_qsa_gate_apply(attn_, qfull_, attn32_, (int) (T * NH), (int) HD, cs);

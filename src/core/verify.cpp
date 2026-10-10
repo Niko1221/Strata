@@ -18,6 +18,7 @@
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/route_prior.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -1305,6 +1306,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 12, grp);
                 if (qbr) join(0);   // the query, for attention
                 const QsaAttnPools pools = qsa_attn_pools(st);
+                // STRATA_QSA_SPLIT_ATTN=1: the split tensor-core attention where it applies (int8 KV, sm_80+)
+                static const bool split_attn = [] { const char* v = std::getenv("STRATA_QSA_SPLIT_ATTN"); return v != nullptr && std::atoi(v) != 0; }();
+                if (!(split_attn && qsa_decode_attn_split(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_,
+                                                          step_ + tb * kStepCount, cap_, s,
+                                                          attn_scratch_ + (size_t) tb * attn_scratch_floats_,
+                                                          (uint64_t) n * (uint64_t) attn_scratch_floats_, attn_ + tb * NH * HD, n, cs)))
                 qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
                                       s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
                 }
