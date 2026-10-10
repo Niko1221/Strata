@@ -1,0 +1,43 @@
+﻿record: task-check-C.json | tasks: 13
+  expr '1 + 2 * 3'                  -> 7.0        want 7      ok
+  expr '(1 + 2) * 3'                -> 9.0        want 9      ok
+  expr '10 / 4'                     -> 2.5        want 2.5    ok
+  expr '-(2+3)'                     -> -5.0       want -5     ok
+  expr '2 * -3'                     -> -6.0       want -6     ok
+  expr '- -4'                       -> 4.0        want 4      ok
+  expr '3 - 2 - 1'                  -> 0.0        want 0      ok
+  expr '8 / 2 / 2'                  -> 2.0        want 2      ok
+  expr '2 * (3 + 4) * 5'            -> 70.0       want 70     ok
+  expr ' 1.5 + 2.25 '               -> 3.75       want 3.75   ok
+  expr '((2))'                      -> 2.0        want 2      ok
+  expr '-(1 + 2) * (3 - 5) / 4'     -> 1.5        want 1.5    ok
+  expr '100'                        -> 100.0      want 100    ok
+  expr '1 - -1'                     -> 2.0        want 2      ok
+  expr '2*3+4*5-6/2'                -> 23.0       want 23     ok
+  malformed '(1 + 2': raised ValueError (ok)
+  malformed '1 +': raised ValueError (ok)
+  malformed '2 3': raised ValueError (ok)
+  malformed 'abc': raised ValueError (ok)
+code_expr: 15/15 cases correct, 4/4 malformed inputs rejected
+json_strict: parses, schema ok = True
+poem: lines 4 chars per line [7, 7, 7, 7]
+tool_call: [('get_weather', {'city': '北京', 'unit': 'celsius'})]
+math_zh_high: contains expected answer = True | first line: '甲、乙、丙三管同时打开时，每小时净注水量为：'
+math_zh_none: contains expected answer = True | first line: '这是一个经典的工程问题（注水与排水问题）。我们可以通过计算各管道的工作效率（每小时注水或排水的比例）来解决。'
+logic_trap: contains expected answer = True | first line: '1'
+logic_trap_high: contains expected answer = True | first line: '1. Each brother’s two sisters include Sally and one other sister, so Sally has o'
+needle: contains expected answer = True | first line: '7391-ALPHA-蓝鲸'
+code_bug: proposes 'lo = mid + 1' = True
+--- knowledge (judged by reading)
+1. 周树人
+2. 堪培拉
+3. 加西亚·马尔克斯
+4. 100摄氏度
+5. 皮肤
+6. 尼尔·阿姆斯特朗，1969年
+--- translate (judged by reading)
+This little shop has been open for over twenty years, and the owner always remembers the preferences of his regular customers. On rainy days, he lends umbrellas to customers who don’t have one, never pressing them to return it.
+--- summary_zh (judged by reading)
+1. 在普通电脑运行1250亿参数AI，需12GB显存，免费开源，数据本地留存。
+2. 通过专家分摊至显卡、内存和SSD，利用猜测检查机制提升推理速度。
+3. 支持OpenAI兼容API，可连接编程智能体，提供聊天、监控及图片识别功能。
