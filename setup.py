@@ -4802,7 +4802,8 @@ def main() -> int:
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
                          "precise) or k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
-                    help="let the model read images (yes = the encoder on the GPU)")
+                    help="let the model read images (yes = the encoder on the GPU; cpu = the encoder on the CPU: "
+                         "no VRAM, about 3 s per picture)")
     ap.add_argument("--vision-tokens", type=int, metavar="N",
                     help="the most image tokens a picture becomes (default 1024 with the encoder on the GPU, 300 on "
                          "the CPU): more reads small text and charts better, and takes longer to encode; remembered "
@@ -5322,8 +5323,16 @@ def main() -> int:
     else:
         say()
         say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
-        say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
-        vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
+        say("  download. The image encoder on the GPU keeps ~1.4 GB of VRAM free for it, so text is a few % slower;")
+        say("  on the CPU it costs no VRAM at all.")
+        if ask("Do you want images?", ["y", "n"], "n", a.yes) == "n":
+            vision = "none"
+        else:
+            say("  Image encoder:")
+            say("  1) GPU   (recommended: 0.1-0.5 s per picture, ~1.4 GB of VRAM kept free, text a few % slower)")
+            say("  2) CPU   (no VRAM: about 3 s per picture at 300 image tokens on 8 cores, and more tokens take")
+            say("             longer in proportion; the Q8_0 encoder file is the faster one here, see docs/DETAILS.md)")
+            vision = ["gpu", "cpu"][int(ask("Image encoder?", ["1", "2"], "1", a.yes)) - 1]
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if vision != "none" and MODELS[model].get("vision_untested"):
         warn(f"images with {model} are untested: users report them working, but we have not run this file with "

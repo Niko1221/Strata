@@ -441,7 +441,8 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 1. **Which model?** Qwen3.8-Flash-Next (the original) or Swift 1.5 (the fine-tune that thinks shorter).
 2. **Which size?** Q2_0, IQ2_XS or IQ3_XXS (it recommends one for your RAM).
 3. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
-4. **Images?** yes / no (see [Images](#images-vision)).
+4. **Images?** yes / no, and when yes: where the image encoder runs - on the GPU (recommended) or on the CPU, which
+   costs no VRAM (see [Images](#images-vision)).
 
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
@@ -1393,8 +1394,10 @@ The config snippets for every client, the tool arguments and the safety rules ar
 
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 (0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
-"Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
-helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
+"Images?" and it then asks where the encoder runs - on the GPU (the recommended one) or on the CPU, which costs no
+VRAM. The flags are `--vision gpu` and `--vision cpu`, and `--yes` leaves images off. The setup downloads the
+encoder, builds a small helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script.
+Nothing else changes.
 
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |

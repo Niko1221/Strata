@@ -612,5 +612,53 @@ class HostCompilers(unittest.TestCase):
             self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=g++-14", defs, target)
 
 
+class InteractiveVision(unittest.TestCase):
+    """The interactive images question: saying yes asks where the encoder runs, and the CPU answer writes the same
+    config as `--vision cpu` (#304's CPU encoder, now offered to someone who answers).  Enter for every question
+    leaves images off, as before."""
+
+    def setUp(self):
+        from test_setup_golden import PROFILES
+        self.ram, self.found = PROFILES["64GB-1x32GB"]
+
+    def install(self, answers):
+        from test_setup_golden import install
+
+        def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+            (bdir / "bin").mkdir(parents=True, exist_ok=True)
+            (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+            (bdir / setup.EXE).write_bytes(b"engine")
+
+        extra = [mock.patch.object(setup, "cmake_build", cmake_build),
+                 mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(setup.ROOT / "nvcc"), None)),
+                 mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S")]
+        return install(self.ram, self.found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
+                       answers=answers, extra=extra)
+
+    def test_yes_then_the_cpu_encoder(self):
+        code, out, cfg, asked = self.install({"Do you want images": "y", "Image encoder?": "2"})
+        self.assertEqual(code, 0, out)
+        self.assertIn("Image encoder?", " ".join(asked))
+        self.assertIn("images: on (encoder on the CPU)", out)
+        self.assertIs(cfg["vision"]["gpu"], False)
+        self.assertEqual(cfg["vision"]["max_tokens"], setup.VISION["cpu"]["max_tokens"])
+        self.assertGreaterEqual(cfg["vision"]["threads"], 1)
+        self.assertIn("--vision", cfg["args"])
+
+    def test_yes_and_enter_keeps_the_gpu_encoder(self):
+        code, out, cfg, _ = self.install({"Do you want images": "y"})      # Enter: the GPU, as before
+        self.assertEqual(code, 0, out)
+        self.assertIn("images: on", out)
+        self.assertIs(cfg["vision"]["gpu"], True)
+        self.assertEqual(cfg["vision"]["max_tokens"], setup.VISION["gpu"]["max_tokens"])
+        self.assertNotIn("threads", cfg["vision"])
+
+    def test_enter_leaves_images_off(self):
+        code, out, cfg, asked = self.install("")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("Image encoder?", " ".join(asked))               # not asked: nothing about the encoder
+        self.assertIsNone(cfg.get("vision"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -211,9 +211,9 @@ says so and starts the engine you had.
   512K (experimental) extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
   covering factor; `--rope-scaling`/`--rope-scale` override) ([details](DETAILS.md): "Context extension past
   262K").
-- **Images?** Whether it should also read pictures. The image encoder (0.9 GB) runs on the GPU (0.1-0.5 s per
-  picture, ~1.4 GB of VRAM kept free for it) or on the CPU (about 3-13 s per picture, nothing on the GPU); with AMD cards
-  on the CPU for now. [Details](DETAILS.md#images-vision).
+- **Images?** Whether it should also read pictures, and when yes: where the image encoder (0.9 GB) runs - on the GPU
+  (0.1-0.5 s per picture, ~1.4 GB of VRAM kept free for it) or on the CPU (about 3-13 s per picture, nothing on the
+  GPU); with AMD cards on the CPU for now. [Details](DETAILS.md#images-vision).
 - **Experimental speed projection?** Off unless you say yes - [read what it does](DETAILS.md#experimental-speed-projection-experimental-off-by-default)
   first. It changes how the model answers, and only the original model offers it.
 
