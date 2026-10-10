@@ -85,6 +85,9 @@ std::string cpu_name();
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1);
 void act_quant_any(const float* x, int n, ActQ& a);
+/// The same dispatch, always the pre-bit-plane kernel (tests and A/B; the bit-plane switch off by construction).
+void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
+                        int r0, int r1);
 
 /// The process-wide layout (canonical Q2_0 until `expert_layout_load` finds a native pack).
 const ExpertLayout& expert_layout();

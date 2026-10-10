@@ -1,5 +1,6 @@
 // src/ngram/ple_reader.cpp - see include/strata/ngram/ple_reader.hpp.
 #include "strata/ngram/ple_reader.hpp"
+#include "strata/platform/aux_cpus.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -363,7 +364,7 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
     impl_->threaded = io_thread;
     if (io_thread) {
         try {
-            impl_->worker = std::thread([this] { impl_->worker_loop(); });
+            impl_->worker = std::thread([this] { strata::aux_cpus::pin_current_thread(); impl_->worker_loop(); });
         } catch (const std::exception& e) {
             err = std::string("PleReader: cannot create I/O worker: ") + e.what();
             close();

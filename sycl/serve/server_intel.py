@@ -138,9 +138,26 @@ def install_logprobs():
 
     def _pump(self):   # serve/server.py's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
         proc, lines = self.proc, self.lines
+        slot_q = self.slot_q
         lp = self.__dict__.setdefault("lp_lines", collections.deque())
         last_t = None
+        line = None
         for line in proc.stdout:
+            if line.startswith(S.FATAL_PREFIXES):   # as serve/server.py: never a slot's own line
+                if self.proc is proc:
+                    self.silent_note = "Unrecoverable native verification failure: " + line[4:].strip()
+                    self.ended = True
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                break
+            if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch ("parallel"): a batch slot's own lines
+                try:
+                    slot_q[int(line.split()[1])].put(line)
+                    continue
+                except (IndexError, ValueError):
+                    pass
             if line.startswith("LP "):
                 lp.append((last_t, line))
                 continue
@@ -152,7 +169,11 @@ def install_logprobs():
             lines.put(line)
         if self.proc is proc:
             self.ended = True
+            if line and line.startswith("ERR"):
+                self.last_err = line[4:].strip()
         lines.put(None)
+        for q in slot_q:
+            q.put(None)
     Eng._pump = _pump
 
     keys = Eng.sampling_keys
