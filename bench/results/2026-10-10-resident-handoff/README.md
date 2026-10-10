@@ -254,6 +254,29 @@ above. The separately installed adaptive package now pins this tested Hermes
 source, while its default additional return allowance remains 256 MiB. No Strata
 kernel/configuration change caused this agent improvement.
 
+## Separate projection-disabled workflow
+
+A fresh run disabled experimental speed projection in all configuration and
+request paths and removed native control-vector loading arguments. Native
+`INFO cvec=0` was checked before the first request and after the last; all ten
+recorded requests explicitly disabled projection. The same frozen runtime,
+paired Hermes `873419f6`, supplied correct fixture and strict acceptance gates
+were retained. Earlier projection-enabled successes and failures remain intact.
+
+The [separate allowlisted result](hermes-no-projection01-results.json) passed all
+**17 lifecycle and 12 workflow checks**, 2,096 compiler-fixture cases, 104
+independent cases, CPU vision and the real function/result continuation. There
+was exactly one sequential worker and one compiler command, with no redundant
+supervisor command. Both model identities were retained and cleanup was verified.
+
+The agent interval was **217.872 s** and whole harness **292.981 s**. Sampled
+minimum available RAM was **9.882 GiB** and native free VRAM **328 MiB**. AUTO
+selected `none` because sufficient headroom was already available; this run does
+not demonstrate forced memory relief or pressure-triggered unload. It retains
+the same explicit zero **additional** return allowance for this bounded shape;
+the general default remains 256 MiB. These separate single runs do not establish
+a causal speed or memory improvement from disabling projection.
+
 ## Limits
 
 - The component sections are direct API tests. The separately labeled Hermes
