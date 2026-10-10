@@ -1,0 +1,7 @@
+request,condition,prompt_tokens,reused_tokens,generated_tokens,finish_reason,prompt_ms,prompt_tps,gen_ms,gen_tps,drafts_accepted,drafts_total,wall_s,esp,max_tokens
+1,decode-story,48,0,1400,length,1125,42.7,33790,41.4,712,1263,38.4,true,1400
+2,decode-explan,47,0,1337,stop,1252,37.5,31741,42.1,771,1258,36.5,true,1400
+3,prompt-4k,3657,0,3,not recorded,13974,261.7,165,18.2,3,3,14.2,true,24
+4,prompt-20k,18052,0,5,not recorded,37079,486.9,276,18.1,4,6,44.6,true,24
+5,esp-on,not recorded,,500,length,,,,,,true,500
+6,esp-off,not recorded,,107,stop,,,,,,false,500

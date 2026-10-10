@@ -1,0 +1,20 @@
+{
+ "model": "qwen3.8-flash-next-iq3_s",
+ "max_context": 131072,
+ "images": false,
+ "version": "0.1.41",
+ "context": 131072,
+ "kv": "int8",
+ "expert_slots": 3668,
+ "expert_cache_mib": 7182,
+ "spec": 6,
+ "mtp_max": 4,
+ "vram_free_mib": 457,
+ "cvec": "project:4-44",
+ "arena_mib": 47962,
+ "pool_workers": 7,
+ "pcie_frac": "0.18",
+ "spec_min_p": "0.50",
+ "conversation_cache_slots": 4,
+ "note": "A4000 run snapshot, 2026-10-10"
+}
