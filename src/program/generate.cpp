@@ -6641,14 +6641,18 @@ int main(int argc, char** argv) {
         // #669 / #765: a big chunk lends many cache slots to the prompt path, and each lent slot's expert is read back
         // from the SSD whenever the RAM could not keep its copy (31 GB: auto:32768 read prompts ~3x slower than auto).
         // Said, never capped: --prefill is the user's, and with the RAM for them it is the faster one (+21-35%).
-        if (resident_ok && lend_from >= 0 && o.prefill_chunk > 8192 && xcache.slots() > lend_from &&
+        // #1683: with a RAM budget the lend region is kept after the ranked experts, as far as the budget reaches, so
+        // the advice there is a larger budget, not a smaller chunk (the budget used to keep none of it whatever the chunk)
+        if (resident_ok && lend_from >= 0 && (o.prefill_chunk > 8192 || o.resident_budget > 0) && xcache.slots() > lend_from &&
             src.resident_lent_slots() < xcache.slots() - lend_from)
             std::fprintf(stderr, "strata generate: WARNING: a prompt chunk of %lld tokens lends %lld cache slots to the "
                                  "prompt path, but only %lld of their experts fit in RAM: the others are read from the "
                                  "SSD on every chunk, and prompts can read ~3x slower than with --prefill auto (#669). "
-                                 "A smaller --prefill, or auto, keeps them all in RAM\n",
+                                 "%s keeps them all in RAM\n",
                          (long long) o.prefill_chunk, (long long) (xcache.slots() - lend_from),
-                         (long long) src.resident_lent_slots());
+                         (long long) src.resident_lent_slots(),
+                         o.resident_budget > 0 ? "A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill,"
+                                               : "A smaller --prefill, or auto,");
         if (resident_ok) {
             // --adapt-async: twice the exchange buffers - the second half bounces the copies in whose source is not
             // page-locked (an asynchronous copy instead of the driver's staged, synchronous one)

@@ -2579,6 +2579,7 @@ bool FileExpertSource::pin_cache_complement(
     }
 #endif
     const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
+    int64_t budget_lent = 0, budget_lendable = 0;   // the lend region's slots kept by a budget (below), and its size
     uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
     uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
     if (budget_bytes > 0) {
@@ -2630,6 +2631,36 @@ bool FileExpertSource::pin_cache_complement(
         std::fprintf(stderr, "FileExpertSource: RAM budget %.2f GiB: %lld of the %.2f GiB of experts the GPU cache does "
                              "not hold, by profile rank; the rest are read from the files\n",
                      (double) budget_bytes / 1073741824.0, (long long) held, (double) bytes / 1073741824.0);
+        // The prompt path's lend region under a budget.  Until now a budget turned the loan off (`lend_from_slot = -1`
+        // below), so every lent slot's expert was read from the pack during every prompt chunk and again when the slot
+        // was refilled after the prompt - even with room left in the budget.  Measured on an RX 6900 XT 16 GB with
+        // --resident-budget-gib 71 and UD-Q4_K_XL: the copy kept all 63.47 GiB of the experts outside the cache, 7.5
+        // GiB of the budget stayed unused, and every agent turn read 0.5-2.6 GB of the 1,231 lent slots' experts (3.6
+        // GiB) from the GGUF (a fresh 17K-token prompt 24 GB).  As the unbudgeted path does, take the lend region's
+        // experts from the last slot down (the order the borrowing takes them) while they fit in what the budget has
+        // left; the ones past it keep the file fallback, and `rank` keeps its precedence (the hottest experts first).
+        if (lend_from_slot >= 0 && lend_from_slot < n_slots && additional_gpu_pairs.empty()) {
+            budget_lendable = n_slots - lend_from_slot;
+            std::vector<size_t> order;   // the pairs in the lend region, highest slot first
+            for (size_t i = 0; i < primary_gpu_pairs.size(); ++i)
+                if (pair_slot[i] >= lend_from_slot && pair_slot[i] < n_slots) order.push_back(i);
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pair_slot[a] > pair_slot[b]; });
+            const uint64_t at0 = at;
+            for (size_t i : order) {
+                const auto& pr = primary_gpu_pairs[i];
+                const size_t idx = (size_t) pr.first * (size_t) n_expert_ + (size_t) pr.second;
+                const uint64_t b = layer_blob_bytes_[(size_t) pr.first];
+                if (b > budget_bytes - at) break;   // a contiguous tail of the region: a short prompt lends only the last few
+                if (ranked[idx] != kNoComplement) continue;
+                ranked[idx] = at;
+                at += b;
+                ++budget_lent;
+            }
+            std::fprintf(stderr, "FileExpertSource: the prompt path's lend region: %lld of its %lld slots keep their experts "
+                                 "in RAM too (%.2f GiB of the budget's remaining %.2f GiB)\n",
+                         (long long) budget_lent, (long long) budget_lendable, (double) (at - at0) / 1073741824.0,
+                         (double) (budget_bytes - at0) / 1073741824.0);
+        }
         offsets.swap(ranked);
         bytes = at;
         lend_from_slot = -1;
@@ -3094,7 +3125,7 @@ bool FileExpertSource::pin_cache_complement(
     complement_partial_ = complement_registered_ && !(paced && partial_pin >= bytes);
     complement_locked_ = locked;
     complement_lock_off_ = lock_off;
-    complement_lent_slots_ = lend ? n_slots - keep_from : 0;
+    complement_lent_slots_ = lend ? n_slots - keep_from : budget_lent;   // a budget keeps its own tail of the region
     complement_lent_slots_ += stage_lent;   // and the split stages' regions: pairs the copy kept of them
     complement_ready_ = true;
     std::fprintf(stderr, "FileExpertSource: %s cache complement ready: resident %.2f GiB, pinned %.2f GiB in %.0f s%s%s\n",
@@ -3102,21 +3133,24 @@ bool FileExpertSource::pin_cache_complement(
                  (double) resident_bytes() / 1073741824.0, (double) pinned_bytes() / 1073741824.0,
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - pin_t0).count(),
                  note.empty() ? "" : "; ", note.c_str());
-    if (lend)
+    const int64_t lendable_all = lend ? n_slots - lend_from_slot : budget_lendable;   // 0: no lend region at all
+    if (lendable_all > 0)
         std::fprintf(stderr, "FileExpertSource: %lld of the prompt path's %lld lendable slots keep their experts in RAM "
-                             "too%s\n", (long long) complement_lent_slots_, (long long) (n_slots - lend_from_slot),
-                     complement_lent_slots_ < n_slots - lend_from_slot
+                             "too%s\n", (long long) (lend ? n_slots - keep_from : budget_lent), (long long) lendable_all,
+                     (lend ? n_slots - keep_from : budget_lent) < lendable_all
                          ? " (the others are read from the file when lent: not enough RAM for them)" : "");
-    if (lend && complement_lent_slots_ < n_slots - lend_from_slot) {
+    if (lendable_all > 0 && (lend ? n_slots - keep_from : budget_lent) < lendable_all) {
         // #1389: below full coverage the uncovered experts are read from the pack during a long prompt (a 74K prompt
         // routes through nearly all experts, so the misses repeat). The reporter measured 18% uncovered = -26% prompt
         // speed on a gfx1100; short prompts barely touch them. A warning, not a refusal.
-        const long long lendable = (long long) (n_slots - lend_from_slot);
-        const long long missing = lendable - (long long) complement_lent_slots_;
+        const long long lendable = (long long) lendable_all;
+        const long long missing = lendable - (long long) (lend ? n_slots - keep_from : budget_lent);
         std::fprintf(stderr, "FileExpertSource: WARNING: %lld of %lld lendable slots (%.0f%%) will read their experts from the pack "
                              "during a long prompt; expect a slower prompt read on 50K+ token prompts (one measurement: 18%% uncovered "
-                             "cost 26%%). Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start) and restart; "
-                             "the line above should read N of N.\n", missing, lendable, 100.0 * (double) missing / (double) std::max<long long>(1, lendable));
+                             "cost 26%%). %s and restart; the line above should read N of N.\n", missing, lendable,
+                     100.0 * (double) missing / (double) std::max<long long>(1, lendable),
+                     lend ? "Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start)"
+                          : "Raise --resident-budget-gib (the lend region comes after the ranked experts)");
     }
     if (!stage_lend_regions_.empty()) {
         int64_t offered = 0;

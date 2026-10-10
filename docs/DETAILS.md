@@ -250,7 +250,13 @@ start (locked; page-locked when the driver allows the whole budget), and the res
 It implies `--mmap-experts` and leaves 4 GiB of headroom. On Windows, available commit capacity also
 limits the budget; a larger N is clamped to the smaller limit less 4 GiB and a 256 MiB margin, with a message.
 A clamped budget no longer fails the safety check that follows (#403). A budget that cannot be kept at all is a
-warning, with every expert read from the files. Setup sets N with `--resident-budget-gib N`. With
+warning, with every expert read from the files. Setup sets N with `--resident-budget-gib N`. When the budget has room
+left after the ranked experts, the slots the prompt path borrows keep their experts in RAM too, as they do without a
+budget (the engine prints `the prompt path's lend region: N of its M slots keep their experts in RAM too`); before, a
+budget always left them out, and every prompt read the lent slots' experts from the model files again (RX 6900 XT,
+UD-Q4_K_XL, budget 71 GiB with 7.5 GiB unused: 0.5-2.6 GB of file reads per agent turn and 1.9-2.8 GB from the SSD
+per fresh 8K-16K prompt went to zero; fresh prompts read 3-8% faster, the prompt path's host staging fell from
+0.8-2.1 s to 0.06-0.5 s per request). With
 the GGUF read in place it also warms the next layer's likely experts: while the CPU works on a layer, a thread applies
 the next layer's router to this layer's input and asks the OS for the pages of the predicted experts that neither the
 GPU nor the RAM budget holds (only pages - the experts computed are the same; `STRATA_LOOKAHEAD=0` turns it off). This
