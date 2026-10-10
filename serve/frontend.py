@@ -1045,10 +1045,19 @@ class OutputParser:
     def _hold(self, text: str, tags: tuple[str, ...]) -> int:
         """Length of the longest suffix of `text` that is a proper prefix of one of `tags`."""
         best = 0
+        size = len(text)
         for tag in tags:
-            for n in range(1, len(tag)):
-                if text.endswith(tag[:n]):
-                    best = max(best, n)
+            if len(tag) <= 1:
+                continue
+            # Only a suffix beginning with the tag's first character can match.
+            # Ordinary token deltas contain no '<': one C-level search replaces
+            # checking every possible prefix. Earliest candidate is the longest.
+            start = text.find(tag[0], max(0, size - len(tag) + 1))
+            while start >= 0 and size - start > best:
+                if tag.startswith(text[start:]):
+                    best = size - start
+                    break
+                start = text.find(tag[0], start + 1)
         return best
 
     def feed(self, delta: str) -> list[Event]:
