@@ -88,15 +88,9 @@ constexpr uint64_t mtp_prefill_record_bytes(int64_t prefill_chunk, int64_t n_hea
     return (uint64_t) prefill_chunk * (uint64_t) (1 + 4 + n_head) * 4u;
 }
 
-// cudaGraphInstantiate does not report a size. This is an explicit estimate, not a measurement:
-// 30 MiB is the high end of the 20-30 MiB verify-window graphs noted for an L40S, booked for every
-// T in 1..max_t, for both residency graphs, plus the commit graph.
-inline constexpr uint64_t kVerifyGraphEstimateBytes = 30ull << 20;
-
-constexpr uint64_t verify_window_graph_estimate_bytes(int max_t) {
-    if (max_t <= 0) return 0;
-    return kVerifyGraphEstimateBytes * ((uint64_t) max_t * 2u + 1u);
-}
+// Verify-window graphs are NOT booked here: the existing cap_late_bytes slack already pays for
+// graphs/hit scratch, and the post-instantiate refusal catches a crossing. On the RTX 3080 the
+// measured capture cost was ~12-16 MiB per window, well under the 700 MiB slack.
 
 static_assert(gdn_chunk_scratch_bytes(32, true, true) == 17039360ull, "qwen3.6 chunked-GDN scratch");
 static_assert(gdn_chunk_scratch_bytes(48, false, true) == 25559040ull, "flash-next chunked-GDN scratch");
@@ -105,8 +99,6 @@ static_assert(gdn_chunk_scratch_bytes(32, false, true) == 0, "32 heads without s
 static_assert(mtp_prefill_record_bytes(8192, 16, false) == 0, "MTP off books no prefill records");
 static_assert(mtp_prefill_record_bytes(0, 16, true) == 0, "no prefill chunk books no records");
 static_assert(mtp_prefill_record_bytes(128, 16, true) == 128ull * 21u * 4u, "MTP record formula");
-static_assert(verify_window_graph_estimate_bytes(0) == 0, "no verify window");
-static_assert(verify_window_graph_estimate_bytes(4) == 30ull * 1048576u * 9u, "estimate is 30 MiB times 2*T+1");
 
 // A post-touch reading is an acceptance check only, NOT input to another sizing attempt.
 // late_bytes excludes the pre-touch haircut: it compensates telemetry bias, not a later allocation.

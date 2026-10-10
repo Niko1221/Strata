@@ -89,10 +89,10 @@ int main() {
             for (const int64_t reserve : {0ll, 700ll, 3000ll}) {
                 const uint64_t total = gib * GiB;
                 const uint64_t free = total - GiB;   // fixed engine allocations (or another app) already counted
-                const uint64_t late = 512 * MiB;
-                const uint64_t room = cap::cache_room(free, cap::reserve_mib(reserve, total, frac), late);
+                const uint64_t late_alloc = 512 * MiB;
+                const uint64_t room = cap::cache_room(free, cap::reserve_mib(reserve, total, frac), late_alloc);
                 if (room > 0)
-                    check((long double) (GiB + room + late) <= (long double) total * frac,
+                    check((long double) (GiB + room + late_alloc) <= (long double) total * frac,
                           "fixed + cache + later <= fraction of total, not fraction of free");
             }
     check(cap::gdn_chunk_scratch_bytes(32, true, true) == 17039360ull, "qwen3.6 chunked-GDN scratch is 17039360 B");
@@ -102,9 +102,9 @@ int main() {
     check(cap::mtp_prefill_record_bytes(128, 16, true) == 128ull * (1u + 4u + 16u) * 4u, "MTP prefill records");
     check(cap::mtp_prefill_record_bytes(8192, 16, false) == 0, "MTP off books no prefill records");
     check(cap::mtp_prefill_record_bytes(0, 16, true) == 0, "no prefill chunk books no records");
-    check(cap::verify_window_graph_estimate_bytes(0) == 0, "no verify window books no graph estimate");
-    check(cap::verify_window_graph_estimate_bytes(4) == 30ull * MiB * 9u, "graph estimate is 30 MiB times 2*T+1");
-    const uint64_t feat = 17039360ull + 128ull * 21u * 4u + 30ull * MiB * 9u;
+    // Verify-window graphs are deliberately not booked: the cap_late_bytes slack covers them and the
+    // post-instantiate refusal catches a crossing, so the feature bytes here are the two named allocations.
+    const uint64_t feat = 17039360ull + 128ull * 21u * 4u;
     const uint64_t room_without = cap::cache_room(8 * GiB, 2048, 700 * MiB);
     const uint64_t room_with = cap::cache_room(8 * GiB, 2048, 700 * MiB + feat);
     check(room_with + feat == room_without, "feature bytes shrink cache room and leave the floor intact");

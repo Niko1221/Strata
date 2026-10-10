@@ -4504,20 +4504,15 @@ int main(int argc, char** argv) {
         ? (int64_t) strata::program::vram_cap::gdn_chunk_scratch_bytes(g.ssm_v_heads, g.gdn_gate_silu, cap_gdn_chunked) : 0;
     const int64_t cap_mtp_records = vram_capped
         ? (int64_t) strata::program::vram_cap::mtp_prefill_record_bytes(o.prefill_chunk, g.n_head, !o.mtp.empty()) : 0;
-    const int cap_graph_t = (vram_capped && native_pack && o.spec > 0)
-        ? (batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch)) : 0;
-    const int64_t cap_graph_est =
-        (int64_t) strata::program::vram_cap::verify_window_graph_estimate_bytes(cap_graph_t);
-    const int64_t cap_feature_bytes = cap_gdn_scratch + cap_mtp_records + cap_graph_est;
+    // Verify-window graphs stay covered by the existing cap_late_bytes slack and are refused at
+    // cudaGraphInstantiate if the floor is crossed; they are not booked here.
+    const int64_t cap_feature_bytes = cap_gdn_scratch + cap_mtp_records;
     if (vram_capped && cap_feature_bytes > 0) {
         std::fprintf(stderr, "strata generate: cap books late allocations before cache sizing, from the frozen pre-touch reading:");
         if (cap_gdn_scratch > 0)
             std::fprintf(stderr, " chunked-GDN scratch %lld B;", (long long) cap_gdn_scratch);
         if (cap_mtp_records > 0)
             std::fprintf(stderr, " MTP prefill records %lld B;", (long long) cap_mtp_records);
-        if (cap_graph_est > 0)
-            std::fprintf(stderr, " verify-window graphs %lld B (explicit estimate, 30 MiB x (2*%d + 1 commit); not measured);",
-                         (long long) cap_graph_est, cap_graph_t);
         std::fprintf(stderr, "\n");
     }
     int64_t cap_cache_extra = 0;   // everything still to be allocated beside the cap's free-VRAM floor
