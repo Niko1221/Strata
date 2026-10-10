@@ -1,0 +1,110 @@
+{
+ "phase": "post-0142-run2",
+ "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+ "started": "2026-10-10 23:39:26",
+ "target_tokens": 131072,
+ "results": {
+  "ru_decode": {
+   "completion_tokens": 450,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 92,
+    "prompt_ms": 1783.3,
+    "prompt_per_token_ms": 19.384,
+    "prompt_per_second": 51.6,
+    "predicted_n": 450,
+    "predicted_ms": 6297.0,
+    "predicted_per_token_ms": 13.993,
+    "predicted_per_second": 71.5,
+    "draft_n": 271,
+    "draft_n_accepted": 241
+   },
+   "wall_s": 8.1,
+   "sha256_text": "e3b0c44298fc1c14",
+   "text_head": ""
+  },
+  "short": {
+   "ru-chat": {
+    "prompt_tokens": 80,
+    "completion_tokens": 311,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 80,
+     "prompt_ms": 779.7,
+     "prompt_per_token_ms": 9.746,
+     "prompt_per_second": 102.6,
+     "predicted_n": 311,
+     "predicted_ms": 4400.9,
+     "predicted_per_token_ms": 14.151,
+     "predicted_per_second": 70.7,
+     "draft_n": 219,
+     "draft_n_accepted": 178
+    },
+    "wall_s": 5.2,
+    "content": "Параметр `proxy_read_timeout` задаёт максимальное время ожидания ответа от upstream-сервера после отправки запроса, то есть паузу между получением данных от бэкенда. Он нужен, чтобы nginx не держал соединение бесконечно, если бэкенд завис или медленно обрабатывает запрос. При слишком малом значении nginx может разорвать соединение раньше, чем бэкенд завершит работу, и вернуть клиенту `504 Gateway Timeout`.",
+    "reasoning": "We need answer in Russian, three sentences. User asks: Explain in three sentences why nginx needs proxy_read_timeout and what happens if too small. Need ensure exactly three sentences? likely. Need final only three sentences. Need maybe mention: proxy_read_timeout sets max time nginx waits for response from upstream after sending request (between successive reads). If too small, nginx may close connection and return 504 Gateway Timeout even if backend still processing. Need three sentences. Ensure Russian. Could be:\n\"Параметр proxy_read_timeout задаёт максимальное время ожидания ответа от upstream-сервера после отправки запроса, то есть паузу между получением данных от бэкенда. Он нужен, чтобы nginx не держал соединение бесконечно, если бэкенд завис или медленно обрабатывает запрос. При слишком малом значении nginx может разорвать соединение раньше, чем бэкенд завершит работу, и вернуть клиенту 504 Gateway Timeout.\"\nThree sentences. Good.\n"
+   },
+   "code": {
+    "prompt_tokens": 103,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 103,
+     "prompt_ms": 816.9,
+     "prompt_per_token_ms": 7.931,
+     "prompt_per_second": 126.1,
+     "predicted_n": 400,
+     "predicted_ms": 5693.8,
+     "predicted_per_token_ms": 14.235,
+     "predicted_per_second": 70.3,
+     "draft_n": 284,
+     "draft_n_accepted": 226
+    },
+    "wall_s": 6.53,
+    "content": "",
+    "reasoning": "We need answer user in Russian: \"Напиши на Python функцию `parse_size(s: str) -> int`, которая переводит строки вида '12GiB', '350M', '2T' в байты. Только код и одна строка пояснения.\" Need provide only code and one line explanation. Need likely include function. Need decide suffixes: GiB binary, M decimal? Examples: '12GiB', '350M', '2T'. Need parse sizes. Could support common suffixes: B, KB, MB, GB, TB, KiB, MiB, GiB, TiB maybe. Need one line explanation. \"Только код и одна строка пояснения.\" Means final should be code block? Maybe only code and one line explanation. Could be:\n```python\nimport re\n...\n```\n# ...\nBut \"Только код и одна строка пояснения\" maybe no prose besides one comment? Need satisfy. Could output:\n```python\ndef parse_size(s: str) -> int:\n    ...\n```\n# Перевод строки с суффиксом размера в целое число байтов.\nBut that's code plus one line explanation outside? They said only code and one line explanation. Could include comment inside code as explanation. Need maybe no extra text. Final: code block with function and one comment line. Ensure robust.\n\nNeed think about parsing. Input strings like '12GiB', '350M', '2T'. Need convert to bytes. Suffix mapping:\n- B: 1\n- K, KB: 1000? Usually M, T decimal? But GiB binary. Could support both: K/KB = 1000, KiB = 1024; M/MB = 1000^2, MiB = 10"
+   },
+   "math": {
+    "prompt_tokens": 113,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 113,
+     "prompt_ms": 895.4,
+     "prompt_per_token_ms": 7.924,
+     "prompt_per_second": 126.2,
+     "predicted_n": 400,
+     "predicted_ms": 4776.9,
+     "predicted_per_token_ms": 11.942,
+     "predicted_per_second": 83.7,
+     "draft_n": 280,
+     "draft_n_accepted": 250
+    },
+    "wall_s": 5.69,
+    "content": "1) Найдём общий путь:  \n\\[\n240 + 180 = 420 \\text{ км}\n\\]\n\n2) Найдём общее время:  \n\\[\n2 \\text{ ч } 40 \\text{ мин} + 1 \\text{ ч } 50 \\text{ мин} = 4 \\text{ ч } 30 \\text{ мин}\n\\]\n\nПереведём в часы:  \n\\[\n4 \\text{ ч } 30 \\text{ мин} = 4.5 \\text{ ч}\n\\]\n\n3) Средняя скорость:  \n\\[\nv = \\frac{420}{4.5} = 93.333\\ldots \\text{ км/ч}\n\\]\n\nОтвет с точностью до 0.1:  \n\\[\n\\boxed{93.3 \\text{ км",
+    "reasoning": "We need answer in Russian likely. Need solve step by step. Problem: train traveled 240 km in 2 h 40 min, then 180 km in 1 h 50 min. Average speed total distance / total time. Total distance 420 km. Total time 2h40 + 1h50 = 4h30 = 4.5 h. Average speed = 420/4.5 = 93.333... km/h. To 0.1 = 93.3. Need provide steps. Ensure no mistakes: 2h40 = 2 + 40/60 = 2.6667; 1h50=1.8333; sum 4.5. 420/4.5 = 93.333. Answer 93.3.\n"
+   },
+   "tool-json": {
+    "prompt_tokens": 101,
+    "completion_tokens": 189,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 101,
+     "prompt_ms": 891.9,
+     "prompt_per_token_ms": 8.831,
+     "prompt_per_second": 113.2,
+     "predicted_n": 189,
+     "predicted_ms": 2452.1,
+     "predicted_per_token_ms": 12.974,
+     "predicted_per_second": 77.1,
+     "draft_n": 146,
+     "draft_n_accepted": 130
+    },
+    "wall_s": 3.36,
+    "content": "{\n  \"host\": \"127.0.0.1\",\n  \"port\": 8080,\n  \"engine\": \"strata\",\n  \"tags\": [\n    \"llm\",\n    \"v100\"\n  ]\n}",
+    "reasoning": "We need answer user's request in Russian? User: \"Верни строго JSON без пояснений: объект с полями host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"].\" Means return strictly JSON without explanations: object with fields host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"]. Need final only JSON. Ensure valid JSON. No markdown.\n"
+   }
+  }
+ },
+ "finished": "2026-10-10 23:39:55"
+}

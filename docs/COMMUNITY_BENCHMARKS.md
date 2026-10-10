@@ -60,6 +60,12 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-10: Tesla V100-SXM2 16 GB (sm_70), EPYC 7532, 94 GiB RAM, Ubuntu 26.04 in a Proxmox guest](../bench/results/2026-10-10-community-v100-16gb-linux-0142/README.md):
+  source builds of 0.1.41 (`fb58e0d`) and 0.1.42 (`61b3fb5`) for sm_70, Flash-Next IQ3_S, 1M YaRN, k8v4 KV; a same-day
+  A/B of the two new NVIDIA defaults: decode **+34…+62%** (medians of three runs), prompt throughput unchanged,
+  `tools/needle_bench.py` 6/6 on both versions. The measured PCIe share moved `pcie_frac` from 0.36 to **0.10, the
+  floor of the search range**, on a host whose CPU pool measures 45–52 GB/s against a 13.1 GB/s link; the two
+  defaults were not separated, and the long-context arms are single runs.
 
 ## What to record
 

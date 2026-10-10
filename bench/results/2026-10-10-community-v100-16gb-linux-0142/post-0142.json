@@ -1,0 +1,187 @@
+{
+ "phase": "post-0142",
+ "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+ "started": "2026-10-10 22:11:05",
+ "target_tokens": 131072,
+ "results": {
+  "needle": {
+   "10": {
+    "depth_pct": 10,
+    "chars": 405249,
+    "prompt_tokens": 131100,
+    "cached_tokens": 0,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 131100,
+     "prompt_ms": 100398.3,
+     "prompt_per_token_ms": 0.766,
+     "prompt_per_second": 1305.8,
+     "predicted_n": 159,
+     "predicted_ms": 1942.1,
+     "predicted_per_token_ms": 12.214,
+     "predicted_per_second": 81.9,
+     "draft_n": 119,
+     "draft_n_accepted": 110
+    },
+    "wall_s": 102.49
+   },
+   "50": {
+    "depth_pct": 50,
+    "chars": 405249,
+    "prompt_tokens": 131101,
+    "cached_tokens": 0,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 131101,
+     "prompt_ms": 102040.9,
+     "prompt_per_token_ms": 0.778,
+     "prompt_per_second": 1284.8,
+     "predicted_n": 166,
+     "predicted_ms": 1983.5,
+     "predicted_per_token_ms": 11.949,
+     "predicted_per_second": 83.7,
+     "draft_n": 128,
+     "draft_n_accepted": 113
+    },
+    "wall_s": 104.17
+   },
+   "90": {
+    "depth_pct": 90,
+    "chars": 405249,
+    "prompt_tokens": 131101,
+    "cached_tokens": 65280,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 65280,
+     "prompt_n": 65821,
+     "prompt_ms": 53923.0,
+     "prompt_per_token_ms": 0.819,
+     "prompt_per_second": 1220.6,
+     "predicted_n": 162,
+     "predicted_ms": 1833.1,
+     "predicted_per_token_ms": 11.315,
+     "predicted_per_second": 88.4,
+     "draft_n": 126,
+     "draft_n_accepted": 113
+    },
+    "wall_s": 55.89
+   }
+  },
+  "ru_decode": {
+   "completion_tokens": 450,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 92,
+    "prompt_ms": 2155.7,
+    "prompt_per_token_ms": 23.432,
+    "prompt_per_second": 42.7,
+    "predicted_n": 450,
+    "predicted_ms": 6722.0,
+    "predicted_per_token_ms": 14.938,
+    "predicted_per_second": 66.9,
+    "draft_n": 288,
+    "draft_n_accepted": 218
+   },
+   "wall_s": 8.9,
+   "sha256_text": "e3b0c44298fc1c14",
+   "text_head": ""
+  },
+  "short": {
+   "ru-chat": {
+    "prompt_tokens": 80,
+    "completion_tokens": 166,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 80,
+     "prompt_ms": 800.9,
+     "prompt_per_token_ms": 10.011,
+     "prompt_per_second": 99.9,
+     "predicted_n": 166,
+     "predicted_ms": 2729.0,
+     "predicted_per_token_ms": 16.44,
+     "predicted_per_second": 60.8,
+     "draft_n": 121,
+     "draft_n_accepted": 83
+    },
+    "wall_s": 3.55,
+    "content": "`proxy_read_timeout` задаёт максимальное время, в течение которого nginx ждёт ответ от upstream-сервера после отправки запроса.  \nОн нужен, чтобы соединение не висело бесконечно, если backend долго обрабатывает запрос или завис.  \nПри слишком малом значении nginx может прервать ожидание и вернуть клиенту ошибку 504 Gateway Timeout.",
+    "reasoning": "We need answer in Russian, three sentences. User asks: Explain in three sentences why nginx needs proxy_read_timeout and what happens if too small. Need ensure exactly three sentences? likely. Need final only three sentences. Need maybe mention it sets max time waiting response from upstream after sending request, prevents hanging, if too small nginx returns 504 Gateway Timeout and may abort request. Need three sentences. Ensure Russian.\n"
+   },
+   "code": {
+    "prompt_tokens": 103,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 103,
+     "prompt_ms": 811.9,
+     "prompt_per_token_ms": 7.883,
+     "prompt_per_second": 126.9,
+     "predicted_n": 400,
+     "predicted_ms": 5530.5,
+     "predicted_per_token_ms": 13.826,
+     "predicted_per_second": 72.3,
+     "draft_n": 284,
+     "draft_n_accepted": 226
+    },
+    "wall_s": 6.36,
+    "content": "",
+    "reasoning": "We need answer user in Russian: \"Напиши на Python функцию `parse_size(s: str) -> int`, которая переводит строки вида '12GiB', '350M', '2T' в байты. Только код и одна строка пояснения.\"\nNeed provide only code and one line explanation. Need likely include function. Need decide units: 'GiB' binary, 'M' decimal? Strings like '12GiB', '350M', '2T'. Need parse size to bytes. Could support common suffixes: B, KB, MB, GB, TB, KiB, MiB, GiB, TiB maybe. But user examples: '12GiB' -> 12*1024^3, '350M' -> 350*1000^2? '2T' -> 2*1000^4? Or maybe M/T binary? Need infer. They say '12GiB', '350M', '2T'. In many contexts, GiB is binary, M/T maybe decimal? Could implement robust: if suffix ends with 'iB' binary 1024, else decimal 1000. But 'M' and 'T' could be ambiguous. Need likely parse sizes like Kubernetes? In Kubernetes, GiB binary, M decimal? Actually Kubernetes resource quantities: Gi, Mi, Ki binary; M, G, T decimal? Examples: 12GiB? Not Kubernetes. Maybe common: '12GiB', '350M', '2T'. Need convert to bytes. Could support both: suffixes: B, KB, MB, GB, TB, KiB, MiB, GiB, TiB. For 'M' and 'T' maybe decimal? But if they expect 350M = "
+   },
+   "math": {
+    "prompt_tokens": 113,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 113,
+     "prompt_ms": 1008.8,
+     "prompt_per_token_ms": 8.927,
+     "prompt_per_second": 112.0,
+     "predicted_n": 400,
+     "predicted_ms": 4857.5,
+     "predicted_per_token_ms": 12.144,
+     "predicted_per_second": 82.3,
+     "draft_n": 279,
+     "draft_n_accepted": 253
+    },
+    "wall_s": 5.88,
+    "content": "1. Найдём общий путь:  \n   \\(240 + 180 = 420\\) км.\n\n2. Переведём время в часы:  \n   \\(2\\) ч \\(40\\) мин \\(= 2 + \\frac{40}{60} = 2 + \\frac{2}{3} = \\frac{8}{3}\\) ч.  \n   \\(1\\) ч \\(50\\) мин \\(= 1 + \\frac{50}{60} = 1 + \\frac{5}{6} = \\frac{1",
+    "reasoning": "We need answer in Russian likely. Need solve step by step. Problem: train traveled 240 km in 2 h 40 min, then 180 km in 1 h 50 min. Average speed total distance / total time. Total distance 420 km. Times: 2h40 = 2 + 40/60 = 2 + 2/3 = 8/3 h = 2.6667. 1h50 = 1 + 50/60 = 1 + 5/6 = 11/6 h = 1.8333. Total time = 8/3 + 11/6 = 16/6+11/6=27/6=9/2=4.5 h. Average speed = 420 / 4.5 = 93.333... km/h. To 0.1 = 93.3. Need show steps. Ensure no mistakes. Could also convert minutes: 160+110=270 min=4.5h. 420/4.5=93.333. Answer 93.3.\n"
+   },
+   "tool-json": {
+    "prompt_tokens": 101,
+    "completion_tokens": 189,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 101,
+     "prompt_ms": 792.6,
+     "prompt_per_token_ms": 7.848,
+     "prompt_per_second": 127.4,
+     "predicted_n": 189,
+     "predicted_ms": 2341.0,
+     "predicted_per_token_ms": 12.386,
+     "predicted_per_second": 80.7,
+     "draft_n": 141,
+     "draft_n_accepted": 131
+    },
+    "wall_s": 3.15,
+    "content": "{\n  \"host\": \"127.0.0.1\",\n  \"port\": 8080,\n  \"engine\": \"strata\",\n  \"tags\": [\n    \"llm\",\n    \"v100\"\n  ]\n}",
+    "reasoning": "We need answer user's request in Russian? User: \"Верни строго JSON без пояснений: объект с полями host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"].\" Means return strictly JSON without explanations: object with fields host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"]. Need final only JSON. Ensure valid JSON. No markdown.\n"
+   }
+  }
+ },
+ "calib": {
+  "chars": 20000,
+  "prompt_tokens": 6471,
+  "chars_per_token": 3.091,
+  "prompt_per_second": 1140.1
+ },
+ "finished": "2026-10-10 22:16:01"
+}
