@@ -1,0 +1,165 @@
+strata generate: remote stage: this process holds layers 16-31 (a relay stage worker, the rest on 127.0.0.1:18850)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: $HOME/Strata-data/packs/q8_0-r730-opt experts (largest blob 5.22 MB), token embedding Q8_0 in mapped host memory (644 MiB, 6.8 s)
+strata generate: remote stage: the dense weights of layers 16-31 only
+strata generate: 489 MiB of weights loaded from $HOME/Strata-data/packs/q8_0-r730-opt in 0.2 s (815 canonical tensors skipped: served natively)
+strata generate: 101 native projection matrices, 1009.38 MiB of weights, in 27.4 s
+strata generate: remote stage: no PLE here (layer 1 runs in the main process)
+strata generate: profile $HOME/remote-stage-parity/matched-expert-profile.bin: 1536 ranked pairs, built for 1536 slots
+strata generate: remote stage: 512 of the 1536 pairs are this process's layers
+strata generate: GPU 0: Tesla P4, compute capability 6.1
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: layers 16-31 only (39.84 of 119.53 GiB; remote stage)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 20403 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 119.53 GiB at 0.11 GiB/s
+strata generate: CPU pool tasks/phase: 84 (automatic), participating threads: 28
+strata generate: 27 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 512 slots, 2.49 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 512 of 512 slots from the profile in 0.5 s (5347 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 27 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.41)
+strata generate: token graph hit path: 512 resident experts, decided on the device
+strata serve: the prompt path borrows 214 CUDA0 cache slots (1.04 GiB)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 2 tokens, 91.0 MiB of device buffers
+strata serve: 2924 MiB of VRAM free with everything loaded
+INFO context=16384 kv=fp16 kv_resident=0 expert_slots=512 expert_cache_mib=2550 expert_slots_primary=512 expert_cache_primary_mib=2550 spec=2 mtp_max=0 lookup=0 vram_free_mib=2924 cvec=0 arena_mib=122400 pool_workers=27 pcie_frac=0.00 spec_min_p=0.00 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 tail_role_token=-1 vram_elastic=0 engine=0.1.41
+strata serve: relay: layers 32-47 on 127.0.0.1:18850
+strata serve: stage worker: layers 16-31, relaying to 127.0.0.1:18850, prompt chunk 1024, port 18849
+strata stage worker: listening on 127.0.0.1:18849 (a token is required)
+strata stage worker: connection from 127.0.0.1
+strata stage worker: main process 127.0.0.1: layers 16.. here, context 16384, chunk 1024
+strata prefill: layers 16-31, chunk T=127 at 0: own 2787 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=127 at 0: read in 2787 ms
+strata remote: chunk T=127: 2044 ms from its send to its rows = worker 2042 + link and queue 3 (0 rows back)
+strata verify: capturing the 1-token window (2902 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata remote: 64 windows: mean 39.77 ms a round trip = worker 39.45 + link 0.32 (last: T=1 at 190, 38.05 = 37.71 + 0.34)
+strata stage worker: windows: own layers 40.46 ms, next worker 39.777727 ms each (64 windows; wait for the GPU 13.80, pool + plan 23.56, host staging 0.00)
+strata remote: 128 windows: mean 38.62 ms a round trip = worker 38.30 + link 0.32 (last: T=1 at 254, 37.43 = 37.12 + 0.31)
+strata stage worker: windows: own layers 38.04 ms, next worker 37.472089 ms each (64 windows; wait for the GPU 13.80, pool + plan 24.09, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1023 at 0: own 5499 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 0: read in 5500 ms
+strata remote: chunk T=1023: 4066 ms from its send to its rows = worker 4045 + link and queue 21 (0 rows back)
+strata remote: 192 windows: mean 38.84 ms a round trip = worker 38.53 + link 0.31 (last: T=1 at 1086, 35.81 = 35.51 + 0.30)
+strata stage worker: windows: own layers 40.02 ms, next worker 39.276274 ms each (64 windows; wait for the GPU 13.85, pool + plan 23.18, host staging 0.00)
+strata remote: 256 windows: mean 38.39 ms a round trip = worker 38.08 + link 0.31 (last: T=1 at 1150, 38.00 = 37.69 + 0.31)
+strata stage worker: windows: own layers 37.73 ms, next worker 37.059287 ms each (64 windows; wait for the GPU 13.87, pool + plan 23.72, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1024 at 0: own 6742 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 0: read in 6751 ms
+strata remote: chunk T=1024: 4751 ms from its send to its rows = worker 4709 + link and queue 42 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 1024: own 7092 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 1024: read in 7092 ms
+strata remote: chunk T=1024: 4899 ms from its send to its rows = worker 4848 + link and queue 51 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 2048: own 7163 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 2048: read in 7163 ms
+strata remote: chunk T=1024: 4929 ms from its send to its rows = worker 4866 + link and queue 63 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 3072: own 7144 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 3072: read in 7147 ms
+strata remote: chunk T=1024: 4920 ms from its send to its rows = worker 4855 + link and queue 65 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 4096: own 7124 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 4096: read in 7130 ms
+strata remote: chunk T=1024: 4898 ms from its send to its rows = worker 4836 + link and queue 62 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 5120: own 7117 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 5120: read in 7126 ms
+strata remote: chunk T=1024: 4864 ms from its send to its rows = worker 4811 + link and queue 53 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 6144: own 7116 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 6144: read in 7117 ms
+strata remote: chunk T=1024: 4836 ms from its send to its rows = worker 4805 + link and queue 31 (0 rows back)
+strata prefill: layers 16-31, chunk T=1023 at 7168: own 5617 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 7168: read in 5618 ms
+strata remote: chunk T=1023: 3895 ms from its send to its rows = worker 3875 + link and queue 21 (0 rows back)
+strata remote: 320 windows: mean 38.76 ms a round trip = worker 38.45 + link 0.31 (last: T=1 at 8254, 36.83 = 36.53 + 0.29)
+strata stage worker: windows: own layers 40.84 ms, next worker 40.215579 ms each (64 windows; wait for the GPU 14.34, pool + plan 23.50, host staging 0.00)
+strata remote: 384 windows: mean 38.61 ms a round trip = worker 38.30 + link 0.31 (last: T=1 at 8318, 39.81 = 39.50 + 0.31)
+strata stage worker: windows: own layers 38.29 ms, next worker 37.871516 ms each (64 windows; wait for the GPU 14.32, pool + plan 23.83, host staging 0.00)
+strata prefill: layers 16-31, chunk T=127 at 0: own 2780 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=127 at 0: read in 2780 ms
+strata remote: chunk T=127: 2037 ms from its send to its rows = worker 2034 + link and queue 3 (0 rows back)
+strata remote: 448 windows: mean 38.76 ms a round trip = worker 38.44 + link 0.31 (last: T=1 at 190, 38.49 = 38.16 + 0.32)
+strata stage worker: windows: own layers 40.36 ms, next worker 39.635533 ms each (64 windows; wait for the GPU 13.80, pool + plan 23.58, host staging 0.00)
+strata remote: 512 windows: mean 38.57 ms a round trip = worker 38.26 + link 0.31 (last: T=1 at 254, 35.92 = 35.59 + 0.32)
+strata stage worker: windows: own layers 38.34 ms, next worker 37.306843 ms each (64 windows; wait for the GPU 13.78, pool + plan 24.41, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1023 at 0: own 5476 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 0: read in 5477 ms
+strata remote: chunk T=1023: 4057 ms from its send to its rows = worker 4036 + link and queue 21 (0 rows back)
+strata remote: 576 windows: mean 38.67 ms a round trip = worker 38.36 + link 0.31 (last: T=1 at 1086, 35.81 = 35.48 + 0.33)
+strata stage worker: windows: own layers 40.35 ms, next worker 39.479916 ms each (64 windows; wait for the GPU 13.85, pool + plan 23.51, host staging 0.00)
+strata remote: 640 windows: mean 38.54 ms a round trip = worker 38.22 + link 0.32 (last: T=1 at 1150, 39.71 = 39.37 + 0.34)
+strata stage worker: windows: own layers 37.70 ms, next worker 37.295639 ms each (64 windows; wait for the GPU 13.85, pool + plan 23.70, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1024 at 0: own 6744 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 0: read in 6744 ms
+strata remote: chunk T=1024: 4739 ms from its send to its rows = worker 4694 + link and queue 45 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 1024: own 7057 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 1024: read in 7062 ms
+strata remote: chunk T=1024: 4866 ms from its send to its rows = worker 4823 + link and queue 43 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 2048: own 7148 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 2048: read in 7148 ms
+strata remote: chunk T=1024: 4980 ms from its send to its rows = worker 4913 + link and queue 67 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 3072: own 7156 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 3072: read in 7156 ms
+strata remote: chunk T=1024: 4921 ms from its send to its rows = worker 4869 + link and queue 52 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 4096: own 7109 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 4096: read in 7118 ms
+strata remote: chunk T=1024: 4888 ms from its send to its rows = worker 4827 + link and queue 61 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 5120: own 7122 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 5120: read in 7129 ms
+strata remote: chunk T=1024: 4867 ms from its send to its rows = worker 4813 + link and queue 54 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 6144: own 7135 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 6144: read in 7136 ms
+strata remote: chunk T=1024: 4859 ms from its send to its rows = worker 4829 + link and queue 30 (0 rows back)
+strata prefill: layers 16-31, chunk T=1023 at 7168: own 5630 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 7168: read in 5630 ms
+strata remote: chunk T=1023: 3898 ms from its send to its rows = worker 3878 + link and queue 20 (0 rows back)
+strata remote: 704 windows: mean 38.65 ms a round trip = worker 38.34 + link 0.32 (last: T=1 at 8254, 36.69 = 36.39 + 0.30)
+strata stage worker: windows: own layers 40.87 ms, next worker 39.830831 ms each (64 windows; wait for the GPU 14.37, pool + plan 23.51, host staging 0.00)
+strata remote: 768 windows: mean 38.58 ms a round trip = worker 38.26 + link 0.32 (last: T=1 at 8318, 39.36 = 39.06 + 0.31)
+strata stage worker: windows: own layers 38.22 ms, next worker 37.716884 ms each (64 windows; wait for the GPU 14.32, pool + plan 23.75, host staging 0.00)
+strata prefill: layers 16-31, chunk T=127 at 0: own 2779 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=127 at 0: read in 2780 ms
+strata remote: chunk T=127: 2037 ms from its send to its rows = worker 2035 + link and queue 3 (0 rows back)
+strata remote: 832 windows: mean 38.68 ms a round trip = worker 38.36 + link 0.32 (last: T=1 at 190, 38.89 = 38.56 + 0.32)
+strata stage worker: windows: own layers 40.43 ms, next worker 39.929651 ms each (64 windows; wait for the GPU 13.79, pool + plan 23.65, host staging 0.00)
+strata remote: 896 windows: mean 38.59 ms a round trip = worker 38.28 + link 0.32 (last: T=1 at 254, 36.88 = 36.56 + 0.32)
+strata stage worker: windows: own layers 37.81 ms, next worker 37.445173 ms each (64 windows; wait for the GPU 13.80, pool + plan 23.87, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1023 at 0: own 5476 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 0: read in 5476 ms
+strata remote: chunk T=1023: 4054 ms from its send to its rows = worker 4033 + link and queue 21 (0 rows back)
+strata remote: 960 windows: mean 38.64 ms a round trip = worker 38.33 + link 0.32 (last: T=1 at 1086, 35.93 = 35.64 + 0.29)
+strata stage worker: windows: own layers 39.93 ms, next worker 39.377758 ms each (64 windows; wait for the GPU 13.87, pool + plan 23.07, host staging 0.00)
+strata remote: 1024 windows: mean 38.54 ms a round trip = worker 38.22 + link 0.32 (last: T=1 at 1150, 37.62 = 37.30 + 0.32)
+strata stage worker: windows: own layers 37.56 ms, next worker 36.964695 ms each (64 windows; wait for the GPU 13.85, pool + plan 23.57, host staging 0.00)
+strata prefill: layers 16-31, chunk T=1024 at 0: own 6736 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 0: read in 6736 ms
+strata remote: chunk T=1024: 4760 ms from its send to its rows = worker 4709 + link and queue 51 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 1024: own 7106 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 1024: read in 7106 ms
+strata remote: chunk T=1024: 4874 ms from its send to its rows = worker 4831 + link and queue 43 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 2048: own 7169 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 2048: read in 7175 ms
+strata remote: chunk T=1024: 4958 ms from its send to its rows = worker 4894 + link and queue 64 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 3072: own 7156 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 3072: read in 7157 ms
+strata remote: chunk T=1024: 4914 ms from its send to its rows = worker 4855 + link and queue 59 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 4096: own 7124 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 4096: read in 7130 ms
+strata remote: chunk T=1024: 4932 ms from its send to its rows = worker 4876 + link and queue 56 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 5120: own 7160 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 5120: read in 7163 ms
+strata remote: chunk T=1024: 4915 ms from its send to its rows = worker 4862 + link and queue 53 (0 rows back)
+strata prefill: layers 16-31, chunk T=1024 at 6144: own 7160 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1024 at 6144: read in 7160 ms
+strata remote: chunk T=1024: 4875 ms from its send to its rows = worker 4842 + link and queue 33 (0 rows back)
+strata prefill: layers 16-31, chunk T=1023 at 7168: own 5664 ms, waited 0 ms for the previous send
+strata stage worker: chunk T=1023 at 7168: read in 5664 ms
+strata remote: chunk T=1023: 3899 ms from its send to its rows = worker 3878 + link and queue 21 (0 rows back)
+strata remote: 1088 windows: mean 38.62 ms a round trip = worker 38.31 + link 0.32 (last: T=1 at 8254, 37.49 = 37.17 + 0.33)
+strata stage worker: windows: own layers 40.71 ms, next worker 39.997322 ms each (64 windows; wait for the GPU 14.34, pool + plan 23.38, host staging 0.00)
+strata remote: 1152 windows: mean 38.57 ms a round trip = worker 38.26 + link 0.32 (last: T=1 at 8318, 39.23 = 38.92 + 0.31)
+strata stage worker: windows: own layers 38.11 ms, next worker 37.690474 ms each (64 windows; wait for the GPU 14.32, pool + plan 23.64, host staging 0.00)
+strata stage worker: 127.0.0.1 disconnected: remote stage: the peer closed the connection

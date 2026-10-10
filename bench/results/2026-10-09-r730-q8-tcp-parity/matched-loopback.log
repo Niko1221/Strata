@@ -1,0 +1,153 @@
+[strata] 2026-10-09 18:06:43 engine started: $HOME/remote-stage-parity/build-cuda/strata --serve --pack $HOME/Strata-data/packs/q8_0-r730-opt --native $Q8_SOURCE/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf --ple-gguf $Q8_SOURCE/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf --expert-profile $HOME/remote-stage-parity/matched-expert-profile.bin --expert-cache auto --prefill 1024 --max-context 16384 --kv fp16 --stats --vram-reserve-mib 1536 --prompt-cache 0 --conversation-cache-mib 0 --spec 2 --suffix-draft 0 --expert-cache 512 --pcie-frac 0 --adapt-every 0 --layer-split 16 --split-device 0 --remote-stage 127.0.0.1:18849
+strata generate: remote stage: this process holds layers 0-15, the rest on 127.0.0.1:18849
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: $HOME/Strata-data/packs/q8_0-r730-opt experts (largest blob 5.22 MB), token embedding Q8_0 in mapped host memory (644 MiB, 6.9 s)
+strata generate: remote stage: the dense weights of layers 0-15 only
+strata generate: 489 MiB of weights loaded from $HOME/Strata-data/packs/q8_0-r730-opt in 0.2 s (815 canonical tensors skipped: served natively)
+strata generate: 101 native projection matrices, 1009.38 MiB of weights, in 27.5 s
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile $HOME/remote-stage-parity/matched-expert-profile.bin: 1536 ranked pairs, built for 1536 slots
+strata generate: remote stage: 512 of the 1536 pairs are this process's layers
+strata generate: PLE on, table 320001536 rows of $Q8_SOURCE/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf
+strata generate: experimental native Q5_K head, 675430400 bytes, in 6.5 s
+strata generate: GPU 0: Tesla P4, compute capability 6.1
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: layers 0-15 only (39.84 of 119.53 GiB; remote stage)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 20403 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 119.53 GiB at 0.11 GiB/s
+strata generate: CPU pool tasks/phase: 84 (automatic), participating threads: 28
+strata generate: 27 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 512 slots, 2.49 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 512 of 512 slots from the profile in 0.3 s (8642 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 27 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.41)
+strata generate: token graph hit path: 512 resident experts, decided on the device
+strata serve: the prompt path borrows 214 CUDA0 cache slots (1.04 GiB)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 2 tokens, 91.0 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: layer split: layers 0-15 (CUDA0), 16-47 (127.0.0.1:18849), the head (CUDA0), one hand-off per window
+strata verify: window up to 2 tokens, 91.0 MiB of device buffers
+strata serve: 2142 MiB of VRAM free with everything loaded
+strata serve: remote stage 127.0.0.1:18849: layers 16-47 there (prompt chunk 1024, context 16384)
+strata prefill: layers 0-15, chunk T=127 at 0: own 1755 ms, waited 0 ms for the previous send
+strata remote: chunk T=127: 4834 ms from its send to its rows = worker 2787 + link and queue 2047 (0 rows back)
+strata verify: capturing the 1-token window (2110 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: capturing the 1-token window (2104 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata remote: 64 windows: mean 80.52 ms a round trip = worker 80.25 + link 0.26 (last: T=1 at 190, 76.95 = 76.68 + 0.27)
+strata remote: main process between windows 40.55 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 128 windows: mean 78.15 ms a round trip = worker 77.89 + link 0.26 (last: T=1 at 254, 75.88 = 75.61 + 0.27)
+strata serve: prompt 128 tokens = 0 reused + 128 read in 6626 ms (19.3 tok/s), 128 generated in 15231 ms (8.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 10.5% (2149 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1023 at 0: own 2876 ms, waited 0 ms for the previous send
+strata remote: chunk T=1023: 9587 ms from its send to its rows = worker 5500 + link and queue 4087 (0 rows back)
+strata remote: main process between windows 41.11 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 192 windows: mean 78.62 ms a round trip = worker 78.36 + link 0.26 (last: T=1 at 1086, 72.00 = 71.75 + 0.25)
+strata remote: main process between windows 40.21 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 256 windows: mean 77.73 ms a round trip = worker 77.47 + link 0.26 (last: T=1 at 1150, 75.82 = 75.55 + 0.26)
+strata serve: prompt 1024 tokens = 0 reused + 1024 read in 12571 ms (81.5 tok/s), 128 generated in 15072 ms (8.5 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.7% (2390 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1024 at 0: own 4442 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 1024: own 4675 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 2048: own 4873 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 11530 ms from its send to its rows = worker 6751 + link and queue 4779 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 3072: own 4848 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 14105 ms from its send to its rows = worker 7092 + link and queue 7012 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 4096: own 4908 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 5120: own 4874 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 16427 ms from its send to its rows = worker 7163 + link and queue 9264 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 6144: own 4843 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 18709 ms from its send to its rows = worker 7147 + link and queue 11562 (0 rows back)
+strata prefill: layers 0-15, chunk T=1023 at 7168: own 2831 ms, waited 3504 ms for the previous send
+strata remote: chunk T=1024: 20892 ms from its send to its rows = worker 7130 + link and queue 13762 (0 rows back)
+strata remote: chunk T=1024: 23108 ms from its send to its rows = worker 7126 + link and queue 15982 (0 rows back)
+strata remote: chunk T=1024: 25364 ms from its send to its rows = worker 7117 + link and queue 18248 (0 rows back)
+strata remote: chunk T=1023: 23706 ms from its send to its rows = worker 5618 + link and queue 18089 (0 rows back)
+strata remote: main process between windows 40.76 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 320 windows: mean 78.45 ms a round trip = worker 78.19 + link 0.26 (last: T=1 at 8254, 74.94 = 74.68 + 0.26)
+strata remote: main process between windows 40.81 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 384 windows: mean 78.11 ms a round trip = worker 77.85 + link 0.26 (last: T=1 at 8318, 78.34 = 78.07 + 0.26)
+strata serve: prompt 8192 tokens = 0 reused + 8192 read in 63625 ms (128.8 tok/s), 128 generated in 15347 ms (8.3 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.6% (2375 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=127 at 0: own 1705 ms, waited 0 ms for the previous send
+strata remote: chunk T=127: 4820 ms from its send to its rows = worker 2780 + link and queue 2040 (0 rows back)
+strata remote: main process between windows 41.32 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 448 windows: mean 78.42 ms a round trip = worker 78.16 + link 0.26 (last: T=1 at 190, 76.74 = 76.49 + 0.25)
+strata remote: main process between windows 40.34 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 512 windows: mean 78.11 ms a round trip = worker 77.85 + link 0.26 (last: T=1 at 254, 75.48 = 75.20 + 0.28)
+strata serve: prompt 128 tokens = 0 reused + 128 read in 6562 ms (19.5 tok/s), 128 generated in 15188 ms (8.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 10.5% (2149 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1023 at 0: own 2871 ms, waited 0 ms for the previous send
+strata remote: chunk T=1023: 9555 ms from its send to its rows = worker 5477 + link and queue 4078 (0 rows back)
+strata remote: main process between windows 40.84 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 576 windows: mean 78.33 ms a round trip = worker 78.07 + link 0.26 (last: T=1 at 1086, 73.74 = 73.47 + 0.27)
+strata remote: main process between windows 40.43 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 640 windows: mean 78.02 ms a round trip = worker 77.76 + link 0.26 (last: T=1 at 1150, 77.26 = 77.00 + 0.26)
+strata serve: prompt 1024 tokens = 0 reused + 1024 read in 12533 ms (81.7 tok/s), 128 generated in 15128 ms (8.5 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.7% (2390 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1024 at 0: own 4438 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 1024: own 4675 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 2048: own 4886 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 11523 ms from its send to its rows = worker 6744 + link and queue 4778 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 3072: own 4849 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 14027 ms from its send to its rows = worker 7062 + link and queue 6965 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 4096: own 4887 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 5120: own 4879 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 16412 ms from its send to its rows = worker 7148 + link and queue 9264 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 6144: own 4862 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 18663 ms from its send to its rows = worker 7156 + link and queue 11507 (0 rows back)
+strata prefill: layers 0-15, chunk T=1023 at 7168: own 2845 ms, waited 3431 ms for the previous send
+strata remote: chunk T=1024: 20843 ms from its send to its rows = worker 7118 + link and queue 13725 (0 rows back)
+strata remote: chunk T=1024: 23073 ms from its send to its rows = worker 7129 + link and queue 15944 (0 rows back)
+strata remote: chunk T=1024: 25347 ms from its send to its rows = worker 7136 + link and queue 18212 (0 rows back)
+strata remote: chunk T=1023: 23744 ms from its send to its rows = worker 5630 + link and queue 18113 (0 rows back)
+strata remote: main process between windows 40.78 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 704 windows: mean 78.29 ms a round trip = worker 78.03 + link 0.26 (last: T=1 at 8254, 75.02 = 74.75 + 0.27)
+strata remote: main process between windows 40.86 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 768 windows: mean 78.12 ms a round trip = worker 77.86 + link 0.26 (last: T=1 at 8318, 78.80 = 78.53 + 0.27)
+strata serve: prompt 8192 tokens = 0 reused + 8192 read in 63604 ms (128.8 tok/s), 128 generated in 15301 ms (8.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.6% (2375 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=127 at 0: own 1708 ms, waited 0 ms for the previous send
+strata remote: chunk T=127: 4820 ms from its send to its rows = worker 2780 + link and queue 2041 (0 rows back)
+strata remote: main process between windows 41.02 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 832 windows: mean 78.31 ms a round trip = worker 78.05 + link 0.26 (last: T=1 at 190, 76.84 = 76.57 + 0.27)
+strata remote: main process between windows 40.67 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 896 windows: mean 78.11 ms a round trip = worker 77.85 + link 0.26 (last: T=1 at 254, 74.42 = 74.19 + 0.23)
+strata serve: prompt 128 tokens = 0 reused + 128 read in 6565 ms (19.5 tok/s), 128 generated in 15200 ms (8.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 10.5% (2149 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1023 at 0: own 2878 ms, waited 0 ms for the previous send
+strata remote: chunk T=1023: 9551 ms from its send to its rows = worker 5476 + link and queue 4075 (0 rows back)
+strata remote: main process between windows 40.82 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 960 windows: mean 78.21 ms a round trip = worker 77.95 + link 0.26 (last: T=1 at 1086, 72.83 = 72.57 + 0.26)
+strata remote: main process between windows 40.33 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1024 windows: mean 78.00 ms a round trip = worker 77.74 + link 0.26 (last: T=1 at 1150, 75.74 = 75.48 + 0.26)
+strata serve: prompt 1024 tokens = 0 reused + 1024 read in 12537 ms (81.7 tok/s), 128 generated in 15057 ms (8.5 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.7% (2390 hits / 20480 lookups)
+strata prefill: layers 0-15, chunk T=1024 at 0: own 4436 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 1024: own 4671 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 2048: own 4883 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 11533 ms from its send to its rows = worker 6736 + link and queue 4797 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 3072: own 4871 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 14080 ms from its send to its rows = worker 7106 + link and queue 6974 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 4096: own 4936 ms, waited 0 ms for the previous send
+strata prefill: layers 0-15, chunk T=1024 at 5120: own 4883 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 16451 ms from its send to its rows = worker 7175 + link and queue 9276 (0 rows back)
+strata prefill: layers 0-15, chunk T=1024 at 6144: own 4867 ms, waited 0 ms for the previous send
+strata remote: chunk T=1024: 18702 ms from its send to its rows = worker 7157 + link and queue 11546 (0 rows back)
+strata prefill: layers 0-15, chunk T=1023 at 7168: own 2834 ms, waited 3447 ms for the previous send
+strata remote: chunk T=1024: 20901 ms from its send to its rows = worker 7130 + link and queue 13771 (0 rows back)
+strata remote: chunk T=1024: 23169 ms from its send to its rows = worker 7163 + link and queue 16006 (0 rows back)
+strata remote: chunk T=1024: 25423 ms from its send to its rows = worker 7160 + link and queue 18262 (0 rows back)
+strata remote: chunk T=1023: 23832 ms from its send to its rows = worker 5664 + link and queue 18168 (0 rows back)
+strata remote: main process between windows 40.73 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1088 windows: mean 78.17 ms a round trip = worker 77.91 + link 0.26 (last: T=1 at 8254, 75.65 = 75.40 + 0.26)
+strata remote: main process between windows 40.95 ms each (64 windows: head, drafter, layers 0-K)
+strata remote: 1152 windows: mean 78.05 ms a round trip = worker 77.79 + link 0.26 (last: T=1 at 8318, 79.13 = 78.86 + 0.27)
+strata serve: prompt 8192 tokens = 0 reused + 8192 read in 63767 ms (128.5 tok/s), 128 generated in 15290 ms (8.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 11.6% (2375 hits / 20480 lookups)

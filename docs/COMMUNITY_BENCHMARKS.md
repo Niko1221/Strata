@@ -12,6 +12,10 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-09: R730, three Tesla P4s, Q8 TCP loopback parity](../bench/results/2026-10-09-r730-q8-tcp-parity/README.md):
+  matched layers and expert placement, FP16 KV, 128/1,024/8,192 input tokens and 128-token replies;
+  all nine local-versus-TCP output sequences identical. TCP decode 8.52–8.65 versus local 10.87–11.17 tok/s
+  (medians of three runs per length). Same-host control for #1748 with #1674 retained, not a LAN speedup test.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
