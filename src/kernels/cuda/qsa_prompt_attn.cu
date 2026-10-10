@@ -787,7 +787,7 @@ struct Smem70 {
     float alpha[16];
     float lsum[16];
     float mrow[16];
-    long long row[CH];
+    long long row[2][CH];        // double-buffered pool rows: the next chunk's lookups hide under p.v
 };
 
 template <int KV_MODE>
@@ -838,40 +838,54 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
             for (int i = 0; i < 8; ++i) acc[rb][nt][i] = 0.0f;
 
-    for (int c0 = 0; c0 < n; c0 += CH) {
-        const int nh = min(CH, n - c0);
-        if (t < CH) {
-            long long r = -1;
-            if (t < nh) {
-                const int cell = ids[c0 + t];
-                const long long page = (long long) p.page_table[cell / page_size];
-                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-            }
-            S.row[t] = r;
+    // the pool rows of a chunk: -1 past the selection and for a page the KV streaming left non-resident (the
+    // decode kernel masks those, so this kernel does too).  Chunk 0's rows fill one buffer here; every later
+    // chunk's lookups fill the other just before the previous p.v, where their global latency hides.
+    int rbuf = 0;
+    if (t < CH) {
+        long long r = -1;
+        if (t < min(CH, n)) {
+            const int cell = ids[t];
+            const long long page = (long long) p.page_table[cell / page_size];
+            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
-        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v, s
+        S.row[0][t] = r;
+    }
+    for (int c0 = 0; c0 < n; c0 += CH, rbuf ^= 1) {
+        const int nh = min(CH, n - c0);
+        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
         // and their scales
         {
             constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16;   // per K row
-            for (int i = t; i < CH * KPIECES; i += THREADS) {
-                const int c = i / KPIECES, pc = i % KPIECES;
-                const long long r = S.row[c];
-                uint4 kx = make_uint4(0, 0, 0, 0);
+            constexpr int KPT = (CH * KPIECES + THREADS - 1) / THREADS;
+            static_assert((CH * KPIECES) % THREADS == 0, "the staging pieces divide evenly");
+            // issue every global load of a thread before any of its stores: they then overlap each other instead
+            // of paying the HBM latency one at a time
+            uint4 kx[KPT];
+            int kc[KPT], kp[KPT];
+#pragma unroll
+            for (int s = 0; s < KPT; ++s) {
+                const int i = t + s * THREADS;
+                kc[s] = i / KPIECES; kp[s] = i % KPIECES;
+                const long long r = S.row[rbuf][kc[s]];
+                kx[s] = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + kp[s]);
                     else   // modes 1 and 3: the K side is INT8
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + kp[s]);
                 }
-                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
             }
+#pragma unroll
+            for (int s = 0; s < KPT; ++s)
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[kc[s]][0]) + kp[s] * 16) = kx[s];
             if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
                 constexpr int BLKS = HD / QK4_0;
                 constexpr int BYTES = BLKS * (int) sizeof(block_q4_0);
                 for (int i = t; i < CH * BLKS; i += THREADS) {
                     const int c = i / BLKS, b = i % BLKS;
-                    const long long r = S.row[c];
+                    const long long r = S.row[rbuf][c];
 #pragma unroll
                     for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
@@ -887,22 +901,30 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 }
             } else {
                 constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
-                for (int i = t; i < CH * VPIECES; i += THREADS) {
-                    const int c = i / VPIECES, pc = i % VPIECES;
-                    const long long r = S.row[c];
-                    uint4 vx = make_uint4(0, 0, 0, 0);
+                constexpr int VPT = (CH * VPIECES + THREADS - 1) / THREADS;
+                static_assert((CH * VPIECES) % THREADS == 0, "the staging pieces divide evenly");
+                uint4 vx[VPT];
+                int vc[VPT], vp[VPT];
+#pragma unroll
+                for (int s = 0; s < VPT; ++s) {
+                    const int i = t + s * THREADS;
+                    vc[s] = i / VPIECES; vp[s] = i % VPIECES;
+                    const long long r = S.row[rbuf][vc[s]];
+                    vx[s] = make_uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + vp[s]);
                         else
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + vp[s]);
                     }
-                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
                 }
+#pragma unroll
+                for (int s = 0; s < VPT; ++s)
+                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[vc[s]][0]) + vp[s] * 16) = vx[s];
             }
             for (int i = t; i < CH * 4; i += THREADS) {
                 const int c = i / 4, g = i % 4;
-                const long long r = S.row[c];
+                const long long r = S.row[rbuf][c];
                 float a = 0.0f, b = 0.0f;
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
@@ -1064,6 +1086,17 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                     for (int i = 0; i < 8; ++i)
                         acc[rb][nt][i] = fmaf(acc[rb][nt][i], a_[(i >> 1) & 1], (tmp[rb][nt][i] + tmpl[rb][nt][i]) * vdown);
             }
+        }
+        // the next chunk's pool rows, into the other buffer: the two global lookups per cell hide under p.v
+        if (c0 + CH < n && t < CH) {
+            long long r = -1;
+            const int idx = c0 + CH + t;
+            if (idx < n) {
+                const int cell = ids[idx];
+                const long long page = (long long) p.page_table[cell / page_size];
+                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            }
+            S.row[rbuf ^ 1][t] = r;
         }
     }
     __syncthreads();

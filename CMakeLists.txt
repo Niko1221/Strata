@@ -386,6 +386,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(qsa_prompt_attn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels CUDA::cudart)
   endif()
+  # PR #600: the Volta (sm_70) prompt attention's latency pipeline against the FP32 kernel it replaces.  Only in the
+  # experimental sm_60/sm_70 build, where prompt_attn_v70_kernel is compiled in.
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
+    add_executable(qsa_prompt_attn_sm70_bench bench/qsa_prompt_attn_sm70_bench.cpp)
+    target_include_directories(qsa_prompt_attn_sm70_bench PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_prompt_attn_sm70_bench PRIVATE strata_kernels CUDA::cudart)
+  endif()
   # #512: the top-k's active-block bound (Turing's dispatch, forced on any card by STRATA_TOPK_ACTIVE_ANY) against
   # the capacity rule, selected ids bitwise
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
