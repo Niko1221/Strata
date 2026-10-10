@@ -1,0 +1,118 @@
+{
+ "k8v4": [
+  {
+   "length": "32k",
+   "depth": 10,
+   "prompt_tokens": 33286,
+   "seconds": 74.1,
+   "found": true,
+   "word": "meadow-copper-504",
+   "answer": "meadow-copper-504"
+  },
+  {
+   "length": "32k",
+   "depth": 50,
+   "prompt_tokens": 33286,
+   "seconds": 73.5,
+   "found": true,
+   "word": "falcon-quartz-940",
+   "answer": "falcon-quartz-940"
+  },
+  {
+   "length": "32k",
+   "depth": 90,
+   "prompt_tokens": 33287,
+   "seconds": 40.8,
+   "found": true,
+   "word": "willow-cobalt-696",
+   "answer": "willow-cobalt-696"
+  },
+  {
+   "length": "128k",
+   "depth": 10,
+   "prompt_tokens": 126640,
+   "seconds": 264.3,
+   "found": true,
+   "word": "falcon-saffron-138",
+   "answer": "falcon-saffron-138"
+  },
+  {
+   "length": "128k",
+   "depth": 50,
+   "prompt_tokens": 126638,
+   "seconds": 231.1,
+   "found": true,
+   "word": "quartz-tundra-528",
+   "answer": "quartz-tundra-528"
+  },
+  {
+   "length": "128k",
+   "depth": 90,
+   "prompt_tokens": 126638,
+   "seconds": 264.3,
+   "found": true,
+   "word": "quartz-glacier-192",
+   "answer": "quartz-glacier-192"
+  }
+ ],
+ "fp16": [
+  {
+   "length": "32k",
+   "depth": 10,
+   "prompt_tokens": 33286,
+   "seconds": 76.2,
+   "found": true,
+   "word": "meadow-copper-504",
+   "answer": "meadow-copper-504"
+  },
+  {
+   "length": "32k",
+   "depth": 50,
+   "prompt_tokens": 33286,
+   "seconds": 73.4,
+   "found": true,
+   "word": "falcon-quartz-940",
+   "answer": "falcon-quartz-940"
+  },
+  {
+   "length": "32k",
+   "depth": 90,
+   "prompt_tokens": 33287,
+   "seconds": 40.6,
+   "found": true,
+   "word": "willow-cobalt-696",
+   "answer": "willow-cobalt-696"
+  },
+  {
+   "length": "128k",
+   "depth": 10,
+   "prompt_tokens": 126640,
+   "seconds": 265.0,
+   "found": true,
+   "word": "falcon-saffron-138",
+   "answer": "falcon-saffron-138"
+  },
+  {
+   "length": "128k",
+   "depth": 50,
+   "prompt_tokens": 126638,
+   "seconds": 231.2,
+   "found": true,
+   "word": "quartz-tundra-528",
+   "answer": "quartz-tundra-528"
+  },
+  {
+   "length": "128k",
+   "depth": 90,
+   "prompt_tokens": 126638,
+   "seconds": 247.0,
+   "found": true,
+   "word": "quartz-glacier-192",
+   "answer": "quartz-glacier-192"
+  }
+ ],
+ "k8v4_262k": {
+  "skipped": true,
+  "reason": "the script skips a target at 98% of the context plus 200 answer tokens; 262144 cannot hold it (message: 262k: skipped (the server's context is 262144))"
+ }
+}
