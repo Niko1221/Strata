@@ -1,0 +1,126 @@
+# syntax=docker/dockerfile:1
+#
+# Strata: Qwen3.8-Flash-Next on AMD GPUs through the HIP backend (RX 7900 XT /
+# XTX gfx1100, RX 9070 / 9070 XT / Radeon AI PRO R9700 gfx1201, RX 6800 / 6900
+# gfx1030 - docs/AMD_HIP.md). This is the AMD twin of Dockerfile.
+#
+# The engine is compiled during docker build, so the first container start only
+# downloads the model (~70 GB) and starts the server. docker build has no GPU to
+# probe, so the card list comes from HIP_ARCHITECTURES instead of a device probe:
+# the HIP engine carries code for the listed gfx arches and the runtime picks the
+# one matching your card. Narrow HIP_ARCHITECTURES to your card for a faster
+# build; a card outside the set needs a rebuild with its own arch.
+#
+# ROCm needs no base image here: setup.py's HIP path (build_engine_hip) installs
+# AMD's TheRock wheels (~10 GB, one GPU family's libraries) into .venv when /opt/rocm
+# has no system ROCm 7 with hipcc, hipBLAS and the HIP development files. Arches of
+# one family may be listed together (gfx1100;gfx1102); cards of two families need a
+# system ROCm 7 in the image instead - setup.py says so and stops the build.
+#
+# Build:
+#   docker build -t strata-rocm -f Dockerfile.rocm-stable .
+#   docker build -t strata-rocm -f Dockerfile.rocm-stable --build-arg HIP_ARCHITECTURES=gfx1100 .   # RX 7900 XTX only
+#   docker build -t strata-rocm-rdna2 -f Dockerfile.rocm-stable --build-arg HIP_ARCHITECTURES=gfx1030;gfx1031 .   # RX 6800 / 6900
+#
+# One image per GPU family: the wheels hold one family's libraries, so a gfx103X
+# image runs on AMD's pinned 7.13 wheels (the 7.14 nightlies time out there, #1103)
+# while the gfx120X default gets 7.10; and gfx103X has no tuned hipBLASLt table yet
+# (tools/hip/tune_hipblaslt makes one on such a PC; prompts use plain hipBLAS until).
+#
+# Run (host needs the AMDGPU kernel driver; the container gets the cards through
+# /dev/kfd and /dev/dri, or with ROCm 6.4+ docker's own --gfx flag):
+#   docker run --rm --device /dev/kfd --device /dev/dri --group-add video \
+#     -p 8080:8080 \
+#     --ulimit memlock=-1 \
+#     -v strata-data:/data \
+#     -e MODEL=IQ2_XS \
+#     strata-rocm
+#   docker run --rm --gfx gfx1201 -p 8080:8080 -v strata-data:/data strata-rocm
+#
+# Setup choices are env vars, read by docker-entrypoint.sh: FAMILY, MODEL, CONTEXT,
+# VISION (no | yes | cpu; the AMD backend has no GPU image encoder yet, so yes/cpu
+# run the encoder on the CPU - docs/AMD_HIP.md), KV (int8 | q4_0 | k8v4), GPU (one
+# card) or GPUS ("0,2" or "all", with LAYER_SPLIT - numbered as HIP numbers them,
+# setup's KFD order, not nvidia-smi's), LOW_RAM (auto | on | off), HOST, PORT, API_KEY,
+# GGUF_DIR (GGUF files you already have), RESIDENT_BUDGET_GIB, KV_STREAMING.
+#
+# Only the model files, the prepared pack, the MTP layer and the install config
+# live in the /data volume; the engine is part of the image. Strata loads 32-62 GB
+# into RAM, so a capped container needs -e LOW_RAM=on: setup.py reads the RAM from
+# /proc/meminfo, which here is the host's total, not the container's limit. Add an
+# API key before exposing the port to a network: -e API_KEY=<secret>. Pass
+# -e REINSTALL=1 to change the model settings later.
+#
+# The ROCm libraries the engine loads (hipBLAS / hipBLASLt / rocBLAS with their
+# kernels for the built arches) are the TheRock wheels in the image's .venv;
+# setup.py records their folders in engine/BUILD.json (lib_dirs) and puts them on
+# the engine's path at the start.
+
+FROM ubuntu:24.04
+
+# STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
+# and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
+# don't set it, keep spawning the server as a child.
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 LANG=C.UTF-8 STRATA_EXECV=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl git libatomic1 libgomp1 \
+        python3 python3-pip python3-venv unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/strata
+COPY . .
+
+# The validated AMD cards: gfx1100 (RX 7900 XT / XTX, RDNA3), gfx1201 (RX 9070 /
+# 9070 XT, Radeon AI PRO R9700, RDNA4), gfx1030 (RX 6800 / 6900, RDNA2, community
+# reported). gfx1100 and gfx1102 share a wheel family; gfx1100 with gfx1201 does
+# not (two families: needs a system ROCm 7, see the note above). BUILD_VISION=0
+# skips the image encoder build.
+ARG HIP_ARCHITECTURES=gfx1200;gfx1201
+ARG BUILD_VISION=1
+
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --upgrade pip \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && chmod +x setup.sh docker-entrypoint.sh
+
+# llama.cpp at the pinned commit, then the engine and - when asked - the image
+# encoder for the CPU (there is no HIP encoder build yet), built exactly the way
+# setup.py builds them on a Linux PC: build_engine_hip finds ROCm (AMD's TheRock
+# wheels into .venv here; a system ROCm 7 in /opt/rocm when present), compiles
+# with cmake's HIP backend (-DSTRATA_ENABLE_HIP=ON, -DSTRATA_PREFILL_MMQ=ON,
+# -DCMAKE_HIP_ARCHITECTURES), copies the exe into engine/ and writes engine/BUILD.json
+# with backend "hip", the arches, the lib_dirs and the src hash. Native code for the
+# CPU that builds the image, so build it on the PC it runs on. BUILD.json is what
+# setup.py reads to decide whether an engine is current: source=local-hip with a
+# matching src hash means the first start reuses it instead of recompiling.
+RUN .venv/bin/python - <<'PYEOF'
+import os
+import setup
+
+llama = setup.get_llama_cpp()
+archs = [a for a in os.environ.get("HIP_ARCHITECTURES", "gfx1200;gfx1201").replace(",", ";").split(";") if a]
+vision = "cpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
+
+# docker build has no GPU to probe, so the card dict comes from HIP_ARCHITECTURES:
+# the same shape setup.py builds from its device probe (archs: every arch the
+# engine needs code for, as for the cards of a layer split).
+gpu = {"index": 0, "name": "AMD (from HIP_ARCHITECTURES)", "vram_gb": 16.0,
+       "arch": archs[0], "archs": archs, "driver": "hip", "vendor": "amd"}
+setup.build_engine_hip(gpu, llama, vision)
+PYEOF
+
+# the cmake trees are build-time only; the engine itself is what the container needs
+RUN rm -rf build-hip build-vision
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+# /health is answered before the API key gate, so it works with or without one.
+# The port only opens after the model loads (1-3 minutes, longer on a first run),
+# so the start period is generous: a too short one marks a still-loading container
+# unhealthy and a restart policy would kill it mid-download.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+  CMD curl -fs "http://127.0.0.1:${PORT:-8080}/health" || exit 1
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
