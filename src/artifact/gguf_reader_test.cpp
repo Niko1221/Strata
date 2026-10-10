@@ -55,6 +55,33 @@ std::filesystem::path write_gguf(const std::vector<std::string>& names) {
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
     return path;
 }
+
+// A metadata-only GGUF v3 file with one U32 kv, ending exactly at the unpadded header end: its aligned data
+// start falls past EOF by the padding (issue #1611: unsloth UD-Q5_K_XL shard 1, 10,946,618 bytes with a
+// 10,946,624 aligned start).  With `with_tensors` the file instead carries one F32[8] tensor.
+std::filesystem::path write_gguf_meta_only(size_t pad_before_start, bool with_tensors) {
+    (void)pad_before_start;   // kept for readability of the call sites: how far the start falls past EOF
+    std::vector<uint8_t> b;
+    put<uint32_t>(b, 0x46554747u);   // "GGUF"
+    put<uint32_t>(b, 3);
+    put<uint64_t>(b, with_tensors ? 1 : 0);  // n_tensors
+    put<uint64_t>(b, 1);             // n_kv
+    put_str(b, "general.name");
+    put<uint32_t>(b, 8);             // STRING
+    put_str(b, "shard1");
+    if (with_tensors) {
+        put_str(b, "blk.0.attn_q.weight");
+        put<uint32_t>(b, 1);         // n_dims
+        put<uint64_t>(b, 8);
+        put<uint32_t>(b, 0);         // F32
+        put<uint64_t>(b, 0);         // offset from data_start
+    }
+    const size_t pos = b.size();
+    b.resize(pos, 0);                            // the file ends at the unpadded header end: no padding, no payload
+    const auto path = std::filesystem::temp_directory_path() / "strata_gguf_reader_meta_test.gguf";
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
+    return path;
+}
 }  // namespace
 
 int main() {
@@ -86,6 +113,41 @@ int main() {
         check(!err.empty(), "the same name twice: refused at open");
         check(err.find("blk.0.attn_q.weight") != std::string::npos, "  the error names the tensor");
         check(err.find(path.filename().string()) != std::string::npos, "  the error names the file");
+        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+    }
+    {
+        // Issue #1611: a metadata-only shard whose aligned data start falls past EOF.  Without tensors there
+        // is no payload, so llama.cpp's gguf-py reads the file; the reader should too, not refuse it.
+        const auto path = write_gguf_meta_only(6, false);
+        std::string err;
+        size_t n = 0;
+        uint64_t start = 0;
+        try {
+            strata::GgufFile g(path.string());
+            n = g.tensors().size();
+            start = g.data_start();
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        const uintmax_t sz = std::filesystem::file_size(path);
+        std::filesystem::remove(path);
+        check(err.empty() && n == 0, "metadata-only shard, data start past EOF (#1611): opens with 0 tensors");
+        check(err.empty() && start > sz, "  the data start stays past EOF (harmless with no payload)");
+        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+    }
+    {
+        // The guard stays for files with tensors: a payload that starts past EOF would make tensor_data()
+        // out of bounds for every tensor.
+        const auto path = write_gguf_meta_only(6, true);
+        std::string err;
+        try {
+            strata::GgufFile g(path.string());
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        std::filesystem::remove(path);
+        check(!err.empty(), "with tensors, a data start past EOF is still refused");
+        check(err.find("past EOF") != std::string::npos, "  the error is the data-section one");
         if (!err.empty()) std::printf("  (%s)\n", err.c_str());
     }
     std::printf(g_fail ? "gguf_reader_test: %d FAILED\n" : "gguf_reader_test: all passed\n", g_fail);

@@ -455,7 +455,10 @@ private:
             if (a->u) align = a->u;
         alignment_ = align;
         data_start_ = (c.pos() + align - 1) / align * align;
-        if (data_start_ > size_) throw std::runtime_error("GGUF: data section starts past EOF");
+        // #1611: a metadata-only shard (0 tensors) may end before its aligned data start - llama.cpp's gguf-py
+        // reads it fine, and no payload follows, so there is nothing the start could point past.  With tensors
+        // the payloads live there, and a start past EOF would make every tensor_data() out of bounds.
+        if (!tensors_.empty() && data_start_ > size_) throw std::runtime_error("GGUF: data section starts past EOF");
     }
 
     std::string path_;
