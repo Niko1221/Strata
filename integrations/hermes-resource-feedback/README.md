@@ -23,15 +23,25 @@ pre-tool hook. Strata requires the resource-lease implementation in adaptive
 3. After Hermes's command approval checks, eligible tool work enters one FIFO
    broker. It uses runtime parent/root identities; the model does not supply an
    owner ID, engine URL or control credential.
-4. The broker asks Strata for a bounded lease and waits for a fresh `ready`
-   acknowledgment. Strata drains existing work, unloads its native and vision
-   processes, and checks physical RAM, commit and GPU headroom. Acknowledging the
-   request alone is not permission to start the command.
-5. The approved foreground command executes once. A renewal thread keeps its
-   lease alive. The broker releases the lease when the command returns, including
-   exceptions. Failed cleanup does not replace a successful command result or
-   cause it to run twice; the engine's expiry remains the fallback.
-6. The next normal model request waits for measured reload capacity. Ordinary
+4. The broker asks Strata for a bounded lease and waits for a fresh owner-bound
+   `ready` acknowledgment. Strata drains existing inference and preparation,
+   checks physical RAM, commit and GPU headroom, and performs the action permitted
+   by the profile. Existing profiles default to full native-and-vision unload.
+   Explicit `auto` or `relieve` profiles require the newer server capability;
+   they are never silently downgraded to unload. Even an action of `none` retains
+   the inference barrier; resident inference cannot overlap the protected tool.
+5. A server advertising `supports_start: true` must acknowledge the same owner's
+   `start` transition from admission to execution before the approved command
+   runs once. A renewal thread keeps its lease alive. For `auto` and `relieve`,
+   the broker releases only after a recognized synchronous terminal-completion
+   result. A raised callback, timeout, interruption, background result or unknown
+   result shape retains the barrier; a returned error is not proof that spawned
+   children stopped. The original result or exception is preserved, without
+   rerunning the command. For these modes, execution-phase expiry keeps
+   the inference barrier until the owner releases it: TTL is not proof of command
+   exit. An unreachable release can therefore require operator recovery.
+6. The next normal model request passes the server's post-tool capacity guard,
+   including measured reload admission if the model was unloaded. Ordinary
    pressure monitoring still covers unrelated apps and inaccurate estimates.
 
 Sequential delegated agents are the initial acceptance target. Multiple eligible
@@ -95,6 +105,82 @@ make one bounded command unambiguous. A general `python` or shell prefix is too
 broad. A tool that launches another model call would deadlock behind its own lease
 and is outside this initial contract.
 
+### Explicit resident admission modes
+
+The following broker options are opt-in. The historical full-unload acceptance
+results do not qualify these resident modes or establish a speedup; they need
+their own matched service and real-tool validation.
+
+| Profile mode | Permitted action after existing inference/preparation drains |
+| --- | --- |
+| omitted or `unload` | Full verified unload, preserving the legacy behavior. |
+| `auto` | Keep residency unchanged when qualified, perform acknowledged live relief, or escalate to verified unload. |
+| `relieve` | Keep residency unchanged or perform acknowledged live relief; fail if the lease needs unload. |
+
+For example, an operator who has separately established the tool's budgets can
+add these fields to a profile:
+
+```yaml
+mode: auto
+ram_headroom_gib: 6
+vram_headroom_mib: 512
+execution_ram_floor_gib: 3
+execution_vram_floor_mib: 250
+```
+
+The admission targets above are **total free capacity before dispatch**. The
+execution floors are **total free capacity to protect while the tool consumes
+its allocation**. Each explicit floor must be finite, nonnegative and no greater
+than its matching admission target. An omitted execution floor defaults on the
+server to its admission target; the broker does not infer incremental tool demand.
+The server may retain higher configured safety floors. These example numbers
+are not measurements or suitable defaults for every machine or tool.
+
+The server keeps the lease's residency ceiling and inference barrier throughout
+execution. A legitimate tool allocation must not be mistaken for a new request
+to restore the original admission headroom. Recovery after release follows the
+existing fresh-observation guard and growth policy; it is not an instruction to
+refill immediately on the tool-return path.
+
+### Protocol compatibility and failures
+
+- Explicit `auto`, `relieve`, or either execution-floor option first checks
+  `GET /v1/resource-lease` for the requested mode and `supports_start: true`.
+  Unsupported versions fail before acquisition. Public discovery never grants
+  permission to run a command.
+- A profile with no new options sends the same unload acquisition fields as the
+  older broker. It can still use an older unload-only server. When the owner
+  response advertises the phase handshake, the new broker uses it for unload too.
+- New owner responses must retain the lease identity, requested mode and target
+  values, phase, positive remaining TTL and a permitted selected action. Pending
+  `relieving` and `unloading` responses are not READY. Unknown states or a strict
+  relief response selecting unload fail before command execution.
+- `start` is idempotent for the same owner on the server and does not renew TTL.
+  The broker sends it once. A missing, late, expired, wrong-owner or ambiguous
+  acknowledgement leaves the command uncalled and attempts owner release. It
+  never retries a compiler or shell to resolve uncertain control state.
+- Cancellation while waiting releases the owned lease without dispatch. After
+  synchronous execution begins, a renewal failure is logged; it does not prove
+  that the command stopped. Known terminal completion attempts release, including
+  a normal compiler failure such as exit code 1. Unknown completion retains the
+  hold without release: this includes raised callbacks, error envelopes, malformed
+  results, timeout code 124, interrupt/signal-style codes 128 and above, negative
+  codes, and detached/background metadata. Standard timeout/interruption output
+  markers are also checked because Hermes's finalizer can omit backend flags.
+  For resident modes, an expired execution hold remains blocked until explicit
+  owner release or deliberate operator recovery. Legacy unload retains its prior
+  release-on-return/error and expiry behavior.
+
+Use bounded cooperative tool wrappers whose command and owned children have
+actually finished when the continuation returns. Arbitrary detached descendants,
+unbounded tools and automatic recovery after the broker process dies are not
+qualified by this protocol. A recognized terminal envelope is evidence only
+under this trusted-wrapper contract, not proof that arbitrary shell descendants
+have exited. After uncertain cleanup, an operator must establish owned-process
+exit before recovering the retained engine barrier; restarting or retrying the
+tool automatically would be unsafe. No profile option is a command sandbox or
+an OS memory reservation.
+
 The integration requires trusted **in-process** plugin execution: its runtime
 lineage and synchronous continuation do not cross Hermes's plugin-host RPC
 boundary. Host-process plugin isolation is not supported by this prototype.
@@ -118,16 +204,18 @@ this integration is explicitly enabled.
 
 ## Limits
 
-- The initial actuator is **full unload**, which releases fixed allocations too,
+- The default actuator is **full unload**, which releases fixed allocations too,
   but loses warm model state and can add considerable reload/prefill time. Do not
-  use it for every file read or tiny build. Live selective cache relief remains a
-  separate existing controller; automatic cheapest-action selection is not claimed.
+  use it for every file read or tiny build. The opt-in resident modes use the
+  server's bounded action policy, not a qualified general cheapest-action scheduler.
 - A lease coordinates cooperating clients. It cannot reserve Windows memory
   against a new browser/game allocation, guarantee frame rates, prevent every OOM,
   or make a tool fit when the tool itself exceeds the machine's capacity.
 - Readiness is sampled. Memory can change immediately afterward. TTL expiry and
   renewal failure are not guarantees that a foreground subprocess has exited;
-  reactive capacity admission remains necessary before inference reloads.
+  reactive capacity admission remains necessary before inference resumes. The
+  new resident execution hold deliberately favors blocking over guessing that a
+  still-running tool has stopped.
 - Only local foreground commands are covered. Explicit background processes and
   foreground-to-background promotion are refused for matched resource work.
   Protected foreground continuations do not detach through Hermes's yield path.
@@ -163,3 +251,16 @@ Tests must include real terminal approval/dispatch, supervisor/worker lineage,
 FIFO ownership, failed readiness, cancellation, release/expiry, and a real
 compiler-feedback cycle. Unit-test success alone is not an end-to-end resource
 or performance claim.
+
+From a Strata source checkout, the broker and state-machine contract regressions
+can be run without a model or GPU:
+
+```console
+python -m unittest discover -s integrations/hermes-resource-feedback -p "test_broker*.py"
+```
+
+`test_broker_contract.py` composes the actual broker with `ToolLeases` but supplies
+fake lifecycle acknowledgements. It checks protocol agreement, phase targets,
+expiry holds and no duplicate dispatch; it does not prove that native RAM/VRAM
+was released. The local HTTP-client tests also cover redirect refusal, bounded
+responses and sanitized control errors.

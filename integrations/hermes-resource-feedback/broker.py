@@ -21,14 +21,49 @@ import urllib.request
 import uuid
 
 LOG = logging.getLogger(__name__)
+MODES = frozenset(("unload", "auto", "relieve"))
+EXECUTION_FLOORS = {"execution_ram_floor_gib": "ram_headroom_gib",
+                    "execution_vram_floor_mib": "vram_headroom_mib"}
+# Known synchronous terminal envelope, not a general process-lifetime proof.
+# Unknown backend extensions must be reviewed before they can authorize release.
+TERMINAL_RESULT_FIELDS = frozenset(("output", "exit_code", "error", "cwd", "environment_recreated",
+    "output_total_chars", "full_output_path", "truncation_note", "verification_evidence",
+    "approval", "exit_code_meaning", "hint", "sudo_auth_failed", "sudo_cache_cleared"))
 
 
 class AdmissionError(RuntimeError):
     pass
 
 
+def _foreground_finished(result):
+    """Recognize the trusted bounded wrapper contract, without altering its result.
+
+    A backend may return or raise after spawning work that is still alive.
+    Hermes's finalizer also drops timeout/interrupt flags, so reserved exit
+    codes and markers remain uncertain even when its error field is null.
+    """
+    if isinstance(result, str):
+        if len(result) > 2 * 1024 * 1024:
+            return False
+        try:
+            result = json.loads(result)
+        except (ValueError, RecursionError):
+            return False
+    if (not isinstance(result, dict) or set(result) - TERMINAL_RESULT_FIELDS
+            or not {"output", "exit_code", "error"} <= set(result)
+            or not isinstance(result["output"], str) or result.get("error") is not None
+            or result.get("environment_recreated")):
+        return False
+    code = result["exit_code"]
+    if type(code) is not int or not 0 <= code < 128 or code == 124:
+        return False
+    return not any(marker in result["output"] for marker in
+                   ("[Command timed out", "[Command interrupted]"))
+
+
 def _number(value, name, low, high):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not low <= value <= high or not math.isfinite(value)):
         raise ValueError(f"{name} must be finite and between {low} and {high}")
     return value
 
@@ -40,8 +75,12 @@ def validate_profiles(value):
     for name, spec in value.items():
         if not isinstance(name, str) or not name or len(name) > 64 or not isinstance(spec, dict):
             raise ValueError("invalid resource profile")
-        if set(spec) - {"command_prefixes", "ram_headroom_gib", "vram_headroom_mib", "ttl_seconds"}:
+        if set(spec) - {"command_prefixes", "ram_headroom_gib", "vram_headroom_mib", "ttl_seconds",
+                        "mode", *EXECUTION_FLOORS}:
             raise ValueError("unknown resource profile option")
+        mode = spec.get("mode", "unload")
+        if not isinstance(mode, str) or mode not in MODES:
+            raise ValueError("resource profile mode must be unload, auto or relieve")
         prefixes = spec.get("command_prefixes")
         if not isinstance(prefixes, list) or not 1 <= len(prefixes) <= 16 or any(
                 not isinstance(p, str) or not p.strip() or len(p) > 1024 for p in prefixes):
@@ -51,7 +90,11 @@ def validate_profiles(value):
             "ram_headroom_gib": _number(spec.get("ram_headroom_gib", 4), "RAM headroom", 0, 1048576),
             "vram_headroom_mib": _number(spec.get("vram_headroom_mib", 250), "VRAM headroom", 0, 1048576),
             "ttl_seconds": _number(spec.get("ttl_seconds", 60), "lease TTL", 30, 300),
+            "mode": mode,
         }
+        for floor, target in EXECUTION_FLOORS.items():
+            if floor in spec:
+                profiles[name][floor] = _number(spec[floor], floor, 0, profiles[name][target])
     return profiles
 
 
@@ -71,7 +114,9 @@ def validate_scope(scope):
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
-        raise AdmissionError("Resource control redirects are not allowed")
+        # Let urllib produce an HTTPError whose response we close below. Raising
+        # here skips its response cleanup. Never construct a redirected request.
+        return None
 
 
 class EngineClient:
@@ -93,8 +138,15 @@ class EngineClient:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
     def call(self, action, **fields):
-        request = urllib.request.Request(self.url, method="POST",
-            data=json.dumps({"action": action, **fields}, allow_nan=False).encode(),
+        return self._request("POST", {"action": action, **fields})
+
+    def capabilities(self):
+        """Public capabilities are not an owner-bound admission acknowledgement."""
+        return self._request("GET")
+
+    def _request(self, method, payload=None):
+        request = urllib.request.Request(self.url, method=method,
+            data=None if payload is None else json.dumps(payload, allow_nan=False).encode(),
             headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.token})
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
@@ -104,7 +156,9 @@ class EngineClient:
                 result = json.loads(data)
         except urllib.error.HTTPError as exc:
             # Do not copy a server body, URL, headers or token into model output.
-            raise AdmissionError(f"Resource control refused the request (HTTP {exc.code})") from None
+            code = exc.code
+            exc.close()
+            raise AdmissionError(f"Resource control refused the request (HTTP {code})") from None
         except (OSError, ValueError) as exc:
             raise AdmissionError("Resource control is unavailable or returned invalid data") from None
         if not isinstance(result, dict) or result.get("schema") != "strata.resource-lease.v1":
@@ -147,6 +201,42 @@ class SupervisorBroker:
         if len(matches) > 1:
             raise AdmissionError("Command matches multiple resource profiles; narrow the configured prefixes")
         return matches[0] if matches else None
+
+    @staticmethod
+    def _require_capabilities(response, mode):
+        if (not isinstance(response, dict) or response.get("schema") != "strata.resource-lease.v1"
+                or response.get("enabled") is not True or response.get("supports_start") is not True
+                or not isinstance(response.get("supported_modes"), list)
+                or mode not in response["supported_modes"]):
+            raise AdmissionError("Engine does not support the requested resource mode and start handshake")
+
+    @staticmethod
+    def _owned_response(response, lease_id, spec, *, phases=("admission", "execution")):
+        """Reject downgraded, stale-owner or ambiguous extended acknowledgements."""
+        SupervisorBroker._require_capabilities(response, spec["mode"])
+        expires = response.get("expires_in_seconds")
+        if (not isinstance(lease_id, str) or not lease_id or len(lease_id) > 128
+                or response.get("lease_id") != lease_id or response.get("mode") != spec["mode"]
+                or response.get("phase") not in phases or isinstance(expires, bool)
+                or not isinstance(expires, (int, float)) or not 0 < expires <= 300
+                or not math.isfinite(expires)):
+            raise AdmissionError("Engine returned an invalid or expired owned resource acknowledgement")
+        for field in ("ram_headroom_gib", "vram_headroom_mib", *EXECUTION_FLOORS):
+            expected = spec[field] if field in spec else spec[EXECUTION_FLOORS[field]]
+            value = response.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != expected:
+                raise AdmissionError("Engine did not acknowledge the requested resource targets")
+        action = response.get("selected_action")
+        allowed = {"unload": ("unload",), "auto": ("none", "relieve", "unload"),
+                   "relieve": ("none", "relieve")}[spec["mode"]]
+        if action is not None and action not in allowed:
+            raise AdmissionError("Engine selected an action outside the requested resource mode")
+        if response.get("state") == "ready" and action not in allowed:
+            raise AdmissionError("Engine readiness is missing a supported selected action")
+
+    def _check_pending(self, cancelled, deadline, renewal_failed):
+        if cancelled() or self.clock() >= deadline or renewal_failed.is_set():
+            raise AdmissionError("Resource admission cancelled, expired, or timed out; command was not started")
 
     @contextmanager
     def _turn(self, root, profile, cancelled):
@@ -195,47 +285,87 @@ class SupervisorBroker:
             stop = threading.Event()
             renewal_failed = threading.Event()
             renewer = None
+            dispatched = False
+            completed = False
             try:
-                response = client.call("acquire", request_id=request_id, mode="unload",
+                extended = spec["mode"] != "unload" or any(field in spec for field in EXECUTION_FLOORS)
+                if extended:
+                    self._require_capabilities(client.capabilities(), spec["mode"])
+                    self._check_pending(cancelled, deadline, renewal_failed)
+                response = client.call("acquire", request_id=request_id, mode=spec["mode"],
                     ram_headroom_gib=spec["ram_headroom_gib"], vram_headroom_mib=spec["vram_headroom_mib"],
-                    ttl_seconds=spec["ttl_seconds"])
+                    ttl_seconds=spec["ttl_seconds"],
+                    **{field: spec[field] for field in EXECUTION_FLOORS if field in spec})
                 lease_token = response.get("lease_token")
-                if not isinstance(lease_token, str) or len(lease_token) < 24:
+                if (not isinstance(lease_token, str) or not 24 <= len(lease_token) <= 256
+                        or not lease_token.isascii()):
+                    lease_token = None
                     raise AdmissionError("Engine did not return an owned lease")
+                # New servers also phase-gate legacy unload profiles. Old servers
+                # remain compatible only with the unchanged unload-only request.
+                phased = extended or response.get("supports_start") is True
+                lease_id = response.get("lease_id")
+                if phased:
+                    self._owned_response(response, lease_id, spec, phases=("admission",))
+                elif response.get("supports_start") not in (None, False):
+                    raise AdmissionError("Engine returned an invalid start capability")
+                waiting_states = ("pending", "relieving", "unloading") if phased else ("pending", "unloading")
                 # Keep the pending lease alive as well as the executing one.
                 def renew():
                     while not stop.wait(min(10, spec["ttl_seconds"] / 3)):
                         try:
                             result = client.call("renew", lease_token=lease_token, ttl_seconds=spec["ttl_seconds"])
-                            if result.get("state") not in ("pending", "unloading", "ready"):
+                            if phased:
+                                self._owned_response(result, lease_id, spec)
+                            if result.get("state") not in (*waiting_states, "ready"):
                                 raise AdmissionError("Resource lease is no longer active")
                         except Exception:
                             renewal_failed.set()
-                            LOG.error("Resource lease renewal failed; pending admission will not execute")
+                            LOG.error("Resource lease renewal failed; pending admission will not execute; "
+                                      "an already running command is not cancelled")
                             return
                 renewer = threading.Thread(target=copy_context().run, args=(renew,), daemon=True,
                                            name="hermes-resource-lease")
                 renewer.start()
                 while True:
-                    if cancelled() or self.clock() >= deadline or renewal_failed.is_set():
-                        raise AdmissionError("Resource admission cancelled, expired, or timed out; command was not started")
+                    self._check_pending(cancelled, deadline, renewal_failed)
                     response = client.call("status", lease_token=lease_token)
+                    if phased:
+                        self._owned_response(response, lease_id, spec, phases=("admission",))
                     state = response.get("state")
                     if state == "ready":
                         break
-                    if state not in ("pending", "unloading"):
+                    if state not in waiting_states:
                         raise AdmissionError("Engine could not grant the requested resource handoff")
                     stop.wait(.1)
-                if cancelled() or self.clock() >= deadline or renewal_failed.is_set():
-                    raise AdmissionError("Resource handoff cancelled before execution")
+                self._check_pending(cancelled, deadline, renewal_failed)
+                if phased:
+                    # Idempotent on the server, but never retry an uncertain reply:
+                    # the continuation remains uncalled and finally releases our owner.
+                    response = client.call("start", lease_token=lease_token)
+                    self._owned_response(response, lease_id, spec, phases=("execution",))
+                    if response.get("state") != "ready":
+                        raise AdmissionError("Engine did not acknowledge execution readiness")
+                    self._check_pending(cancelled, deadline, renewal_failed)
                 # Exactly one continuation; no retry of a compiler, renderer or shell.
-                return next_call()
+                dispatched = True
+                result = next_call()
+                completed = spec["mode"] == "unload" or _foreground_finished(result)
+                return result
             finally:
                 stop.set()
                 if renewer is not None:
                     renewer.join(timeout=client.timeout + 1)
-                if lease_token:
+                retain = spec["mode"] in ("auto", "relieve") and dispatched and not completed
+                if retain:
+                    LOG.warning("Resource command completion is unconfirmed; retaining the execution barrier. "
+                                "Verify owned-process exit before operator recovery; the command was not retried")
+                elif lease_token:
                     try:
                         client.call("release", lease_token=lease_token)
                     except Exception:
-                        LOG.warning("Resource lease release was not acknowledged; engine TTL remains authoritative")
+                        if spec["mode"] in ("auto", "relieve"):
+                            LOG.warning("Resource lease release was not acknowledged; "
+                                        "the execution barrier may require operator recovery")
+                        else:
+                            LOG.warning("Resource lease release was not acknowledged; engine TTL remains authoritative")

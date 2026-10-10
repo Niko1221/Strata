@@ -61,6 +61,8 @@ class MemoryPolicy:
         self.last_safety = {"action": "run", "reason": "disabled"}
         self.last_capacity = None
         self.ram_growth_block = None
+        self._lease_owner = None
+        self._lease_ceiling = None
         self.last_reason = "disabled" if not self.enabled else "awaiting_telemetry"
 
     @staticmethod
@@ -134,6 +136,48 @@ class MemoryPolicy:
         if self.fixed_resource_limits:
             return self.headroom
         return max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
+
+    def update_lease_ceiling(self, owner, arena_gib, gpu_cache_mib):
+        """Hold resident cache growth for one caller-owned foreground lease.
+
+        The service must drain/reconcile earlier native controls before passing
+        actual allocations here. This is neither an allocation nor native ACK.
+        Renewals are idempotent; the same owner may only tighten its ceilings.
+        Native MEMORY commands must additionally hold GPU growth: free VRAM can
+        increase between a sample and native execution of a RAM-only command.
+        """
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("invalid lease ceiling owner")
+        if (not self.background_guard_active or self.current is None
+                or not _number(arena_gib) or not 0 <= arena_gib <= self.cap
+                or not _number(gpu_cache_mib) or gpu_cache_mib < 0):
+            raise ValueError("invalid live lease ceiling")
+        if self._lease_owner is not None and self._lease_owner != owner:
+            raise ValueError("lease ceiling belongs to another owner")
+        ceiling = {"arena_gib": float(arena_gib), "gpu_cache_mib": float(gpu_cache_mib)}
+        if self._lease_ceiling is not None:
+            ceiling = {key: min(value, self._lease_ceiling[key]) for key, value in ceiling.items()}
+            if ceiling == self._lease_ceiling:
+                return False
+        self._lease_owner, self._lease_ceiling = owner, ceiling
+        self.growth_since = self.gpu_growth_since = self.recovery_since = None
+        return True
+
+    def clear_lease_ceiling(self, owner):
+        """Release only this owner; fresh growth must earn its dwell again once."""
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("invalid lease ceiling owner")
+        if self._lease_owner is None:
+            return False
+        if self._lease_owner != owner:
+            raise ValueError("lease ceiling belongs to another owner")
+        self._lease_owner = self._lease_ceiling = None
+        self.growth_since = self.gpu_growth_since = self.recovery_since = None
+        return True
+
+    def lease_ceiling(self):
+        """A detached numeric ceiling, never the opaque owner credential."""
+        return dict(self._lease_ceiling) if self._lease_ceiling is not None else None
 
     @property
     def background_guard_active(self):
@@ -274,6 +318,9 @@ class MemoryPolicy:
     def plan_for_load(self, snapshot, now):
         """Return a fresh bounded budget for a naturally unloaded model."""
         if not self.enabled:
+            return None
+        if self._lease_ceiling is not None:
+            self.last_reason = "lease_ceiling_active"
             return None
         reading = self._reading(snapshot, now)
         if reading is None:
@@ -492,6 +539,11 @@ class MemoryPolicy:
     def _observe_fixed(self, reading, plan, stamp):
         """Fixed targets use bounded fresh growth and the existing pressure window."""
         self.reconcile_after_load = False
+        leased = self._lease_ceiling is not None
+        if leased:
+            plan["resident_budget_gib"] = min(plan["resident_budget_gib"],
+                                              self.current["resident_budget_gib"],
+                                              self._lease_ceiling["arena_gib"])
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
         vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
         free_ram = self._free_ram(reading)
@@ -517,6 +569,11 @@ class MemoryPolicy:
         # Native VMM admission leaves its additional mapping-granule margin.
         vram_grow = not self.gpu_capacity_ceiling and (vram_delta <= -32 or
                     self.reclaim_gpu_headroom and free_vram >= self.reserve_floor + 256)
+        if leased:
+            # A tool consuming its admitted room must not compete with cache
+            # recovery. Even after a pressure shrink, stay below today's size
+            # until release; the captured ceiling is not a regrowth allowance.
+            ram_grow = vram_grow = False
         grow = not pressure and (ram_grow or vram_grow)
         self.pressure_since = (stamp if self.pressure_since is None else self.pressure_since) if shrink else None
         self.growth_since = (stamp if self.growth_since is None else self.growth_since) if not pressure and ram_grow else None
@@ -544,13 +601,14 @@ class MemoryPolicy:
                 plan["vram_reserve_mib"] = max(self.reserve_floor,
                     self.current["vram_reserve_mib"] - 128 if vram_ready else math.ceil(free_vram))
         else:
-            self.last_reason = "pressure_debounce" if shrink else "growth_debounce" if grow else "stable"
+            self.last_reason = ("pressure_debounce" if shrink else "lease_ceiling_active" if leased else
+                                "growth_debounce" if grow else "stable")
             return None
         plan["reason"] = self.last_reason = reason
         return plan
 
     def status(self):
-        return {"enabled": self.enabled, "mode": self.mode, "current": dict(self.current) if self.current else None,
+        result = {"enabled": self.enabled, "mode": self.mode, "current": dict(self.current) if self.current else None,
                 "reason": self.last_reason, "last_applied_at": self.last_applied,
                 "resident_cap_gib": self.cap, "vram_reserve_floor_mib": self.reserve_floor,
                 "ram_target_percent": self.ram_target * 100, "vram_target_percent": self.vram_target * 100,
@@ -563,3 +621,6 @@ class MemoryPolicy:
                 "ram_growth_retry": dict(self.ram_growth_block) if self.ram_growth_block else None,
                 "pressure_recovery_ceiling_gib": self.pressure_recovery_ceiling_gib,
                 "gpu_baseline_free_mib": self.gpu_baseline[1] if self.gpu_baseline is not None else None}
+        if self._lease_ceiling is not None:
+            result["lease_ceiling"] = self.lease_ceiling()
+        return result

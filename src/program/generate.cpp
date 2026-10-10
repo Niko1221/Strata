@@ -8576,7 +8576,7 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld live_memory=%d memory_protocol=%d background_control=%d memory_supersede=%d "
+                        "conversation_cache_min_free_mib=%lld live_memory=%d memory_protocol=%d background_control=%d memory_supersede=%d memory_hold=%d "
                         "vram_reserve_mib=%d tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -8589,7 +8589,7 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
-                        o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
+                        o.live_memory ? 1 : 0, o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
                         o.vram_reserve_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +

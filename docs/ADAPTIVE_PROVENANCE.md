@@ -1,7 +1,7 @@
 # Adaptive Strata: implementation provenance
 
 This document identifies sources actually used by this branch, as audited on
-2026-10-09. It distinguishes inherited or adapted code, design inspiration, and
+2026-10-10. It distinguishes inherited or adapted code, design inspiration, and
 API/ABI references. A citation does not transfer a source's performance claims
 to this implementation. Validation must use this branch's own test evidence.
 
@@ -43,7 +43,7 @@ Specific existing mechanisms reused:
 | Liu, Ye, Li and Li, [ATSInfer, *Automated Tensor Scheduling for Hybrid CPU-GPU LLM Inference on Consumer Devices*, arXiv:2607.10183v2, sections 4.3–4.4](https://arxiv.org/html/2607.10183v2) | **Design inspiration:** `serve/routing_costs.py` compares measured CPU/GPU choices and exposed transfer/completion cost under changing load. The citation is also beside that implementation. | No ATSInfer source, tensor-placement algorithm, learned estimator, benchmark or claimed speedup is incorporated. This branch only selects among already-supported Strata request-level routing choices using qualified matched samples. |
 | [StarPU performance models and data-aware task scheduling](https://starpu.gitlabpages.inria.fr/features.html) | **Design inspiration:** the same optional routing-cost gate considers expected completion cost and data movement rather than utilization alone. | No StarPU runtime, scheduler source, task graph, out-of-core subsystem or dependency was imported. Its source license is not being used to license this original routing gate. |
 | [miskahm's Strata PR #1093](https://github.com/Niko1221/Strata/pull/1093) | **Reporting idea used:** omit stale process-allocation counters from public metrics after the engine has unloaded, so old expert/arena/VRAM figures are not reported as current usage. This branch filters the published INFO view while retaining internal capabilities and identity needed for guarded reload. | The monitor split button, idle slider, frontend code and other unrelated changes are not copied. The implementation is original integration of the specific stale-counter observation, with a source comment beside it. |
-| [MARS, arXiv:2604.26963v2](https://arxiv.org/abs/2604.26963v2) and [MARS preview/OpenHands integration](https://github.com/Afterglow231/MARS_preview) | **Design inspiration:** the supervisor resource-lease path shares upcoming tool needs with inference control and separates resource admission from execution. It adds advance notice to reactive pressure monitoring. | No source, full MARS scheduling algorithm, continuation-priority policy, KV-retention algorithm or published speedup is imported. The preview targets a different runtime and datacenter GPUs; it is not a Windows validation result. |
+| [MARS, arXiv:2604.26963v2](https://arxiv.org/abs/2604.26963v2) and [MARS preview/OpenHands integration](https://github.com/Afterglow231/MARS_preview) | **Design inspiration:** the supervisor resource-lease path shares upcoming tool needs with inference control and separates resource admission from execution. The C1 resident extension makes admission targets and optional execution floors explicit, with an owner-bound transition before the tool runs. It adds advance notice to reactive pressure monitoring. | No source, full MARS scheduling algorithm, continuation-priority policy, KV-retention algorithm or published speedup is imported. The preview targets a different runtime and datacenter GPUs; it is not a Windows validation result. |
 | [vLLM sleep/wake](https://docs.vllm.ai/en/latest/features/sleep_mode/) | **Actuator prior art:** an explicit release/return boundary around known external work. This branch uses Strata's existing unload/FIFO/guarded-reload lifecycle for that boundary. | No vLLM allocator, CPU weight-copy implementation, scheduler or wake-up-time claim is copied. Full unload has a reload/prefill cost here. |
 
 ATSInfer and StarPU are the two research/system principles explicitly used in
@@ -53,6 +53,34 @@ bounds, pressure admission and bounded retry policy are original choices in this
 branch; they are not presented as implementations of ATSInfer or StarPU. The
 supervisor protocol separately uses the MARS information-sharing principle and
 explicit engine release/return boundary described above.
+
+The C1 resident extension is an original bounded policy built on those same
+mechanisms. It chooses among retaining current residency, acknowledged cache
+relief and permitted unload. It reuses the PR #726 live allocator, memory-command
+acknowledgements, reader/loan lifetime rules, and the existing server FIFO,
+capacity sampler and lifecycle admission; it imports no additional external PR
+or engine code. Its `memory_hold=1` capability, owned residency ceilings,
+admission/execution handshake, terminal-operation reconciliation and guarded
+return to inference are new integration code. The 30-second live-admission and
+return waits, and default 2 GiB RAM / 256 MiB VRAM return allowances, are original
+conservative planning choices, not parameters or measured guarantees borrowed
+from MARS. They require workload-specific validation. Retaining an execution
+barrier after an extended lease expires is a process-lifetime correctness rule,
+not a claim to implement a research scheduler. The standalone broker also retains
+that barrier when the dispatched terminal callback's completion is uncertain.
+Its conservative envelope/timeout checks follow the actual companion Hermes
+terminal result contract; they are an integration correction, not an imported
+research technique or proof of arbitrary child-process containment.
+
+If a completed resident `auto` handoff cannot meet the return working-space
+floor, its bounded fallback reuses this branch's existing FIFO/lifecycle-owned
+native-and-vision unload and measured fresh reload admission. Strict `relieve`
+does not gain that permission. This is an original integration correction using
+the already credited Strata mechanisms, not another external allocator or
+research algorithm. A workload-specific zero extra VRAM return allowance changes
+only that planning allowance, preserving the configured safety floors; it is not
+evidence that every 64K request fits or that unloading always improves completion
+time.
 
 The standalone Hermes plugin uses Hermes's existing plugin registry, profile
 secrets, tool dispatch and parent/child weak-reference lineage. The companion

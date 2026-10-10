@@ -955,10 +955,12 @@ class StrataEngine:
             if close:
                 target.stdin.close()
 
-    def request_memory(self, request_id, resident_mib, reserve_mib, proc):
+    def request_memory(self, request_id, resident_mib, reserve_mib, proc, *, hold=False):
         if not self.live_memory_capable():
             raise ValueError("the loaded engine does not support live memory")
-        self._write(f"MEMORY {request_id} {resident_mib} {reserve_mib}", proc=proc)
+        if hold and self.info.get("memory_hold") != 1:
+            raise ValueError("the loaded engine does not support held residency")
+        self._write(f"MEMORY {request_id} {resident_mib} {reserve_mib}" + (" hold" if hold else ""), proc=proc)
 
     def request_background(self, lease_ms, delay_ms, waiting, proc):
         """Cooperative, expiring control: no STOP or process suspension."""
@@ -1064,6 +1066,7 @@ class StrataEngine:
         # Capabilities belong to the new process, never to a previous binary.
         info.pop("live_memory", None)
         info.pop("memory_protocol", None)
+        info.pop("memory_hold", None)
         self.starting = True                     # prepare() answers 503 "starting" meanwhile (#344)
         try:
             self.close()
@@ -2919,6 +2922,9 @@ class Service:
         self.idle_parking_status = {"enabled": False, "state": "disabled"}
         self.idle_parked = None
         self.tool_leases = ToolLeases()
+        self.tool_resident = None                       # one lease's drained native identity and ceiling
+        self.tool_resume = None                         # additional working space, not a second reload footprint
+        self.tool_resuming = False
         self.preparing_requests = 0
         self.request_owner = threading.local()
         self.shutdown_event = threading.Event()
@@ -2972,6 +2978,8 @@ class Service:
         waiting = True
         try:
             with self.fifo:
+                if self.tool_leases.blocked():
+                    return error(503, "a supervisor tool lease blocks session mutation")
                 with self.status_lock:
                     self.status["queued"] -= 1
                 waiting = False
@@ -3286,6 +3294,17 @@ class Service:
 
     def _retarget_resources(self):
         limits = self.coadaptive.limits() if self.coadaptive.active else self.resource_presets.limits()
+        demand = self.tool_leases.demand() if self.tool_leases.enabled else None
+        if demand and not demand["terminal"] and demand["mode"] != "unload":
+            base = limits or (self.memory_policy.configured_headroom,
+                              self.memory_policy.configured_reserve_floor)
+            limits = (max(base[0], demand["ram_target_gib"]),
+                      max(base[1], math.ceil(demand["vram_target_mib"])))
+        if self.tool_resume and (not demand or demand["terminal"] and not self.tool_leases.blocked()):
+            base = limits or (self.memory_policy.configured_headroom,
+                              self.memory_policy.configured_reserve_floor)
+            limits = (max(base[0], self.tool_resume["ram_gib"]),
+                      max(base[1], self.tool_resume["gpu_mib"]))
         if limits != self.resource_limits:
             self.memory_policy.update_resource_limits(*(limits if limits is not None else (None, None)))
             self.resource_limits = limits
@@ -3375,6 +3394,8 @@ class Service:
             self.memory_last_reason = reason
             if status != "progress":
                 self.memory_live_pending = None
+                if self.tool_resume:
+                    self.tool_resume["after"] = now
             if status == "error":
                 self.memory_error = ack.get("error", "native_error")
                 if self.memory_error in ("prefill_cache_floor", "reserve_unreachable"):
@@ -3417,6 +3438,7 @@ class Service:
             snapshot["native_free_mib"] = headroom
             snapshot["native_cuda_free_mib"] = native["free_mib"] if valid else None
             snapshot["native_budget_free_mib"] = native.get("budget_free_mib") if valid else None
+            snapshot["native_sampled_at"] = native["sampled_at"] if valid else None
             if valid:
                 total = native["total_mib"] * 2**20
                 snapshot["gpu_mem_total"] = total
@@ -3451,6 +3473,8 @@ class Service:
         self.engine.info.update(arena_mib=native["resident_mib"], expert_cache_mib=native["cache_mib"],
                                 vram_free_mib=native["free_mib"], vram_reserve_mib=native["memory_reserve_mib"])
         self.memory_live_pending = None
+        if self.tool_resume:
+            self.tool_resume["after"] = now
         self.memory_floor_ack = None
         self.memory_last_reason = "control_reconciled"
         self.memory_error = "terminal_ack_missing"
@@ -3511,7 +3535,8 @@ class Service:
             if self.memory_loading:
                 return
             with self.status_lock:
-                if self.preparing_requests and not self.status.get("busy") and not self.status.get("queued"):
+                if (self.preparing_requests and not self.tool_resuming
+                        and not self.status.get("busy") and not self.status.get("queued")):
                     return  # no independent resize across guarded vision preparation
             snapshot, now = self.memory_snapshot(), time.time()
             with self.status_lock:
@@ -3532,8 +3557,22 @@ class Service:
                     return
                 self._drain_memory_acks(now)
                 self._reconcile_memory_control(now)
+                self._reconcile_tool_control(now)
                 self._observe_background(snapshot, now)
+                lease = self.tool_leases.demand() if self.tool_leases.enabled else None
+                if lease and lease["terminal"] and not self.tool_leases.blocked():
+                    lease = None
+                if lease and lease["mode"] != "unload" and (self.tool_resident is None
+                        or lease["terminal"] or self.tool_resident.get("lease_id") != lease["lease_id"]
+                        or self.memory_policy.lease_ceiling() is None):
+                    # Acquire is atomic against this sender. Existing native work may finish;
+                    # no new growth or resize races the post-drain ceiling capture.
+                    return
+                if lease and lease["mode"] == "unload":
+                    return
                 if self.memory_live_pending is not None:
+                    if lease and self.tool_leases.blocked():
+                        return  # one owner/control identity until ACK or verified teardown
                     if self.engine.info.get("memory_supersede") != 1:
                         return
                     candidate = self.memory_policy.observe(snapshot, True, self.engine.info, now)
@@ -3584,11 +3623,26 @@ class Service:
                            "resource_generation": self.resource_generation, "sent_at": now, "progress_at": now}
                 previous_pending = self.memory_live_pending
                 self.memory_live_pending = pending
+                held = bool(lease and self.tool_resident and not lease["terminal"])
+                if held:
+                    if not self.tool_leases.begin_operation(lease["lease_id"], "relieve", pending["id"], id(pending["proc"])):
+                        self.memory_live_pending = previous_pending
+                        return
+                    self.tool_resident["operation"] = (pending["id"], id(pending["proc"]))
+                    self.tool_resident["action_at"] = now
                 try:
-                    self.engine.request_memory(pending["id"], int(plan["resident_budget_gib"] * 1024),
-                                               plan["vram_reserve_mib"], pending["proc"])
+                    args = (pending["id"], int(plan["resident_budget_gib"] * 1024),
+                            plan["vram_reserve_mib"], pending["proc"])
+                    if held:
+                        self.engine.request_memory(*args, hold=True)
+                    else:
+                        self.engine.request_memory(*args)
                 except (OSError, ValueError) as e:
-                    self.memory_live_pending = previous_pending
+                    # A write can fail after the command reached native stdin.
+                    # Held operations remain owned until ACK/reconciliation or
+                    # verified teardown, never inferred cancelled by an exception.
+                    if not held:
+                        self.memory_live_pending = previous_pending
                     self.memory_error = str(e)
                     self.memory_last_reason = "command_failed"
                     self.memory_retry_at = now + self.memory_policy.cooldown
@@ -3701,6 +3755,9 @@ class Service:
             with self.status_lock:
                 if self.tool_leases.enabled and (cancel.is_set() or self.shutdown_event.is_set()):
                     raise RequestParkCancelled()
+                lease = self.tool_leases.demand() if self.tool_leases.enabled else None
+                if lease and lease["terminal"] and (lease.get("operation") or {}).get("action") == "unload":
+                    raise EngineStuck("a supervisor memory release has not confirmed process death")
                 if depth or not self.tool_leases.blocked():
                     self.request_owner.depth = depth + 1
                     if not depth:
@@ -3728,13 +3785,172 @@ class Service:
         if req.get("action") == "acquire":
             telemetry = getattr(self, "telemetry", None)
             snapshot = telemetry.capacity() if telemetry else {}
-            with self.status_lock:
-                return self.tool_leases.acquire(req, snapshot, time.time())
-        if req.get("action") == "status":
+            # Lock order is memory -> status -> lease. The policy worker never
+            # holds status across sampling, FIFO acquisition or native I/O.
+            with self.memory_lock, self.status_lock:
+                self._finish_tool_residency()
+                row = self.tool_leases.acquire(req, snapshot, time.time())
+                demand = self.tool_leases.demand()
+                if demand and demand["mode"] != "unload" and not demand["terminal"]:
+                    if self.tool_resident is None:
+                        self.tool_resident = {"lease_id": demand["lease_id"], "proc": self.engine.proc,
+                            "vision_proc": getattr(self.vision, "proc", None), "drained_at": None,
+                            "operation": None, "control_wait_since": None,
+                            "pressure_since": None, "action_at": 0}
+                    pending = self.memory_live_pending
+                    if pending and self.tool_resident["operation"] is None:
+                        self.tool_leases.begin_operation(demand["lease_id"], "drain", pending["id"], id(pending["proc"]))
+                        self.tool_resident["operation"] = (pending["id"], id(pending["proc"]))
+                    self._retarget_resources()
+                return row
+        if req.get("action") in {"status", "start"}:
             # Recheck availability for the owner just before it starts a tool.
             # This does not acquire the lifecycle or unload from an HTTP thread.
             self._observe_tool_headroom()
-        return self.tool_leases.action(req)
+        with self.memory_lock:
+            result = self.tool_leases.action(req)
+            self._finish_tool_residency()
+            if self.memory_policy:
+                self._retarget_resources()
+            return result
+
+    def _tool_floors(self):
+        policy, memory = self.idle_parking, self.memory_policy
+        limits = self.coadaptive.limits() if self.coadaptive.active else self.resource_presets.limits()
+        ram, gpu = limits or ((memory.configured_headroom, memory.configured_reserve_floor) if memory else (0, 0))
+        return (max(3, policy.min_ram_headroom_gib, policy.pressure_ram_available_gib, ram),
+                max(250, policy.min_vram_headroom_mib, policy.pressure_vram_free_mib, gpu, self.min_free_vram_mib),
+                max(3, policy.pressure_commit_available_gib))
+
+    def _finish_tool_residency(self):
+        """Drop only a settled owner's ceiling; native and running-tool holds survive TTL."""
+        context = self.tool_resident
+        if context is None or self.tool_leases.blocked():
+            return
+        if context.get("operation") is not None or self.memory_live_pending is not None:
+            return
+        if self.memory_policy:
+            self.memory_policy.clear_lease_ceiling(context["lease_id"])
+        if self.tool_resume:
+            self.tool_resume["after"] = time.time()
+        self.tool_resident = None
+        if self.memory_policy:
+            self._retarget_resources()
+
+    def _reconcile_tool_control(self, now):
+        context = self.tool_resident
+        if context is None or context.get("operation") is None or self.memory_live_pending is not None:
+            self._finish_tool_residency()
+            return
+        control_id, engine_identity = context["operation"]
+        if id(self.engine.proc) != engine_identity:
+            return  # replacing a process is not evidence of the old operation's completion
+        if not self.tool_leases.complete_operation(context["lease_id"], control_id, engine_identity):
+            return
+        context.update(operation=None, action_at=now, drained_at=now)
+        self._finish_tool_residency()
+
+    def _resident_tool_step(self):
+        """FIFO owner: choose against fresh current-process capacity; no MEMORY writes here."""
+        with self.memory_lock:
+            demand = self.tool_leases.demand()
+            if not demand or demand["mode"] == "unload":
+                return True
+            context = self.tool_resident
+            now = time.time()
+            if self.memory_policy and self.loaded():
+                self._drain_memory_acks(now)
+                self._reconcile_memory_control(now)
+                self._reconcile_tool_control(now)
+            if demand["terminal"]:
+                return False
+            # A formerly READY observation cannot survive a failed recheck.
+            # The owner must observe current identity/capacity before start.
+            self.tool_leases.select_action(demand["lease_id"], demand.get("selected_action") or "none",
+                                           "checking_resident_capacity")
+            capable = (self.loaded() and self.memory_policy and self.memory_policy.background_guard_active
+                       and self.engine.info.get("memory_hold") == 1 and not self._vision_down())
+            if not capable:
+                if demand["mode"] == "relieve":
+                    self.tool_leases.fail("resident_relief_unsupported")
+                    self._finish_tool_residency()
+                    return False
+                self.tool_leases.select_action(demand["lease_id"], "unload", "resident_relief_unsupported")
+                return True
+            if context is None or context["proc"] is not self.engine.proc or context["vision_proc"] is not getattr(self.vision, "proc", None):
+                self.tool_leases.fail("resident_process_changed")
+                return False
+            if self.memory_live_pending is not None:
+                # A slow/lost ACK cannot authorize a successor. Auto may fall
+                # back to verified teardown; strict relief retains the drain.
+                if context.get("control_wait_since") is None:
+                    context["control_wait_since"] = time.monotonic()
+                if time.monotonic() - context["control_wait_since"] >= 30:
+                    if demand["mode"] == "auto":
+                        self.tool_leases.select_action(demand["lease_id"], "unload", "live_relief_deadline")
+                        return True
+                    self.tool_leases.fail("live_relief_deadline")
+                return False
+            context["control_wait_since"] = None
+            snapshot = self.memory_snapshot(fresh=True)
+            now = time.time()
+            native = getattr(self.engine, "native_capacity", None)
+            if (not native or native.get("proc") is not self.engine.proc
+                    or native.get("memory_pending_id") != 0
+                    or snapshot.get("native_free_mib") is None
+                    or self.memory_policy._reading(snapshot, now) is None):
+                return False
+            if (context.get("drained_at") is not None
+                    and snapshot.get("native_sampled_at", 0) < context["drained_at"]):
+                return False  # an ACK must be followed by a new residency sample
+            if self.memory_policy.lease_ceiling() is None:
+                arena, cache = native.get("resident_mib"), native.get("cache_mib")
+                if not all(isinstance(n, (int, float)) and not isinstance(n, bool)
+                           and math.isfinite(n) and n >= 0 for n in (arena, cache)):
+                    return False
+                if not self.tool_leases.seal_residency(demand["lease_id"], id(self.engine.proc), arena, cache):
+                    return False
+                self.memory_policy.update_lease_ceiling(demand["lease_id"], arena / 1024, cache)
+                context["drained_at"] = now
+                ram, gpu, commit = self._tool_floors()
+                self.tool_resume = {"proc": self.engine.proc, "mode": demand["mode"],
+                    "ram_gib": max(ram, commit) + self.tool_leases.resume_ram_working_gib,
+                    "gpu_mib": math.ceil(gpu + self.tool_leases.resume_vram_working_mib), "after": now}
+            if snapshot.get("native_sampled_at", 0) < context["drained_at"]:
+                return False
+            ram, gpu, commit = self._tool_floors()
+            ram_target = max(ram, commit, demand["ram_target_gib"])
+            gpu_target = max(gpu, demand["vram_target_mib"])
+            physical = (snapshot["ram_total"] - snapshot["ram_used"]) / 2**30
+            commit_free = snapshot.get("ram_commit_available", float("inf")) / 2**30
+            ram_deficit = max(0, ram_target - min(physical, commit_free))
+            gpu_deficit = max(0, gpu_target - snapshot["native_free_mib"])
+            if ram_deficit == 0 and gpu_deficit == 0:
+                context["pressure_since"] = None
+                action = "relieve" if demand.get("selected_action") == "relieve" else "none"
+                self.tool_leases.select_action(demand["lease_id"], action, "fresh_resident_capacity")
+                self.tool_leases.observe_resident_ready(snapshot, now, lease_id=demand["lease_id"],
+                    engine_identity=id(self.engine.proc), drained_at=context["drained_at"],
+                    ram_floor=ram, gpu_floor=gpu, commit_floor=commit)
+                return False
+            # A healthy long-running tool has not spent its relief budget.
+            # Bound each continuous deficit episode, without extending it on polls.
+            if context.get("pressure_since") is None:
+                context["pressure_since"] = time.monotonic()
+            exhausted = (ram_deficit * 1024 > native["resident_mib"]
+                         or gpu_deficit > native["cache_mib"]
+                         or self.memory_limitation in {"prefill_cache_floor", "reserve_unreachable"}
+                         or time.monotonic() - context["pressure_since"] >= 30)
+            if exhausted:
+                if demand["mode"] == "relieve":
+                    self.tool_leases.fail("live_relief_insufficient")
+                    self._finish_tool_residency()
+                    return False
+                self.tool_leases.select_action(demand["lease_id"], "unload", "live_relief_insufficient")
+                return True
+            self.tool_leases.select_action(demand["lease_id"], "relieve", "reclaiming_live_caches")
+            self._retarget_resources()
+            return False
 
     def _observe_tool_headroom(self):
         if not self.tool_leases.enabled:
@@ -3742,6 +3958,19 @@ class Service:
         telemetry = getattr(self, "telemetry", None)
         policy = self.idle_parking
         memory = self.memory_policy
+        demand = self.tool_leases.demand()
+        if demand and demand["mode"] != "unload" and demand.get("selected_action") != "unload":
+            # An HTTP observer cannot certify drain while a lifecycle worker is
+            # using FIFO. Never hold memory_lock while waiting for FIFO.
+            if self.fifo.acquire(blocking=False):
+                try:
+                    with self.status_lock:
+                        occupied = self.status.get("busy") or self.status.get("queued") or self.preparing_requests
+                    if not occupied:
+                        self._resident_tool_step()
+                finally:
+                    self.fifo.release()
+            return
         self.tool_leases.observe_ready(telemetry.capacity() if telemetry else {}, time.time(),
             unloaded=not self.loaded() and (self.vision is None or not self.vision.alive()),
             ram_floor=max(3, policy.min_ram_headroom_gib, policy.pressure_ram_available_gib,
@@ -3756,7 +3985,11 @@ class Service:
         The lease barrier prevents new preparations while older ones drain. A
         release/expiry during teardown keeps that barrier until confirmed death.
         """
-        if not self.tool_leases.enabled or self.shutdown_event.is_set() or not self.tool_leases.blocked():
+        if not self.tool_leases.enabled or self.shutdown_event.is_set():
+            return False
+        with self.memory_lock:
+            self._finish_tool_residency()
+        if not self.tool_leases.blocked():
             return False
         if not self.fifo.acquire(blocking=False):
             return False
@@ -3764,6 +3997,8 @@ class Service:
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued") or self.preparing_requests:
                     return False
+            if not self._resident_tool_step():
+                return True
             if self.tool_leases.needs_unload():
                 try:
                     with self.memory_lock:
@@ -3790,6 +4025,10 @@ class Service:
                         self._parking_unload(self.shutdown_event)
                     with self.memory_lock:
                         self._invalidate_live_memory()
+                        if self.tool_resident:
+                            self.memory_policy.clear_lease_ceiling(self.tool_resident["lease_id"])
+                            self.tool_resident = None
+                        self.tool_resume = None
                         self.idle_parking_status.update(state="suspended", reason="supervisor_tool_lease")
                     self.tool_leases.unloaded(lease_id, time.time())
                 except (OSError, ValueError, RuntimeError):
@@ -3819,7 +4058,8 @@ class Service:
                 policy.should_park({}, time.time())
                 return False
             with self.memory_lock:
-                if self.memory_loading or self.idle_parked is not None or not self.loaded():
+                if (self.memory_loading or self.idle_parked is not None or not self.loaded()
+                        or self.tool_leases.blocked()):
                     return False
                 snapshot, now = self.memory_snapshot(fresh=True), time.time()
                 trigger, reason = policy.pressure(snapshot, now)
@@ -3868,8 +4108,13 @@ class Service:
                 raise RequestParkCancelled()
             if self._preparation_admission_enabled() and (not self.loaded() or self._vision_down()):
                 raise GpuBusy("no measured idle reload footprint after engine failure; restart explicitly")
-            self._ensure_loaded_base()
-            return
+            yield from self._admit_resident_return(cancel)
+            # AUTO return relief may have released the processes. Reuse the
+            # measured startup gate below, never the unconditional load path.
+            parked = self.idle_parked
+            if parked is None:
+                self._ensure_loaded_base()
+                return
         if self.loaded() or self.vision is not None and self.vision.alive():
             raise EngineStuck("idle memory release did not finish; refusing a second lifecycle")
         admission = parked["admission"]
@@ -3921,6 +4166,104 @@ class Service:
                 self.memory_loading = False
                 if self.idle_parked is not None and not self.loaded():
                     self.idle_parking_status.update(state="suspended")
+
+    def _park_resident_return(self, returning, cancel):
+        """FIFO owner: release a completed AUTO handoff through the existing lifecycle."""
+        with self.lifecycle_lock:
+            with self.memory_lock:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                if (returning.get("mode") != "auto" or self.tool_resume is not returning
+                        or self.tool_leases.blocked() or self.memory_loading or self.idle_parked is not None
+                        or returning["proc"] is not self.engine.proc or not self.loaded()):
+                    raise GpuBusy("resident return changed before release; request was not dispatched")
+                footprint = self._parking_footprint()
+                admission = self.idle_parking.admission(footprint)
+                admission.required["gpu_bytes"] = max(admission.required["gpu_bytes"],
+                                                       self.min_free_vram_mib * 2**20)
+                self.idle_parked = {"footprint": footprint, "identity": self._parking_identity(),
+                                    "admission": admission}
+                self.memory_loading = True
+                self.idle_parking_status.update(state="unloading", reason="resident_return_auto_unload",
+                                                footprint=footprint)
+            try:
+                yield from self._parking_lifecycle_owned(self._parking_unload, cancel)
+            finally:
+                # Cancellation still joins teardown. Only confirmed death of
+                # both processes settles native controls and the return gate.
+                with self.memory_lock:
+                    dead = not self.engine.alive() and (self.vision is None or not self.vision.alive())
+                    if dead:
+                        self._invalidate_live_memory()
+                        self.tool_resume = None
+                        self._retarget_resources()
+                        self.idle_parking_status.update(state="suspended")
+                    else:
+                        self.idle_parking_status.update(state="unavailable")
+                    self.memory_loading = False
+
+    def _admit_resident_return(self, cancel):
+        """Recheck extra inference work after a resident tool, without charging held weights twice.
+
+        Configured allowances cover the qualified request shape only, not every
+        possible 64K/vision peak. Missing telemetry or capacity times out before
+        dispatch. AUTO can use measured full reload admission if live relief
+        cannot supply that space; it never replays an already executed tool.
+        """
+        returning = self.tool_resume
+        if returning is None:
+            return
+        started, beat = time.monotonic(), 0.
+        with self.memory_lock:
+            self.tool_resuming = True
+            self._retarget_resources()
+        try:
+            while True:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                if returning["proc"] is not self.engine.proc or not self.loaded():
+                    raise GpuBusy("resident return identity changed; no safe inference admission")
+                with self.memory_lock:
+                    now = time.time()
+                    self._drain_memory_acks(now)
+                    self._reconcile_memory_control(now)
+                    self._reconcile_tool_control(now)
+                    sample = self.memory_snapshot(fresh=True)
+                    now = time.time()
+                    valid = self.memory_policy._reading(sample, now)
+                    native = getattr(self.engine, "native_capacity", None)
+                    ready = (valid and native and native.get("proc") is returning["proc"]
+                        and sample["sampled_at"] >= returning["after"]
+                        and sample.get("native_sampled_at", 0) >= returning["after"]
+                        and native.get("memory_pending_id") == 0 and self.memory_live_pending is None
+                        and self.memory_policy._free_ram(sample) >= returning["ram_gib"]
+                        and sample.get("native_free_mib", -1) >= returning["gpu_mib"])
+                    if ready:
+                        self.tool_resume = None
+                        self._retarget_resources()
+                        return
+                    floor = (valid and native and native.get("proc") is returning["proc"]
+                        and sample.get("native_sampled_at", 0) >= returning["after"]
+                        and sample.get("native_free_mib", -1) < returning["gpu_mib"]
+                        and self.memory_live_pending is None
+                        and native.get("memory_pending_id") == 0
+                        and self.memory_limitation in {"prefill_cache_floor", "reserve_unreachable"})
+                expired = time.monotonic() - started >= self.tool_leases.resume_timeout_seconds
+                if returning.get("mode") == "auto" and (floor or expired):
+                    yield from self._park_resident_return(returning, cancel)
+                    return
+                if expired:
+                    raise GpuBusy("resident inference working space is unavailable; request was not dispatched")
+                if time.monotonic() - beat >= 10:
+                    beat = time.monotonic()
+                    yield "ping", None
+                # MEMORY still has exactly one sender; FIFO keeps native/vision
+                # work out while this admission allows the existing policy to shrink.
+                self.observe_memory()
+                cancel.wait(.25)
+        finally:
+            with self.memory_lock:
+                self.tool_resuming = False
 
     def load_events(self, cancel):
         """Cancellable preparation admission; yields heartbeats while queued."""
@@ -4007,6 +4350,8 @@ class Service:
         with idle_for: one ran more recently than that) or "unsupported"."""
         if not hasattr(self.engine, "unload"):
             return "unsupported"
+        if self.tool_leases.blocked():
+            return "busy"
         if not self.fifo.acquire(blocking=False):
             return "busy"
         try:
@@ -4018,6 +4363,8 @@ class Service:
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
             with self.memory_lock:
+                if self.tool_leases.blocked():
+                    return "busy"  # acquire and destructive lifecycle commit share memory_lock
                 if self._preparation_admission_enabled():
                     # Timed/manual unload must not bypass the next-load guard.
                     try:

@@ -44,11 +44,20 @@ void protocol() {
     using namespace strata::core;
     LiveMemoryRequest request;
     require(parse_live_memory_request("MEMORY 7 0 900", request) && request.id == 7 &&
-            request.resident_mib == 0 && request.vram_reserve_mib == 900, "zero RAM target is valid");
+            request.resident_mib == 0 && request.vram_reserve_mib == 900 && !request.hold_gpu,
+            "legacy zero RAM target is valid without GPU hold");
+    require(parse_live_memory_request("MEMORY 8 32768 320 hold", request) && request.id == 8 &&
+            request.resident_mib == 32768 && request.vram_reserve_mib == 320 && request.hold_gpu,
+            "optional hold is explicit and preserves numerical targets");
+    require(parse_live_memory_request("MEMORY 9 0 900  ", request) && !request.hold_gpu,
+            "a later legacy command clears the previous parsed hold flag");
     for (const char* line : {"MEMORY", "MEMORY 0 1 2", "MEMORY -1 2 3", "MEMORY 1 -1 3",
                              "MEMORY 1 2 +3", "MEMORY 1 2 3 extra", "MEMORY 1 1048577 3",
-                             "MEMORY 18446744073709551616 1 2", "MEMORY 1 2 3.5"})
+                             "MEMORY 18446744073709551616 1 2", "MEMORY 1 2 3.5",
+                             "MEMORY 1 2 3 HOLD", "MEMORY 1 2 3 hold extra", "MEMORY 1 2 3 hold hold",
+                             "MEMORY 1 2 3 hold=1", "MEMORY 1 -2 3 hold"})
         require(!parse_live_memory_request(line, request), std::string("reject malformed: ") + line);
+    require(request.id == 9 && !request.hold_gpu, "malformed requests cannot change an accepted control");
 }
 void prompt_pause() {
     using strata::core::live_prefill_pause;
@@ -112,6 +121,31 @@ void pressure_direction() {
     require(!live_memory_supersedes({9, 31000, 256}, recovering, 32000 * MiB), "RAM pressure cannot supersede while reducing GPU reserve");
     require(!live_memory_supersedes({8, 31000, 1024}, recovering, 32000 * MiB), "reused acknowledgement ID cannot supersede");
     require(!live_memory_supersedes({9, 40000, 512}, recovering, 45000 * MiB), "identical target remains busy rather than resetting progress");
+    const LiveMemoryRequest held{10, 32000, 320, true};
+    require(!live_memory_gpu_growth_allowed(held, 32000 * MiB, 1536),
+            "lease GPU hold forbids growth even with unchanged RAM and lower reserve");
+    for (uint64_t free_mib : {0ull, 250ull, 320ull, 2048ull, 8192ull}) {
+        const bool growth = live_memory_gpu_growth_allowed(held, 32000 * MiB, 1536);
+        const auto budget = live_memory_gpu_budget(free_mib * MiB, 2048 * MiB, 320 * MiB, quantum, growth);
+        require(budget <= 2048 * MiB, "hold remains a ceiling when external memory is freed between control and execution");
+        if (free_mib < 320) require(budget < 2048 * MiB, "hold still permits pressure relief");
+    }
+    const bool held_growth = live_memory_gpu_growth_allowed(held, 32000 * MiB, 1536);
+    const uint64_t after_shrink = live_memory_gpu_budget(0, 2048 * MiB, 320 * MiB, quantum, held_growth);
+    require(live_memory_gpu_budget(8192 * MiB, after_shrink, 320 * MiB, quantum, held_growth) == after_shrink,
+            "same held command cannot regrow a cache it already shrank");
+    require(live_memory_supersedes({11, 32000, 512, true}, recovering, 32000 * MiB),
+            "held pressure request may supersede old growth");
+    require(live_memory_supersedes({11, 32000, 320, true}, {10, 32000, 320}, 32000 * MiB),
+            "adding hold alone safely restricts an otherwise identical control");
+    require(!live_memory_supersedes({11, 31000, 1024}, held, 32000 * MiB),
+            "superseding a held control may not remove its GPU hold");
+    require(!live_memory_supersedes({11, 32000, 320, true}, held, 32000 * MiB),
+            "unchanged hold does not reset progress");
+    require(!live_memory_supersedes({11, 33000, 512, true}, recovering, 32000 * MiB),
+            "GPU hold is not permission to supersede with RAM growth");
+    require(live_memory_gpu_growth_allowed({12, 32000, 320}, 32000 * MiB, 320),
+            "separate ordinary recovery after lease release preserves legacy growth behavior");
 }
 void loan_geometry() {
     using namespace strata::core;
