@@ -138,6 +138,14 @@ Wikipedia corpus (46,211 ids, `tools/draft_vocab.py --corpus`): 23.6% of French 
 English/code subset, 0.7% are outside this one. Drafts accepted in French answers 0.51 -> 0.60 (IQ3_XXS, RTX 5070,
 8 prompts x 2 passes; English 0.61 -> 0.63 and code 0.77 -> 0.78, no loss), and 141 -> 158 tok/s in French on an
 RTX 5090 (IQ3_S, the reporter's measurement).
+`--draft-vocab es` takes the English/code subset plus the 6,671 tokens that cover 99% of a Spanish Wikipedia corpus
+(47,196 ids, built the same way from 10 articles: España, Madrid, Miguel de Cervantes, Idioma español, Unión Europea,
+Literatura española, Gastronomía de España, Economía de España, Guerra civil española, Segunda Guerra Mundial;
+1.31 M characters): 27.3% of Spanish text's tokens were outside the English/code subset, 0.9% are outside this one,
+and on held-out Latin American articles (México, Argentina, Gabriel García Márquez) 28.3% and 4.2%. Drafts accepted in
+Spanish answers 0.70 -> 0.75 and 75 -> 83 tok/s (UD-IQ4_XS, RTX 3090 + Ryzen 7 5700X, three Spanish prompts x 2
+passes; a code prompt asked in Spanish 0.73 -> 0.82, 79 -> 86 tok/s), measured on a 0.1.30-based fork engine whose
+draft head reads the same subset file.
 `tools/draft_vocab.py` builds and inspects subsets. When the start stops with "the draft head does not fit" (a
 12 GB card with a long context, #474), the engine says how much the head needs, how much VRAM is free and which
 smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
