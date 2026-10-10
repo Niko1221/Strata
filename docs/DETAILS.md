@@ -1614,9 +1614,9 @@ The schema must accept only JSON objects at its root: `"type":"object"`, or an `
 object schemas (an `allOf` with an object member, or a local `$ref` to one, also counts), as apps written for
 llama.cpp's `json_schema` send. A root that also allows an array, string, number, boolean or null is refused. Local
 `#` references work; remote references are refused.
-`json_schema` is checked with the Python package `jsonschema` when it is installed (`python -m pip install
-"jsonschema>=4.23,<5"`; setup does not add it); without it the answer is only checked to be one JSON object, and the
-server says so once.
+`json_schema` is checked with the Python package `jsonschema` (setup installs it; an older install gets it with
+`UPDATE.bat` / `./update.sh`, or `python -m pip install "jsonschema>=4.23,<5"` in `.venv`); without it the answer is
+only checked to be one JSON object, and the server says so once.
 
 This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
 is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
