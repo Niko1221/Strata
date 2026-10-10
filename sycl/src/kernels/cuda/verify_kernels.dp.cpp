@@ -500,11 +500,11 @@ runtimes. You may need to adjust the code.
 // at ~60 GB/s. Every column's arithmetic is the original's; the output norm, which needs all 128 columns of a head,
 // moves to gdn_out_norm_kernel: this kernel leaves the unnormalized output `oc` in y and the second kernel sums the
 // squares by the same warps (columns 32w..32w+31, the same butterfly) in the same order.
-// S26: OUT = false (the commit, whose outputs nobody reads) drops the output reduction and its two barriers; the
+// S26: WRITE_OUT = false (the commit, whose outputs nobody reads) drops the output reduction and its two barriers; the
 // norm kernel below has the old kernel's code shape (S x RG threads, rg 0 holding oc), which makes it bitwise equal -
 // the 128-thread version differed from the old kernel by 1 ulp in ~7% of the outputs.
 constexpr int GS_COLS = 32;
-template <bool OUT>
+template <bool WRITE_OUT>
 /*
 DPCT1110: The total declared local variable size in device function
 gdn_step_split_kernel exceeds 128 bytes and may cause high register pressure.
@@ -587,7 +587,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        if (!OUT) continue;
+        if (!WRITE_OUT) continue;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.

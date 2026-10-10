@@ -81,8 +81,20 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
-                    -Wno-unused-variable -Wno-deprecated-declarations)
+# Windows (ICX + Ninja): the IntelLLVM driver accepts the same -fsycl / -qmkl / -m flags as on Linux.
+# MSVC cl does not, so the warning flags are gated there. docs/INTEL_ARC.md Windows path uses ICX, not cl.
+# FP model: icx in clang-cl (MSVC-like) mode ignores -fp-model=precise with a warning, so Windows takes
+# /fp:precise. The precise model is load-bearing: quantize_act_parity goes from byte-exact to 303k mismatches
+# without it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" /fp:precise /W3)
+elseif(WIN32)
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" /fp:precise -Wno-unused-parameter
+                      -Wno-unused-variable -Wno-deprecated-declarations)
+else()
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
+                      -Wno-unused-variable -Wno-deprecated-declarations)
+endif()
 add_link_options(${_sycl_link})
 
 # --- source resolution: the migrated copy when there is one, the original otherwise -------------------------------
@@ -111,7 +123,11 @@ add_library(strata_includes INTERFACE)
 target_include_directories(strata_includes INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers, first
   ${STRATA_ROOT}/include)
-target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(strata_includes INTERFACE /W3)
+else()
+  target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+endif()
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
 strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
@@ -239,13 +255,59 @@ strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/p
 add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp   # upstream's fused int8 kernels: not built here
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/xmx_moe.dp.cpp)      # A770 port: grouped XMX expert GEMM
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+# IntelLLVM (icx/icpx) accepts -qmkl on both Linux and Windows; MSVC cl needs /Qmkl.
+# Windows without an official oneAPI install (conda icx + PyPI/NuGet pieces): STRATA_ONEMKL_* points at the
+# oneMKL SYCL headers (oneapi-src/oneMKL) and the mkl_sycl_blas import lib (PyPI onemkl-sycl-blas + lib.exe).
+# Default: a `oneMKL-win` / `oneMKL-headers/oneMKL/include` pair beside the user's profile (override to move).
+if(WIN32)
+  set(STRATA_ONEMKL_INCLUDE_DIR "$ENV{USERPROFILE}/oneMKL-headers/oneMKL/include" CACHE PATH
+      "oneMKL SYCL headers (oneapi/math) when no official oneAPI install provides them")
+  set(STRATA_ONEMKL_LIB "$ENV{USERPROFILE}/oneMKL-win/mkl_sycl_blas.lib" CACHE FILEPATH
+      "mkl_sycl_blas import lib when no official oneAPI install provides them")
+endif()
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(strata_prefill PUBLIC /Qmkl:sequential)
+  target_link_options(strata_prefill PUBLIC /Qmkl:sequential)
+elseif(WIN32 AND EXISTS "${STRATA_ONEMKL_LIB}")
+  target_include_directories(strata_prefill PUBLIC "${STRATA_ONEMKL_INCLUDE_DIR}")
+  # oneMKL's own CMake generates oneapi/math/detail/config.hpp (backend selection); the bare
+  # headers have none, so ship the minimal one (MKL GPU backend only) ahead of them.
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/onemath_stub/oneapi/math/detail")
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/onemath_config.hpp"
+                 "${CMAKE_BINARY_DIR}/onemath_stub/oneapi/math/detail/config.hpp" COPYONLY)
+  target_include_directories(strata_prefill PUBLIC "${CMAKE_BINARY_DIR}/onemath_stub")
+  target_link_libraries(strata_prefill PUBLIC "${STRATA_ONEMKL_LIB}")
+else()
+  target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
+  target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+endif()
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+if(WIN32 AND EXISTS "${STRATA_ONEMKL_LIB}")
+  # Installer-free oneMKL (PyPI onemkl-sycl-blas + mkl wheels): the SYCL BLAS DLLs beside the engine.
+  get_filename_component(_onemkl_bin "${STRATA_ONEMKL_LIB}" DIRECTORY)
+  get_filename_component(_icx_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  foreach(_dll mkl_sycl_blas.6.dll mkl_core.3.dll mkl_def.3.dll mkl_avx2.3.dll mkl_avx512.3.dll
+               mkl_mc3.3.dll mkl_sequential.3.dll mkl_tbb_thread.3.dll libimalloc.dll)
+    add_custom_command(TARGET strata POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_onemkl_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
+      COMMENT "copying ${_dll} beside strata.exe")
+  endforeach()
+  # The SYCL runtime beside the compiler (conda dpcpp: sycl9.dll): the server's env may not have it on PATH.
+  # libmmd.dll is Intel's own runtime and is a *static import* of strata.exe, and the UR adapters load
+  # ur_loader.dll / ur_win_proxy_loader.dll from beside the exe: without those three a fresh build's engine ends
+  # with 0xC0000135 (STATUS_DLL_NOT_FOUND) before it prints anything. ur_adapter_opencl beside the exe, or the
+  # loader reports 0 adapters and any gpu_selector terminates the process (0xC0000409 before main prints anything).
+  foreach(_dll sycl9.dll libmmd.dll ur_loader.dll ur_win_proxy_loader.dll ur_adapter_opencl.dll
+               ur_adapter_level_zero.dll ur_adapter_level_zero_v2.dll OpenCL.dll)
+    add_custom_command(TARGET strata POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_icx_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
+      COMMENT "copying ${_dll} beside strata.exe")
+  endforeach()
+endif()
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)

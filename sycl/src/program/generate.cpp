@@ -1,4 +1,4 @@
-#define DPCT_COMPAT_RT_VERSION 12080
+﻿#define DPCT_COMPAT_RT_VERSION 12080
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.
@@ -4703,7 +4703,10 @@ int main(int argc, char **argv) try {
                                     const Fill& g2 = (*fl)[j];
                                     if (!gguf_src.read_into(g2.l, g2.e, other.data(), blob_cap)) continue;
                                     const size_t nb2 = (size_t) lay.blob_bytes(g2.l);
-                                    const void* hit = memmem(other.data(), nb2, probe, 64);
+                                    const uint8_t* const b2 = other.data();
+// SYCL port: memmem is POSIX; std::search is the portable form
+const uint8_t* const it = std::search(b2, b2 + nb2, probe, probe + 64);
+const void* hit = (it == b2 + nb2) ? nullptr : (const void*) it;
                                     if (hit != nullptr)
                                         std::fprintf(stderr, "    the wrong data at byte %zu is expert (layer %d, expert %d), slot %d (fill %zu), byte %zu of its blob\n",
                                                      fd + 4096, (int) g2.l, (int) g2.e, (int) g2.slot, j, (size_t) ((const uint8_t*) hit - other.data()));
@@ -5994,8 +5997,8 @@ int main(int argc, char **argv) try {
             // one falls back to the old rule, which takes the largest chunk whose ring clears kRingMin (the
             // value at or below which ring_slots() returns STAGE and streaming is off).
             constexpr int64_t kRingMin = 16;
-            const int64_t small = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
-            const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small);
+            const int64_t small_chunk = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
+            const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small_chunk);
             const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
             // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
             // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
@@ -6025,12 +6028,12 @@ int main(int argc, char **argv) try {
             int64_t c = scan(ring_max);
             if (c == 0 && ring_max < strata::prefill::Prefill::ring_default_slots()) c = scan(kRingMin);
             // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed it)
-            if (small >= c) {   // the scan bought nothing: 0.1.39's choice
+            if (small_chunk >= c) {   // the scan bought nothing: 0.1.39's choice
                 strata::prefill::Prefill::set_ring_budget(0, 0);
-                if (small > 0) { chunk = small; return slots_for(small); }
+                if (small_chunk > 0) { chunk = small_chunk; return slots_for(small_chunk); }
                 return 0;
             }
-            strata::prefill::Prefill::set_ring_budget((int) room_of(c), small);
+            strata::prefill::Prefill::set_ring_budget((int) room_of(c), small_chunk);
             chunk = c;
             return slots_for(c);
         }
@@ -6583,8 +6586,8 @@ int main(int argc, char **argv) try {
                     return 0;
                 }
                 if (!strata::prefill::Prefill::ring_bytes_enabled()) return old_pick(only);   // STRATA_RING_BYTES=0
-                const int64_t small = old_pick(only);
-                const int64_t cap = strata::prefill::Prefill::ring_cap_for(small);
+                const int64_t small_chunk = old_pick(only);
+                const int64_t cap = strata::prefill::Prefill::ring_cap_for(small_chunk);
                 auto probe = [&](int64_t floor) -> int64_t {
                     return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
                         const int64_t room = ring_room(t, only, cap);
@@ -6597,7 +6600,7 @@ int main(int argc, char **argv) try {
                 };
                 int64_t c = probe(cap);
                 if (c == 0 && cap < strata::prefill::Prefill::ring_default_slots()) c = probe(kRingMin);
-                return std::max(c, small);   // never a smaller chunk than 0.1.39's
+                return std::max(c, small_chunk);   // never a smaller chunk than 0.1.39's
             };
             const int64_t chunk = scan(nullptr);
             // #448: a small card in a layer split caps every stage's chunk (an RTX 3080's 512-slot cache held a
@@ -6609,10 +6612,10 @@ int main(int argc, char **argv) try {
             if (chunk > 0 && o.prefill_auto && strata::prefill::Prefill::ring_bytes_enabled()) {
                 // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed
                 // it); the byte-budget ring is for the chunks past it
-                const int64_t small = old_pick(nullptr);
+                const int64_t small_chunk = old_pick(nullptr);
                 strata::prefill::Prefill::set_ring_budget(
-                    small >= chunk ? 0 : (int) ring_room(chunk, nullptr, strata::prefill::Prefill::ring_cap_for(small)),
-                    small);
+                    small_chunk >= chunk ? 0 : (int) ring_room(chunk, nullptr, strata::prefill::Prefill::ring_cap_for(small_chunk)),
+                    small_chunk);
             }
             if (chunk > 0 && alone > chunk) {
                 for (size_t i = 1; i < pf_parts.size(); ++i) {
