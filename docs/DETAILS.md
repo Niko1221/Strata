@@ -305,6 +305,15 @@ hits, the router, the head, ...). The GPU profile times every stage with events,
 use it to compare, not to measure speed. This works with every pack; `--gpu-stages` (a one-token replay of
 per-layer graphs) refuses a native (IQ) pack, which has no such graphs.
 
+In the serial serve loop the same line lists the wall-time sections in execution order: `swap apply + verify +
+commit/emit + draft + adapt join + other`. `swap apply` is the whole pending-swap application before verify,
+including GPU completion synchronization, RAM exchange commit and residency updates. `adapt join` is the time
+spent joining the synchronous adaptive thread after draft; the worker itself can overlap commit and draft.
+All times are averaged over every decode window, not just the joined rounds; `joins` counts those rounds.
+`other` is total decode time minus the named sections, not a separately timed operation. These are host wall
+times, not pure GPU copy durations. Pipeline windows keep their existing timing format; batch slots are not
+covered. Parsers that require `ms/window = verify` must accept `ms/window = swap apply` for serial requests.
+
 **How good the next-layer expert prediction is (measurement only):** `STRATA_LOOKAHEAD_STATS=1` runs the router look-ahead on any expert tier and
 scores it against the routing of the next layer: every 100 windows the engine log has a `strata lookahead stats:` line with the experts per layer
 outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
