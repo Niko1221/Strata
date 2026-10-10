@@ -3719,6 +3719,7 @@ class ForcedToolChoice(unittest.TestCase):
         self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT[:20]) + extra)
 
     def test_auto_absent_and_none_leave_the_tools_to_the_model(self):
+        prompts = {}
         for extra in ({}, {"tool_choice": "auto"}, {"tool_choice": "none"}):
             with self.subTest(extra=extra):
                 self.engine.prompts = []
@@ -3727,8 +3728,10 @@ class ForcedToolChoice(unittest.TestCase):
                 self.assertEqual(b["choices"][0]["message"]["content"], CallingEngine.ANSWER)
                 self.assertEqual(b["choices"][0]["finish_reason"], "stop")
                 self.assertEqual(len(self.engine.prompts), 1)
-                offered = "search the web" in self.tok.decode(self.engine.prompts[0])
-                self.assertEqual(offered, extra.get("tool_choice") != "none")   # "none": no tools in the prompt
+                # "none" too: the tools stay in the prompt, so an agent's tool-free last step keeps its KV prefix
+                self.assertIn("search the web", self.tok.decode(self.engine.prompts[0]))
+                prompts[extra.get("tool_choice", "absent")] = self.engine.prompts[0]
+        self.assertEqual(prompts["none"], prompts["auto"])
 
     def test_a_call_cut_by_max_tokens_is_not_a_tool_call(self):
         code, b = self.openai(tool_choice="required", max_tokens=5, **self.NO_THINKING)

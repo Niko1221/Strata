@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, H_CHANNEL, ChatTemplate, Event, HarmonyParser, OutputParser,  # noqa: E402
+from serve.frontend import (THINK_END, CALL_START, H_CHANNEL, ChatTemplate, Event, HarmonyParser, OutputParser,  # noqa: E402
                             anthropic_to_messages,
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
@@ -5280,8 +5280,16 @@ def make_handler(svc: Service):
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
             self._no_local_images(messages)
+            prompt_tools = tools
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
+                # ...but the prompt keeps them: an agent's last, tool-free step renders the same prefix as its tool
+                # steps, so the KV cache still matches (dropping them re-prefilled ~100K tokens: 138-266 s on a
+                # Mac, Osaurus 2026-10-09).  No calls are parsed, and a reply that starts one ends there.
                 tools = None
+                stop = req.get("stop")
+                stop = [stop] if isinstance(stop, str) else list(stop or [])
+                if len(stop) < OPENAI_MAX_STOP and CALL_START not in stop:
+                    req = {**req, "stop": stop + [CALL_START]}
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
@@ -5303,7 +5311,7 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
+            ids, thinking, max_new = svc.prepare(messages, tools or prompt_tools, kw, max_new, force=force, req=req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
