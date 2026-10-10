@@ -24,8 +24,8 @@ its GGUF form:
   tokenizer/           exported from the GGUF (tools/strata_tokenizer.py), with the model's chat template.
 
 Split files: every shard of the model is read (<name>-0000N-of-0000M.gguf beside --gguf; a missing shard is an
-error), so the layers may be split anyhow (Swift 1.5's GGUFs put layers 13-47 in shard 2 and the PLE table in
-shard 1).  A layer whose experts are not in shard 1 names its shard in native_experts.txt (v3).  A shard boundary
+error unless --skip-ple-shard names the one PLE-only shard replaced by --ple-gguf), so the layers may be split
+anyhow (Swift 1.5's GGUFs put layers 13-47 in shard 2 and the PLE table in shard 1).  A layer whose experts are not in shard 1 names its shard in native_experts.txt (v3).  A shard boundary
 may even fall inside a layer (Unsloth's UD-Q4_K_XL: layer 11's down in shard 2, its gate and up in shard 3): that
 layer's shard column is per role, `gate,up,down` (an empty field = the --gguf shard), and only then is the file
 v4, so an older engine refuses it instead of misreading it.  Every other pack stays v3, byte for byte.  Router
@@ -94,6 +94,29 @@ def form_of(name: str):
     return FORM.get(re.sub(r"^blk\.\d+\.", "", name))
 
 
+def check_external_ple(model: G.GGUFFile, ple: G.GGUFFile) -> None:
+    if ple.metadata.get("general.architecture") != "strata-ple":
+        raise ValueError("external PLE is not a strata-ple GGUF")
+    if len(ple.tensors) != 1:
+        raise ValueError("external PLE must contain exactly one tensor")
+    tensor = next((t for t in ple.tensors if t.name == "per_layer_token_embd.weight"), None)
+    if tensor is None or tensor.type_name != "I8":
+        raise ValueError("external PLE must contain per_layer_token_embd.weight as I8")
+    if ple.metadata.get("strata.ple.format") != "f8_e4m3" or ple.metadata.get("strata.ple.scale", 0) <= 0:
+        raise ValueError("external PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale")
+    rows = model.metadata.get("qwen4exp.embedding_length_per_layer_input")
+    offsets = model.metadata.get("qwen4exp.ple.head_offsets")
+    heads = model.metadata.get("qwen4exp.ple.head_vocab_sizes")
+    if (not isinstance(rows, int) or rows <= 0 or not isinstance(offsets, list) or not isinstance(heads, list) or
+            not offsets or len(offsets) != len(heads) or
+            not all(isinstance(x, int) and x >= 0 for x in offsets) or
+            not all(isinstance(x, int) and x > 0 for x in heads)):
+        raise ValueError("model lacks complete qwen4exp PLE geometry; cannot verify the skipped shard")
+    expected_cols = max(offset + head for offset, head in zip(offsets, heads))
+    if tensor.shape[0] != rows or tensor.shape[1] < expected_cols:
+        raise ValueError("external PLE shape does not match the model's qwen4exp PLE geometry")
+
+
 def needs_bf16(name: str, type_name: str) -> bool:
     """Whether the engine reads `name` as BF16 from the pack (not natively from the GGUF)."""
     if name == "blk.1.ple_key.weight" and type_name in NATIVE_PLE_KEY:
@@ -139,23 +162,48 @@ def f16_values(values: np.ndarray, name: str) -> np.ndarray:
 
 
 class Model:
-    """All shards of one model: name -> (GGUFFile, TensorInfo, memmap, shard path)."""
+    """All present shards of one model: name -> (GGUFFile, TensorInfo, memmap, shard path)."""
 
-    def __init__(self, first: pathlib.Path):
+    def __init__(self, first: pathlib.Path, skip_ple_shard: int = 0, ple_path: pathlib.Path | None = None):
         import re
         m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", first.name)
         paths = [first]
+        skipped_path = None
         if m:
             total = int(m.group(2))
-            paths = [first.with_name(first.name[:m.start()] + "-%05d-of-%05d.gguf" % (i, total))
-                     for i in range(1, total + 1)]
+            if skip_ple_shard < 0 or skip_ple_shard > total:
+                raise ValueError(f"invalid skipped PLE shard {skip_ple_shard} of {total}")
+            all_paths = [first.with_name(first.name[:m.start()] + "-%05d-of-%05d.gguf" % (i, total))
+                         for i in range(1, total + 1)]
+            skipped_path = all_paths[skip_ple_shard - 1] if skip_ple_shard else None
+            paths = [p for i, p in enumerate(all_paths, 1) if i != skip_ple_shard]
+        elif skip_ple_shard:
+            raise ValueError("--skip-ple-shard requires a split GGUF")
+        if skip_ple_shard and ple_path is None:
+            raise ValueError("--skip-ple-shard requires --ple-gguf")
         missing = [str(p) for p in paths if not p.is_file()]
         if missing:
             raise FileNotFoundError("missing model shards (wait for the download): " + ", ".join(missing))
+        self.skip_ple_shard = skip_ple_shard
         self.paths = paths
         self.files = [G.GGUFFile(p) for p in paths]
         self.sizes = [p.stat().st_size for p in paths]
-        check_split(self.files)
+        check_split(self.files, skip_ple_shard)
+        if skip_ple_shard:
+            ple = G.GGUFFile(pathlib.Path(ple_path))
+            check_external_ple(self.files[0], ple)
+            if skipped_path.is_file():
+                skipped = G.GGUFFile(skipped_path)
+                first_meta = self.files[0].metadata
+                if (skipped.metadata.get("split.count") != first_meta.get("split.count") or
+                        skipped.metadata.get("split.no") != skip_ple_shard - 1 or
+                        skipped.metadata.get("split.tensors.count") != first_meta.get("split.tensors.count")):
+                    raise ValueError(f"skipped shard {skipped_path.name} is not from this model")
+                matches = skipped.find("per_layer_token_embd.weight")
+                if len(skipped.tensors) != 1 or len(matches) != 1:
+                    raise ValueError(f"skipped shard {skipped_path.name} is not PLE-only")
+                if matches[0].shape != ple.find("per_layer_token_embd.weight")[0].shape:
+                    raise ValueError(f"skipped shard {skipped_path.name} does not match the external PLE shape")
         self.where = {}
         for p, g in zip(paths, self.files):
             mm = np.memmap(p, dtype=np.uint8, mode="r")
@@ -172,30 +220,34 @@ class Model:
         return tensor_bytes(mm, g, t)
 
 
-def check_split(files) -> None:
-    """The split keys, as the engine checks them (strata::GgufModel): shard 1 carries the metadata, and every shard
-    declares split.count / split.no (and split.tensors.count) consistently - a shard of another model, or a shard
-    renamed into the family, is refused rather than mixed in."""
+def check_split(files, skip_ple_shard: int = 0) -> None:
+    """Validate split metadata, allowing one explicitly omitted PLE table shard."""
     n = len(files)
     meta0 = files[0].metadata
-    if n == 1:
-        if int(meta0.get("split.count", 1)) > 1:
-            raise ValueError(f"{files[0].path.name} is shard 1 of {meta0['split.count']}, but its name has no "
+    declared = int(meta0.get("split.count", 1))
+    if n == 1 and not skip_ple_shard:
+        if declared > 1:
+            raise ValueError(f"{files[0].path.name} is shard 1 of {declared}, but its name has no "
                              "-00001-of-0000N.gguf to find the others by")
         return
     if "general.architecture" not in meta0:
         raise ValueError(f"{files[0].path.name} has no general.architecture; the first shard of a split model "
                          "carries the metadata")
+    if skip_ple_shard and (skip_ple_shard > declared or n != declared - 1):
+        raise ValueError("the skipped PLE shard does not match split.count")
+    if not skip_ple_shard and n != declared:
+        raise ValueError(f"the split has {n} files but declares {declared} shards")
     total = meta0.get("split.tensors.count")
     for i, g in enumerate(files):
         md = g.metadata
-        if md.get("split.count") != n or md.get("split.no") != i or \
+        expected_no = i + (skip_ple_shard and i + 1 >= skip_ple_shard)
+        if md.get("split.count") != declared or md.get("split.no") != expected_no or \
                 (total is not None and md.get("split.tensors.count") != total):
-            raise ValueError(f"{g.path.name} does not declare itself shard {i + 1} of {n} of this model "
+            raise ValueError(f"{g.path.name} does not declare itself shard {expected_no + 1} of {declared} of this model "
                              "(split.count / split.no / split.tensors.count)")
-    if total is not None and sum(len(g.tensors) for g in files) != total:
-        raise ValueError(f"the {n} shards hold {sum(len(g.tensors) for g in files)} tensors, but "
-                         f"split.tensors.count is {total}")
+    present = sum(len(g.tensors) for g in files)
+    if total is not None and present + (1 if skip_ple_shard else 0) != total:
+        raise ValueError(f"the present shards hold {present} tensors, but split.tensors.count is {total}")
 
 
 ROLES = ("gate", "up", "down")
@@ -495,6 +547,9 @@ def main() -> int:
     ap.add_argument("--gguf", required=True, help="the model's shard 1")
     ap.add_argument("--base", help="optional: a Q2_0 canonical pack whose dense.bin holds the shared float tensors")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--ple-gguf", help="external strata-ple GGUF when a model PLE shard is omitted")
+    ap.add_argument("--skip-ple-shard", type=int, default=0,
+                    help="omit this one-based model shard; requires --ple-gguf")
     ap.add_argument("--skip-experts", action="store_true", help="rewrite the index only")
     ap.add_argument("--compat-bf16", action="store_true",
                     help="dequantize small non-native projections to BF16 for ordinary Qwen4Exp GGUFs "
@@ -504,6 +559,13 @@ def main() -> int:
     a = ap.parse_args()
     if a.compat_bf16 and a.base:
         ap.error("--compat-bf16 cannot reuse --base dense weights")
+    if a.skip_ple_shard < 0:
+        ap.error("--skip-ple-shard needs a positive shard number")
+    if a.skip_ple_shard and not a.ple_gguf:
+        ap.error("--skip-ple-shard requires --ple-gguf")
+    ple_path = pathlib.Path(a.ple_gguf).absolute() if a.ple_gguf else None
+    if ple_path is not None and not ple_path.is_file():
+        ap.error(f"external PLE file does not exist: {ple_path}")
     # HF snapshot files are symlinks to hash-named blobs. Keep the shard filename for discovery: .absolute(), not
     # .resolve(), which would follow the link to the blob and lose the -0000N-of-0000M name.
     src = pathlib.Path(a.gguf).absolute()
@@ -513,7 +575,7 @@ def main() -> int:
 
     g = G.GGUFFile(src)
     mm = np.memmap(src, dtype=np.uint8, mode="r")
-    model = Model(src)
+    model = Model(src, a.skip_ple_shard, ple_path)
     if len(model.paths) > 1:
         print("model shards: " + ", ".join(p.name for p in model.paths))
     # ---- the expert table first: a model that cannot be packed is refused before any file of the pack changes

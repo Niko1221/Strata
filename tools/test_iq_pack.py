@@ -19,9 +19,16 @@ from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
 import iq_pack
 
 
-def write_gguf(path, tensors, split=None, arch=True):
+def write_gguf(path, tensors, split=None, arch=True, arch_name="qwen4exp", ple_shape=None):
     """`split` = (no, count, tensors): llama.cpp's gguf-split keys (0-based split.no)."""
-    writer = GGUFWriter(path, "qwen4exp")
+    writer = GGUFWriter(path, arch_name)
+    if ple_shape is not None and arch:
+        writer.add_embedding_length_per_layer_input(ple_shape[0])
+        writer.add_ple_head_offsets([0])
+        writer.add_ple_head_vocab_sizes([ple_shape[1]])
+    if arch_name == "strata-ple":
+        writer.add_string("strata.ple.format", "f8_e4m3")
+        writer.add_float32("strata.ple.scale", 1.0)
     if not arch:                                   # a later shard of a split: no model metadata
         writer.kv_data[0].pop("general.architecture", None)
     if split is not None:
@@ -29,7 +36,8 @@ def write_gguf(path, tensors, split=None, arch=True):
         writer.add_uint16("split.count", split[1])
         writer.add_int32("split.tensors.count", split[2])
     for name, values, kind in tensors:
-        writer.add_tensor(name, quants.quantize(values, kind), raw_dtype=kind)
+        data = values if kind == Q.I8 else quants.quantize(values, kind)
+        writer.add_tensor(name, data, raw_dtype=kind)
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
@@ -385,6 +393,25 @@ def split_model(root, name="model", split_layer=True, dup=False, split_no=None, 
     return paths
 
 
+def ple_split_model(root):
+    gu, dn = (32, 32), (32, 32)
+    router = [(f"blk.{l}.ffn_gate_inp.weight", np.full((N_EXPERT, 32), 0.5, np.float32), Q.F32)
+              for l in (0, 1)]
+    l0 = [(f"blk.0.ffn_{r}_exps.weight", expert(10 + i, gu if r != "down" else dn), Q.Q8_0)
+          for i, r in enumerate(("gate", "up", "down"))]
+    l1 = [(f"blk.1.ffn_{r}_exps.weight", expert(20 + i, gu if r != "down" else dn), Q.Q8_0)
+          for i, r in enumerate(("gate", "up", "down"))]
+    shards = [router + l0, [("per_layer_token_embd.weight", np.zeros((32, 32), np.float32), Q.Q8_0)],
+              l1, [("output_norm.weight", np.ones(32, np.float32), Q.F32)]]
+    total = sum(len(s) for s in shards)
+    paths = []
+    for i, tensors in enumerate(shards):
+        p = root / f"ple-model-{i + 1:05d}-of-00004.gguf"
+        write_gguf(p, tensors, split=(i, 4, total), arch=i == 0, ple_shape=(32, 32))
+        paths.append(p)
+    return paths
+
+
 def run_pack(first, out, *extra):
     (out / "tokenizer").mkdir(parents=True, exist_ok=True)
     for n in ["vocab.json", "chat_template.jinja"]:
@@ -454,6 +481,30 @@ class SplitArtifactTests(unittest.TestCase):
             paths[3].unlink()
             with self.assertRaisesRegex(FileNotFoundError, "missing model shards.*00004-of-00004"):
                 iq_pack.Model(paths[0])
+
+    def test_skip_ple_shard(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            paths = ple_split_model(Path(tmp))
+            paths[1].unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "missing model shards.*00002-of-00004"):
+                iq_pack.Model(paths[0])
+            ple = Path(tmp) / "ple.gguf"
+            write_gguf(ple, [("per_layer_token_embd.weight", np.zeros((32, 32), np.int8), Q.I8)],
+                       arch_name="strata-ple")
+            model = iq_pack.Model(paths[0], 2, ple)
+            self.assertEqual([p.name for p in model.paths], [paths[0].name, paths[2].name, paths[3].name])
+            self.assertNotIn("per_layer_token_embd.weight", model.where)
+            self.assertEqual(len(model.where), 9)
+            with self.assertRaisesRegex(ValueError, "requires --ple-gguf"):
+                iq_pack.Model(paths[0], 2)
+            rc, log = run_pack(paths[0], Path(tmp) / "pack", "--compat-bf16", "--ple-gguf", str(ple),
+                               "--skip-ple-shard", "2")
+            self.assertEqual(rc, 0, log)
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as bad_tmp:
+                bad_paths = ple_split_model(Path(bad_tmp))
+                bad_paths[2].unlink()
+                with self.assertRaisesRegex(ValueError, "present shards"):
+                    iq_pack.Model(bad_paths[0], 3, ple)
 
     def test_duplicate_tensor_across_shards(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

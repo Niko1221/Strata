@@ -18,7 +18,8 @@ NativeHead::~NativeHead() {
     if (weights_) cudaFree(weights_);
 }
 
-bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
+bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err,
+                      int skipped_ple_shard) {
     if (loaded()) { err = "native head is already loaded"; return false; }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
@@ -27,7 +28,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
     try {
         // The architecture is the metadata shard's; output.weight comes from whichever shard holds it (shard 2
         // of Unsloth's UD-Q4_K_XL, whose shard 1 holds no tensor).  GgufModel refuses a duplicate across shards.
-        const strata::GgufModel model(shards);
+        const strata::GgufModel model(shards, skipped_ple_shard);
         err = strata::check_architecture(model.meta());
         if (!err.empty()) return false;
         size_t at = 0;
@@ -110,9 +111,10 @@ NativeEmbed::~NativeEmbed() {
     else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
 }
 
-bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err) {
+bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err,
+                        int skipped_ple_shard) {
     try {
-        const strata::GgufModel model(shards);
+        const strata::GgufModel model(shards, skipped_ple_shard);
         // --embd-gguf's one-tensor file (tools/embd_bf16_pack.py) says "strata-embd": only its tensor is checked
         const strata::MetaValue* arch = model.meta().get("general.architecture");
         err = arch != nullptr && arch->s == "strata-embd" ? std::string() : strata::check_architecture(model.meta());

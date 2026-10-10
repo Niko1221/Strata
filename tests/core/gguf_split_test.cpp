@@ -69,6 +69,23 @@ template <class F> std::vector<std::string> write_model(const fs::path& dir, F m
 }
 auto same = [](int, std::vector<fixture::Kv>&, std::vector<Tensor>&, uint64_t&) {};
 
+std::vector<std::string> write_ple_model(const fs::path& dir) {
+    std::vector<std::string> paths;
+    for (int i = 0; i < 4; ++i) {
+        std::vector<fixture::Kv> kv;
+        if (i == 0) kv.push_back(fixture::str("general.architecture", "qwen4exp"));
+        for (const auto& k : fixture::split_keys((uint64_t) i, 4, 5)) kv.push_back(k);
+        std::vector<Tensor> ts;
+        if (i == 1) ts = {{"per_layer_token_embd.weight", {32, 32}, Q8_0, 1}};
+        if (i == 2) ts = {{"output.weight", {64, 4}, Q8_0, 2}, {"token_embd.weight", {64, 4}, Q8_0, 3}};
+        if (i == 3) ts = {{"output_norm.weight", {32}, F32, 4}, {"output_hc_norm.weight", {32}, F32, 5}};
+        const fs::path p = dir / shard_name(i + 1, 4);
+        fixture::write(p, kv, ts);
+        paths.push_back(p.string());
+    }
+    return paths;
+}
+
 std::string error_of(const std::vector<std::string>& paths) {
     try {
         strata::GgufModel m(paths);
@@ -155,6 +172,31 @@ int main(int argc, char** argv) {
         try { strata::gguf_split_paths(paths[0]); } catch (const std::exception& e) { err = e.what(); }
         check(err.find("missing model shard") != std::string::npos && err.find(shard_name(4, 4)) != std::string::npos,
               "a missing shard is an error that names it");
+    }
+    {
+        TempDir d;
+        const auto paths = write_ple_model(d.path);
+        fs::remove(paths[1]);
+        const auto partial = strata::gguf_split_paths(paths[0], 2);
+        check(partial.size() == 3 && partial[0] == paths[0] && partial[1] == paths[2] && partial[2] == paths[3],
+              "an explicitly skipped PLE shard is omitted");
+        std::string err;
+        try {
+            const strata::GgufModel m(partial, 2);
+            check(m.size() == 3 && m.find("per_layer_token_embd.weight") == nullptr &&
+                      m.find("output.weight") != nullptr,
+                  "the partial model retains non-PLE tensors");
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        check(err.empty(), "a model with one skipped PLE-only shard opens" + (err.empty() ? std::string() : ": " + err));
+        fs::create_directory(d.path / "bad");
+        const auto bad = write_ple_model(d.path / "bad");
+        fs::remove(bad[2]);
+        std::string bad_err;
+        try { const strata::GgufModel m(strata::gguf_split_paths(bad[0], 3), 3); (void) m; }
+        catch (const std::exception& e) { bad_err = e.what(); }
+        check(!bad_err.empty(), "an unrelated skipped shard is still refused");
     }
     {
         TempDir d;

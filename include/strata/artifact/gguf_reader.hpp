@@ -487,6 +487,44 @@ inline uint64_t tensor_payload_bytes(const TensorInfo& t) {
     return blocks * (uint64_t) bb;
 }
 
+// The skipped model shard is accepted only when the replacement is the exact FP8 PLE for this model.  The model's
+// PLE geometry makes the one omitted tensor falsifiable even when its shard is not present locally.
+inline std::string check_external_ple(const GgufFile& model, const GgufFile& ple) {
+    const auto* arch = ple.get("general.architecture");
+    if (!arch || arch->s != "strata-ple") return "external PLE is not a strata-ple GGUF";
+    if (ple.tensors().size() != 1) return "external PLE must contain exactly one tensor";
+    const auto* tensor = ple.find("per_layer_token_embd.weight");
+    if (!tensor || std::strcmp(tensor->type_name(), "I8") != 0)
+        return "external PLE must contain per_layer_token_embd.weight as I8";
+    const auto* format = ple.get("strata.ple.format");
+    const auto* scale = ple.get("strata.ple.scale");
+    if (!format || format->s != "f8_e4m3" || !scale || !(scale->num() > 0.0))
+        return "external PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale";
+    const auto* rows = model.get("qwen4exp.embedding_length_per_layer_input");
+    const auto* offsets = model.get("qwen4exp.ple.head_offsets");
+    const auto* heads = model.get("qwen4exp.ple.head_vocab_sizes");
+    const auto unsigned_integer = [](const MetaValue& value) {
+        return value.type == MetaType::U8 || value.type == MetaType::U16 || value.type == MetaType::U32 ||
+               value.type == MetaType::U64;
+    };
+    if (!rows || !offsets || !heads || !unsigned_integer(*rows) || offsets->type != MetaType::ARRAY ||
+        heads->type != MetaType::ARRAY || rows->u == 0 || offsets->items.size() != offsets->count ||
+        heads->items.size() != heads->count || offsets->count == 0 || offsets->count != heads->count)
+        return "model lacks complete qwen4exp PLE geometry; cannot verify the skipped shard";
+    uint64_t cols = 0;
+    for (size_t i = 0; i < heads->items.size(); ++i) {
+        const auto& offset = offsets->items[i];
+        const auto& head = heads->items[i];
+        if (!unsigned_integer(offset) || !unsigned_integer(head) || head.u == 0 ||
+            offset.u > (std::numeric_limits<uint64_t>::max)() - head.u)
+            return "model has invalid qwen4exp PLE geometry";
+        cols = (std::max)(cols, offset.u + head.u);
+    }
+    if (tensor->shape.size() != 2 || tensor->shape[0] != rows->u || tensor->shape[1] < cols)
+        return "external PLE shape does not match the model's qwen4exp PLE geometry";
+    return {};
+}
+
 // The shards of one model (strata::gguf_split_paths), opened together; tensors are looked up across all of them.
 // From eddoursul/Strata 8029fa9, with the split-key validation of #255 (gopinath87607) made a property of the
 // model rather than of one loader: a split GGUF carries the model's metadata (general.architecture and the
@@ -497,13 +535,14 @@ inline uint64_t tensor_payload_bytes(const TensorInfo& t) {
 //
 // Refused at construction: a later shard whose split keys disagree with shard 1's (another model's shard, or a
 // shard renamed into the family), a split model whose tensor directories do not add up to split.tensors.count,
-// and a tensor name present in two shards (GGUF has no index to say which one is meant).
+// and a tensor name present in two shards (GGUF has no index to say which one is meant). An explicit skipped PLE
+// shard accounts for its one omitted tensor.
 class GgufModel {
 public:
-    explicit GgufModel(const std::vector<std::string>& paths) {
+    explicit GgufModel(const std::vector<std::string>& paths, int skipped_ple_shard = 0) {
         if (paths.empty()) throw std::runtime_error("GGUF: a model needs at least one shard");
         for (const auto& p : paths) shards_.push_back(std::make_unique<GgufFile>(p));
-        validate_split();
+        validate_split(skipped_ple_shard);
         for (size_t i = 0; i < shards_.size(); ++i)
             for (const auto& t : shards_[i]->tensors()) {
                 const auto ins = index_.emplace(t.name, std::make_pair(i, &t));
@@ -514,7 +553,9 @@ public:
             }
     }
     /// Opens every shard of the model that `any_shard` belongs to (throws when one is missing).
-    static GgufModel open(const std::string& any_shard) { return GgufModel(gguf_split_paths(any_shard)); }
+    static GgufModel open(const std::string& any_shard, int skipped_ple_shard = 0) {
+        return GgufModel(gguf_split_paths(any_shard, skipped_ple_shard), skipped_ple_shard);
+    }
 
     size_t size() const { return shards_.size(); }
     const GgufFile& shard(size_t i) const { return *shards_[i]; }
@@ -536,10 +577,12 @@ public:
     }
 
 private:
-    void validate_split() const {
+    void validate_split(int skipped_ple_shard) const {
         const size_t n = shards_.size();
         const MetaValue* count0 = shards_[0]->get("split.count");
-        if (n == 1) {
+        if (skipped_ple_shard < 0 || (count0 && skipped_ple_shard > (int) count0->u))
+            throw std::runtime_error("GGUF: invalid skipped PLE shard");
+        if (n == 1 && !skipped_ple_shard) {
             if (count0 && count0->u > 1)
                 throw std::runtime_error("GGUF: " + shards_[0]->path() + " is shard 1 of " + std::to_string(count0->u) +
                                          ", but it was opened as a whole model");
@@ -549,21 +592,33 @@ private:
             throw std::runtime_error("GGUF: " + shards_[0]->path() + " has no general.architecture; the first shard "
                                      "of a split model carries the metadata");
         const MetaValue* total = shards_[0]->get("split.tensors.count");
+        const uint64_t split_count = count0 ? count0->u : 0;
+        const uint64_t expected_shards = split_count >= (skipped_ple_shard ? 1u : 0u)
+                                             ? split_count - (skipped_ple_shard ? 1u : 0u)
+                                             : 0;
+        if (!split_count || n != expected_shards || (skipped_ple_shard && !total))
+            throw std::runtime_error("GGUF: split shard count does not match the model metadata");
         uint64_t tensors = 0;
         for (size_t i = 0; i < n; ++i) {
             const GgufFile& g = *shards_[i];
             const MetaValue* count = g.get("split.count");
             const MetaValue* no = g.get("split.no");
             const MetaValue* tc = g.get("split.tensors.count");
-            if (!count || !no || count->u != n || no->u != i || (total && (!tc || tc->u != total->u)))
-                throw std::runtime_error("GGUF: " + g.path() + " does not declare itself shard " + std::to_string(i + 1) +
-                                         " of " + std::to_string(n) + " of this model (split.count / split.no / "
-                                         "split.tensors.count)");
+            const uint64_t expected_no = i + (skipped_ple_shard && i + 1 >= (size_t) skipped_ple_shard);
+            if (!count || !no || count->u != split_count || no->u != expected_no ||
+                (skipped_ple_shard && no->u == (uint64_t) skipped_ple_shard - 1) ||
+                (total && (!tc || tc->u != total->u)))
+                throw std::runtime_error("GGUF: " + g.path() + " does not declare itself shard " +
+                                         std::to_string(expected_no + 1) + " of " + std::to_string(split_count) +
+                                         " of this model (split.count / split.no / split.tensors.count)");
             tensors += g.tensors().size();
         }
-        if (total && tensors != total->u)
-            throw std::runtime_error("GGUF: the " + std::to_string(n) + " shards hold " + std::to_string(tensors) +
-                                     " tensors, but split.tensors.count is " + std::to_string(total->u));
+        if (total && tensors + (skipped_ple_shard ? 1 : 0) != total->u) {
+            if (!skipped_ple_shard)
+                throw std::runtime_error("GGUF: the " + std::to_string(n) + " shards hold " + std::to_string(tensors) +
+                                         " tensors, but split.tensors.count is " + std::to_string(total->u));
+            throw std::runtime_error("GGUF: present shards do not account for split.tensors.count");
+        }
     }
 
     std::vector<std::unique_ptr<GgufFile>> shards_;
