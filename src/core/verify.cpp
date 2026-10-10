@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
+#include "strata/core/vram_floor.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -17,6 +18,7 @@
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/native_gr_norm.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
@@ -64,12 +66,14 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
 inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
-// STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
+// STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi): residency-biased routing.
+// Zero-based tail ranks default to 6-9 for 512/10, 5-7 for 256/8. Off by default; swaps change the output.
 struct RouteResidentCfg;
 RouteResidentCfg& route_resident_cfg();
 struct RouteResidentCfg {
     float margin = 0.0f;
     int lo = 6, hi = 9;
+    bool ranks_override = false;
     unsigned long long* d_stats = nullptr;
     unsigned long long* stats() {
         if (d_stats == nullptr && margin > 0.0f) {
@@ -93,7 +97,10 @@ RouteResidentCfg& route_resident_cfg() {
     static RouteResidentCfg c = [] {
         RouteResidentCfg r;
         if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT")) r.margin = (float) std::atof(v);
-        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT_RANKS")) std::sscanf(v, "%d-%d", &r.lo, &r.hi);
+        if (const char* v = std::getenv("STRATA_ROUTE_RESIDENT_RANKS")) {
+            r.ranks_override = true;
+            if (std::sscanf(v, "%d-%d", &r.lo, &r.hi) != 2) r.lo = r.hi = -1;   // rejected before launching
+        }
         return r;
     }();
     return c;
@@ -204,6 +211,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     s.head_dim = g.head_dim;
     s.idx_n_head = g.idx_q_heads;
     s.idx_dim = g.idx_key_dim;
+    if (!g.has_indexer) s.idx_top_k = strata::kernels::kDenseTopK;   // dense attention (qwen35moe)
     return s;
 }
 
@@ -409,10 +417,30 @@ Verifier::~Verifier() {
         if (h) cudaFreeHost(h);
 }
 
+uint64_t Verifier::dense_attention_bytes(const ModelGeometry& g, const SessionState& ss, int max_t) {
+    if (g.has_indexer || ss.qsa_states == nullptr) return 0;
+    // init's sel_ and attn_scratch_ with cap_ = the whole context
+    const int64_t cap = ss.qsa_states[ss.qsa_primary()].max_cells;
+    const uint64_t per_row = (uint64_t) cap * 4 +
+                             strata::kernels::qsa_decode_attn_scratch_floats(cap, shapes_of(g)) * 4;
+    return (uint64_t) max_t * per_row;
+}
+
+int64_t Verifier::pcie_staging_capacity(int max_t, int64_t k, bool all_misses) {
+    // Two token groups divide staging equally. For an odd T each half must hold ceil(T/2) * k misses.
+    return all_misses ? std::max(kStagingBlobs, (int64_t) ((max_t + 1) / 2) * 2 * k) : kStagingBlobs;
+}
+
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
     g_diag_verifier.store(this);
-    (void) route_resident_cfg().stats();   // STRATA_ROUTE_RESIDENT: the counters are allocated outside graph capture
+    RouteResidentCfg& rr = route_resident_cfg();
+    if (!rr.ranks_override) {
+        const bool rr256 = g.n_expert == 256 && ss.k == 8;
+        rr.lo = rr256 ? 5 : 6;
+        rr.hi = rr256 ? 7 : 9;
+    }
+    (void) rr.stats();   // STRATA_ROUTE_RESIDENT: the counters are allocated outside graph capture
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
         Verifier* none = nullptr;
@@ -445,8 +473,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
-        g.ssm_d_conv != 4) {
+    if ((g.has_hc() && !strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)) || ss.k != g.n_expert_used ||
+        (g.arch == ModelArch::kQwen4Exp && ss.k != 10) || g.ssm_state_size != 128 || g.ssm_d_conv != 4) {
         err = "verify: geometry differs from the artifact's";
         return false;
     }
@@ -461,11 +489,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     n_vocab_ = wo->ne1;
 
     const strata::kernels::QsaShapes s = shapes_of(g);
-    cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
+    // without the indexer every cell is attended: the selection holds the whole context
+    cap_ = g.has_indexer ? strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s)
+                         : ss.qsa_states[ss.qsa_primary()].max_cells;
     max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
+    staging_blobs_ = pcie_staging_capacity(max_t, ss.k, pcie_all_misses_);
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
@@ -539,7 +570,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
-        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+        staging_ = b.take<uint8_t>((uint64_t) staging_blobs_ * strata::kernels::cpu::expert_layout().max_blob);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
@@ -595,7 +626,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
     }
     sink_.staging = (unsigned long long) staging_;
-    sink_.staging_cap = kStagingBlobs;
+    sink_.staging_cap = staging_blobs_;
     (void) TS;
     if (cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess) {
         err = "verify: copy stream create failed";
@@ -681,7 +712,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     return true;
 }
 
-const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
+const float* Verifier::final_R(int t) const { return final_R_all() + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
 
 // ================================ THE WINDOW, AS CAPTURED ================================
 //
@@ -810,13 +841,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 0, grp);
         const LayerView v(wt, l);
         const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
-        const WeightRef *wn[2], *wd[2], *wu[2], *wi[2];
-        for (int h = 0; h < 2; ++h) {
-            wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
-            wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
-            wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
-            wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
-            if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+        const WeightRef *wn[2] = {}, *wd[2] = {}, *wu[2] = {}, *wi[2] = {};
+        if (g.has_hc()) {
+            for (int h = 0; h < 2; ++h) {
+                wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
+                wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
+                wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
+                wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
+                if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+            }
+        } else {   // qwen35moe: one residual stream, an RMSNorm before the mixer and one before the MoE
+            wn[0] = need(v, "attn_norm.weight", err);
+            wn[1] = need(v, "post_attention_norm.weight", err);
+            if (!wn[0] || !wn[1]) return false;
         }
         // the previous layer's FFN write, folded into this layer's first read (a control vector after it has
         // already applied it)
@@ -920,6 +957,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             pending = false;
         }
         auto gr_read_group = [&](int half, bool apply, float* inj_prev, float* inj_out) {
+            if (!g.has_hc()) {
+                // one stream: the pending block output into the residual, then its RMSNorm with this half's weight
+                // (llama.cpp's build_norm) is the mixer's / the MoE's input.  The rows of a group are contiguous.
+                if (apply) add_inplace(Rt(tb), bo_ + tb * N, (int64_t) n * N, cs);
+                native_gr_rms_norm_weighted_multi(Rt(tb), (const float*) wn[half]->data, mixed_ + tb * N, (int) N, 1, n,
+                                                  EPS, cs);   // one gamma row for the group's n tokens
+                return false;
+            }
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = tb; t < te; ++t) {
                 FusedGrArgs& a = fa[t - tb];
@@ -1041,12 +1086,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
                 const QsaState& st = ss.qsa_states[qi];
-                const WeightRef *wik = need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
+                // qwen35moe has no indexer: every cached cell is attended (qsa_select_all), nothing is pooled
+                const bool idx = g.has_indexer;
+                const WeightRef *wik = idx ? need(v, "indexer.k_proj.weight", err) : nullptr, *wq = need(v, "attn_q.weight", err),
                                 *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
-                                *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
+                                *wo = need(v, "attn_output.weight", err),
+                                *wiq = idx ? need(v, "indexer.q_proj.weight", err) : nullptr,
                                 *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                *wiqn = need(v, "indexer.q_norm.weight", err), *wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                *wiqn = idx ? need(v, "indexer.q_norm.weight", err) : nullptr,
+                                *wikn = idx ? need(v, "indexer.k_norm.weight", err) : nullptr;
+                if (!wq || !wk || !wv || !wo || !wqn || !wkn || (idx && (!wik || !wiq || !wiqn || !wikn))) return false;
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
@@ -1081,7 +1130,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
-                const bool qbr = br && qb;
+                // (not without the indexer - qwen35moe: side 1 is the indexer query; that model takes the plain path)
+                const bool qbr = br && qb && idx;
                 if (qbr) {
                     fork(0);
                     native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
@@ -1095,7 +1145,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                               IQ * ID, N, IQ * ID, n, df_side_[1]);
                     norm_rope_on(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, df_side_[1]);
                 }
-                if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
+                if (!idx) {
+                } else if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
                 else for (int t = tb; t < te; ++t)
                     bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, cs);
                 stamp(l, 7, grp);
@@ -1110,7 +1161,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
                 stamp(l, 8, grp);
-                if (batch_rec_) {   // snapshot each slot's indexer tail before its first proposed row
+                if (!idx) {
+                } else if (batch_rec_) {   // snapshot each slot's indexer tail before its first proposed row
                     for (int t = tb; t < te; ++t)
                         if (t == tb || brow_[t] != brow_[t - 1])
                             copy_from_mapped(tail_snap_b_ + ((size_t) brow_[t] * nQall + qi) * TS,
@@ -1164,7 +1216,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs, &st.host);
                 }
-                if (dec_batch && !g_no_batch_kv && !batch_rec_) {
+                if (!idx) {
+                } else if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                     native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
                                                     n, 0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
@@ -1194,9 +1247,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     norm_rope(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH);
                     }
                     if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs);   // <Hq, Hk> = <q, k>
-                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
-                                              N, IQ * ID, n, cs);
-                    norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    if (idx) {
+                        bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID,
+                                                  IQ * ID, N, IQ * ID, n, cs);
+                        norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    }
                 } else {
                 for (int t = tb; t < te; ++t) {
                     float* qc = qcur_ + t * NH * HD;
@@ -1213,7 +1268,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     }
                     if (st.kv_rot) fwht256_inplace_cuda(qc, NH, cs);   // <Hq, Hk> = <q, k>
                 }
-                for (int t = tb; t < te; ++t) {
+                for (int t = tb; t < te && idx; ++t) {
                     float* qx = qidx_ + t * IQ * ID;
                     bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), cs);
                     norm_rope(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
@@ -1224,10 +1279,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        if (!idx) qsa_select_all(step_ + t * kStepCount, 1, cap_, sel_ + (size_t) t * cap_, cs);
+                        else {
                         qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
                                          max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
                                        sel_ + (size_t) t * cap_, cs);
+                        }
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
                         const QsaAttnPools px = qsa_attn_pools(sx);
                         qsa_decode_attn_batch(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_, step_ + t * kStepCount,
@@ -1235,10 +1293,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                               attn_ + t * NH * HD, 1, cs);
                     }
                 } else {
+                if (!idx) qsa_select_all(step_ + tb * kStepCount, n, cap_, sel_ + (size_t) tb * cap_, cs);
+                else {
                 qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
                                  s, scores_ + (size_t) tb * max_blocks_, cs);
                 qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                sel_ + (size_t) tb * cap_, cs);
+                }
                 stamp(l, 11, grp);
                 // KV streaming: the n selections' blocks resident (device-side, inside the graph)
                 qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
@@ -1317,11 +1378,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
-        if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
+        if (route_resident_cfg().margin > 0.0f && ((NE == 512 && K == 10) || (NE == 256 && K == 8)) &&
+            hits_.d_res != nullptr) {
             // STRATA_ROUTE_RESIDENT: after the router, before the plan/doorbell read ids_/w_ (opt-in, changes the output)
             try {
                 native_route_resident(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, hits_.d_res + l * g.n_expert, n,
-                                      route_resident_cfg().margin, route_resident_cfg().lo, route_resident_cfg().hi,
+                                      (int) NE, (int) K, route_resident_cfg().margin,
+                                      route_resident_cfg().lo, route_resident_cfg().hi,
                                       route_resident_cfg().stats() + (n <= 8 ? 4 : 0), cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
@@ -1455,7 +1518,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
             else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                const int64_t per = G == 2 ? staging_blobs_ / 2 : staging_blobs_;
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
                 fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
                 rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
@@ -1506,7 +1569,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
-            if (!fuse_head_gr) {
+            if (!fuse_head_gr && g.has_hc()) {   // (one stream: the head's read adds the last output)
                 if (dec_batch && !g_no_multi_gr) gr_write_multi(Rt(tb), bo_ + tb * N, inj2_ + tb * HC, gs, Rt(tb), n, cs);
                 else for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
                 if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
@@ -1535,66 +1598,77 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---- the head, T columns, and the argmax of each
     stamp(g.n_layers, 0, 0);
     {
-        const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
-                        *hu = wt.find("output_hc_up.weight");
-        if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
-        // S25 (STRATA_HC_Q8=1): the final mixer from the GGUF's Q8_0 projections too, through the same multi read
-        // (no pending write, no inject)
-        const bool mix_q8 = hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
-        if (mix_q8) {
-            FusedGrArgs fa[kFusedGrMaxT];
-            for (int t = 0; t < T; ++t) {
-                FusedGrArgs& a = fa[t];
-                a.R = Rt(t); a.R_out = Rt(t); a.apply = false;
-                a.w_norm = (const float*) hn->data; a.w_down = (const uint16_t*) hd->data;
-                a.w_up = (const uint16_t*) hu->data; a.w_inject = nullptr;
-                a.q8_down = (const uint8_t*) hd->hc_q8; a.q8_up = (const uint8_t*) hu->hc_q8;
-                a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
-                a.mixed = head_mixed_ + t * N;
-            }
-            fused_gr_read_multi(fa, T, xn_, cs);
-        }
-        else if (fuse_head_gr) {
-            FusedGrArgs fa[kFusedGrMaxT];
-            for (int t = 0; t < T; ++t) {
-                FusedGrArgs& a = fa[t];
-                a.R = Rt(t); a.R_out = Rt(t); a.apply = true;
-                a.bo_prev = bo_ + t * N; a.inj_prev = inj2_ + t * HC;
-                a.w_norm = (const float*) hn->data;
-                a.w_down = (const uint16_t*) hd->data;
-                a.w_up = (const uint16_t*) hu->data;
-                a.w_inject = nullptr;
-                a.eps = EPS;
-                a.lo = lo_ + t * g.hc_lr;
-                a.rs = rs_ + t * HC;
-                a.inject_out = head_inj_;
-                a.mixed = head_mixed_ + t * N;
-            }
-            fused_gr_read_multi(fa, T, xn_, cs);
-        } else if (head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
-            // the final mixer, the window's tokens in one read (fused_gr_read_multi without the pending write: the
-            // last layer's write was done above; its sums are gr_read's)
-            if (hn->kind != WeightKind::F32 || hd->kind != WeightKind::Bf16InF32 || hu->kind != WeightKind::Bf16InF32) {
-                err = "verify: the output_hc_* weights have the wrong engine forms";
+        if (!g.has_hc()) {
+            // one stream (qwen35moe): the last layer's output into the residual, then output_norm is the head's input
+            const WeightRef* on = wt.find("output_norm.weight");
+            if (on == nullptr || head_ == nullptr || !head_->loaded()) {
+                err = "verify: a model without hyper-connections needs output_norm.weight and the native head";
                 return false;
             }
-            FusedGrArgs fa[kFusedGrMaxT];
-            for (int t = 0; t < T; ++t) {
-                fa[t].R = Rt(t); fa[t].R_out = Rt(t); fa[t].apply = false;
-                fa[t].w_norm = (const float*) hn->data; fa[t].w_down = (const uint16_t*) hd->data;
-                fa[t].w_up = (const uint16_t*) hu->data; fa[t].eps = EPS;
-                fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = head_mixed_ + t * N;
-            }
-            fused_gr_read_multi(fa, T, xn_, cs);
+            add_inplace(R_, bo_, (int64_t) T * N, cs);
+            native_gr_rms_norm_weighted_multi(R_, (const float*) on->data, head_mixed_, (int) N, 1, T, EPS, cs);
         } else {
-            for (int t = 0; t < T; ++t) {
-                BlockBuffers bb = ss.block;
-                bb.R = Rt(t);
-                bb.mixed = head_mixed_ + t * N;
-                if (head_ != nullptr && head_->loaded()) {
-                    if (!lm_head_mix(wt, g, bb, cs, err)) return false;
-                } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
+            const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
+                            *hu = wt.find("output_hc_up.weight");
+            if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+            // S25 (STRATA_HC_Q8=1): the final mixer from the GGUF's Q8_0 projections too, through the same multi read
+            // (no pending write, no inject)
+            const bool mix_q8 = hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
+            if (mix_q8) {
+                FusedGrArgs fa[kFusedGrMaxT];
+                for (int t = 0; t < T; ++t) {
+                    FusedGrArgs& a = fa[t];
+                    a.R = Rt(t); a.R_out = Rt(t); a.apply = false;
+                    a.w_norm = (const float*) hn->data; a.w_down = (const uint16_t*) hd->data;
+                    a.w_up = (const uint16_t*) hu->data; a.w_inject = nullptr;
+                    a.q8_down = (const uint8_t*) hd->hc_q8; a.q8_up = (const uint8_t*) hu->hc_q8;
+                    a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
+                    a.mixed = head_mixed_ + t * N;
+                }
+                fused_gr_read_multi(fa, T, xn_, cs);
+            }
+            else if (fuse_head_gr) {
+                FusedGrArgs fa[kFusedGrMaxT];
+                for (int t = 0; t < T; ++t) {
+                    FusedGrArgs& a = fa[t];
+                    a.R = Rt(t); a.R_out = Rt(t); a.apply = true;
+                    a.bo_prev = bo_ + t * N; a.inj_prev = inj2_ + t * HC;
+                    a.w_norm = (const float*) hn->data;
+                    a.w_down = (const uint16_t*) hd->data;
+                    a.w_up = (const uint16_t*) hu->data;
+                    a.w_inject = nullptr;
+                    a.eps = EPS;
+                    a.lo = lo_ + t * g.hc_lr;
+                    a.rs = rs_ + t * HC;
+                    a.inject_out = head_inj_;
+                    a.mixed = head_mixed_ + t * N;
+                }
+                fused_gr_read_multi(fa, T, xn_, cs);
+            } else if (head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
+                // the final mixer, the window's tokens in one read (fused_gr_read_multi without the pending write: the
+                // last layer's write was done above; its sums are gr_read's)
+                if (hn->kind != WeightKind::F32 || hd->kind != WeightKind::Bf16InF32 || hu->kind != WeightKind::Bf16InF32) {
+                    err = "verify: the output_hc_* weights have the wrong engine forms";
                     return false;
+                }
+                FusedGrArgs fa[kFusedGrMaxT];
+                for (int t = 0; t < T; ++t) {
+                    fa[t].R = Rt(t); fa[t].R_out = Rt(t); fa[t].apply = false;
+                    fa[t].w_norm = (const float*) hn->data; fa[t].w_down = (const uint16_t*) hd->data;
+                    fa[t].w_up = (const uint16_t*) hu->data; fa[t].eps = EPS;
+                    fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC; fa[t].mixed = head_mixed_ + t * N;
+                }
+                fused_gr_read_multi(fa, T, xn_, cs);
+            } else {
+                for (int t = 0; t < T; ++t) {
+                    BlockBuffers bb = ss.block;
+                    bb.R = Rt(t);
+                    bb.mixed = head_mixed_ + t * N;
+                    if (head_ != nullptr && head_->loaded()) {
+                        if (!lm_head_mix(wt, g, bb, cs, err)) return false;
+                    } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
+                        return false;
+                    }
                 }
             }
         }
@@ -1676,6 +1750,7 @@ void Verifier::refresh_ar() {
 bool Verifier::capture(int T, std::string& err) {
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
         if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
@@ -1765,6 +1840,12 @@ bool Verifier::capture(int T, std::string& err) {
     const cudaError_t us = cudaStreamSynchronize(cs_);
     std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
                  cudaGetErrorString(ue), cudaGetErrorString(us));
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(exec_t);
+        exec_t = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     return true;
 }
 
@@ -1802,6 +1883,8 @@ bool Verifier::capture_commit(std::string& err) {
                                     (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_,
                                     (int) MT);   // S26: t_out_begin = MT - the replay's outputs (y_dummy_) are never read
                 ++gdn_index;
+            } else if (!g.has_indexer) {   // the K/V cells are by position: nothing to replay without an indexer
+                ++qsa_index;
             } else {
                 const QsaState& st = ss.qsa_states[qsa_index];
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
@@ -1837,6 +1920,11 @@ bool Verifier::capture_commit(std::string& err) {
         return false;
     }
     cudaGraphDestroy(graph);
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -2141,7 +2229,7 @@ void Verifier::set_plan_slot(int grp) {
     sink_.ptr2 = sink_.ptr + cap;
     sink_.start2 = base + ptr_off + 4 * cap;
     const int G = last_batch_ ? 1 : (groups_[last_t_] > 0 ? groups_[last_t_] : 1);
-    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+    const int64_t per = G == 2 ? staging_blobs_ / 2 : staging_blobs_;
     sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
 }
@@ -2346,6 +2434,7 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
 bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err) {
     cudaGraphExec_t& ex = exec_bm_[bkey(rows, S, hbase)];
     if (ex != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin batch capture failed";
         return false;
@@ -2372,6 +2461,12 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     std::string list;
     for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
     std::fprintf(stderr, "strata verify: captured the batch window over slots %s\n", list.c_str());
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(ex);
+        ex = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     return true;
 }
 
@@ -2421,6 +2516,8 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                                         t - first > 1 ? t - first : 0);   // a 1-row group keeps the 0.1.39 kernel
                 }
                 ++gdn_index;
+            } else if (!g_->has_indexer) {   // the K/V cells are by position: nothing to replay without an indexer
+                ++qsa_index;
             } else {
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
                 if (!wikn) { ok = false; break; }
@@ -2515,6 +2612,11 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
                              "layouts, %zu kept (a larger --vram-reserve-mib keeps more)\n", freed, exec_bm_.size());
     if (ie != cudaSuccess) {
         err = std::string(what) + cudaGetErrorString(ie);
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        if (ex) cudaGraphExecDestroy(ex);
+        ex = nullptr;
         return false;
     }
     return true;

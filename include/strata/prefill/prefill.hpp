@@ -63,6 +63,9 @@ public:
     /// callbacks stay.  The device `init` ran on must be current.
     void reset();
 
+    /// Whether this prompt path runs model `g` (the geometry `init` requires): Flash-Next's.  For another model
+    /// (Qwen3.6 until its prompt path exists) the prompt is read through the decode windows instead.
+    static bool supports(const core::ModelGeometry& g);
     /// `host_res`: the static residency table (n_layers x n_expert, slot or -1) or null; `cache` its slots.
     /// `borrow`/`borrow_bytes`: device memory to carve every buffer from (the top slots of the expert cache,
     /// lent for the prompt and refilled after it); null = allocate normally.
@@ -142,6 +145,11 @@ public:
 
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
+
+    /// An optional per-chunk admission guard, called at the top of every prompt chunk (once per `m.T`-sized
+    /// chunk, after the split): a false return ends the run with `err`.  The VRAM cap uses it so a long
+    /// prefill cannot step past the free-memory floor between its first and its last chunk.
+    std::function<bool(std::string& err)> chunk_guard;
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.

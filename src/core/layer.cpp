@@ -504,7 +504,7 @@ if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    ret
 namespace {using strata::kernels::QsaIndexerBuffers;using strata::kernels::QsaShapes;
 /// The geometry the QSA kernels want, from the one place that defines it.  `ModelGeometry` carries the widths
 /// the LAYOUT needs; `QsaShapes` adds `n_rot`, `idx_block` and `idx_top_k`, which are kernel contracts.
-QsaShapes qsa_shapes(const ModelGeometry& g) {    QsaShapes s = strata::kernels::qsa_real_shapes();    s.n_head = g.n_head;    s.n_head_kv = g.n_head_kv;    s.head_dim = g.head_dim;    s.idx_n_head = g.idx_q_heads;    s.idx_dim = g.idx_key_dim;    return s;}
+QsaShapes qsa_shapes(const ModelGeometry& g) {    QsaShapes s = strata::kernels::qsa_real_shapes();    s.n_head = g.n_head;    s.n_head_kv = g.n_head_kv;    s.head_dim = g.head_dim;    s.idx_n_head = g.idx_q_heads;    s.idx_dim = g.idx_key_dim;    if (!g.has_indexer) s.idx_top_k = strata::kernels::kDenseTopK;    return s;}
 uint64_t align_up16(uint64_t n) { return (n + 15) & ~15ull; }
 /// One cursor over an arena, so every region is 16-byte aligned without a list of hand-added offsets.
 struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>    T* take(uint64_t count) {        T* r = (T*) (p + used);        used = align_up16(used + count * sizeof(T));        return r;    }    uint8_t* take_bytes(uint64_t n) {        uint8_t* r = p + used;        used = align_up16(used + n);        return r;    }};
@@ -898,6 +898,12 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+    if (st.kv_mode == 1) {   // streamed: a selected block the resolve could not make resident is read from RAM in place
+        pools.host_k_pool = st.host.k_pool; pools.host_v_pool = st.host.v_pool;
+        pools.host_k_q = st.host.k_q; pools.host_v_q = st.host.v_q;
+        pools.host_k_scale = st.host.k_scale; pools.host_v_scale = st.host.v_scale;
+        pools.host_k_q4 = st.host.k_q4; pools.host_v_q4 = st.host.v_q4;
+    }
     return pools;
 }
 

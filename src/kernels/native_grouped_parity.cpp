@@ -345,10 +345,14 @@ int main(int argc, char** argv) {
 #ifdef STRATA_Q6K_EXPERTS
                    14,
 #endif
-                   8})        // STRATA_GU_FMTS
-        for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
+                   8, 11, 10})        // STRATA_GU_FMTS
+        for (int dt : {20, 23, 42, 7, 8, 14, 12, 13, 18, 11}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     check(21, 23, 2560, 768, s, rng);
+    check(21, 23, 2048, 512, s, rng);                                   // Qwen3.6 UD-IQ4_XS
+    check(22, 14, 2048, 512, s, rng);                                   // UD-IQ3_S's 6-bit layers
+    check(10, 12, 2048, 512, s, rng);                                   // the UD-IQ3_S MTP layer
+    check(11, 12, 2048, 512, s, rng);                                   // the UD-IQ4_XS MTP layer
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);
     cudaStreamDestroy(s);

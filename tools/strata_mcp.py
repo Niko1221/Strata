@@ -67,6 +67,18 @@ FALLBACK_MODELS = {
                            "less than ~80 GB of RAM part of its experts are read from the SSD",
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "vision": True},
+    "Qwen3.6-UD-IQ4_XS": {"size": "UD-IQ4_XS", "about": "~4-bit i-quant (Unsloth Dynamic), the recommended size: "
+                                                        "~14 GiB of experts in RAM, comfortable on 32 GB",
+                          "download_gb": 18.2, "ram_gb": 26, "arena_gb": 15.2, "families": ("qwen36",)},
+    "Qwen3.6-UD-IQ3_S": {"size": "UD-IQ3_S", "about": "~3.5-bit i-quant (Unsloth Dynamic), smaller: for 16-24 GB of "
+                                                      "RAM (16 GB: a 12 GB card, the low-RAM mode)",
+                         "download_gb": 15.3, "ram_gb": 24, "arena_gb": 12.9, "families": ("qwen36",)},
+    "Ornith-1.5-IQ4_XS": {"size": "IQ4_XS", "about": "~4-bit i-quant (bartowski), the recommended size: "
+                                                    "~16 GiB of experts in RAM, comfortable on 32 GB",
+                          "download_gb": 19.3, "ram_gb": 28, "arena_gb": 17.1, "families": ("ornith",)},
+    "Ornith-1.5-IQ3_XXS": {"size": "IQ3_XXS", "about": "~3-bit i-quant (bartowski), smaller: for 16-24 GB of RAM "
+                                                      "(16 GB: a 12 GB card, the low-RAM mode)",
+                           "download_gb": 15.3, "ram_gb": 24, "arena_gb": 13.3, "families": ("ornith",)},
 }
 FALLBACK_FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},
@@ -78,6 +90,10 @@ FALLBACK_FAMILIES = {
                                                                   "of RAM part of its experts are read from the SSD "
                                                                   "(UD-Q4_K_XL, 111 GB: experimental)",
                 "tag": "unsloth-", "vision": False},
+    "qwen36": {"title": "Qwen3.6-35B-A3B", "about": "a smaller model for 16-32 GB of RAM and 8-12 GB cards (18 GB "
+                                                    "download); no images yet", "tag": "qwen36-", "vision": False},
+    "ornith": {"title": "Ornith-1.5-35B-A3B", "about": "Qwen3.6-35B-A3B's size, tuned for coding agents (19 GB "
+                                                       "download); no images yet", "tag": "ornith15-", "vision": False},
 }
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -646,8 +662,10 @@ class Strata:
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
-        Coder below the full model's RAM (setup's RAM table), the low-RAM mode when the GPU makes up for the RAM, and
-        the context it preselects for the card's VRAM (32K under 14 GB, 64K under 20 GB, else 128K)."""
+        Coder below the full model's RAM (setup's RAM table), Qwen3.6-35B-A3B where no Flash-Next size reaches the
+        RAM (setup's qwen36_recommended: the 16-24 GB PCs, the size by qwen36_size), the low-RAM mode when the GPU
+        makes up for the RAM, and the context it preselects for the card's VRAM (32K under 14 GB, 64K under 20 GB,
+        else 128K; Qwen3.6 on a card under 5.5 GB: 8K)."""
         models, families, _ctx, _src = self.tables()
         S = self.setup_module()
         usable = [g for g in hw.get("gpus", []) if g.get("usable")]
@@ -668,6 +686,23 @@ class Strata:
             except Exception:                           # noqa: BLE001
                 return False
         notes = []
+        small_vram = getattr(S, "SMALL_MODEL_VRAM_GB", 5.5) if S else 5.5
+
+        def q36_pick():
+            """(size key, fits) for Qwen3.6 on this PC, as setup picks it; ("", False) without the family."""
+            sizes = [m for m in self.sizes_of(models, "qwen36") if not models[m].get("experimental")]
+            if not sizes:
+                return "", False
+            try:
+                if S:
+                    m = S.small_size("qwen36", ram, vram)
+                    return m, not S.low_ram_needed(m, ram) or S.low_ram_fits(m, ram, vram)
+            except Exception:                           # noqa: BLE001
+                pass
+            m = next((x for x in sizes if ram >= models[x]["ram_gb"] - 4), sizes[-1])
+            return m, ram >= models[m]["ram_gb"] - 4 or low_fits(m)
+        q36_wanted = (S.qwen36_recommended(ram) if S and hasattr(S, "qwen36_recommended")
+                      else ram < models["IQ1_M"]["ram_gb"] - 4) and "qwen36" in families
         if ram >= 60:
             fam, model, why = "qwen", "IQ3_XXS", f"{ram:.0f} GB of RAM: setup's own pick from 60 GB (better quality)"
         elif ram >= models["Q2_0"]["ram_gb"] - 4:
@@ -675,24 +710,45 @@ class Strata:
         elif ram >= models["IQ1_M"]["ram_gb"] - 4:
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM: the full model needs ~48 GB; the Coder "
                                                  "(half the experts, best for code) needs ~32 GB")
+        elif q36_wanted and q36_pick()[1]:
+            fam, model = "qwen36", q36_pick()[0]
+            low = bool(S) and S.low_ram_needed(model, ram)
+            why = (f"{ram:.0f} GB of RAM: no Qwen3.8-Flash-Next size fits (the Coder needs ~32 GB); Qwen3.6-35B-A3B, "
+                   f"the smaller model of the same family, keeps ~{models[model]['arena_gb']:.0f} GB of experts in RAM"
+                   + (f" - in setup's low-RAM mode, the {vram:.0f} GB card holding part of them" if low else ""))
         elif low_fits("IQ1_M"):
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but the GPU's "
                                                  f"{vram:.0f} GB make up for it (setup's low-RAM mode: slower)")
+        elif q36_wanted:
+            m = q36_pick()[0]
+            return {"family": None, "model": None,
+                    "why": f"{ram:.0f} GB of RAM with a {vram:.0f} GB card: the smallest model, Qwen3.6-35B-A3B "
+                           f"{models[m].get('size', m)}, keeps ~{models[m]['arena_gb']:.0f} GB of experts in RAM; on "
+                           "16 GB of RAM it needs a 12 GB card (setup's low-RAM mode)"}
         else:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
                                                           "RAM)"}
+        small = fam == "qwen36"
         ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-        if vram < 11:
-            notes.append("less than 12 GB of VRAM: it runs, but slowly (most experts stay on the CPU)")
+        if small and vram < small_vram:
+            ctx = 8192
+            notes.append(S.small_model_vram_note(vram) if S and hasattr(S, "small_model_vram_note") else
+                         f"a {vram:.0f} GB card is at this model's floor: an 8K context and --draft-vocab en")
+        elif vram < 11 and not small:
+            notes.append("less than 12 GB of VRAM: it runs, but slowly (most experts stay on the CPU); "
+                         "Qwen3.6-35B-A3B (--family qwen36) is made for 6-12 GB cards")
         if hw.get("cpu", {}).get("avx2") is False:      # #623: a warning, not a stop (setup compiles for it)
             notes.append("this CPU has no AVX2: EXPERIMENTAL and slow - setup compiles the engine on this PC for the "
                          "older CPU (10-20 minutes), and the CPU's share of the experts runs a few times slower")
         if backend == "hip":
-            notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images")
+            notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images"
+                         + ("; Qwen3.6-35B-A3B is untested on AMD and reads prompts through the decode windows "
+                            "(its batched prompt path is NVIDIA-only)" if small else ""))
+        size = models[model].get("size", model)        # Qwen3.6's keys carry the model; setup takes the size name
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
-               f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
-        return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
+               f" --yes --family {fam} --model {size} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
+        return {"family": fam, "model": model, "title": families[fam]["title"] + " " + size, "context": ctx,
                 "backend": backend, "gpu": {k: best.get(k) for k in ("index", "name", "vram_gb")},
                 "download_gb": models[model]["download_gb"], "why": why, "notes": notes, "setup_command": cmd}
 
@@ -708,7 +764,7 @@ class Strata:
             sizes = []
             for m in self.sizes_of(models, f):
                 d = models[m]
-                tag = (fd.get("tag", "") + m).lower()
+                tag = (fd.get("tag", "") + d.get("size", m)).lower()   # (Qwen3.6's keys carry the model)
                 verdict = None
                 if ram is not None:
                     verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
@@ -1226,6 +1282,8 @@ class Tools:
             fams = [f for f in families if model in s.sizes_of(models, f)]
             family = "qwen" if "qwen" in fams else fams[0]
         sizes = s.sizes_of(models, family)
+        if model not in sizes:                          # a published size name (qwen36's UD-IQ4_XS) -> its key
+            model = next((m for m in sizes if models[m].get("size", "").upper() == str(model).upper()), model)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
         if context is None:
@@ -1247,7 +1305,7 @@ class Tools:
                 raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
                                 "Linux) or vision=no")
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
-        tag = (families[family].get("tag", "") + model)
+        tag = (families[family].get("tag", "") + models[model].get("size", model))
         have_dir = target / "models" / tag
         partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
         need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)

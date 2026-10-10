@@ -107,7 +107,11 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
                 m.slot_stamp[sl] = epoch;
                 m.slot_ref[sl] = 1;
             } else if (sl == -1 && atomicCAS(&m.page_table[b], -1, -2) == -1) {
-                m.miss_block[atomicAdd(&s_nmiss, 1)] = b;
+                // the miss list holds n_slots: a dense selection (qwen35moe, every cell) can miss more blocks than
+                // that, and the readers take those from the host copy in place (qsa_decode_attn's cell_row)
+                const int k = atomicAdd(&s_nmiss, 1);
+                if (k < (int) m.n_slots) m.miss_block[k] = b;
+                else m.page_table[b] = -1;
             }
         }
     }
@@ -115,7 +119,7 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
     __syncthreads();
     // 2. one victim per miss: a clock sweep from the hand. A slot this call uses (stamp == epoch) is never taken;
     //    a referenced one loses its bit as the hand passes it and is taken on the next pass.
-    const int need = s_nmiss, n = (int) m.n_slots;
+    const int n = (int) m.n_slots, missed = s_nmiss, need = missed < n ? missed : n;
     int hand = m.ctl[1], got = 0;
     for (int scanned = 0; got < need && scanned < 3 * n; scanned += RT) {
         const int j = (int) (((long long) hand + threadIdx.x) % n);
@@ -143,7 +147,7 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
     const int placed = got < need ? got : need;
     for (int k = threadIdx.x; k < need; k += RT) {
         const int b = m.miss_block[k];
-        if (k >= placed) { m.page_table[b] = -1; continue; }   // overflow: never happens with a legal n_slots
+        if (k >= placed) { m.page_table[b] = -1; continue; }   // no slot: read from the host copy in place
         const int sl = m.miss_slot[k];
         const int old = m.slot_block[sl];
         if (old >= 0) m.page_table[old] = -1;
@@ -156,9 +160,9 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
         m.ctl[0] = epoch;
         m.ctl[1] = hand;
         m.ctl[2] = placed;
-        if (placed < need) m.ctl[3] = 1;
+        if (placed < missed) m.ctl[3] = 1;
         unsigned long long* c = reinterpret_cast<unsigned long long*>(m.ctl + 4);
-        c[0] += (unsigned long long) placed;
+        c[0] += (unsigned long long) missed;   // from RAM: copied into a slot, or read in place
         c[1] += (unsigned long long) s_lookups;
         c[2] += 1ull;
     }

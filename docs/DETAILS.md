@@ -546,6 +546,20 @@ Terminal chat: `.venv/bin/python chat.py`.
 
 ## Sharing the GPU with other programs (optional)
 
+**Optional total-VRAM cap (CUDA/HIP):** setup's `--vram-cap 0.8` writes `--vram-frac 0.8` into the run config's
+`args`; the engine also accepts `STRATA_VRAM_FRAC`. It budgets against **total**, not currently free, VRAM on each
+GPU it uses. The fraction must be finite and `0 < F <= 1`; omitted or `1` means **cap off**, with the existing
+allocation path unchanged. An explicit engine flag wins over the environment (including `1` to turn it off).
+The effective reserve is `max(existing reserve, ceil((1-F) * total MiB))`: on a 12 GiB card, `0.8` keeps a
+2,458 MiB floor rather than the default 700 MiB, and an explicit larger `--vram-reserve-mib` still wins. Late
+engine buffers are budgeted separately so they do not spend that floor; Windows/WSL also keeps 1 GiB of extra
+headroom because WDDM can overstate free VRAM before the cache is written (a ceiling, not a target to fill).
+Both automatic and fixed expert caches
+are constrained; small-card reserve reduction and an elastic `VRAM 0` command cannot undo the cap. Setup keeps it
+on reruns; `--vram-cap 1` opts out. This is reserve-based budgeting, not a GPU-driver quota: a configuration that
+cannot keep the floor fails rather than relaxing it, and peak-VRAM validation on real hardware is still required.
+RAM recommendations are unchanged; the separate SYCL engine does not accept this option.
+
 By default the model stays loaded until you close Strata. On a PC that also games, renders or runs another model
 server, three server options (all off by default; also as keys in `strata-<model>.json`) give the VRAM back:
 

@@ -61,6 +61,8 @@ LAYOUT = {   # (block values, block bytes) == the vendored gguf-py's GGML_QUANT_
     "IQ4_NL":   (32,  18),
     "IQ4_XS":  (256, 136),
     "Q3_K":    (256, 110),
+    "Q2_K":    (256,  84),
+    "Q4_0":     (32,  18),
 }
 HALF_ONE = struct.pack("<e", 1.0)      # fp16 1.0 = 0x3c00: a tame, exactly-representable scale
 
@@ -75,6 +77,10 @@ def repair_scales(name: str, raw: np.ndarray) -> None:
     if name == "Q3_K":
         raw[:, 108:110] = np.frombuffer(HALF_ONE, dtype=np.uint8)
         return
+    if name == "Q2_K":                             # 16 scale bytes, 64 code bytes, then the fp16 d and dmin
+        raw[:, 80:82] = np.frombuffer(HALF_ONE, dtype=np.uint8)
+        raw[:, 82:84] = np.frombuffer(HALF_ONE, dtype=np.uint8)
+        return
     if name == "IQ1_M":
         raw[:, 48:56] &= np.uint8(0x0F)            # clear the four scale nibbles
         for byte, nib in ((49, 0x30), (51, 0xC0), (54, 0x00), (55, 0x00)):
@@ -83,7 +89,7 @@ def repair_scales(name: str, raw: np.ndarray) -> None:
     raw[:, 0:2] = np.frombuffer(HALF_ONE, dtype=np.uint8)
 # name -> (the KERNEL type id written into the .bin header, identical to the gguf-py enum id)
 KERNEL_IDS = {"IQ2_XXS": 16, "IQ2_XS": 17, "IQ2_S": 22, "IQ3_XXS": 18, "IQ3_S": 21,
-              "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11}
+              "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11, "Q2_K": 10, "Q4_0": 2}
 
 
 def build(name: str, rows: int, cols: int, seed: int):

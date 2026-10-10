@@ -3122,6 +3122,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) MAXT);
     const ExpertLayout& lay = expert_layout();
     const bool native = lay.native;
+    const int64_t HN = native ? lay.n_embd : H;   // the rows' width: Flash-Next's H, or Qwen3.6's 2048
+    auto quality_fail = [&](const char* message, int64_t expert = -1) {
+        d.failed = true;
+        d.fail = message;
+        d.fail_layer = d.layers;
+        d.fail_expert = expert;
+        std::memset(out, 0, (size_t) (n_tok * k * HN) * sizeof(float));
+    };
+    if (d.require_gpu_experts && (d.plan == nullptr || n_tok * k > d.plan->cap || d.host_res == nullptr)) {
+        quality_fail("--vram-cap-mode quality needs a GPU plan covering every routed entry");
+        return;
+    }
     if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
     if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
@@ -3163,12 +3175,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
             }
         }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->pcie_layer(d.layers);
-        const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
+        const bool pcie_ok = (d.require_gpu_experts || d.pcie_num > 0) && d.src->pcie_layer(d.layers);
+        const int m = pcie_ok ? (d.require_gpu_experts ? nmiss : (nmiss * d.pcie_num) >> 8) : 0;
         int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
-        const uint8_t* dma_src[64];
-        int64_t pcie_i0[64];
+        const uint8_t* dma_src[kMaxWindowEntries];
+        int64_t pcie_i0[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) {
             const int64_t i0 = distinct[q];
             const int32_t e = ids[i0];
@@ -3188,7 +3200,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
-                    if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
+                    if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < kMaxWindowEntries) {
                         const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
                         if (src != nullptr) {
                             kd = 1;
@@ -3199,6 +3211,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     }
                     ++miss_rank;
                 }
+            }
+            if (d.require_gpu_experts && kd != 0 && kd != 1) {
+                // No plan has been published yet. The verifier drains an empty plan on failure and the driver
+                // refuses the window; it must not silently compute this expert with the CPU's Q8_K contract.
+                quality_fail("--vram-cap-mode quality: a miss is not pinned/mapped or exceeds GPU staging; "
+                             "keep the arena pinned or reduce --spec (fast allows CPU fallback)", e);
+                return;
             }
             for (int64_t i = i0; i < n; ++i)
                 if (first_of[i] == i0) kind[i] = kd;
@@ -3219,6 +3238,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             const int64_t i0 = pcie_i0[q];
             P.ptr2[q] = P.pcie_mode != 0 ? (unsigned long long) d.src->device_alias(d.layers, ids[i0])
                                  : P.staging + (unsigned long long) q * (unsigned long long) bb;
+            if (d.require_gpu_experts && P.ptr2[q] == 0) {
+                quality_fail("--vram-cap-mode quality: a miss has no GPU-visible blob address", ids[i0]);
+                return;
+            }
             P.start2[q] = entries;
             for (int64_t i = i0; i < n; ++i)
                 if (first_of[i] == i0) {
@@ -3279,9 +3302,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t t = 0; t < n_tok; ++t) {
             if (ep && std::all_of(kind + t * k, kind + (t + 1) * k, [](int32_t v) { return v >= 0; })) continue;
             if (native && strata::kernels::cpu::q2_native_kernels(lay.fmt[(size_t) d.layers].gu_type))   // a native Q2_0 pack: the Q2_0 kernels' activations
-                act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+                act_quant_any(x_f + (size_t) t * HN, (int) HN, d.act_multi[(size_t) t]);
             else if (native)
-                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * H, d.nact_multi.data() + (size_t) t * kNativeActBytes);
+                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * HN, d.nact_multi.data() + (size_t) t * kNativeActBytes);
             else
                 act_quant_q8_1(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
         }
@@ -3301,7 +3324,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t j = 0; j < k; ++j) {
             const int64_t i = t * k + j;
             const int64_t e = ids[i];
-            float* row = out + (size_t) i * H;
+            float* row = out + (size_t) i * HN;
             if (e < 0 || e >= d.n_expert) {
                 d.failed = true;
                 d.fail = "a routed expert id is out of range";
@@ -3317,7 +3340,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 // dec_batch: copy_rows_from_mapped_kernel already zeroes kind 0/1 rows on the GPU
                 if (!((kind[i] == 2 && d.peer != nullptr && d.peer->launched_direct()) ||
                       (gpu_zeroes_hits && (kind[i] == 0 || kind[i] == 1))))
-                    std::memset(row, 0, (size_t) H * sizeof(float));
+                    std::memset(row, 0, (size_t) HN * sizeof(float));
                 continue;
             }
             ++d.cache_refused;
