@@ -567,6 +567,8 @@ class Assembler:
         elif kind == "content":
             if not ev.text:
                 return out
+            if self.item is not None and self.item["type"] in ("function_call", "custom_tool_call"):
+                out += self.close("incomplete")
             if self.json_mode:                       # sent once it is checked (finish)
                 out += self.close()
                 self.json_text.append(ev.text)
