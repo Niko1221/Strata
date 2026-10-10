@@ -53,7 +53,8 @@ the kernel's amdgpu driver (no ROCm install needed):
   (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32); on Windows from the driver's ADL
-  library (`atiadlxx.dll`, part of Adrenalin: activity, graphics temperature, ASIC power) and the OS counter
+  library (`atiadlxx.dll`, part of Adrenalin: activity, graphics temperature, board power where the card reports it,
+  else ASIC power) and the OS counter
   `\GPU Adapter Memory(<luid>)\Dedicated Usage` (checked on a Radeon 8060S; an APU's ASIC power is the whole chip).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
