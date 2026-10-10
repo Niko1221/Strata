@@ -65,8 +65,10 @@ void fused_gr_set_fast(int on);
 /// every output with exactly the staged read's operations in its order. On runtime gfx1200/gfx1201 only, the P4
 /// register-half down kernel is selected by default iff its bitwise self-test passes against staged for T=1..8,
 /// apply on/off, and inject weights present/null. Other architectures retain upstream's staged selection. The
-/// explicit STRATA_HC_SPLIT=2 forces staged; =7 requests P4 but is still architecture- and parity-gated; =0 keeps
-/// plain and =1 selects split. `fused_gr_check` runs once per card (Verifier::init) and prints the effective path.
+/// STRATA_HC_SPLIT unset runs the P4 self-test on gfx1200/gfx1201 and selects it only if bitwise parity passes.
+/// `=2` requests staged and `=7` opts into P4 testing, both still arch/parity gated; the verifier can fall back to
+/// split/plain if the requested path fails its check. `=0` selects plain and `=1` selects split, skipping P4 testing.
+/// `fused_gr_check` runs once per card and latches its choice.
 void fused_gr_check();
 int fused_gr_variant();
 
