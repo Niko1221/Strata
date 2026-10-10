@@ -56,6 +56,7 @@ set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 
 add_executable(strata-vision strata_vision.cpp)
+target_include_directories(strata-vision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_link_libraries(strata-vision PRIVATE mtmd llama)
 target_compile_features(strata-vision PRIVATE cxx_std_17)
 set_target_properties(strata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
