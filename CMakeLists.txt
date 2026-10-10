@@ -255,6 +255,10 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(batch_read_test PRIVATE include)
   add_test(NAME batch_read_test COMMAND batch_read_test)
 
+  add_executable(peer_placement_test tests/core/peer_placement_test.cpp)
+  target_include_directories(peer_placement_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  add_test(NAME peer_placement_test COMMAND peer_placement_test)
+
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
   add_executable(tuning_header_arch_family_test tests/prefill/tuning_header_arch_family_test.cpp)
