@@ -24,7 +24,6 @@ class ThinkTokenizer(ByteTokenizer):
     Qwen vocabulary: the case #537's plain spans exist for."""
     SPECIALS = ByteTokenizer.SPECIALS + ["<think>", "</think>"]
     ALWAYS = ("<think>", "</think>")
-    max_special_len = max(len(s) for s in SPECIALS)
 
 
 PIECES = ["<|im_start|>user\n", "<|im_end|>\n", "<think>", "</think>", "hello ", "é你 ", "<|im_sta", "x" * 7,
@@ -34,14 +33,8 @@ PIECES = ["<|im_start|>user\n", "<|im_end|>\n", "<think>", "</think>", "hello ",
 def spans_of(text, rng):
     """Random plain spans over the specials' texts (<think>, </think>, <|im_start|>, ...), as unmark_think_literals
     marks the ones quoted inside a message."""
-    found = sorted((m.start(), m.end()) for m in re.finditer("|".join(map(re.escape, ThinkTokenizer.SPECIALS)), text))
-    out, end = [], 0
-    for a, b in found:
-        if a >= end:                                                # as the tokenizer scans: left to right, no overlap
-            end = b
-            if rng.random() < 0.5:
-                out.append((a, b))
-    return tuple(out)
+    matches = re.finditer("|".join(map(re.escape, ThinkTokenizer.SPECIALS)), text)
+    return tuple((m.start(), m.end()) for m in matches if rng.random() < 0.5)   # finditer: left to right, no overlap
 
 
 class Units(unittest.TestCase):

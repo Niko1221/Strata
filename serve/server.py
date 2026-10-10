@@ -2432,7 +2432,9 @@ class ByteTokenizer:
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
-    max_special_len = max(len(s) for s in SPECIALS)
+    @property
+    def max_special_len(self):
+        return max(len(s) for s in self.SPECIALS)
 
     @property
     def control_tokens(self):

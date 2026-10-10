@@ -1763,8 +1763,9 @@ class IncrementalPrompts(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "tools"))
         from test_strata_tokenizer import conversation_prompts, load_tokenizer
         toks = [("byte", ByteTokenizer())]
-        if load_tokenizer() is not None:
-            toks.append(("qwen35", load_tokenizer()))
+        qwen = load_tokenizer()
+        if qwen is not None:
+            toks.append(("qwen35", qwen))
         for name, tok in toks:
             svc = Service(self.engine, tok, self.svc.template)
             for seed in range(3):
@@ -1775,10 +1776,13 @@ class IncrementalPrompts(unittest.TestCase):
     def test_a_tokenizer_without_resume_points_encodes_in_full(self):
         class Plain:
             """ByteTokenizer without the resume points."""
+            def __init__(self):
+                self.base = ByteTokenizer()
+
             def __getattr__(self, name):
                 if name in ("encode_marked", "max_special_len"):
                     raise AttributeError(name)
-                return getattr(ByteTokenizer(), name)
+                return getattr(self.base, name)
         svc = Service(self.engine, Plain(), self.svc.template)
         self.assertIsNone(svc.prompts)
         msgs = [{"role": "user", "content": "hi"}]
