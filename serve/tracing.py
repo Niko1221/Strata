@@ -296,7 +296,17 @@ class Tracing:
         The queue empties the moment the export thread takes a batch out, so this waits for the batch in flight
         too - close() must never end the process with spans whose POST never finished."""
         deadline = time.monotonic() + max(drain_s, FLUSH_S + 0.5)
-        while (not self._q.empty() or self._inflight) and time.monotonic() < deadline:
+        quiet_since = None
+        while time.monotonic() < deadline:
+            busy = not self._q.empty() or self._inflight
+            if busy:
+                quiet_since = None
+            else:
+                # the record's finish() runs on the server's settling thread: a span can land in the
+                # queue a beat after the answer is written.  A quarter second of quiet drains for good.
+                quiet_since = quiet_since or time.monotonic()
+                if time.monotonic() - quiet_since >= 0.5:
+                    return
             time.sleep(0.05)
 
 
