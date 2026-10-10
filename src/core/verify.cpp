@@ -1925,6 +1925,22 @@ bool Verifier::capture_commit(std::string& err) {
         commit_exec_ = nullptr;
         return false;
     }
+    // The first commit's implicit upload is a later allocation of its own: make it explicit here and re-check
+    // the floor, exactly as the window capture does.  Without this, an instantiate that passed could still be
+    // followed by an upload that crosses the floor.
+    const cudaError_t ue = cudaGraphUpload(commit_exec_, cs_);
+    const cudaError_t us = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess || us != cudaSuccess) {
+        err = std::string("verify: commit upload: ") + cudaGetErrorString(ue != cudaSuccess ? ue : us);
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphUpload", err)) {
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -2561,7 +2577,22 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
     }
     const bool made = instantiate_evicting(cex, graph, bkey(rows, S, hbase), "verify: batch commit instantiate: ", err);
     cudaGraphDestroy(graph);
-    return made;
+    if (!made) return false;
+    // Same as capture_commit: charge the first commit's implicit upload against the floor explicitly.
+    const cudaError_t ue = cudaGraphUpload(cex, cs_);
+    const cudaError_t us = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess || us != cudaSuccess) {
+        err = std::string("verify: batch commit upload: ") + cudaGetErrorString(ue != cudaSuccess ? ue : us);
+        cudaGraphExecDestroy(cex);
+        cex = nullptr;
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphUpload", err)) {
+        cudaGraphExecDestroy(cex);
+        cex = nullptr;
+        return false;
+    }
+    return true;
 }
 
 bool Verifier::evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err) {

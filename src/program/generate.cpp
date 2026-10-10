@@ -2578,7 +2578,7 @@ int main(int argc, char** argv) {
     // capped caches never shrink based on post-touch telemetry (a transient overshoot also counts as a peak).
     const uint64_t cap_wddm_bytes = strata::program::vram_cap::startup_haircut_bytes(o.vram_frac, vram_capped && under_wddm());
     const int64_t cap_late_bytes = vram_capped ? (700ll << 20) + (int64_t) cap_wddm_bytes : 0;
-    auto check_vram_cap = [&](const char* where) -> bool {
+    auto check_vram_cap = [&](const char* where, uint64_t needed_bytes = 0) -> bool {
         if (!vram_capped) return true;   // no extra device calls at all on the default path
         std::set<int> devices{0};
         devices.insert(split_devs.begin(), split_devs.end());
@@ -2593,10 +2593,16 @@ int main(int argc, char** argv) {
                 return false;
             }
             const int64_t floor = strata::program::vram_cap::floor_mib((uint64_t) tb, o.vram_frac);
-            if ((uint64_t) fb < ((uint64_t) floor << 20)) {
+            const uint64_t need_bytes = (uint64_t) floor << 20;
+            if ((uint64_t) fb < need_bytes || (uint64_t) fb - need_bytes < needed_bytes) {
                 std::fprintf(stderr, "strata generate: --vram-frac %.6g: CUDA%d has %llu MiB free, needs %lld MiB "
-                                     "kept free (%s). Use a smaller context/chunk or a larger fraction; cap not relaxed\n",
-                             o.vram_frac, dev, (unsigned long long) (fb >> 20), (long long) floor, where);
+                                     "kept free (%s)%s. Use a smaller context/chunk or a larger fraction; cap not relaxed\n",
+                             o.vram_frac, dev, (unsigned long long) (fb >> 20), (long long) floor, where,
+                             needed_bytes ? " after this allocation" : "");
+                std::fprintf(stderr, "strata vram: REFUSED %s free_mib=%llu floor_mib=%lld%s\n", where,
+                             (unsigned long long) (fb >> 20), (long long) floor,
+                             needed_bytes ? (std::string(" needed_mib=") + std::to_string((needed_bytes + (1 << 20) - 1) >> 20)).c_str() : "");
+                std::fflush(stderr);
                 return false;
             }
         }

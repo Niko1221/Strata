@@ -1392,6 +1392,14 @@ bool MtpDrafter::prepare_prefill(std::string& err) {
     const OnDevice on_device(device_);
     const int64_t per_row = 1 + 4 + g_->n_head;
     if (pf_cap_ < (int64_t) max_t_ * per_row) {
+        // The records are booked in the frozen cache budget; charge them against the floor before taking them,
+        // so short headroom refuses here instead of allocating under it and keeping the buffer.
+        const uint64_t need_bytes = (uint64_t) (max_t_ * per_row) * sizeof(int32_t);
+        std::string floor_err;
+        if (!strata::core::vram_floor_allow("before the MTP prefill records", floor_err, need_bytes)) {
+            err = floor_err;
+            return false;
+        }
         if (pf_dev_) cudaFree(pf_dev_);
         pf_dev_ = nullptr;
         pf_cap_ = 0;
@@ -1434,6 +1442,14 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
     if (!per_group_sync && n > 0) {
         if (pf_cap_ < n * per_row) {
+            // Same charge as prepare_prefill: the grown buffer is booked, and a floor hit refuses rather than
+            // keeping it under the floor when a later graph check fails.
+            const uint64_t need_bytes = (uint64_t) (n * per_row) * sizeof(int32_t);
+            std::string floor_err;
+            if (!strata::core::vram_floor_allow("before the MTP prefill records", floor_err, need_bytes)) {
+                err = floor_err;
+                return false;
+            }
             if (pf_dev_) cudaFree(pf_dev_);
             pf_dev_ = nullptr;
             pf_cap_ = 0;

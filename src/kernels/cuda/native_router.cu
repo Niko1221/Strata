@@ -235,7 +235,10 @@ __device__ __forceinline__ void route_resident_impl(const float* __restrict__ lo
             for (int r = 0; r < K; ++r) m = fmaxf(m, l[my[r]]);
             float ex[K], sum = 0.0f;
             for (int r = 0; r < K; ++r) { ex[r] = expf(l[my[r]] - m); sum += ex[r]; }
-            for (int r = 0; r < K; ++r) weights[(size_t) t * K + r] = ex[r] / sum;
+            // the same 2**-14 lower clamp the default router's renormalisation uses, so a row of very small
+            // logits cannot divide by a zero/denormal sum
+            const float sc = fmaxf(sum, 6.103515625e-05f);
+            for (int r = 0; r < K; ++r) weights[(size_t) t * K + r] = ex[r] / sc;
         }
         for (int r = 0; r < K; ++r) id[r] = my[r];
         if (stats) {
