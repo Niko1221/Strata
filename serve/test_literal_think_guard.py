@@ -9,9 +9,13 @@ serve/fixtures/literal_think_specimens.json holds the raw text of five real turn
 tagged with its `kind`: `no-answer` is this bug, `answered` reached its answer, `length-cut` ended on max_tokens.  This
 test replays them through a mock engine.
 
-The parser cannot tell this end from a normal one, and nothing in the token stream says "I meant it".  So Service.run()
-continues the reply with the thinking closed the way #123's wrap-up closes it: the next pass's prompt is this one plus
-what was generated plus that close, and the engine continues from the prefix it already holds.
+The parser cannot tell this end from a normal one, and nothing in the token stream says "I meant it".  Two layers, so
+that the fix is not optional:
+
+  * the end is always REPORTED - one log line, `totals.ended_inside_thinking` (and /metrics), and
+    `"ended_inside_thinking": true` on the response.  This changes no output, so it has no switch.
+  * the reply is continued with the thinking closed the way #123's wrap-up closes it, which is opt-in
+    ("literal_think_guard"), like #1053: it appends the close to the prompt and spends another pass.
 
     python -m unittest serve.test_literal_think_guard -v
 """
@@ -95,6 +99,14 @@ class Guard(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.loads(r.read().decode())["choices"][0]
 
+    def chat_full(self, max_tokens: int = 4000) -> dict:
+        """The whole response: the reporting layer's flag sits beside `choices`, not inside a choice."""
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": max_tokens}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read().decode())
+
     def test_off_by_default(self):
         self.close()
         self.engine = SpecimenEngine(self.tok, NO_ANSWER[0]["raw"])
@@ -146,6 +158,30 @@ class Guard(unittest.TestCase):
         c = self.chat()
         self.assertEqual(len(self.engine.prompts), 1)
         self.assertFalse(c["message"].get("content"))
+
+    def test_the_empty_reply_says_why_it_is_empty(self):
+        """The reporting layer needs no switch: with the guard off there is still a log line, a total, and the flag."""
+        self.close()
+        self.boot(SpecimenEngine, NO_ANSWER[0]["raw"], guard_on=False)
+        full = self.chat_full()
+        self.assertTrue(full["ended_inside_thinking"])
+        self.assertFalse(full["choices"][0]["message"].get("content"))
+        self.assertEqual(self.svc.totals["ended_inside_thinking"], 1)
+
+    def test_the_reply_the_guard_answered_is_reported_too(self):
+        full = self.chat_full()
+        self.assertTrue(full["ended_inside_thinking"])
+        self.assertEqual(full["choices"][0]["message"]["content"], SpecimenEngine.ANSWER)
+        self.assertEqual(self.svc.totals["ended_inside_thinking"], 1)
+
+    def test_a_normal_reply_carries_no_flag(self):
+        for sp in ANSWERED:
+            self.close()
+            self.boot(SpecimenEngine, sp["raw"])
+            with self.subTest(tail=sp["raw"][-40:]):
+                full = self.chat_full()
+                self.assertNotIn("ended_inside_thinking", full)
+                self.assertNotIn("ended_inside_thinking", self.svc.totals)
 
     def test_the_retries_are_capped(self):
         self.close()

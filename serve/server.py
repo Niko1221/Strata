@@ -158,6 +158,9 @@ REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my 
 # closes it and the model answers (#1053 does the same, for the reasoning side only).
 # Opt-in, like #1053: "literal_think_guard": true in the model's strata-<model>.json, or STRATA_LITERAL_THINK_GUARD=1.
 # Capped per reply so a model that keeps doing it cannot loop.
+# The end ITSELF is always reported - one log line, totals.ended_inside_thinking (/metrics) and
+# "ended_inside_thinking": true on the response - because reporting changes no output: a client that is told why its
+# reply is empty can retry, or turn the guard on.  Detection and continuation are separate for that reason.
 LITERAL_THINK_RETRIES = 2
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
@@ -3664,6 +3667,7 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         literal_retries = 0                             # #1814: continuations used by the literal-thinking-tag guard
+        reported_inside_thinking = False                # #1814: the end was reported (done/…), whatever came next
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
@@ -3876,10 +3880,24 @@ class Service:
                                   f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
-                        if (self.literal_think_guard and thinking and finish == "stop" and not answered
-                                and literal_retries < LITERAL_THINK_RETRIES and not wrap and not opens
-                                and parser.state in ("reasoning", "content")
-                                and (stops is None or stops.hit is None) and not cancel.is_set()):
+                        # #1814: this end - inside the thinking, with no answer - is reported whether or not the guard
+                        # below continues it: a client that is told why its reply is empty can act on it (retry, or
+                        # turn the guard on), the log says it, and /metrics' totals count it.  The detection changes
+                        # nothing about the reply itself, so it needs no switch.
+                        inside_thinking = (thinking and finish == "stop" and not answered and not wrap and not opens
+                                           and parser.state in ("reasoning", "content")
+                                           and (stops is None or stops.hit is None) and not cancel.is_set())
+                        if inside_thinking:
+                            reported_inside_thinking = True
+                            self.totals["ended_inside_thinking"] = self.totals.get("ended_inside_thinking", 0) + 1
+                            if trace is not None:
+                                trace["ended_inside_thinking"] = True
+                            if not (self.literal_think_guard and literal_retries < LITERAL_THINK_RETRIES):
+                                print(f"[strata] the reply ended inside its thinking with no answer ({n} tokens "
+                                      "generated): the client gets an empty reply (\"literal_think_guard\": true "
+                                      "continues it instead)", flush=True)
+                        if self.literal_think_guard and inside_thinking \
+                                and literal_retries < LITERAL_THINK_RETRIES:
                             # #1814: the reply ended inside its thinking with no answer at all.  The model was about
                             # to write its closing thinking tag and the turn-end token came instead, so the client
                             # gets an empty reply (five real turns, raw: serve/fixtures/literal_think_specimens.json).
@@ -4076,6 +4094,8 @@ class Service:
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
+        if reported_inside_thinking:                     # #1814: an empty reply that says why it is empty
+            done["ended_inside_thinking"] = True
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
         yield "done", done
@@ -4319,6 +4339,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if x.get("ended_inside_thinking"):
+                last["ended_inside_thinking"] = True    # #1814: the reply ended inside its thinking: no answer came
             yield last
 
 
@@ -4363,6 +4385,8 @@ def openai_collect(chunks) -> dict:
            "usage": last["usage"]}
     if last.get("timings"):
         out["timings"] = last["timings"]
+    if last.get("ended_inside_thinking"):
+        out["ended_inside_thinking"] = True      # #1814: the reply ended inside its thinking, so it has no answer
     return out
 
 
