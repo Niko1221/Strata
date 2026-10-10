@@ -40,8 +40,16 @@ EDITABLE = [
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
 
+def _args_key(cfg: dict, flag: str) -> str:
+    """Where an engine option lives: the config's "user_args" when it names the option (those win over "args" when
+    the engine starts, and setup never writes them), else "args"."""
+    u = cfg.get("user_args")
+    return "user_args" if isinstance(u, list) and flag in u else "args"
+
+
 def _arg(cfg: dict, flag: str):
-    a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+    key = _args_key(cfg, flag)
+    a = cfg.get(key) if isinstance(cfg.get(key), list) else []
     if flag in a[:-1]:
         v = str(a[a.index(flag) + 1])
         return int(v) if v.isdigit() else v
@@ -142,8 +150,9 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
             else:
                 new.pop("sampling", None)
         elif isinstance(kind, tuple) and kind[0] == "arg":
-            a = list(new.get("args") or [])
             flag = kind[1]
+            where = _args_key(new, flag)
+            a = list(new.get(where) or [])
             if flag in a[:-1]:
                 i = a.index(flag)
                 if v is None:
@@ -152,7 +161,7 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
                     a[i + 1] = str(v)
             elif v is not None:
                 a += [flag, str(v)]
-            new["args"] = a
+            new[where] = a
         elif v is None:
             new.pop(key, None)
         else:
