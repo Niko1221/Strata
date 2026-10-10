@@ -63,6 +63,7 @@ from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve.response_store import ResponseStore  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2605,6 +2606,7 @@ class Service:
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.responses_store = None                    # opt-in bounded history; unrelated to engine KV state
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -4334,10 +4336,11 @@ def make_handler(svc: Service):
                              f"turns this check off"}})
             return False
 
-        def _foreign_page(self) -> bool:
+        def _foreign_page(self, body: bool = True) -> bool:
             """Without an API key, a /v1 POST from a browser page of another site (any site can POST text/plain
             there without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and
-            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before."""
+            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before.
+            `body=False` (a DELETE: it has no body, and a browser always asks a preflight first): the Origin only."""
             origin = self.headers.get("Origin")
             if svc.api_key or not origin:
                 return False
@@ -4350,7 +4353,7 @@ def make_handler(svc: Service):
                                  f"or add the page's host to \"allowed_hosts\" (or its origin to \"cors_origins\") "
                                  f"in the config"}})
                 return True
-            if not self.headers.get("Content-Type", "").startswith("application/json"):
+            if body and not self.headers.get("Content-Type", "").startswith("application/json"):
                 self._json(415, {"error": {"message": "send application/json"}})
                 return True
             return False
@@ -4408,7 +4411,8 @@ def make_handler(svc: Service):
             else:
                 return
             self.send_header("Access-Control-Allow-Origin", allow)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"
+                             if svc.responses_store is not None else "GET, POST, OPTIONS")
             # the headers the preflight asks for (SDKs add their own; "*" does not cover Authorization)
             asked = self.headers.get("Access-Control-Request-Headers")
             self.send_header("Access-Control-Allow-Headers",
@@ -4451,6 +4455,10 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/v1/responses/"):
+                if self._authorized():
+                    self._stored_response(path)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4588,6 +4596,32 @@ def make_handler(svc: Service):
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
+        def _stored_response(self, path, delete=False):
+            response_id = path[len("/v1/responses/"):]
+            if "/" in response_id:                       # input_items, cancel, ...: not offered
+                return self._json(404, responses_error_body("this Responses operation is not supported",
+                                                            code="not_found"))
+            if svc.responses_store is None or not re.fullmatch(r"resp_[A-Za-z0-9_]+", response_id):
+                return self._json(404, responses_error_body("stored response not found", code="not_found"))
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                if not delete and query.get("stream", ["false"])[0].lower() in ("true", "1"):
+                    raise ResponsesError("stored responses can only be retrieved as JSON, not as a stream",
+                                         "stream", "unsupported_parameter")
+                result = (svc.responses_store.delete(response_id) if delete
+                          else svc.responses_store.get(response_id))
+            except ResponsesError as e:
+                return self._json(e.status, e.body())
+            return self._json(200, result)
+
+        def do_DELETE(self):
+            path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/v1/responses/"):
+                if not self._foreign_page(body=False) and self._authorized():
+                    self._stored_response(path, delete=True)
+                return
+            self._json(404, {"error": {"message": "not found"}})
+
         def do_POST(self):
             try:
                 self._post()
@@ -4633,9 +4667,9 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
-                if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
-                    self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
-                                                         "whole conversation to POST /v1/responses", code="not_found"))
+                if path.startswith("/v1/responses/"):        # no background cancel or compact endpoint
+                    self._json(404, responses_error_body("this Responses operation is not supported",
+                                                         code="not_found"))
                     return
                 if path in ("/v1/load", "/v1/unload"):
                     if not self._own_page("the model can be loaded or unloaded"):
@@ -5014,7 +5048,7 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
 
         def _responses(self, req):
-            """#451: POST /v1/responses - OpenAI's Responses API, stateless (serve/responses.py), on the chat path.
+            """#451: POST /v1/responses - Responses on the chat path, with optional retained history.
             Errors use the Responses format; once the stream has started they arrive as a response.failed event."""
             try:
                 title = (responses_api.thread_title_events(req, svc.model_for(req))
@@ -5048,11 +5082,17 @@ def make_handler(svc: Service):
                     elif kind == "done":
                         done = x
                 if done is not None and done["finish"] != "cancel" and not cancel.is_set():
-                    yield from asm.finish(done, check)
+                    terminal = list(asm.finish(done, check))
+                    # Save before announcing completion: the ID is immediately retrievable, including over SSE.
+                    if svc.responses_store is not None:
+                        svc.responses_store.save(req, asm.snapshot())
+                    yield from terminal
             items = self._capture(events(), "responses")
             if not req.get("stream"):
                 try:
                     result = responses_api.collect(items)
+                except ResponsesError as e:
+                    return self._json(e.status, e.body())
                 except StructuredOutputError as e:
                     return self._json(502, responses_error_body(str(e), "server_error",
                                                                 code="structured_output_failed"))
@@ -5091,6 +5131,8 @@ def make_handler(svc: Service):
                 self._responses_failed(asm, f"{e}; the next request restarts it", "server_error", send)
             except StructuredOutputError as e:
                 self._responses_failed(asm, str(e), "structured_output_failed", send)
+            except ResponsesError as e:
+                self._responses_failed(asm, str(e), e.code or "server_error", send)
             except ValueError as e:                          # the engine's ERR after the stream started
                 self._responses_failed(asm, str(e), "server_error", send)
 
@@ -5104,7 +5146,12 @@ def make_handler(svc: Service):
                 pass
 
         def _responses_prepare(self, req):
-            responses_api.check_request(req)
+            store = svc.responses_store
+            responses_api.check_request(req, storage=store is not None)
+            if store is None:                            # stateless, as before: nothing is kept, whatever `store` says
+                req = {**req, "store": False}
+            else:                                        # opt-in: kept unless the request says store: false
+                req = store.prepare({**req, "store": req.get("store") is not False})
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
             kw = responses_api.template_kwargs(req, svc.shared)
@@ -5638,6 +5685,9 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--responses-store-mib", type=int, default=None, metavar="MIB",
+                    help="opt in to stored Responses and previous_response_id; UTF-8 JSON byte budget in MiB "
+                         "(also responses_store_mib in config; 0/default: off; memory only, 256 responses max)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -5758,6 +5808,16 @@ def main() -> int:
     if not svc.api_key and "api_key" in cfg:             # #569: written, but empty: the server has none (a warning, not a stop)
         print("[strata] the api_key in the config is empty: this server has no API key (anyone who can reach it can "
               "use it); set one, or leave api_key out", file=sys.stderr, flush=True)
+    store_mib = a.responses_store_mib if a.responses_store_mib is not None else cfg.get("responses_store_mib", 0)
+    if isinstance(store_mib, bool) or not isinstance(store_mib, int) or store_mib < 0:
+        raise SystemExit("[strata] responses_store_mib must be a nonnegative integer")
+    if store_mib:
+        try:
+            svc.responses_store = ResponseStore(store_mib * 1024 ** 2, cfg.get("responses_store_ttl_s", 3600))
+        except ValueError as e:
+            raise SystemExit(f"[strata] {e}") from None
+        print(f"[strata] Responses storage on: {store_mib} MiB of UTF-8 JSON, 256 responses, "
+              f"{svc.responses_store.ttl_seconds:g}s lifetime; process memory only (lost on restart)", flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
     svc.trusted_origins = origins_of(cfg.get("trusted_origins"), "trusted_origins", wildcard=False)
     try:

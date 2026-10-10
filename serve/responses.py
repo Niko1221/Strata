@@ -1,9 +1,9 @@
-"""serve/responses.py - #451: OpenAI's Responses API (POST /v1/responses), stateless, on the chat path.
+"""serve/responses.py - #451: OpenAI's Responses API (POST /v1/responses), on the chat path.
 
 A Responses request becomes the same template messages, tools and kwargs a Chat Completions request does, runs through
 the same Service.run, and its events (reasoning, text, tool calls) come back as Responses output items and typed SSE
-events.  Nothing is stored: the client sends the whole conversation in `input` every time (`store: false`, as Codex CLI
-does), including the reasoning, message and function_call items of earlier answers.
+events. By default nothing is stored: the client sends the whole conversation in `input` every time (`store: false`,
+as Codex CLI does). Optional bounded storage (serve/response_store.py) permits previous_response_id continuations.
 
 Codex CLI is the first client.  What it needs, and what this does:
   * `instructions` and `developer` messages -> the system message (leading ones merged, so the prompt start is stable
@@ -194,8 +194,8 @@ def input_messages(req: dict) -> list[dict]:
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":
-            raise ResponsesError("item references need stored responses, and this server keeps none: send the items "
-                                 "themselves", param, "unsupported_parameter")
+            raise ResponsesError("item references are not supported: send the items themselves", param,
+                                 "unsupported_parameter")
         else:
             raise ResponsesError(f"input items of type {kind!r} are not supported", param + ".type",
                                  "unsupported_parameter")
@@ -432,9 +432,17 @@ def text_format(req: dict):
     raise ResponsesError("text.format.type must be text, json_object or json_schema", "text.format.type")
 
 
-def check_request(req: dict) -> None:
-    """What this stateless server cannot do, refused before anything runs."""
-    if req.get("previous_response_id"):
+def check_request(req: dict, storage: bool = False) -> None:
+    """Unsupported behavior is refused before anything runs.  Without storage (the default) these are the stateless
+    server's checks, unchanged: `store` is not looked at (the answer says store: false) and only a
+    previous_response_id is refused.  With storage, `store` and `previous_response_id` must be well-formed."""
+    previous = req.get("previous_response_id")
+    if storage:
+        if req.get("store") is not None and not isinstance(req["store"], bool):
+            raise ResponsesError("store must be a boolean", "store")
+        if previous is not None and (not isinstance(previous, str) or not previous):
+            raise ResponsesError("previous_response_id must be a nonempty string or null", "previous_response_id")
+    elif previous:
         raise ResponsesError("this server keeps no responses (stateless): send the whole conversation in input "
                              "instead of previous_response_id", "previous_response_id", "unsupported_parameter")
     if req.get("conversation"):
@@ -483,9 +491,9 @@ class Assembler:
             "background": False, "error": None, "incomplete_details": None,
             "instructions": req.get("instructions"), "max_output_tokens": req.get("max_output_tokens"),
             "model": model, "output": [], "parallel_tool_calls": req.get("parallel_tool_calls", True),
-            "previous_response_id": None,
+            "previous_response_id": req.get("previous_response_id") or None,
             "reasoning": {"effort": reasoning.get("effort"), "summary": reasoning.get("summary")},
-            "store": False, "temperature": req.get("temperature"),
+            "store": req.get("store") is True, "temperature": req.get("temperature"),
             "text": req.get("text") if isinstance(req.get("text"), dict) else {"format": {"type": "text"}},
             "tool_choice": req.get("tool_choice", "auto"), "tools": req.get("tools") or [],
             "top_p": req.get("top_p"), "truncation": "disabled", "usage": None, "user": None,
@@ -677,6 +685,7 @@ class Assembler:
             self.item["status"] = "incomplete"
             self.item = None
         self.response["status"] = "failed"
+        self.response.pop("completed_at", None)          # finish() ran first when keeping the answer failed
         self.response["error"] = {"code": code, "message": message}
         return self.event("response.failed", response=self.snapshot())
 
