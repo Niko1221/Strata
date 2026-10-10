@@ -1376,7 +1376,7 @@ catch (sycl::exception const &exc) {
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);
 }
-};    if (!alloc((size_t) g.n_embd * 4, (void**) &db.h_x_f, (void**) &db.d_x_f, "x_f")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_ids, (void**) &db.d_ids, "ids")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_weights, (void**) &db.d_weights, "weights")) return 0;    if (!alloc(4, (void**) &db.h_seq, (void**) &db.d_seq, "seq")) return 0;    if (!alloc(4, (void**) &db.h_flag, (void**) &db.d_flag, "flag")) return 0;    return bytes;}
+};    if (!alloc((size_t) g.n_embd * 4, (void**) &db.h_x_f, (void**) &db.d_x_f, "x_f")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_ids, (void**) &db.d_ids, "ids")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_weights, (void**) &db.d_weights, "weights")) return 0;    if (!alloc(64, (void**) &db.h_seq, (void**) &db.d_seq, "seq")) return 0;   /* + the payload tag and checksum */    if (!alloc(4, (void**) &db.h_flag, (void**) &db.d_flag, "flag")) return 0;    return bytes;}
 void doorbell_free(Doorbell &db) {
     if (db.h_x_f) sycl::free(db.h_x_f, dpct::get_in_order_queue());
     if (db.h_ids) sycl::free(db.h_ids, dpct::get_in_order_queue());
@@ -1386,7 +1386,7 @@ void doorbell_free(Doorbell &db) {
     db = Doorbell{};
 }
 void doorbell_reset(const Doorbell& db) {
-    if (db.h_seq) *db.h_seq = 0;
+    if (db.h_seq) for (int i = 0; i <= 8; ++i) ((volatile uint32_t*) db.h_seq)[i] = 0;   /* + the payload tags */
     if (db.h_flag) *(volatile uint32_t*) db.h_flag = 0;
 }
 // ================================ THE TWO ENDS OF A TOKEN ================================

@@ -5,6 +5,11 @@
 //   2. the same name twice: refused at open, and the error names the tensor and the file - GGUF has no
 //      index to say which of the two a name means, and find() is first-match, so the alternative is a
 //      lookup that silently picks by position.
+//   3. no tensors, and the file ends at its header, before the 32-byte-aligned data start: the file opens,
+//      with data_start() clamped to the file size.  A split model's first shard can hold metadata only and
+//      end unpadded (unsloth's UD-Q5_K_XL shard 1 ends 6 bytes before its aligned data start; llama.cpp's
+//      gguf-py reads it); nothing is ever read from its data section.
+//   4. one tensor, and the file ends at its header: still refused at open ("data section starts past EOF").
 //
 // The fixture is a minimal GGUF v3 written here (header, no metadata, two F32[8] tensors, 32-byte
 // alignment), so the test needs neither gguf-py nor a shard.  The file is closed before it is removed:
@@ -37,7 +42,8 @@ void put_str(std::vector<uint8_t>& b, const std::string& s) {
 }
 
 // A GGUF v3 file of F32[8] tensors named `names`, laid out 32 bytes apart from a 32-byte-aligned data start.
-std::filesystem::path write_gguf(const std::vector<std::string>& names) {
+// `header_only`: the file ends right after the tensor directory - no alignment padding, no data.
+std::filesystem::path write_gguf(const std::vector<std::string>& names, bool header_only = false) {
     std::vector<uint8_t> b;
     put<uint32_t>(b, 0x46554747u);   // "GGUF"
     put<uint32_t>(b, 3);
@@ -50,7 +56,7 @@ std::filesystem::path write_gguf(const std::vector<std::string>& names) {
         put<uint32_t>(b, 0);         // F32
         put<uint64_t>(b, 32 * i);    // offset from data_start
     }
-    b.resize((b.size() + 31) / 32 * 32 + 32 * names.size(), 0);
+    if (!header_only) b.resize((b.size() + 31) / 32 * 32 + 32 * names.size(), 0);
     const auto path = std::filesystem::temp_directory_path() / "strata_gguf_reader_test.gguf";
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
     return path;
@@ -87,6 +93,36 @@ int main() {
         check(err.find("blk.0.attn_q.weight") != std::string::npos, "  the error names the tensor");
         check(err.find(path.filename().string()) != std::string::npos, "  the error names the file");
         if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+    }
+    {
+        const auto path = write_gguf({}, true);   // 24 bytes: the aligned data start (32) is past EOF
+        std::string err;
+        uint64_t size = 0, start = 1;
+        size_t n = 1;
+        try {
+            strata::GgufFile g(path.string());
+            size = g.file_size();
+            start = g.data_start();
+            n = g.tensors().size();
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        std::filesystem::remove(path);
+        check(err.empty() && n == 0, "no tensors, ends before the aligned data start: the file opens");
+        check(err.empty() && start == size, "  data_start() is the file size (nothing to read past it)");
+        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+    }
+    {
+        const auto path = write_gguf({"blk.0.attn_q.weight"}, true);
+        std::string err;
+        try {
+            strata::GgufFile g(path.string());
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        std::filesystem::remove(path);
+        check(err.find("data section starts past EOF") != std::string::npos,
+              "one tensor, ends before the aligned data start: refused at open");
     }
     std::printf(g_fail ? "gguf_reader_test: %d FAILED\n" : "gguf_reader_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

@@ -455,7 +455,14 @@ private:
             if (a->u) align = a->u;
         alignment_ = align;
         data_start_ = (c.pos() + align - 1) / align * align;
-        if (data_start_ > size_) throw std::runtime_error("GGUF: data section starts past EOF");
+        if (data_start_ > size_) {
+            // A file with tensors needs its data section.  One without (a split model's metadata-only first
+            // shard) may end at its header, before the aligned start - unsloth's UD-Q5_K_XL shard 1 ends 6 bytes
+            // short, and llama.cpp's gguf-py reads it.  Nothing is read there; the clamp keeps
+            // `file_size() - data_start()` (the payload checks downstream) at 0 instead of wrapping.
+            if (n_tensors != 0) throw std::runtime_error("GGUF: data section starts past EOF");
+            data_start_ = size_;
+        }
     }
 
     std::string path_;

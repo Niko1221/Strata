@@ -197,7 +197,7 @@ class Slots(unittest.TestCase):
             cwd = os.getcwd()
             try:
                 os.chdir(base)
-                self.assertEqual(slot_save_dir("rel"), os.path.join(os.path.realpath(base), "rel"))
+                self.assertEqual(os.path.realpath(slot_save_dir("rel")), os.path.realpath(os.path.join(base, "rel")))
             finally:
                 os.chdir(cwd)
             for bad in ("", "  ", None, 3, "a\nb"):

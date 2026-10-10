@@ -28,8 +28,8 @@ int main() {
     unset("STRATA_GFX1151_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
-    CHECK(arch_default_env("gfx1201:sramecc-:xnack-").empty());
     CHECK(arch_default_env("gfx1150").empty());
+    CHECK(arch_default_env("gfx1152").empty());
     CHECK(arch_default_env("gfx11510").empty());   // not a prefix match
     CHECK(arch_default_env("").empty());
     CHECK(arch_default_env(nullptr).empty());
@@ -44,6 +44,21 @@ int main() {
                 CHECK(kv.first != bits);
         }
     }
+    // gfx12: the five prompt switches only, no decode switch, no bit-changing one
+    unset("STRATA_GFX12_DEFAULTS");
+    for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
+        const auto t = arch_default_env(a);
+        CHECK(t.size() == 5);
+        for (const auto& kv : t) CHECK(kv.first != "STRATA_HCD_EXACT");
+        for (const auto& kv : t) {
+            CHECK(kv.first != "STRATA_Q8_PACKED" && kv.first != "STRATA_SH_STREAM" && kv.first != "STRATA_PF_GEMM" &&
+                  kv.first != "STRATA_PF_FUSED");
+        }
+    }
+    CHECK(arch_default_env("gfx12010").empty());
+    put("STRATA_GFX12_DEFAULTS", "0");
+    CHECK(arch_default_env("gfx1201").empty());
+    unset("STRATA_GFX12_DEFAULTS");
     // a user's setting wins, whatever it is; the rest are set
     put("STRATA_TSUM", "0");
     unset("STRATA_QFUSE");

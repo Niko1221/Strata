@@ -1,6 +1,7 @@
 // CPU-only tests for the on-disk session format (include/strata/core/conversation_file.hpp).
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/session_save_reclaim.hpp"
 
 #include <array>
 #include <cerrno>
@@ -697,6 +698,32 @@ int main() {
         check(fat[0].gdn.size() == (256u << 20) && fat[0].gdn[12345] == 0x22 &&
               slurp(old_file) == std::vector<char>(9, 'o'), "save: live state and the old file intact");
 #endif
+    }
+    // Opt-in pressure reclamation does not change the selected file bytes, even with pin=N.
+    for (bool pin : {false, true}) {
+        auto source = sample();
+        source.checkpoints[0].pinned = pin;
+        const auto live_before = source.live;
+        auto expected = sample();
+        expected.checkpoints = session_checkpoints_to_save(source.checkpoints);
+        const fs::path before_path = dir / "reclaim-before.bin", after_path = dir / "reclaim-after.bin";
+        check(session_file_write(before_path.string(), expected, id, written, error), "reclaim: baseline file written");
+        ConversationCache parked(1u << 20, 4);
+        SessionSaveLive sl; sl.state_bytes = source.live.bytes(); sl.tokens = source.live.ids.size();
+        const auto freed = session_save_reclaim(source.checkpoints, parked, sl, 0,
+                                                [] { return std::optional<uint64_t>(0); });
+        check(freed.checkpoints == 1, "reclaim: a non-selected checkpoint released");
+        check(same_checkpoint(source.live, live_before), "reclaim: live state remains intact");
+        check(session_file_write(after_path.string(), source, id, written, error), "reclaim: file written after pressure");
+        check(slurp(before_path) == slurp(after_path), "reclaim: file byte-identical to original selection");
+        const auto old = slurp(after_path);
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::strcmp(step, "write") == 0 ? ENOSPC : 0; };
+        SessionStatus status;
+        check(!session_file_write(after_path.string(), source, id, written, error, opt, &status) &&
+              status.error == SessionError::storage && !status.published, "reclaim: later write failure reported");
+        check(slurp(after_path) == old && same_checkpoint(source.live, live_before) && no_temp(dir),
+              "reclaim: later failure preserves old file and live state, no temporary left");
     }
     // R6: the folder the free-space query is asked about
     {

@@ -568,6 +568,97 @@ class ParallelService(unittest.TestCase):
         self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], prompt, u)
         self.assertEqual(u["cache_read_input_tokens"], 3, u)    # the first read's reuse, not the continuation's
 
+    def test_a_leaked_busy_slot_does_not_hang_the_next_request(self):
+        """#1603: a slot whose busy flag has no owner (no request holds it, no BDONE wait is running) kept every later
+        request waiting for a slot nothing would free: running 0, queued 0, and the frozen-engine check never looked.
+        The waiting request is now counted (admitting), the slot is given back after ORPHAN_SLOT_S, and it is
+        answered."""
+        self.start(2)
+        e = self.engine
+        e.ORPHAN_SLOT_S = 0.4
+        with e.slot_cv:
+            e.slot_busy[0] = e.slot_busy[1] = True       # the leak: busy, claimed by nobody, nothing ending them
+        # the solo path needs a quiet engine; a busy flag sends the request to the slot path, which waits
+        res, errs = {}, []
+        def go():
+            try:
+                res["r"] = self.chat("after the leak", max_tokens=16)
+            except Exception as ex:                       # noqa: BLE001
+                errs.append(ex)
+        t = threading.Thread(target=go)
+        t0 = time.time()
+        t.start()
+        seen = []
+        while t.is_alive() and time.time() - t0 < 20:
+            live = self.get("/metrics")["live"]
+            seen.append((live.get("running"), live.get("queued"), live.get("admitting")))
+            time.sleep(0.05)
+        t.join(5)
+        self.assertEqual(errs, [])
+        self.assertFalse(t.is_alive(), "the request hung on a slot nobody owns")
+        self.assertEqual(res["r"]["choices"][0]["message"]["content"], "ok, done.")
+        # while it waited it was visible: running as a request, and counted as waiting for a slot - never 0 / 0 / 0
+        self.assertTrue(any(r == 1 and a == 1 for r, q, a in seen), seen)
+        first = next(i for i, x in enumerate(seen) if sum(v or 0 for v in x))
+        self.assertTrue(all(sum(v or 0 for v in x) for x in seen[first:-1]), seen)   # never invisible once it arrived
+        self.assertEqual(e.admitting, 0)
+        self.assertEqual(e.slot_claims, set())
+
+    def test_an_owned_busy_slot_is_never_taken(self):
+        """The leak check frees only slots with no owner: a slot a request holds stays busy however long it waits."""
+        self.start(2)
+        e = self.engine
+        e.ORPHAN_SLOT_S = 0.0
+        with e.slot_cv:
+            e.slot_busy[0] = True
+            e.slot_claims.add(0)
+            e.slot_busy[1] = True
+            e.slot_releasing.add(1)
+            self.assertEqual(e._reap_orphan_slots(), [])
+            self.assertEqual(e.slot_busy, [True, True])
+            e.slot_claims.discard(0)
+            self.assertEqual(e._reap_orphan_slots(), [0])
+            self.assertEqual(e.slot_busy, [False, True])
+
+    def test_a_parallel_request_does_not_wait_for_the_fifo_on_a_loaded_engine(self):
+        """#1603: parallel requests used to take the FIFO (held by an image encode, /v1/vram, load) just to find the
+        engine loaded; between 'queued' and 'running' they were neither.  Loaded: no fifo.  Unloaded: they wait for it
+        and are counted as queued the whole time."""
+        self.start(2)
+        self.assertEqual(self.chat("warm")["choices"][0]["message"]["content"], "ok, done.")
+        self.svc.fifo.acquire()
+        try:
+            r = self.chat("with the fifo held")             # would block here before
+            self.assertEqual(r["choices"][0]["message"]["content"], "ok, done.")
+        finally:
+            self.svc.fifo.release()
+        import serve.server as server
+        script, real = Path(self.tmp.name) / "fake_strata.py", server.subprocess.Popen
+        patch = mock.patch.object(server.subprocess, "Popen",      # the reload starts the fake again
+                                  lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.engine.unload()
+        self.svc.fifo.acquire()
+        res = {}
+        t = threading.Thread(target=lambda: res.setdefault("r", self.chat("reloads", max_tokens=16)))
+        t.start()
+        try:
+            deadline = time.time() + 10
+            live = {}
+            while time.time() < deadline:
+                live = self.get("/metrics")["live"]
+                if live.get("queued"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(live.get("queued"), 1, live)    # waiting for the fifo: queued, not nothing
+            self.assertEqual(live.get("running"), 0, live)
+        finally:
+            self.svc.fifo.release()
+        t.join(60)
+        self.assertEqual(res["r"]["choices"][0]["message"]["content"], "ok, done.")
+        self.assertEqual(self.get("/metrics")["live"]["queued"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
