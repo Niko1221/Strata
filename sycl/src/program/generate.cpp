@@ -4424,7 +4424,15 @@ int main(int argc, char **argv) try {
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
         uint64_t used = 0;
         const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
+        // #1549: `auto` used to fill all but the reserve, and that leaves the prompt path crawling on a card
+        // this size. Under WDDM an over-subscribed allocation does not fail, it pages to system memory and
+        // crawls (the P5 note above) - and with the prompt path borrowing cache slots, which is the default
+        // with a profile, `prefill_mib` is 0, so P5 reserves nothing for it and the reserve is all there is.
+        // The measurements behind the default and the STRATA_EXPERT_CACHE_HEADROOM A/B live with the helper,
+        // include/strata/core/expert_cache.hpp.
+        const size_t headroom = auto_cache ? (size_t) (free_b * strata::core::expert_cache_headroom()) : 0;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
+        if (free_b > keep_free + headroom) free_room = free_b - keep_free - headroom;   // when it still leaves room
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
             const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
@@ -4439,6 +4447,11 @@ int main(int argc, char **argv) try {
                                  "%zu slots (the profile is the ceiling on a native pack; a profile that ranks every "
                                  "(layer, expert) pair lifts it - tools/make_profile.py)\n", o.expert_cache,
                          profile.size(), o.expert_profile.c_str(), profile.size());
+        if (auto_cache && headroom > 0)
+            std::fprintf(stderr, "strata generate: expert cache auto: %zu slots (%.2f GiB), keeping %.2f GiB "
+                                 "of %.2f GiB free for the session's other buffers (#1549)\n",
+                         sized_slots.size(), (double) used / 1073741824.0,
+                         (double) (keep_free + headroom) / 1073741824.0, (double) free_b / 1073741824.0);
         o.expert_cache = (int) sized_slots.size();
     }
     // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,
