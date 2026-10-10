@@ -82,8 +82,9 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** images only through a CPU image encoder you build once
+  (the ready-made zip has none: [Images on Windows](#images-on-windows) below), one card per model (`--gpus` is
+  Linux-only for now), no calibration.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -120,6 +121,58 @@ git; no admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-w
 `dist\strata-windows-x64-hip.zip`; `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
 `tools\hip\build_windows.bat tests` also builds the HIP tests (`ctest` in `build-hip-win`, with
 `.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin` on the PATH). `STRATA_HIP_ARCHS` picks other architectures.
+
+### Images on Windows
+
+The ready-made Windows AMD zip carries no image encoder (#1155), but the CPU encoder (`tools/vision`, llama.cpp's
+`mtmd` on the processor) builds and runs on Windows. Build it once, with Visual Studio 2022 (or 2026) Build Tools and
+the Ninja from Strata's `.venv`, in a "x64 Native Tools" prompt or after `vcvars64.bat`:
+
+```bat
+set PATH=%CD%\.venv\Scripts;%PATH%
+cmake -G Ninja -S tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp ^
+      -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=OFF
+cmake --build build-vision --target strata-vision
+```
+
+Then `START-HERE.bat --setup --vision cpu`: setup finds `build-vision\bin\strata-vision.exe`, puts it beside the
+engine and turns images on (an engine update copies it next to the new engine again, from `build-vision\bin` or
+`engine\.previous`). `-DSTRATA_PORTABLE=OFF` builds for this PC's processor (AVX-512 where it has it), as setup does
+on Linux. Measured on a Ryzen AI Max+ 395 (Radeon 8060S, Windows 11, 16 encoder threads, UD-IQ4_XS):
+
+| Picture | `max_tokens` 300 (setup's CPU default) | 1024 |
+| --- | --- | --- |
+| 640 x 360, shapes and a line of text | 7 s, all correct | 7 s (a small picture uses fewer tokens) |
+| 1600 x 1000 table, 40 values at 20 px | 12 s, 40/40 | 30 s, 40/40 |
+| 1224 x 1584 phone photo of a 5-column statement | 12 s, 32/44 amounts in the right column, a year misread | 32 s, 44/44 |
+
+The time is the encoder's (the CPU); reading the prompt on the GPU barely changes. For photos and scans of
+documents, `"max_tokens": 1024` in the config's `"vision"` block reads them right; for casual pictures 300 is faster.
+
+**On the GPU, with Vulkan.** The same encoder built with llama.cpp's Vulkan backend runs on the Radeon (the encoder's
+`--gpu`, which stock llama.cpp also does by default for its `--mmproj`). It needs the
+[Vulkan SDK](https://vulkan.lunarg.com/) for the build (its `glslc` compiles the shaders; the AMD driver already has
+the Vulkan runtime), and goes into its own folder:
+
+```bat
+cmake -G Ninja -S tools/vision -B build-vision-vulkan -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp ^
+      -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=OFF -DGGML_VULKAN=ON
+cmake --build build-vision-vulkan --target strata-vision
+```
+
+Then `START-HERE.bat --setup --vision gpu`: setup finds `build-vision-vulkan\bin\strata-vision.exe`, puts it beside
+the engine and writes `"gpu": true` and `"max_tokens": 1024` (the GPU default). Same PC, 1224 x 1584 photos of
+documents, 1024 image tokens, the first read of each picture (the server keeps a picture's encoding, so a second read
+does not encode again):
+
+| Photo | CPU encoder | Vulkan encoder |
+| --- | --- | --- |
+| 5-column settlement statement | 31.7 s, 44/44 | 9.8 s, 44/44 |
+| permit list | 27.7 s, the permit number exact | 6.2 s, exact |
+
+The encoding itself goes from about 23 s to about 1 s (the rest is reading the prompt and writing the answer, the same
+in both). It loads in 1.1 s and warms up at 1024 tokens in 1.8 s. Text-only requests are not affected: the engine
+keeps the `--vram-reserve-mib 700` it keeps for any encoder.
 
 ## Build
 

@@ -2521,17 +2521,63 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     return eng
 
 
+def windows_cpu_encoders() -> list[Path]:
+    """#1155: where a CPU image encoder for the Windows AMD engine can be: the engine's folder, the folder tools/vision
+    builds into (the build docs/AMD_HIP.md describes), the engine an update moved aside (engine/.previous), and the
+    Vulkan build (which runs on the CPU too, without --gpu)."""
+    return [ROOT / "engine" / VEXE, ROOT / "build-vision" / "bin" / VEXE, ROOT / "engine" / ".previous" / VEXE,
+            ROOT / "build-vision-vulkan" / "bin" / VEXE]
+
+
+def windows_vulkan_encoder() -> Path:
+    """The image encoder built with llama.cpp's Vulkan backend (-DGGML_VULKAN=ON, docs/AMD_HIP.md): it runs on the
+    Radeon with --gpu.  Measured on a Radeon 8060S at 1024 image tokens: ~1 s per photo of a page against ~23 s for
+    the CPU encoder, the same text read."""
+    return ROOT / "build-vision-vulkan" / "bin" / VEXE
+
+
 def hip_vision(asked) -> str:
     """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304); a HIP (GPU) encoder build
-    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them."""
+    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them.  On Windows the ready-made
+    engine carries no encoder, but one built by hand (#1155) is used: --vision cpu then works there too, and
+    `yes`/`gpu` with an encoder built for Vulkan runs it on the Radeon."""
     if asked in ("yes", "gpu"):
-        warn("the AMD backend has no GPU image encoder yet: images off"
-             + ("" if WIN else " (--vision cpu reads them on the CPU)"))
-    if asked == "cpu" and WIN:
-        warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
-             "image encoder): images off")
+        if WIN and windows_vulkan_encoder().is_file():
+            return "gpu"
+        warn("the AMD backend has no GPU image encoder yet: images off (--vision cpu reads them on the CPU"
+             + (", with an encoder you build; one built for Vulkan runs on the GPU: docs/AMD_HIP.md)" if WIN else ")"))
+    if asked == "cpu" and WIN and not any(p.is_file() for p in windows_cpu_encoders()):
+        warn("images on the CPU with an AMD card on Windows need an image encoder you build once (the ready-made "
+             "Windows AMD engine has none): see 'Images on Windows' in docs/AMD_HIP.md (#1155), then run setup "
+             "again: images off")
         return "none"
     return "cpu" if asked == "cpu" else "none"
+
+
+def place_windows_encoder(eng: Path, vision: str = "cpu") -> str:
+    """#1155: the hand-built image encoder beside the Windows AMD engine.  "gpu": the Vulkan build, copied over
+    whatever encoder is there (a CPU build cannot use the GPU); "cpu": any build, copied from the build folder or the
+    engine an update replaced when the engine folder has none.  Returns what is in place: "gpu", "cpu", or "none"
+    (images off) when there is no encoder."""
+    target = eng / VEXE
+    if vision == "gpu":
+        src = windows_vulkan_encoder()
+        if src.is_file():
+            if not target.is_file() or target.read_bytes() != src.read_bytes():
+                shutil.copy2(src, target)
+            ok(f"image encoder (GPU, Vulkan, built here): {target}")
+            return "gpu"
+        warn(f"no Vulkan image encoder in {src.parent}: trying the CPU one")
+    if target.is_file():
+        ok(f"image encoder (CPU, built here): {target}")
+        return "cpu"
+    for src in windows_cpu_encoders():
+        if src.is_file() and src != target:
+            shutil.copy2(src, target)
+            ok(f"image encoder (CPU, built here): copied {src} to {target}")
+            return "cpu"
+    warn(f"no image encoder for the Windows AMD engine in {eng} (see 'Images on Windows' in docs/AMD_HIP.md): images off")
+    return "none"
 
 
 def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
@@ -5235,6 +5281,8 @@ def main() -> int:
     if eng is None:
         eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    if hip and WIN and vision in ("cpu", "gpu"):
+        vision = place_windows_encoder(eng, vision)    # #1155: the encoder built by hand, beside this engine
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
     else:
