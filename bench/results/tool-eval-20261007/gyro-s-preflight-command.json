@@ -1,0 +1,8 @@
+[
+  [
+    "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build/native_expert_parity",
+    "--load-check",
+    "/home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1",
+    "/home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf"
+  ]
+]

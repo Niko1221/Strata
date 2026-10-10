@@ -1,0 +1,38 @@
+{
+  "exe": "/benchmark/strata/build/strata",
+  "cwd": "/benchmark/strata",
+  "tokenizer": "/benchmark/packs/unsloth-q8-llm60-main/tokenizer",
+  "gpu": 0,
+  "model_name": "unsloth-q8-llm60-main",
+  "lib_dirs": [
+    "/usr/local/cuda-13.2/lib64"
+  ],
+  "args": [
+    "--pack",
+    "/benchmark/packs/unsloth-q8-llm60-main",
+    "--native",
+    "/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "--ple-gguf",
+    "/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf",
+    "--expert-profile",
+    "/benchmark/strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "8192",
+    "--spec",
+    "2",
+    "--suffix-draft",
+    "0",
+    "--max-context",
+    "32768",
+    "--kv",
+    "fp16",
+    "--stats",
+    "--mmap-experts"
+  ],
+  "log": "/benchmark/results/unsloth-q8-llm60-main/engine.log",
+  "host": "127.0.0.1",
+  "port": 18190,
+  "open_browser": false
+}

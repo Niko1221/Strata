@@ -1,0 +1,41 @@
+loading the model (the first start takes a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] loading the experts into RAM (about 58 GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] experts loaded: 24.02 GiB at 11.53 GiB/s (5 s so far)
+[strata] filling the GPU's expert cache (24576 experts, 24.02 GiB of VRAM) ...
+[strata] almost ready ...
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/serve/server.py", line 4145, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/serve/server.py", line 4001, in main
+    engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/serve/server.py", line 478, in __init__
+    raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else "") +
+RuntimeError: the engine exited before it was ready (see /home/dflanag3/fleet-tool-eval-20261007/results/gyro-s-llm60-rc1/engine.log)
+the engine log's last lines:
+  strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+  strata generate: profile /home/dflanag3/fleet-tool-eval-20261007/strata-gyro/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+  strata generate: PLE on, table 320001536 rows of /home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf
+  strata generate: experimental native Q5_K head, 521472000 bytes
+  strata generate: GPU 0: NVIDIA RTX PRO 6000 Blackwell Workstation Edition, compute capability 12.0
+  strata generate: expert arena read through the file cache (buffered (not Windows))
+  strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 12301 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+  strata generate: loaded 24.02 GiB at 11.53 GiB/s
+  strata generate: expert cache auto: 89.26 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 24576 slots
+  strata generate: expert cache 24576 slots, 24.02 GiB of VRAM; policy is
+  strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                   so a reply can differ slightly from a run without the cache (same quality:
+                   bench/results/2026-09-27-cache-parity).
+                   PROFILE, ranked by routing frequency, no eviction.
+  strata generate: pre-filled 24576 of 24576 slots from the profile; slot 0 verified
+  strata generate: R4 hit path ON - resident experts are computed on the GPU
+  strata generate: 15 expert-pool workers + the host thread
+  strata generate: session is up (engine 0.1.39)
+  strata generate: token graph hit path: 24576 resident experts, decided on the device
+  strata serve: needs --spec T, --mtp DIR and --prefill CHUNK (and a fillable --expert-cache; the graphed hit path additionally needs --expert-profile P)

@@ -1,0 +1,64 @@
+[
+  {
+    "model": "Gyro-M",
+    "short_score": 93,
+    "standard_score": 86,
+    "points": 117,
+    "max_points": 136,
+    "scored_scenarios": 68,
+    "excluded": [
+      "TC-45"
+    ],
+    "pass_count": 54,
+    "partial_count": 9,
+    "fail_count": 5,
+    "wall_sum_s": 249.67,
+    "sampled_cgroup_gib": 34.667198181152344,
+    "sampled_gpu_mib": 37853.0
+  },
+  {
+    "model": "AP-Q4_K_XL",
+    "short_score": 97,
+    "standard_score": 85,
+    "points": 117,
+    "max_points": 138,
+    "scored_scenarios": 69,
+    "excluded": [],
+    "pass_count": 51,
+    "partial_count": 15,
+    "fail_count": 3,
+    "wall_sum_s": 234.38,
+    "sampled_cgroup_gib": 84.46526336669922,
+    "sampled_gpu_mib": 71523.0
+  },
+  {
+    "model": "AP-IQ3_XXS",
+    "short_score": 90,
+    "standard_score": 89,
+    "points": 123,
+    "max_points": 138,
+    "scored_scenarios": 69,
+    "excluded": [],
+    "pass_count": 57,
+    "partial_count": 9,
+    "fail_count": 3,
+    "wall_sum_s": 221.83,
+    "sampled_cgroup_gib": 93.78873443603516,
+    "sampled_gpu_mib": 57727.0
+  },
+  {
+    "model": "AP-IQ2_S",
+    "short_score": 93,
+    "standard_score": 88,
+    "points": 121,
+    "max_points": 138,
+    "scored_scenarios": 69,
+    "excluded": [],
+    "pass_count": 54,
+    "partial_count": 13,
+    "fail_count": 2,
+    "wall_sum_s": 211.26,
+    "sampled_cgroup_gib": 55.28245544433594,
+    "sampled_gpu_mib": 52913.0
+  }
+]

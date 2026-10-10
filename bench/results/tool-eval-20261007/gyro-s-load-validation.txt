@@ -1,0 +1,6 @@
+load check: pack /home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1, GGUF /home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf
+  experts: native_experts.txt v5, 48 layers (tqk6/tqk7 ...), 24.02 GiB; hadamard block 128, 48 layers folded
+  check_experts_gguf: ok
+  index: 302 tensors served from the GGUF, 302 with a kernel (incl. token_embd Q6_K, output Q6_K)
+  PLE table: IQ4_NL, 320001536 rows, direct I/O: ok
+native_expert_parity: 0 failures

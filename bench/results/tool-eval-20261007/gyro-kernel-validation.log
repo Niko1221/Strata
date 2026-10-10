@@ -1,0 +1,14 @@
+Internal ctest changing into directory: /home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build
+Test project /home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build
+    Start 59: native_expert_parity_tqk6_tqk7
+1/4 Test #59: native_expert_parity_tqk6_tqk7 ..............   Passed   39.61 sec
+    Start 60: native_expert_parity_hadamard_tqk6_tqk7
+2/4 Test #60: native_expert_parity_hadamard_tqk6_tqk7 .....   Passed   39.42 sec
+    Start 61: native_expert_parity_tq2_t_tq2_t
+3/4 Test #61: native_expert_parity_tq2_t_tq2_t ............   Passed   10.38 sec
+    Start 62: native_expert_parity_hadamard_tq2_t_tq2_t
+4/4 Test #62: native_expert_parity_hadamard_tq2_t_tq2_t ...   Passed   10.43 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =  99.83 sec

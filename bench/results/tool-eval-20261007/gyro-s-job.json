@@ -1,0 +1,86 @@
+{
+  "label": "gyro-s-llm60-rc1",
+  "wait_files": [
+    "/home/dflanag3/fleet-tool-eval-20261007/BENCH_READY",
+    "/home/dflanag3/fleet-tool-eval-20261007/ENGINE_READY"
+  ],
+  "python": "/home/dflanag3/src/Strata/.venv/bin/python",
+  "source_revision": "434e136f73a7da2bfd11cde3bb0aa0acaf1328c6",
+  "model": "/home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+  "pack": "/home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1",
+  "config": {
+    "exe": "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build/strata",
+    "cwd": "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro",
+    "tokenizer": "/home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1/tokenizer",
+    "gpu": 0,
+    "model_name": "gyro-s-llm60-rc1",
+    "lib_dirs": [
+      "/usr/local/cuda-13.2/lib64"
+    ],
+    "args": [
+      "--pack",
+      "/home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1",
+      "--native",
+      "/home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+      "--ple-gguf",
+      "/home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+      "--expert-profile",
+      "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/data/expert-profile.bin",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "8192",
+      "--spec",
+      "2",
+      "--suffix-draft",
+      "0",
+      "--max-context",
+      "32768",
+      "--kv",
+      "fp16",
+      "--stats"
+    ]
+  },
+  "stages": [
+    "short",
+    "standard"
+  ],
+  "ggml_revision": "dc255f2a4b6e4211b555b0c05260b2523281f314",
+  "engine_patch": {
+    "upstream": "3216d27118136cf85ef68087507166babb840d9d",
+    "sha256": "a93d2f59d56bad80ca0d6558ee07e1388eee5603b24654ff635c7099c0e27199",
+    "base": "434e136f73a7da2bfd11cde3bb0aa0acaf1328c6"
+  },
+  "env": {
+    "STRATA_APR": "1",
+    "STRATA_GGUF_PY": "/home/dflanag3/fleet-tool-eval-20261007/ggml-gyro/gguf-py"
+  },
+  "pack_args": [
+    "--compat-bf16"
+  ],
+  "preflight": [
+    [
+      "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build/native_expert_parity",
+      "--load-check",
+      "/home/dflanag3/fleet-tool-eval-20261007/packs/gyro-s-llm60-rc1",
+      "/home/dflanag3/models/huggingface/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf"
+    ]
+  ],
+  "kernel_validation": {
+    "time": 1791417971.2075622,
+    "build": {
+      "strata": "434e136f73a7da2bfd11cde3bb0aa0acaf1328c6",
+      "ggml": "dc255f2a4b6e4211b555b0c05260b2523281f314",
+      "time": 1791417809.2777975
+    },
+    "command": [
+      "ctest",
+      "--test-dir",
+      "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build",
+      "--output-on-failure",
+      "--no-tests=error",
+      "-R",
+      "^native_expert_parity_(hadamard_)?(tqk6_tqk7|tq2_t_tq2_t)$"
+    ]
+  }
+}

@@ -1,0 +1,529 @@
+{
+  "schema_version": "1",
+  "tool_eval_bench_version": "2.7.1.dev25+gc8a30ff5c",
+  "final_score": 93,
+  "rating": "\u2605\u2605\u2605\u2605\u2605 Excellent",
+  "safety_warnings": [],
+  "deployability": 90,
+  "responsiveness": 84,
+  "total_scenarios": 15,
+  "run_id": "2026-10-08T02-41-41.459407Z_ec44872d",
+  "status": "completed",
+  "config": {
+    "model": "gyro-m-llm60-rc1",
+    "backend": "unknown",
+    "base_url": "http://***:18190",
+    "endpoint_id": "endpoint:21116075921e",
+    "temperature": 0.0,
+    "timeout_seconds": 600.0,
+    "max_turns": 8,
+    "seed": 42,
+    "reference_date": "2026-10-07",
+    "scenario_count": 15,
+    "scenario_ids": [
+      "TC-01",
+      "TC-02",
+      "TC-03",
+      "TC-04",
+      "TC-05",
+      "TC-06",
+      "TC-07",
+      "TC-08",
+      "TC-09",
+      "TC-10",
+      "TC-11",
+      "TC-12",
+      "TC-13",
+      "TC-14",
+      "TC-15"
+    ],
+    "concurrency": 1,
+    "error_rate": 0.0,
+    "alpha": 0.7,
+    "extra_params": {
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      },
+      "reasoning_effort": "none",
+      "max_tokens": 4096
+    },
+    "weight_by_difficulty": false,
+    "config_fingerprint": "35ed1f7d5dda"
+  },
+  "scores": {
+    "final_score": 93,
+    "total_points": 28,
+    "max_points": 30,
+    "rating": "\u2605\u2605\u2605\u2605\u2605 Excellent",
+    "category_scores": [
+      {
+        "category": "A",
+        "label": "Tool Selection",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "B",
+        "label": "Parameter Precision",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "C",
+        "label": "Multi-Step Chains",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "D",
+        "label": "Restraint & Refusal",
+        "earned": 5,
+        "max": 6,
+        "percent": 83,
+        "pass_count": 2,
+        "partial_count": 1,
+        "fail_count": 0
+      },
+      {
+        "category": "E",
+        "label": "Error Recovery",
+        "earned": 5,
+        "max": 6,
+        "percent": 83,
+        "pass_count": 2,
+        "partial_count": 1,
+        "fail_count": 0
+      }
+    ],
+    "scenario_results": [
+      {
+        "scenario_id": "TC-01",
+        "status": "pass",
+        "points": 2,
+        "summary": "Used get_weather with Berlin only.",
+        "note": null,
+        "tool_calls_made": [
+          "get_weather(location=Berlin, units=celsius)"
+        ],
+        "expected_behavior": "Use get_weather instead of falling back to web_search.",
+        "duration_seconds": 2.23,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-01 Direct Specialist Match\nprompt=What's the weather like in Berlin right now?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_weather\ntool_call=get_weather {\"location\":\"Berlin\",\"units\":\"celsius\"}\ntool_result={\"location\": \"Berlin\", \"temperature\": 8, \"units\": \"celsius\", \"condition\": \"Overcast\", \"humidity\": 72, \"wind_speed_kmh\": 15.5, \"wind_direction\": \"SW\", \"uv_index\": 3, \"visibility_km\": 9.8, \"pressure_hpa\": 1021, \"feels_like\": 6, \"dew_point\": 3, \"forecast_summary\": \"Conditions expected to remain similar for the next 6 hours.\", \"last_updated\": \"2026-03-20T12:00:00Z\", \"data_source\": \"National Weather Service\", \"station_id\": \"WXSTN-7c2c6bfd\", \"request_id\": \"req_wx_7c2c6bfd\"}\nassistant_turn_2=Here's the current weather in Berlin:\n\n- **Temperature:** 8\u00b0C (feels like 6\u00b0C)\n- **Condition:** Overcast\n- **Humidity:** 72%\n- **Wind:** 15.5 km/h from the southwest\n- **Pressure:** 1021 hPa\n- **Visibility:** 9.8 km\n- **UV Index:** 3\n\nConditions are expected to stay similar over the next few hours. It's a cool, cloudy day \u2014 you might want a light jacket if you're heading out!\nfinal_answer=Here's the current weather in Berlin:\n\n- **Temperature:** 8\u00b0C (feels like 6\u00b0C)\n- **Condition:** Overcast\n- **Humidity:** 72%\n- **Wind:** 15.5 km/h from the southwest\n- **Pressure:** 1021 hPa\n- **Visibility:** 9.8 km\n- **UV Index:** 3\n\nConditions are expected to stay similar over the next few hours. It's a cool, cloudy day \u2014 you might want a light jacket if you're heading out!\n\nverdict=pass\nsummary=Used get_weather with Berlin only.",
+        "ttft_ms": 719.1,
+        "turn_latencies_ms": [
+          994.0,
+          1231.4
+        ],
+        "prompt_tokens": 3227,
+        "completion_tokens": 159,
+        "total_tokens": 3386,
+        "tool_call_arg_bytes": 39
+      },
+      {
+        "scenario_id": "TC-02",
+        "status": "pass",
+        "points": 2,
+        "summary": "Used only get_stock_price for AAPL.",
+        "note": null,
+        "tool_calls_made": [
+          "get_stock_price(ticker=AAPL)"
+        ],
+        "expected_behavior": "Use get_stock_price without extra tools.",
+        "duration_seconds": 2.98,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-02 Distractor Resistance\nprompt=What is the current price of AAPL stock?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_stock_price\ntool_call=get_stock_price {\"ticker\":\"AAPL\"}\ntool_result={\"ticker\": \"AAPL\", \"price\": 187.42, \"currency\": \"USD\", \"change\": \"+1.23\", \"change_percent\": \"+0.66%\", \"timestamp\": \"2026-03-20T16:00:00Z\", \"exchange\": \"NASDAQ\", \"volume\": 52314800, \"market_cap\": \"2.89T\", \"pe_ratio\": 28.4, \"day_high\": 189.67, \"day_low\": 185.17, \"week_52_high\": 234.27, \"week_52_low\": 134.94, \"previous_close\": 186.19, \"after_hours\": null, \"request_id\": \"req_sp_8c1d4e2a\"}\nassistant_turn_2=Here's the current AAPL (Apple Inc.) stock data:\n\n**Price: $187.42 USD** (NASDAQ) \u2014 up **+$1.23 (+0.66%)**\n\n| Metric | Value |\n|---|---|\n| Previous close | $186.19 |\n| Day high / low | $189.67 / $185.17 |\n| 52-week high / low | $234.27 / $134.94 |\n| Volume | 52,314,800 |\n| Market cap | $2.89T |\n| P/E ratio | 28.4 |\n\n\u26a0\ufe0f One note: the data feed returned a timestamp of **March 20, 2026**, which is older than today's date (October 7, 2026), so this quote may be stale rather than truly live. If you need a real-time price, I'd recommend checking a live market data source directly.\nfinal_answer=Here's the current AAPL (Apple Inc.) stock data:\n\n**Price: $187.42 USD** (NASDAQ) \u2014 up **+$1.23 (+0.66%)**\n\n| Metric | Value |\n|---|---|\n| Previous close | $186.19 |\n| Day high / low | $189.67 / $185.17 |\n| 52-week high / low | $234.27 / $134.94 |\n| Volume | 52,314,800 |\n| Market cap | $2.89T |\n| P/E ratio | 28.4 |\n\n\u26a0\ufe0f One note: the data feed returned a timestamp of **March 20, 2026**, which is older than today's date (October 7, 2026), so this quote may be stale rather than truly live. If you need a real-time price, I'd recommend checking a live market data source directly.\n\nverdict=pass\nsummary=Used only get_stock_price for AAPL.",
+        "ttft_ms": 594.5,
+        "turn_latencies_ms": [
+          760.1,
+          2216.4
+        ],
+        "prompt_tokens": 3234,
+        "completion_tokens": 262,
+        "total_tokens": 3496,
+        "tool_call_arg_bytes": 17
+      },
+      {
+        "scenario_id": "TC-03",
+        "status": "pass",
+        "points": 2,
+        "summary": "Looked up Sarah before sending the email.",
+        "note": null,
+        "tool_calls_made": [
+          "get_contacts(query=Sarah)",
+          "send_email(to=sarah.chen@company.com, subject=Meeting moved to 3pm, body=Hi Sarah,\n\nJust a quick note to let you know that our meeting has been moved to 3pm.\n\nPlease let me know if you have any questions or if the new time doesn't work for you.\n\nThanks,\nAlex)"
+        ],
+        "expected_behavior": "Infer get_contacts followed by send_email.",
+        "duration_seconds": 2.97,
+        "turn_count": 3,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-03 Implicit Tool Need\nprompt=I need to let Sarah know the meeting moved to 3pm.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=I'll send Sarah an email about the meeting change. Let me look up her contact details first.\ntool_calls_requested=get_contacts\ntool_call=get_contacts {\"query\":\"Sarah\"}\ntool_result={\"results\": [{\"id\": \"contact_1000\", \"department\": \"Engineering\", \"phone\": \"+1-555-0100\", \"last_contacted\": \"2026-03-18T15:30:00Z\", \"notes\": \"\", \"source\": \"directory\", \"name\": \"Sarah Chen\", \"email\": \"sarah.chen@company.com\", \"title\": \"Team Member\"}], \"total_contacts\": 1, \"directory_version\": \"2026.03\", \"request_id\": \"req_ct_6e3b2a1c\"}\nassistant_turn_2=Found Sarah Chen. I'll send her the email now.\ntool_calls_requested=send_email\ntool_call=send_email {\"to\":\"sarah.chen@company.com\",\"subject\":\"Meeting moved to 3pm\",\"body\":\"Hi Sarah,\\n\\nJust a quick note to let you know that our meeting has been moved to 3pm.\\n\\nPlease let me know if you have any questions or if the new time doesn't work for you.\\n\\nThanks,\\nAlex\"}\ntool_result={\"status\": \"sent\", \"message_id\": \"msg_8821\", \"timestamp\": \"2026-03-20T12:05:33Z\", \"thread_id\": \"thread_e9a1f4c2\", \"headers\": {\"X-Mailer\": \"tool-eval-bench/1.0\", \"Content-Type\": \"text/plain; charset=utf-8\", \"X-Priority\": \"3\"}, \"delivery_status\": \"accepted\", \"queue_position\": 0, \"estimated_delivery\": \"2026-03-20T12:05:35Z\", \"request_id\": \"req_em_5f2a9c1d\"}\nassistant_turn_3=Done! I've sent Sarah Chen an email letting her know the meeting has moved to 3pm.\n\n- **To:** sarah.chen@company.com\n- **Subject:** Meeting moved to 3pm\n- **Status:** Sent \u2705\n\nWould you like me to add anything else to the message, or notify anyone else about the change?\nfinal_answer=Done! I've sent Sarah Chen an email letting her know the meeting has moved to 3pm.\n\n- **To:** sarah.chen@company.com\n- **Subject:** Meeting moved to 3pm\n- **Status:** Sent \u2705\n\nWould you like me to add anything else to the message, or notify anyone else about the change?\n\nverdict=pass\nsummary=Looked up Sarah before sending the email.",
+        "ttft_ms": 534.7,
+        "turn_latencies_ms": [
+          907.0,
+          1231.2,
+          832.6
+        ],
+        "prompt_tokens": 5193,
+        "completion_tokens": 242,
+        "total_tokens": 5435,
+        "tool_call_arg_bytes": 283
+      },
+      {
+        "scenario_id": "TC-04",
+        "status": "pass",
+        "points": 2,
+        "summary": "Requested Tokyo weather in Fahrenheit explicitly.",
+        "note": null,
+        "tool_calls_made": [
+          "get_weather(location=Tokyo, units=fahrenheit)"
+        ],
+        "expected_behavior": "Pass the requested units parameter instead of ignoring it.",
+        "duration_seconds": 1.88,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-04 Unit Handling\nprompt=What's the temperature in Tokyo in Fahrenheit?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_weather\ntool_call=get_weather {\"location\":\"Tokyo\",\"units\":\"fahrenheit\"}\ntool_result={\"location\": \"Tokyo\", \"temperature\": 64, \"units\": \"fahrenheit\", \"condition\": \"Clear\", \"wind_speed_kmh\": 14.799999999999999, \"wind_direction\": \"E\", \"uv_index\": 4, \"visibility_km\": 9.8, \"pressure_hpa\": 1014, \"feels_like\": 62, \"dew_point\": 59, \"forecast_summary\": \"Conditions expected to remain similar for the next 6 hours.\", \"last_updated\": \"2026-03-20T12:00:00Z\", \"data_source\": \"National Weather Service\", \"station_id\": \"WXSTN-39cca05a\", \"request_id\": \"req_wx_39cca05a\"}\nassistant_turn_2=The current temperature in Tokyo is **64\u00b0F** with clear skies. Here are a few more details:\n\n- **Feels like:** 62\u00b0F\n- **Wind:** 14.8 km/h from the east\n- **Humidity (dew point):** 59\u00b0F\n- **Visibility:** 9.8 km\n- **UV index:** 4\n\nConditions are expected to remain similar over the next few hours.\nfinal_answer=The current temperature in Tokyo is **64\u00b0F** with clear skies. Here are a few more details:\n\n- **Feels like:** 62\u00b0F\n- **Wind:** 14.8 km/h from the east\n- **Humidity (dew point):** 59\u00b0F\n- **Visibility:** 9.8 km\n- **UV index:** 4\n\nConditions are expected to remain similar over the next few hours.\n\nverdict=pass\nsummary=Requested Tokyo weather in Fahrenheit explicitly.",
+        "ttft_ms": 594.8,
+        "turn_latencies_ms": [
+          872.4,
+          1005.6
+        ],
+        "prompt_tokens": 3236,
+        "completion_tokens": 133,
+        "total_tokens": 3369,
+        "tool_call_arg_bytes": 41
+      },
+      {
+        "scenario_id": "TC-05",
+        "status": "pass",
+        "points": 2,
+        "summary": "Parsed next Monday and included the requested meeting details.",
+        "note": null,
+        "tool_calls_made": [
+          "get_contacts(query=Alex)",
+          "get_contacts(query=Jamie)",
+          "create_calendar_event(title=Team Standup, date=2026-10-12, time=09:30, duration_minutes=30, attendees=['alex.stone@company.com', 'jamie.liu@company.com'])"
+        ],
+        "expected_behavior": "Parse relative date and structured event parameters correctly.",
+        "duration_seconds": 3.29,
+        "turn_count": 3,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-05 Date and Time Parsing\nprompt=Schedule a team standup for next Monday at 9:30am, 30 minutes, with Alex and Jamie.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_contacts, get_contacts\ntool_call=get_contacts {\"query\":\"Alex\"}\ntool_result={\"results\": [{\"id\": \"contact_1000\", \"department\": \"Engineering\", \"phone\": \"+1-555-0100\", \"last_contacted\": \"2026-03-18T15:30:00Z\", \"notes\": \"\", \"source\": \"directory\", \"name\": \"Alex Stone\", \"email\": \"alex.stone@company.com\", \"title\": \"Team Member\"}], \"total_contacts\": 1, \"directory_version\": \"2026.03\", \"request_id\": \"req_ct_6e3b2a1c\"}\ntool_call=get_contacts {\"query\":\"Jamie\"}\ntool_result={\"results\": [{\"id\": \"contact_1000\", \"department\": \"Engineering\", \"phone\": \"+1-555-0100\", \"last_contacted\": \"2026-03-18T15:30:00Z\", \"notes\": \"\", \"source\": \"directory\", \"name\": \"Jamie Liu\", \"email\": \"jamie.liu@company.com\", \"title\": \"Team Member\"}], \"total_contacts\": 1, \"directory_version\": \"2026.03\", \"request_id\": \"req_ct_6e3b2a1c\"}\nassistant_turn_2=[tool_calls_only]\ntool_calls_requested=create_calendar_event\ntool_call=create_calendar_event {\"title\":\"Team Standup\",\"date\":\"2026-10-12\",\"time\":\"09:30\",\"duration_minutes\":30,\"attendees\":[\"alex.stone@company.com\", \"jamie.liu@company.com\"]}\ntool_result={\"event_id\": \"evt_4412\", \"status\": \"created\", \"title\": \"Team Standup\", \"date\": \"2026-10-12\", \"calendar_id\": \"cal_primary\", \"created_at\": \"2026-03-20T12:00:00Z\", \"updated_at\": \"2026-03-20T12:00:00Z\", \"organizer\": {\"email\": \"user@company.com\", \"display_name\": \"Current User\"}, \"reminders\": {\"use_default\": true, \"overrides\": []}, \"conference_link\": null, \"visibility\": \"default\", \"color_id\": \"7\", \"recurrence\": null, \"request_id\": \"req_ce_4a1d8b3f\"}\nassistant_turn_3=Done! \u2705 Your team standup is scheduled:\n\n- **Event:** Team Standup\n- **Date:** Monday, October 12, 2026\n- **Time:** 9:30 AM \u2013 10:00 AM (30 minutes)\n- **Attendees:** Alex Stone (alex.stone@company.com) and Jamie Liu (jamie.liu@company.com)\n\nBoth attendees have been invited. Let me know if you'd like to add a conference link or make it a recurring meeting.\nfinal_answer=Done! \u2705 Your team standup is scheduled:\n\n- **Event:** Team Standup\n- **Date:** Monday, October 12, 2026\n- **Time:** 9:30 AM \u2013 10:00 AM (30 minutes)\n- **Attendees:** Alex Stone (alex.stone@company.com) and Jamie Liu (jamie.liu@company.com)\n\nBoth attendees have been invited. Let me know if you'd like to add a conference link or make it a recurring meeting.\n\nverdict=pass\nsummary=Parsed next Monday and included the requested meeting details.",
+        "ttft_ms": 586.9,
+        "turn_latencies_ms": [
+          947.1,
+          1145.5,
+          1199.9
+        ],
+        "prompt_tokens": 5524,
+        "completion_tokens": 270,
+        "total_tokens": 5794,
+        "tool_call_arg_bytes": 178,
+        "parallel_tool_turns": [
+          1
+        ]
+      },
+      {
+        "scenario_id": "TC-06",
+        "status": "pass",
+        "points": 2,
+        "summary": "Issued separate translate_text calls for both languages.",
+        "note": null,
+        "tool_calls_made": [
+          "translate_text(text=Where is the nearest hospital?, source_language=english, target_language=spanish)",
+          "translate_text(text=Where is the nearest hospital?, source_language=english, target_language=japanese)"
+        ],
+        "expected_behavior": "Split a one-to-many translation request into two tool calls.",
+        "duration_seconds": 2.21,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-06 Multi-Value Extraction\nprompt=Use the translate_text tool to translate 'Where is the nearest hospital?' from English into both Spanish and Japanese.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=translate_text, translate_text\ntool_call=translate_text {\"text\":\"Where is the nearest hospital?\",\"source_language\":\"english\",\"target_language\":\"spanish\"}\ntool_result={\"translated\": \"\\u00bfD\\u00f3nde est\\u00e1 el hospital m\\u00e1s cercano?\", \"source_detected\": \"en\", \"confidence\": 0.98, \"alternatives\": [], \"word_count\": 6, \"character_count\": 36, \"api_version\": \"v3.1\", \"model\": \"nmt-2026\", \"request_id\": \"req_tr_2b7a5d1e\"}\ntool_call=translate_text {\"text\":\"Where is the nearest hospital?\",\"source_language\":\"english\",\"target_language\":\"japanese\"}\ntool_result={\"translated\": \"\\u6700\\u5bc4\\u308a\\u306e\\u75c5\\u9662\\u306f\\u3069\\u3053\\u3067\\u3059\\u304b\\uff1f\", \"source_detected\": \"en\", \"confidence\": 0.98, \"alternatives\": [], \"word_count\": 1, \"character_count\": 13, \"api_version\": \"v3.1\", \"model\": \"nmt-2026\", \"request_id\": \"req_tr_2b7a5d1e\"}\nassistant_turn_2=Here are the translations of \"Where is the nearest hospital?\":\n\n- **Spanish:** \u00bfD\u00f3nde est\u00e1 el hospital m\u00e1s cercano?\n- **Japanese:** \u6700\u5bc4\u308a\u306e\u75c5\u9662\u306f\u3069\u3053\u3067\u3059\u304b\uff1f\n\nBoth translations were returned with high confidence (0.98).\nfinal_answer=Here are the translations of \"Where is the nearest hospital?\":\n\n- **Spanish:** \u00bfD\u00f3nde est\u00e1 el hospital m\u00e1s cercano?\n- **Japanese:** \u6700\u5bc4\u308a\u306e\u75c5\u9662\u306f\u3069\u3053\u3067\u3059\u304b\uff1f\n\nBoth translations were returned with high confidence (0.98).\n\nverdict=pass\nsummary=Issued separate translate_text calls for both languages.",
+        "ttft_ms": 605.5,
+        "turn_latencies_ms": [
+          1485.2,
+          724.9
+        ],
+        "prompt_tokens": 3401,
+        "completion_tokens": 169,
+        "total_tokens": 3570,
+        "tool_call_arg_bytes": 195,
+        "parallel_tool_turns": [
+          1
+        ]
+      },
+      {
+        "scenario_id": "TC-07",
+        "status": "pass",
+        "points": 2,
+        "summary": "Completed the full four-step chain with the right data.",
+        "note": null,
+        "tool_calls_made": [
+          "search_files(query=Q3 budget report, file_type=any)",
+          "get_contacts(query=manager)",
+          "read_file(file_id=file_091)",
+          "send_email(to=jordan.park@company.com, subject=Q3 Budget Report Total, body=Hi Jordan,\n\nHere is the total from the Q3 budget report:\n\nTotal: $4.4M\n\nBreakdown by department:\n- Engineering: $2.1M\n- Marketing: $800K\n- Sales: $1.5M\n\nLet me know if you need anything else.\n\nThanks, attachments=['file_091'])"
+        ],
+        "expected_behavior": "Thread file search, file read, contact lookup, and send_email end to end.",
+        "duration_seconds": 5.05,
+        "turn_count": 4,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-07 Search \u2192 Read \u2192 Act\nprompt=Find the Q3 budget report and email the total to my manager.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=I'll help you find the Q3 budget report and email the total to your manager. Let me start by searching for the report and looking up your manager's contact.\ntool_calls_requested=search_files, get_contacts\ntool_call=search_files {\"query\":\"Q3 budget report\",\"file_type\":\"any\"}\ntool_result={\"results\": [{\"file_id\": \"file_091\", \"name\": \"Q3_Budget_Report_2025.xlsx\", \"size_bytes\": 28416, \"modified_at\": \"2026-03-15T09:22:11Z\", \"created_at\": \"2026-02-10T14:00:00Z\", \"owner\": \"system\", \"path\": \"/documents/Q3_Budget_Report_2025.xlsx\", \"permissions\": \"read\", \"content_type\": \"application/octet-stream\"}], \"total_matches\": 1, \"search_time_ms\": 18, \"index_version\": \"idx-2026.03\", \"request_id\": \"req_fs_3d4a8e2b\"}\ntool_call=get_contacts {\"query\":\"manager\"}\ntool_result={\"results\": [{\"id\": \"contact_1000\", \"department\": \"Engineering\", \"phone\": \"+1-555-0100\", \"last_contacted\": \"2026-03-18T15:30:00Z\", \"notes\": \"\", \"source\": \"directory\", \"name\": \"Jordan Park\", \"email\": \"jordan.park@company.com\", \"role\": \"manager\"}], \"total_contacts\": 1, \"directory_version\": \"2026.03\", \"request_id\": \"req_ct_6e3b2a1c\"}\nassistant_turn_2=I found the Q3 budget report and your manager (Jordan Park). Let me read the report to get the total.\ntool_calls_requested=read_file\ntool_call=read_file {\"file_id\":\"file_091\"}\ntool_result={\"content\": \"Department budgets: Engineering $2.1M, Marketing $800K, Sales $1.5M. Total: $4.4M\", \"encoding\": \"utf-8\", \"mime_type\": \"text/plain\", \"size_bytes\": 81, \"last_modified\": \"2026-03-15T09:22:11Z\", \"version\": 3, \"permissions\": {\"read\": true, \"write\": false}, \"line_count\": 1, \"request_id\": \"req_rf_1b5c7d3e\"}\nassistant_turn_3=The total is $4.4M. Now let me email that to your manager, Jordan Park.\ntool_calls_requested=send_email\ntool_call=send_email {\"to\":\"jordan.park@company.com\",\"subject\":\"Q3 Budget Report Total\",\"body\":\"Hi Jordan,\\n\\nHere is the total from the Q3 budget report:\\n\\nTotal: $4.4M\\n\\nBreakdown by department:\\n- Engineering: $2.1M\\n- Marketing: $800K\\n- Sales: $1.5M\\n\\nLet me know if you need anything else.\\n\\nThanks\",\"attachments\":[\"file_091\"]}\ntool_result={\"status\": \"sent\", \"timestamp\": \"2026-03-20T12:05:33Z\", \"thread_id\": \"thread_e9a1f4c2\", \"headers\": {\"X-Mailer\": \"tool-eval-bench/1.0\", \"Content-Type\": \"text/plain; charset=utf-8\", \"X-Priority\": \"3\"}, \"delivery_status\": \"accepted\", \"queue_position\": 0, \"estimated_delivery\": \"2026-03-20T12:05:35Z\", \"request_id\": \"req_em_5f2a9c1d\"}\nassistant_turn_4=Done! Here's a summary of what I did:\n\n1. **Found the report:** `Q3_Budget_Report_2025.xlsx`\n2. **Read the total:** **$4.4M** (Engineering $2.1M, Marketing $800K, Sales $1.5M)\n3. **Emailed your manager:** Jordan Park (jordan.park@company.com) with the total and department breakdown, plus the report attached.\n\nThe email was sent successfully. Let me know if you'd like me to adjust anything or send it to anyone else.\nfinal_answer=Done! Here's a summary of what I did:\n\n1. **Found the report:** `Q3_Budget_Report_2025.xlsx`\n2. **Read the total:** **$4.4M** (Engineering $2.1M, Marketing $800K, Sales $1.5M)\n3. **Emailed your manager:** Jordan Park (jordan.park@company.com) with the total and department breakdown, plus the report attached.\n\nThe email was sent successfully. Let me know if you'd like me to adjust anything or send it to anyone else.\n\nverdict=pass\nsummary=Completed the full four-step chain with the right data.",
+        "ttft_ms": 536.8,
+        "turn_latencies_ms": [
+          1361.0,
+          727.2,
+          1657.7,
+          1301.7
+        ],
+        "prompt_tokens": 8041,
+        "completion_tokens": 451,
+        "total_tokens": 8492,
+        "tool_call_arg_bytes": 403,
+        "parallel_tool_turns": [
+          1
+        ]
+      },
+      {
+        "scenario_id": "TC-08",
+        "status": "pass",
+        "points": 2,
+        "summary": "Checked the weather first, then set the rainy-day reminder.",
+        "note": null,
+        "tool_calls_made": [
+          "get_weather(location=Paris)",
+          "set_reminder(message=Bring an umbrella \u2014 it's raining in Paris!, datetime=2026-10-08T08:00:00)"
+        ],
+        "expected_behavior": "Branch off the weather result instead of setting the reminder blindly.",
+        "duration_seconds": 2.4,
+        "turn_count": 3,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-08 Conditional Branching\nprompt=Check the weather in Paris. If it's raining, remind me to bring an umbrella tomorrow at 8am.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_weather\ntool_call=get_weather {\"location\":\"Paris\"}\ntool_result={\"location\": \"Paris\", \"temperature\": 11, \"condition\": \"Light rain\", \"humidity\": 89, \"wind_speed_kmh\": 14.5, \"wind_direction\": \"NW\", \"uv_index\": 5, \"visibility_km\": 9.8, \"pressure_hpa\": 1011, \"feels_like\": 9, \"dew_point\": 6, \"forecast_summary\": \"Conditions expected to remain similar for the next 6 hours.\", \"last_updated\": \"2026-03-20T12:00:00Z\", \"data_source\": \"National Weather Service\", \"station_id\": \"WXSTN-2f3f1a07\", \"request_id\": \"req_wx_2f3f1a07\"}\nassistant_turn_2=[tool_calls_only]\ntool_calls_requested=set_reminder\ntool_call=set_reminder {\"message\":\"Bring an umbrella \\u2014 it's raining in Paris!\",\"datetime\":\"2026-10-08T08:00:00\"}\ntool_result={\"reminder_id\": \"rem_553\", \"status\": \"set\", \"created_at\": \"2026-03-20T12:00:00Z\", \"notification_channels\": [\"push\", \"email\"], \"repeat\": null, \"priority\": \"normal\", \"request_id\": \"req_rm_4c2a1d3b\"}\nassistant_turn_3=It's currently raining in Paris \u2014 light rain, 11\u00b0C (feels like 9\u00b0C), 89% humidity, wind from the NW at 14.5 km/h.\n\n\u2705 Reminder set: \"Bring an umbrella \u2014 it's raining in Paris!\" for tomorrow (Thursday, October 8) at 8:00 AM, with push and email notifications.\nfinal_answer=It's currently raining in Paris \u2014 light rain, 11\u00b0C (feels like 9\u00b0C), 89% humidity, wind from the NW at 14.5 km/h.\n\n\u2705 Reminder set: \"Bring an umbrella \u2014 it's raining in Paris!\" for tomorrow (Thursday, October 8) at 8:00 AM, with push and email notifications.\n\nverdict=pass\nsummary=Checked the weather first, then set the rainy-day reminder.",
+        "ttft_ms": 600.3,
+        "turn_latencies_ms": [
+          759.4,
+          766.8,
+          874.2
+        ],
+        "prompt_tokens": 5129,
+        "completion_tokens": 171,
+        "total_tokens": 5300,
+        "tool_call_arg_bytes": 114
+      },
+      {
+        "scenario_id": "TC-09",
+        "status": "pass",
+        "points": 2,
+        "summary": "Handled both independent tasks.",
+        "note": "Both tools were called in the same assistant turn.",
+        "tool_calls_made": [
+          "get_weather(location=London)",
+          "get_stock_price(ticker=MSFT)"
+        ],
+        "expected_behavior": "Handle two independent requests without missing either one.",
+        "duration_seconds": 3.42,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-09 Parallel Independence\nprompt=What's the weather in London and the stock price of MSFT?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_weather, get_stock_price\ntool_call=get_weather {\"location\":\"London\"}\ntool_result={\"location\": \"London\", \"temperature\": 12, \"condition\": \"Cloudy\", \"wind_speed_kmh\": 16.0, \"wind_direction\": \"W\", \"uv_index\": 1, \"visibility_km\": 9.8, \"pressure_hpa\": 1026, \"feels_like\": 10, \"dew_point\": 7, \"forecast_summary\": \"Conditions expected to remain similar for the next 6 hours.\", \"last_updated\": \"2026-03-20T12:00:00Z\", \"data_source\": \"National Weather Service\", \"station_id\": \"WXSTN-89f4634e\", \"request_id\": \"req_wx_89f4634e\"}\ntool_call=get_stock_price {\"ticker\":\"MSFT\"}\ntool_result={\"ticker\": \"MSFT\", \"price\": 412.78, \"currency\": \"USD\", \"timestamp\": \"2026-03-20T16:00:00Z\", \"exchange\": \"NASDAQ\", \"volume\": 52314800, \"market_cap\": \"2.89T\", \"pe_ratio\": 28.4, \"day_high\": 417.73, \"day_low\": 407.83, \"week_52_high\": 515.97, \"week_52_low\": 297.2, \"previous_close\": 411.55, \"after_hours\": null, \"request_id\": \"req_sp_8c1d4e2a\"}\nassistant_turn_2=Here's what I found:\n\n**Weather in London** \ud83c\udf24\ufe0f\n- **Temperature:** 12\u00b0C (feels like 10\u00b0C)\n- **Condition:** Cloudy\n- **Wind:** 16 km/h from the west\n- **Humidity/Dew point:** 7\u00b0C dew point\n- **Pressure:** 1026 hPa\n- **Visibility:** 9.8 km\n- **UV Index:** 1 (low)\n- Conditions expected to remain similar for the next 6 hours.\n\n**Microsoft (MSFT) Stock** \ud83d\udcc8\n- **Price:** $412.78 USD (NASDAQ)\n- **Previous close:** $411.55 (+0.3%)\n- **Day range:** $407.83 \u2013 $417.73\n- **52-week range:** $297.20 \u2013 $515.97\n- **Volume:** ~52.3M shares\n- **Market cap:** $2.89T\n- **P/E ratio:** 28.4\n\nAnything else you'd like to know?\nfinal_answer=Here's what I found:\n\n**Weather in London** \ud83c\udf24\ufe0f\n- **Temperature:** 12\u00b0C (feels like 10\u00b0C)\n- **Condition:** Cloudy\n- **Wind:** 16 km/h from the west\n- **Humidity/Dew point:** 7\u00b0C dew point\n- **Pressure:** 1026 hPa\n- **Visibility:** 9.8 km\n- **UV Index:** 1 (low)\n- Conditions expected to remain similar for the next 6 hours.\n\n**Microsoft (MSFT) Stock** \ud83d\udcc8\n- **Price:** $412.78 USD (NASDAQ)\n- **Previous close:** $411.55 (+0.3%)\n- **Day range:** $407.83 \u2013 $417.73\n- **52-week range:** $297.20 \u2013 $515.97\n- **Volume:** ~52.3M shares\n- **Market cap:** $2.89T\n- **P/E ratio:** 28.4\n\nAnything else you'd like to know?\n\nverdict=pass\nsummary=Handled both independent tasks.\nnote=Both tools were called in the same assistant turn.",
+        "ttft_ms": 592.0,
+        "turn_latencies_ms": [
+          982.3,
+          2432.6
+        ],
+        "prompt_tokens": 3424,
+        "completion_tokens": 305,
+        "total_tokens": 3729,
+        "tool_call_arg_bytes": 38,
+        "parallel_tool_turns": [
+          1
+        ]
+      },
+      {
+        "scenario_id": "TC-10",
+        "status": "pass",
+        "points": 2,
+        "summary": "Answered directly without tool use.",
+        "note": null,
+        "tool_calls_made": [],
+        "expected_behavior": "Avoid tools for basic knowledge.",
+        "duration_seconds": 1.19,
+        "turn_count": 1,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-10 Trivial Knowledge\nprompt=What year did World War II end?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=World War II ended in **1945**.\n\nKey dates:\n- **May 8, 1945** \u2013 Germany surrendered, ending the war in Europe (V-E Day).\n- **September 2, 1945** \u2013 Japan formally signed its surrender aboard the USS Missouri, ending the war in the Pacific (V-J Day).\nfinal_answer=World War II ended in **1945**.\n\nKey dates:\n- **May 8, 1945** \u2013 Germany surrendered, ending the war in Europe (V-E Day).\n- **September 2, 1945** \u2013 Japan formally signed its surrender aboard the USS Missouri, ending the war in the Pacific (V-J Day).\n\nverdict=pass\nsummary=Answered directly without tool use.",
+        "ttft_ms": 548.5,
+        "turn_latencies_ms": [
+          1190.4
+        ],
+        "prompt_tokens": 1494,
+        "completion_tokens": 78,
+        "total_tokens": 1572
+      },
+      {
+        "scenario_id": "TC-11",
+        "status": "partial",
+        "points": 1,
+        "summary": "Reached for calculator on 15%\u00d7200 \u2014 correct answer but mental math was sufficient.",
+        "note": null,
+        "tool_calls_made": [
+          "calculator(expression=0.15 * 200)"
+        ],
+        "expected_behavior": "Avoid calculator for easy arithmetic.",
+        "duration_seconds": 1.13,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-11 Simple Math\nprompt=What is 15% of 200?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=calculator\ntool_call=calculator {\"expression\":\"0.15 * 200\"}\ntool_result={\"result\": 30.0}\nassistant_turn_2=15% of 200 is **30**.\nfinal_answer=15% of 200 is **30**.\n\nverdict=partial\nsummary=Reached for calculator on 15%\u00d7200 \u2014 correct answer but mental math was sufficient.",
+        "ttft_ms": 590.3,
+        "turn_latencies_ms": [
+          817.5,
+          311.3
+        ],
+        "prompt_tokens": 3056,
+        "completion_tokens": 48,
+        "total_tokens": 3104,
+        "tool_call_arg_bytes": 27
+      },
+      {
+        "scenario_id": "TC-12",
+        "status": "pass",
+        "points": 2,
+        "summary": "Refused cleanly because no delete-email tool exists.",
+        "note": null,
+        "tool_calls_made": [],
+        "expected_behavior": "Refuse cleanly when no suitable tool exists.",
+        "duration_seconds": 3.12,
+        "turn_count": 1,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-12 Impossible Request\nprompt=Delete all my emails from last month.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=I don't have a tool available to delete emails. My email tool can only send new emails, not manage or delete existing ones.\n\nTo delete emails from last month, you'll need to do this directly in your email client. Here's how:\n\n**Gmail:**\n1. Search using: `older_than:2026/09/01 newer_than:2026/10/01`\n2. Click the \"Select all\" checkbox at the top (then click the link that appears to select all conversations, including those outside the current page)\n3. Click the **Delete** (trash) icon\n\n**Outlook:**\n1. Use the search filter: `received:2026-09-01..2026-09-30`\n2. Select all messages (Ctrl+A / Cmd+A)\n3. Press Delete\n\n**Apple Mail:**\n1. Use Search with the date range filter\n2. Select all results and delete\n\n\u26a0\ufe0f **A word of caution:** Deleting a full month's worth of emails is irreversible once emptied from the Trash. You may want to archive them instead (Gmail: Archive button; Outlook: Move to an \"Archive\" folder) so you can recover them later if needed.\n\nIs there anything else I can help you with \u2014 like drafting an email or setting a reminder?\nfinal_answer=I don't have a tool available to delete emails. My email tool can only send new emails, not manage or delete existing ones.\n\nTo delete emails from last month, you'll need to do this directly in your email client. Here's how:\n\n**Gmail:**\n1. Search using: `older_than:2026/09/01 newer_than:2026/10/01`\n2. Click the \"Select all\" checkbox at the top (then click the link that appears to select all conversations, including those outside the current page)\n3. Click the **Delete** (trash) icon\n\n**Outlook:**\n1. Use the search filter: `received:2026-09-01..2026-09-30`\n2. Select all messages (Ctrl+A / Cmd+A)\n3. Press Delete\n\n**Apple Mail:**\n1. Use Search with the date range filter\n2. Select all results and delete\n\n\u26a0\ufe0f **A word of caution:** Deleting a full month's worth of emails is irreversible once emptied from the Trash. You may want to archive them instead (Gmail: Archive button; Outlook: Move to an \"Archive\" folder) so you can recover them later if needed.\n\nIs there anything else I can help you with \u2014 like drafting an email or setting a reminder?\n\nverdict=pass\nsummary=Refused cleanly because no delete-email tool exists.",
+        "ttft_ms": 547.3,
+        "turn_latencies_ms": [
+          3122.5
+        ],
+        "prompt_tokens": 1494,
+        "completion_tokens": 294,
+        "total_tokens": 1788
+      },
+      {
+        "scenario_id": "TC-13",
+        "status": "pass",
+        "points": 2,
+        "summary": "Retried after the empty result and recovered.",
+        "note": null,
+        "tool_calls_made": [
+          "search_files(query=Johnson proposal, file_type=any)",
+          "search_files(query=Johnson, file_type=any)",
+          "search_files(query=proposal, file_type=any)"
+        ],
+        "expected_behavior": "Retry or ask for clarification when the first search returns nothing.",
+        "duration_seconds": 3.27,
+        "turn_count": 3,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-13 Empty Results\nprompt=Find the Johnson proposal document.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=search_files\ntool_call=search_files {\"query\":\"Johnson proposal\",\"file_type\":\"any\"}\ntool_result={\"results\": [], \"total_matches\": 0, \"search_time_ms\": 18, \"index_version\": \"idx-2026.03\", \"request_id\": \"req_fs_3d4a8e2b\"}\nassistant_turn_2=No results came up for \"Johnson proposal.\" Let me try broader searches.\ntool_calls_requested=search_files, search_files\ntool_call=search_files {\"query\":\"Johnson\",\"file_type\":\"any\"}\ntool_result={\"results\": [{\"file_id\": \"file_117\", \"name\": \"Johnson_Project_Proposal_v2.docx\", \"size_bytes\": 28416, \"modified_at\": \"2026-03-15T09:22:11Z\", \"created_at\": \"2026-02-10T14:00:00Z\", \"owner\": \"system\", \"path\": \"/documents/Johnson_Project_Proposal_v2.docx\", \"permissions\": \"read\", \"content_type\": \"application/octet-stream\"}], \"total_matches\": 1, \"search_time_ms\": 18, \"index_version\": \"idx-2026.03\", \"request_id\": \"req_fs_3d4a8e2b\"}\ntool_call=search_files {\"query\":\"proposal\",\"file_type\":\"any\"}\ntool_result={\"error\": \"Tool search_files is not relevant for this scenario.\", \"error_code\": \"ERR_TOOL_UNAVAILABLE\", \"timestamp\": \"2026-03-20T12:00:00Z\", \"trace_id\": \"trace_d788a7ca\", \"documentation_url\": \"https://docs.example.com/errors/ERR_TOOL_UNAVAILABLE\", \"request_id\": \"req_err_d788a7ca\"}\nassistant_turn_3=Found it. Here's the Johnson proposal document:\n\n**Johnson_Project_Proposal_v2.docx**\n- **Path:** `/documents/Johnson_Project_Proposal_v2.docx`\n- **File ID:** `file_117`\n- **Size:** ~28 KB\n- **Created:** February 10, 2026\n- **Last modified:** March 15, 2026\n- **Permissions:** Read-only\n\nWould you like me to read its contents or do anything else with it?\nfinal_answer=Found it. Here's the Johnson proposal document:\n\n**Johnson_Project_Proposal_v2.docx**\n- **Path:** `/documents/Johnson_Project_Proposal_v2.docx`\n- **File ID:** `file_117`\n- **Size:** ~28 KB\n- **Created:** February 10, 2026\n- **Last modified:** March 15, 2026\n- **Permissions:** Read-only\n\nWould you like me to read its contents or do anything else with it?\n\nverdict=pass\nsummary=Retried after the empty result and recovered.",
+        "ttft_ms": 587.8,
+        "turn_latencies_ms": [
+          850.6,
+          1141.3,
+          1279.2
+        ],
+        "prompt_tokens": 5074,
+        "completion_tokens": 245,
+        "total_tokens": 5319,
+        "tool_call_arg_bytes": 121,
+        "parallel_tool_turns": [
+          2
+        ]
+      },
+      {
+        "scenario_id": "TC-14",
+        "status": "partial",
+        "points": 1,
+        "summary": "Acknowledged the error but did not attempt an alternative source.",
+        "note": null,
+        "tool_calls_made": [
+          "get_stock_price(ticker=AAPL)"
+        ],
+        "expected_behavior": "Surface tool errors instead of hallucinating a price.",
+        "duration_seconds": 1.92,
+        "turn_count": 2,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-14 Malformed Response\nprompt=What's Apple's stock price?\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=get_stock_price\ntool_call=get_stock_price {\"ticker\":\"AAPL\"}\ntool_result={\"error\": \"Service temporarily unavailable. Rate limit exceeded.\", \"error_code\": \"ERR_TOOL_UNAVAILABLE\", \"timestamp\": \"2026-03-20T12:00:00Z\", \"trace_id\": \"trace_198b3243\", \"documentation_url\": \"https://docs.example.com/errors/ERR_TOOL_UNAVAILABLE\", \"request_id\": \"req_err_198b3243\"}\nassistant_turn_2=The stock price service is currently unavailable \u2014 it returned a \"Rate limit exceeded\" error (ERR_TOOL_UNAVAILABLE), so I can't retrieve Apple's live price right now.\n\nA couple of options:\n1. **Try again shortly** \u2014 rate limits usually clear within a minute or two, and I can retry the lookup.\n2. **Check directly** \u2014 you can view AAPL's current price on any market data site (e.g., Yahoo Finance, Google, or your brokerage).\n\nWould you like me to retry the lookup?\nfinal_answer=The stock price service is currently unavailable \u2014 it returned a \"Rate limit exceeded\" error (ERR_TOOL_UNAVAILABLE), so I can't retrieve Apple's live price right now.\n\nA couple of options:\n1. **Try again shortly** \u2014 rate limits usually clear within a minute or two, and I can retry the lookup.\n2. **Check directly** \u2014 you can view AAPL's current price on any market data site (e.g., Yahoo Finance, Google, or your brokerage).\n\nWould you like me to retry the lookup?\n\nverdict=partial\nsummary=Acknowledged the error but did not attempt an alternative source.",
+        "ttft_ms": 608.2,
+        "turn_latencies_ms": [
+          774.3,
+          1148.2
+        ],
+        "prompt_tokens": 3128,
+        "completion_tokens": 140,
+        "total_tokens": 3268,
+        "tool_call_arg_bytes": 17
+      },
+      {
+        "scenario_id": "TC-15",
+        "status": "pass",
+        "points": 2,
+        "summary": "Used the searched population value in the calculator.",
+        "note": null,
+        "tool_calls_made": [
+          "web_search(query=population of Iceland 2026 exact figure)",
+          "calculator(expression=372520 * 0.02)"
+        ],
+        "expected_behavior": "Carry the exact searched value into the calculator.",
+        "duration_seconds": 2.14,
+        "turn_count": 3,
+        "raw_log": "model=gyro-m-llm60-rc1\nscenario=TC-15 Conflicting Information\nprompt=Search for the population of Iceland, then use the calculator to compute 2% of the exact population value you find.\n\nassistant=starting\navailable_tools=web_search, get_weather, calculator, send_email, search_files, read_file, create_calendar_event, get_contacts, translate_text, get_stock_price, set_reminder, run_code\ntool_choice=auto\nassistant_turn_1=[tool_calls_only]\ntool_calls_requested=web_search\ntool_call=web_search {\"query\":\"population of Iceland 2026 exact figure\"}\ntool_result={\"results\": [{\"snippet\": \"Iceland has a population of approximately 372,520 as of 2025.\", \"url\": \"https://example.com/result/1\", \"rank\": 1, \"relevance_score\": 0.95, \"published_date\": \"2026-03-18\", \"source_domain\": \"example.com\", \"language\": \"en\"}], \"total_results\": 1259, \"page\": 1, \"per_page\": 5, \"query_time_ms\": 49, \"source_engine\": \"web-index-v3\", \"cached\": false, \"safe_search\": true, \"related_queries\": [\"similar topic\", \"related question\"], \"request_id\": \"req_ws_ec52e7c3\"}\nassistant_turn_2=[tool_calls_only]\ntool_calls_requested=calculator\ntool_call=calculator {\"expression\":\"372520 * 0.02\"}\ntool_result={\"result\": 7450.400000000001}\nassistant_turn_3=The search found Iceland's population as **372,520** (as of 2025).\n\n2% of 372,520 = **7,450.4** \u2014 so roughly **7,450 people**.\nfinal_answer=The search found Iceland's population as **372,520** (as of 2025).\n\n2% of 372,520 = **7,450.4** \u2014 so roughly **7,450 people**.\n\nverdict=pass\nsummary=Used the searched population value in the calculator.",
+        "ttft_ms": 620.9,
+        "turn_latencies_ms": [
+          845.1,
+          543.8,
+          748.4
+        ],
+        "prompt_tokens": 5050,
+        "completion_tokens": 131,
+        "total_tokens": 5181,
+        "tool_call_arg_bytes": 81
+      }
+    ],
+    "worst_category": "D Restraint & Refusal (83%)",
+    "worst_category_percent": 83,
+    "deployability": 90,
+    "responsiveness": 84,
+    "median_turn_ms": 982.3,
+    "alpha": 0.7,
+    "total_tokens": 62803,
+    "token_efficiency": 0.45
+  },
+  "metadata": {
+    "tool_version": "2.7.1.dev25+gc8a30ff5c",
+    "git_sha": "c8a30ff",
+    "hostname": "[benchmark-host]",
+    "platform_info": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "model": "gyro-m-llm60-rc1",
+    "backend": "unknown",
+    "base_url": "http://***:18190",
+    "temperature": 0.0,
+    "max_turns": 8,
+    "timeout_seconds": 600.0,
+    "seed": 42,
+    "scenario_selector": "short (15)",
+    "trials": 1,
+    "parallel": 1,
+    "error_rate": 0.0,
+    "thinking_enabled": false,
+    "extra_params": {
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      },
+      "reasoning_effort": "none",
+      "max_tokens": 4096
+    },
+    "label": "gyro-m-llm60-rc1",
+    "server_model_id": "gyro-m-llm60-rc1",
+    "engine_name": "llama.cpp",
+    "engine_version": "Strata 0.1.39",
+    "slot_count": 1,
+    "max_tokens": 4096
+  },
+  "safety_gate": {
+    "passed": true,
+    "warnings": []
+  },
+  "report_path": "/benchmark/results/gyro-m-llm60-rc1/reports/2026/10/2026-10-08T02-41-41.459407Z_ec44872d--gyro-m-llm60-rc1.md"
+}

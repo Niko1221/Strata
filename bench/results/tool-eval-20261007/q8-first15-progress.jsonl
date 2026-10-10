@@ -1,0 +1,15 @@
+{"event": "scenario_result", "scenario_id": "TC-01", "status": "pass", "points": 2, "index": 0, "total": 69, "duration_seconds": 40.42}
+{"event": "scenario_result", "scenario_id": "TC-02", "status": "pass", "points": 2, "index": 1, "total": 69, "duration_seconds": 41.45}
+{"event": "scenario_result", "scenario_id": "TC-03", "status": "pass", "points": 2, "index": 2, "total": 69, "duration_seconds": 53.77}
+{"event": "scenario_result", "scenario_id": "TC-04", "status": "pass", "points": 2, "index": 3, "total": 69, "duration_seconds": 34.74}
+{"event": "scenario_result", "scenario_id": "TC-05", "status": "pass", "points": 2, "index": 4, "total": 69, "duration_seconds": 56.85}
+{"event": "scenario_result", "scenario_id": "TC-06", "status": "pass", "points": 2, "index": 5, "total": 69, "duration_seconds": 42.61}
+{"event": "scenario_result", "scenario_id": "TC-07", "status": "partial", "points": 1, "index": 6, "total": 69, "duration_seconds": 65.5}
+{"event": "scenario_result", "scenario_id": "TC-08", "status": "pass", "points": 2, "index": 7, "total": 69, "duration_seconds": 52.24}
+{"event": "scenario_result", "scenario_id": "TC-09", "status": "pass", "points": 2, "index": 8, "total": 69, "duration_seconds": 51.47}
+{"event": "scenario_result", "scenario_id": "TC-10", "status": "pass", "points": 2, "index": 9, "total": 69, "duration_seconds": 26.14}
+{"event": "scenario_result", "scenario_id": "TC-11", "status": "pass", "points": 2, "index": 10, "total": 69, "duration_seconds": 21.16}
+{"event": "scenario_result", "scenario_id": "TC-12", "status": "pass", "points": 2, "index": 11, "total": 69, "duration_seconds": 40.17}
+{"event": "scenario_result", "scenario_id": "TC-13", "status": "pass", "points": 2, "index": 12, "total": 69, "duration_seconds": 42.68}
+{"event": "scenario_result", "scenario_id": "TC-14", "status": "partial", "points": 1, "index": 13, "total": 69, "duration_seconds": 34.64}
+{"event": "scenario_result", "scenario_id": "TC-15", "status": "pass", "points": 2, "index": 14, "total": 69, "duration_seconds": 50.4}

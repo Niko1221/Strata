@@ -1,0 +1,11 @@
+model shards: Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf
+2 layer(s) have their gate/up/down in different shards: native_experts.txt v4, per-role shard column for 17, 35
+output_hc_down.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+output_hc_up.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_attn_down.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_attn_inject.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_attn_up.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_ffn_down.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_ffn_inject.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+blk.0.hc_ffn_up.weight is Q8_0, but the engine requires BF16; use --compat-bf16
+... and 355 more
