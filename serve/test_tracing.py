@@ -220,6 +220,62 @@ class ClientAsParent(unittest.TestCase):
             collector.stop()
 
 
+class LateSpansAndInstantRequests(unittest.TestCase):
+    """Two shapes the settle path really produces: a record whose spans enter the queue after the answer was
+    written, and a request whose first token settles in the same rounded millisecond as its start."""
+
+    def test_a_span_queued_after_the_answer_is_exported(self):
+        collector = Collector()
+        endpoint = collector.start()
+        svc = make_service(endpoint=endpoint)
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            code, _, _ = request(base, "/v1/chat/completions",
+                                  {"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 8})
+            self.assertEqual(code, 200)
+            # the answer is out; this record comes over a beat later, as server.py's settling thread does
+            late = {"path": "/v1/chat/completions", "model": "strata-test", "state": "completed",
+                    "started_at": time.time(), "wallclock_s": 1.2, "first_token_s": 0.4,
+                    "usage": {"prompt_tokens": 254, "completion_tokens": 7},
+                    "timings": {"prompt_n": 254, "prompt_ms": 300.0, "predicted_n": 7, "predicted_ms": 500.0}}
+            svc.tracing.begin(late, {})
+            svc.tracing.finish(late)
+            svc.tracing.close(drain_s=2.0)
+            self.assertEqual(len(collector.received), 2)         # no polling: the drain itself must have posted it
+            self.assertEqual(len(collector.traces()), 2)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            collector.stop()
+
+    def test_an_instant_request_keeps_its_prefill(self):
+        """The anchor's floor is the root span's own width floor, so a request that settles in one rounded
+        millisecond is not drawn as decoding without prefills."""
+        collector = Collector()
+        svc = make_service(endpoint=collector.start())
+        instant = {"path": "/v1/chat/completions", "model": "strata-test", "state": "completed",
+                   "started_at": time.time(), "wallclock_s": 0.0, "first_token_s": 0.0,
+                   "usage": {"prompt_tokens": 254, "completion_tokens": 7},
+                   "timings": {"prompt_n": 254, "prompt_ms": 120.0, "predicted_n": 7, "predicted_ms": 90.0}}
+        try:
+            svc.tracing.begin(instant, {})
+            svc.tracing.finish(instant)
+            svc.tracing.close(drain_s=2.0)
+            spans = collector.spans()
+            names = {s["name"] for s in spans}
+            self.assertIn("strata.prefill", names)
+            self.assertIn("strata.decode", names)
+            prefill = next(s for s in spans if s["name"] == "strata.prefill")
+            root = next(s for s in spans if s["kind"] == 2)
+            self.assertLess(int(prefill["startTimeUnixNano"]), int(prefill["endTimeUnixNano"]))
+            self.assertLessEqual(int(root["startTimeUnixNano"]), int(prefill["startTimeUnixNano"]))
+            self.assertLessEqual(int(prefill["endTimeUnixNano"]), int(root["endTimeUnixNano"]))
+        finally:
+            collector.stop()
+
+
+
 class DeadCollector(unittest.TestCase):
     """A collector that is not there costs a counted drop, never a failed or slowed request."""
 

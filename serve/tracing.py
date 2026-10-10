@@ -15,7 +15,10 @@ twice and no clock is added to the generation loop:
 
 The queue and load spans come from the server's own perf_counter; prefill and decode come from the engine's DONE
 line, so they are the GPU's time, not the host's wall around it. A span whose number the server does not have
-(an engine that says nothing, a request that never reached the model) is left out rather than drawn as zero.
+(an engine that says nothing, a request that never reached the model) is left out rather than drawn as zero.  The
+two engine spans are anchored on the first token, clamped into the request's wall window with the root span's own
+width as the floor: a span is never drawn as a negative slice, and a request that settles in one rounded
+millisecond keeps its prefill slice.
 
 W3C context is followed both ways: a `traceparent` header from the client becomes the root span's parent, so Strata
 shows up inside the caller's trace, and every answer carries the `traceparent` of its own root span.
@@ -206,8 +209,11 @@ class Tracing:
         # prefill and decode are the engine's own milliseconds: prefill ends at the first token, decode starts there.
         # The first-token anchor is clamped into the request's wall window: a cache-hot request can read the prompt
         # before the wall the record settled, and a stream that is still finishing can end before the engine's
-        # decode_ms claims - a span is drawn inside the window, never as a negative slice
-        first = min(max(first, 0.0), max(wall, 1e-6)) if first is not None else None
+        # decode_ms claims - a span is drawn inside the window, never as a negative slice.  The floor is the width
+        # floor the root span uses too (1e-6), so a request whose first token settles in the same rounded
+        # millisecond as its start keeps a prefill slice: measured on a mock request that settles in under 0.5 ms,
+        # an anchor floored at 0.0 drops the prefill while the engine's decode_ms is drawn whole
+        first = min(max(first, 1e-6), max(wall, 1e-6)) if first is not None else None
         prompt_ms, decode_ms = timings.get("prompt_ms"), timings.get("predicted_ms") or timings.get("decode_ms")
         if first is not None and prompt_ms:
             s = span("strata.prefill", max(0.0, first - prompt_ms / 1000), first, 1, _attrs([
@@ -303,7 +309,7 @@ class Tracing:
                 quiet_since = None
             else:
                 # the record's finish() runs on the server's settling thread: a span can land in the
-                # queue a beat after the answer is written.  A quarter second of quiet drains for good.
+                # queue a beat after the answer is written.  A half second of quiet drains for good.
                 quiet_since = quiet_since or time.monotonic()
                 if time.monotonic() - quiet_since >= 0.5:
                     return
