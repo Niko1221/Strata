@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -85,6 +87,12 @@ class AlwaysStopsEngine(SpecimenEngine):
             yield t
 
 
+def _loop_threads() -> set:
+    """The hardware sampler's threads -- ``serve()`` names them ``<...>(_loop)``, and serve/test_responses'
+    NoLeakedSampler counts exactly these, so this file must not leave one behind."""
+    return {t for t in threading.enumerate() if t.name.endswith("(_loop)")}
+
+
 class Guard(unittest.TestCase):
     """#1814: on by default, capped, and it leaves a reply that produced its answer alone."""
 
@@ -99,13 +107,26 @@ class Guard(unittest.TestCase):
         self.engine = engine_cls(self.tok, raw)
         self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         self.svc.literal_think_guard = guard_on
+        self._loops_before = _loop_threads()      # the sampler this server starts must not outlive it
+        self._closed = False
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         return self
 
     def close(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+        if getattr(self, "_closed", True):
+            return                                # tearDown after the test already closed it
+        self._closed = True
+        httpd = getattr(self, "httpd", None)
+        if httpd is None:
+            return
+        httpd.shutdown()
+        httpd.server_close()
+        # The hardware sampler stops with the server, but a moment later.  Wait for it: a lingering `(_loop)`
+        # thread throws off serve/test_responses' NoLeakedSampler, which counts exactly these threads.
+        deadline = time.time() + 5.0
+        while time.time() < deadline and (_loop_threads() - self._loops_before):
+            time.sleep(0.02)
 
     def chat(self, max_tokens: int = 4000):
         body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": max_tokens}
