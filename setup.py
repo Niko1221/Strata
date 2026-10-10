@@ -3752,7 +3752,9 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) ->
     if bak is not None:
         dropped = args_dropped(old, cfg) if old is not None else []
         say(f"  the earlier run config is kept as {bak.name}" + (
-            f"; engine options it had that this one has not (setup chooses those): {' '.join(dropped)}"
+            f"; engine options it had that this one has not (setup chooses those): {' '.join(dropped)}. Options of "
+            "your own that setup should never change go in the config's \"user_args\" list (kept by every setup "
+            "run, and applied over setup's own: docs/DETAILS.md)"
             if dropped else ""))
 
 

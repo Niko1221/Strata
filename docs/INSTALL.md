@@ -193,7 +193,9 @@ says so and starts the engine you had.
   rewrites the keys setup writes (`exe`, `args`, `port`, `gpu`, `host`, `api_key`, `vision`, ...) and keeps the
   ones you added (`sampling`, `mcp_servers`, `mcp`, `cors_origins`, ...); the earlier file is kept as
   `strata-<model>.json.bak` (0.1.39). Engine options you added to `"args"` by hand are not carried over: setup names
-  them, and you add them again.
+  them. Put engine options of your own in `"user_args"` instead (a list, e.g. `["--no-prefill-borrow",
+  "--kv-resident", "0"]`): setup never writes that key, so every setup run keeps it, and the server applies it over
+  `"args"` (an option in both takes the `"user_args"` value).
 - **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
   wherever `--data-dir` put them.
 - **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on

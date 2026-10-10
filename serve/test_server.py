@@ -3912,6 +3912,31 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
+class UserArgs(unittest.TestCase):
+    """"user_args": engine options of the user's own, over setup's "args" (setup keeps the key on every run)."""
+
+    def test_replace_and_add(self):
+        cfg = {"args": ["--pack", "p", "--kv-resident", "32768", "--resident-budget-gib", "36", "--vision"],
+               "user_args": ["--no-prefill-borrow", "--kv-resident", "0", "--conversation-cache-mib", "16384"]}
+        self.assertEqual(engine_args(cfg), ["--pack", "p", "--resident-budget-gib", "36", "--vision",
+                                            "--no-prefill-borrow", "--kv-resident", "0",
+                                            "--conversation-cache-mib", "16384"])
+        self.assertEqual(engine_args({"args": ["--a", "1"]}), ["--a", "1"])           # absent: as before
+        self.assertEqual(engine_args({"args": ["--x", "-1"], "user_args": ["--x", "2"]}), ["--x", "2"])  # -1 a value
+
+    def test_bad_values(self):
+        for bad in ("--x", [1], ["value-first", "--x"], {"--x": 1}):
+            with self.assertRaises(ValueError):
+                engine_args({"args": [], "user_args": bad})
+
+    def test_the_settings_page_edits_user_args_for_their_options(self):
+        from serve import runconfig
+        cfg = {"args": ["--vram-reserve-mib", "700"], "user_args": ["--vram-reserve-mib", "900"]}
+        self.assertEqual(runconfig.value_of(cfg, "vram_reserve_mib"), 900)
+        new, _ = runconfig.apply(cfg, {"vram_reserve_mib": 1200})
+        self.assertEqual((new["args"], new["user_args"]), (["--vram-reserve-mib", "700"], ["--vram-reserve-mib", "1200"]))
+
+
 class SilentEngine(unittest.TestCase):
     """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
     lost step with the server: it is ended and the request fails with EngineDied, instead of waiting forever."""

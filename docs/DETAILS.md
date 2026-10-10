@@ -845,6 +845,11 @@ print(r.choices[0].message.content)
   each token on at once. The web app's settings and MCP tools only answer Strata's own page: when you open it through
   a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
   With the key set, any `Host` name reaches the server (see Host names below).
+- **Engine options of your own (`"user_args"`).** A list of engine options, e.g. `["--no-prefill-borrow",
+  "--kv-resident", "0", "--conversation-cache-mib", "16384"]`. The server applies it over `"args"` when it starts the
+  engine: an option in both takes the `"user_args"` value(s), any other is added. Setup never writes the key, so every
+  setup run and update keeps it, while hand edits to `"args"` are dropped (setup writes `"args"`, #629). The web app's
+  Settings edit an option in `"user_args"` when it is there.
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
