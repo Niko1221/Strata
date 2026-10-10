@@ -1,0 +1,17 @@
+/* Strata — styles for the language picker in the header (see web/i18n.js). */
+#lang-btn {
+  height: 28px;
+  min-width: 42px;
+  padding: 0 10px;
+  margin-right: 8px;
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* The status pill changes width ("Idle" -> "Reading prompt · 63 %") and the header is
+   right-aligned, so a button placed to its left kept sliding around: in one language the
+   text is shorter and the button drifted. An invisible fixed-width slot keeps the button
+   in place, while the pill itself still hugs its own text. */
+.st-pill-slot { display: inline-flex; align-items: center; }
+@media (min-width: 900px) { .st-pill-slot { min-width: 210px; } }
