@@ -39,6 +39,8 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
 - **MCP tools** are opt-in: only the servers you put in the run config, only for requests from Strata's own page
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless
-  `"api_monitor": true` is set.
+  `"api_monitor": true` is set. Apart from it, the server keeps in its process memory the text and tokens of its
+  last few prompts, whatever `"api_monitor"` says, to encode the next turn faster; no endpoint shows them, and they
+  are gone when the server stops.
 
 Strata has not had an outside security audit yet.

@@ -96,6 +96,37 @@ class Served(unittest.TestCase):
                 self.assertGreater(svc.prompts.last_reused, 0)
             msgs.append({"role": "assistant", "content": "It closes the reasoning: </think> is a marker."})
 
+    def service(self, max_context=1 << 22):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=max_context), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+
+    def test_another_conversation_does_not_evict_the_first(self):
+        """A subagent beside the main conversation: every rendered prompt starts with the template's header, which
+        must not make the second client's prompt a continuation of the first's entry."""
+        svc = self.service()
+        turn2 = [{"role": "user", "content": "a long question " * 500}, {"role": "assistant", "content": "answer"},
+                 {"role": "user", "content": "next"}]
+        svc.encode_prompt(turn2, None, {})
+        svc.encode_prompt([{"role": "user", "content": "one unrelated prompt " * 300}], None, {})
+        self.assertEqual(len(svc.prompts.entries), 2)
+        turn3 = turn2 + [{"role": "assistant", "content": "x"}, {"role": "user", "content": "more"}]
+        svc.encode_prompt(turn3, None, {})
+        self.assertGreater(svc.prompts.last_reused, len(turn2[0]["content"]))
+        self.assertEqual(len(svc.prompts.entries), 2)           # turn 3 replaced turn 2, the other one stayed
+
+    def test_a_refused_prompt_is_not_kept(self):
+        svc = self.service(max_context=4096)
+        msgs = [{"role": "user", "content": "kept " * 20}]
+        svc.prepare(msgs, None, {}, 16)
+        refused = msgs + [{"role": "assistant", "content": "a"}, {"role": "user", "content": "more " * 20}]
+        full = self.service(max_context=4096)
+        full.prompts = None
+        refused_ids = full.encode_prompt(refused, None, {})
+        with self.assertRaisesRegex(ValueError, "exceeds the context"):
+            svc.prepare(refused, None, {}, 1 << 20)
+        self.assertNotIn(refused_ids, [e[2] for e in svc.prompts.entries])
+        self.assertNotIn(full.render_prompt(refused, None, {}), [e[0] for e in svc.prompts.entries])
+
     def test_random_messages_equal_a_full_encode(self):
         """Messages quoting control-token texts and <think> tags at random, growing, edited and cut back between
         requests: the incremental encoder's ids are the full encode's, 2400 prompts."""

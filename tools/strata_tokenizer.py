@@ -350,8 +350,9 @@ class PromptEncoder:
     encode(new[c:]).  The margin matters only for a vocabulary where a literal overlaps another's end; it costs
     re-encoding one short stretch.
 
-    A few recent prompts are kept (one per conversation: the one a prompt extends is replaced by it), so a second
-    client does not evict the first.  The tokenizer needs `encode_marked` and `max_special_len`.
+    A few recent prompts are kept (one per conversation: a prompt replaces the one it continues, that is, one whose
+    text it reuses for more than half; a prompt that shares only the template's head with every entry is a new
+    entry), so a second client does not evict the first.  The tokenizer needs `encode_marked` and `max_special_len`.
     """
 
     def __init__(self, tok, keep: int = 4):
@@ -384,9 +385,17 @@ class PromptEncoder:
             ends = src[3][:cut_k + 1] + [c + m[0] for m in marks]
             counts = src[4][:cut_k + 1] + [n + m[1] for m in marks]
             self.last_reused = c
+        # every rendered prompt starts with the template's header, so sharing a special boundary does not make two
+        # prompts one conversation: only the entry whose text is mostly reused is replaced
+        old = src if src is not None and 2 * src[3][cut_k] > len(src[0]) else None
         with self.lock:
-            self.entries = [(text, plain, ids, ends, counts)] + [e for e in self.entries if e is not src][:self.keep - 1]
+            self.entries = [(text, plain, ids, ends, counts)] + [e for e in self.entries if e is not old][:self.keep - 1]
         return list(ids)
+
+    def forget(self, ids: list[int]) -> None:
+        """The prompt with these ids was refused: it is not kept."""
+        with self.lock:
+            self.entries = [e for e in self.entries if e[2] != ids]
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory
