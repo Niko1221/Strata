@@ -2653,6 +2653,7 @@ class Service:
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+        self.structured_plain_string = False            # opt-in: a one-string-field json_schema as plain text
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
@@ -4014,7 +4015,7 @@ def _is_json(text: str) -> bool:
 def openai_collect(chunks) -> dict:
     content, reasoning, by_index, last, mcp = [], [], {}, None, []
     for c in chunks:
-        if c is None:                              # a heartbeat
+        if not isinstance(c, dict):                # a heartbeat (None, or a progress note from structured_chunks)
             continue
         if c.get("strata_mcp"):
             mcp.append(c["strata_mcp"])
@@ -4048,17 +4049,29 @@ def openai_collect(chunks) -> dict:
 
 
 def structured_chunks(chunks, validator):
-    """Buffer structured streams so a client never receives unvalidated content."""
+    """Buffer structured streams so a client never receives unvalidated content.  While it buffers, the heartbeat is a
+    progress note (str: an SSE comment, which clients ignore) with what has been written so far, so a client - or
+    a person reading the stream - can tell a long answer from a stuck one."""
     buffered = []
     heartbeat = time.monotonic()
+    written = chars = 0
     try:
         for chunk in chunks:
             progress = chunk is not None and "prompt_progress" in chunk
             if chunk is not None and not progress:
                 buffered.append(chunk)      # a progress chunk carries no content: there is nothing in it to validate
+                delta = chunk["choices"][0]["delta"]
+                piece = (delta.get("content") or "") + (delta.get("reasoning_content") or "")
+                if piece:
+                    written += 1
+                    chars += len(piece)
             if chunk is None or progress or time.monotonic() - heartbeat >= 1:
                 heartbeat = time.monotonic()
-                yield chunk if progress else None
+                if progress:
+                    yield chunk
+                else:
+                    yield (f"keep-alive: structured output buffered until it is validated, {written} pieces "
+                           f"({chars} characters) written so far" if written else None)
         result = openai_collect(buffered)
         choice = result["choices"][0]
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
@@ -4908,7 +4921,7 @@ def make_handler(svc: Service):
         def _captured(self, items, api):
             try:
                 for item in items:
-                    if item is not None:
+                    if item is not None and not isinstance(item, str):   # not a heartbeat or a progress note
                         if api == "openai":
                             delta = item["choices"][0]["delta"]
                             content, reasoning = delta.get("content", ""), delta.get("reasoning_content", "")
@@ -4944,7 +4957,8 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
-            messages, validator = prepare_format(req.get("response_format"), messages)
+            messages, validator = prepare_format(req.get("response_format"), messages,
+                                                 plain_string=svc.structured_plain_string)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
@@ -4979,6 +4993,8 @@ def make_handler(svc: Service):
                 for c in chunks:
                     if c is None:
                         self.wfile.write(b": keep-alive\n\n")      # an SSE comment: clients ignore it
+                    elif isinstance(c, str):                     # structured_chunks' progress note: a comment too
+                        self.wfile.write(b": " + c.replace("\n", " ").encode() + b"\n\n")
                     else:
                         self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
@@ -5113,7 +5129,8 @@ def make_handler(svc: Service):
             except ValueError as e:
                 raise ResponsesError(str(e), "input") from None
             try:
-                messages, validator = prepare_format(responses_api.text_format(req), messages, with_tools=bool(tools))
+                messages, validator = prepare_format(responses_api.text_format(req), messages, with_tools=bool(tools),
+                                                     plain_string=svc.structured_plain_string)
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
             noted = svc.__dict__.setdefault("hosted_tools_noted", set())   # said once per tool, not per request
@@ -5802,6 +5819,10 @@ def main() -> int:
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
+    sp = cfg.get("structured_plain_string", False)
+    if not isinstance(sp, bool):
+        raise SystemExit(f"[strata] config \"structured_plain_string\" must be true or false, not {sp!r}")
+    svc.structured_plain_string = sp
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:
