@@ -4276,11 +4276,97 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
     check("quantize_q8_1_rows");
 }
 
+// SYCL port: a wide kernel for the dense IQ3_S matrices (attn_q, attn_gate, ssm_out, attn_k, the shared experts'
+// gate/up), shaped like the Q4_K..IQ4_XS wide kernels: 8 lanes share a 256-block, lane g takes sub-block g, so a
+// 32-lane sub-group has four blocks in flight. Each sub-block's value is vec_dot_iq3_s_q8_1's; only the order the
+// sub-blocks are summed in differs from mmvq_multi_kernel, so the output differs in the last bits.
+template <int NCOLS>
+__dpct_inline__ void iq3s_wide_kernel(const uint8_t* __restrict__ w, size_t rb, const block_q8_1* __restrict__ x,
+                                      float* __restrict__ y, int n_in, int n_out) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int lane = (int) item.get_local_id(2), warp = (int) item.get_local_id(1);
+    const int row = (int) item.get_group(2) * (int) item.get_local_range(1) + warp;
+    if (row >= n_out) return;
+    const int nb = n_in / QK_K, xs = n_in / QK8_1;
+    const int g = lane & 7, sub = lane >> 3;
+    const block_iq3_s* wr = (const block_iq3_s*) (w + (size_t) row * rb);
+    float acc[NCOLS];
+#pragma unroll
+    for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+    for (int kbx = sub; kbx < nb; kbx += 4) {
+        const block_iq3_s* b = wr + kbx;
+        const sycl::int2 qs_packed = load8_a2(b->qs + 8 * g);
+        const uint8_t* qs = (const uint8_t*) &qs_packed;
+        const int qh = b->qh[g];
+        const int signs_packed_32 = load4_a2(b->signs + 4 * g);
+        const uint8_t* signs_packed_8 = (const uint8_t*) &signs_packed_32;
+        const int scale = 1 + 2 * ((b->scales[g / 2] >> (4 * (g & 1))) & 0x0F);
+        const float d3 = sycl::vec<sycl::half, 1>(b->d).convert<float, sycl::rounding_mode::automatic>()[0];
+        int wv[8];
+#pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            const sycl::int2 grid_pos = sycl::int2(iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)],
+                                                   iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
+            const int signs0 = swar_ne4(((signs_packed_8[l0 / 2] & 0x03) << 7) | ((signs_packed_8[l0 / 2] & 0x0C) << 21));
+            const int signs1 = swar_ne4(((signs_packed_8[l0 / 2] & 0x30) << 3) | ((signs_packed_8[l0 / 2] & 0xC0) << 17));
+            wv[l0 + 0] = swar_sub4(grid_pos.x() ^ signs0, signs0);
+            wv[l0 + 1] = swar_sub4(grid_pos.y() ^ signs1, signs1);
+        }
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+            const block_q8_1* xb = x + (size_t) c * xs + (size_t) kbx * (QK_K / QK8_1) + g;
+            const int* u = reinterpret_cast<const int*>(xb->qs);
+            int sumi = 0;
+#pragma unroll
+            for (int l = 0; l < 8; ++l) sumi = ggml_cuda_dp4a(wv[l], u[l], sumi);
+            sumi *= scale;
+            const float d = d3 * xb->ds[0];
+            acc[c] += d * sumi;
+        }
+    }
+    auto sg = item.get_sub_group();
+#pragma unroll
+    for (int c = 0; c < NCOLS; ++c) {
+        float v = acc[c];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) v += sycl::permute_group_by_xor(sg, v, o);
+        if (lane == 0) y[(size_t) c * n_out + row] = v;
+    }
+}
+// STRATA_IQ3S_WIDE=1: the wide kernel; unset or 0: the multi kernel (default).
+bool iq3s_wide_on() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_IQ3S_WIDE"); return e && std::atoi(e) != 0; }();
+    return v;
+}
+template <int NCOLS>
+void launch_iq3s_wide_t(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    constexpr int WPG = 4;   // sub-groups per work-group
+    const unsigned groups = unsigned((n_out + WPG - 1) / WPG);
+    s->parallel_for<dpct_kernel_name<class iq3s_wide_k, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, WPG, groups * 32), sycl::range(1, WPG, 32)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { iq3s_wide_kernel<NCOLS>(W, rb, X, y, n_in, n_out); });
+}
+bool launch_iq3s_wide(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, int ncols, dpct::queue_ptr s) {
+    if (!iq3s_wide_on() || n_in % QK_K != 0) return false;
+    switch (ncols) {
+        case 1: launch_iq3s_wide_t<1>(W, rb, X, y, n_in, n_out, s); return true;
+        case 2: launch_iq3s_wide_t<2>(W, rb, X, y, n_in, n_out, s); return true;
+        case 3: launch_iq3s_wide_t<3>(W, rb, X, y, n_in, n_out, s); return true;
+        case 4: launch_iq3s_wide_t<4>(W, rb, X, y, n_in, n_out, s); return true;
+        case 5: launch_iq3s_wide_t<5>(W, rb, X, y, n_in, n_out, s); return true;
+        case 6: launch_iq3s_wide_t<6>(W, rb, X, y, n_in, n_out, s); return true;
+        case 7: launch_iq3s_wide_t<7>(W, rb, X, y, n_in, n_out, s); return true;
+        case 8: launch_iq3s_wide_t<8>(W, rb, X, y, n_in, n_out, s); return true;
+        default: return false;
+    }
+}
+
 void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
     dpct::queue_ptr s = strata::q_of(stream);
     const auto* W = (const uint8_t*) w;
     const auto* X = (const block_q8_1*) x_q8_1;
+    if (t == 21 && launch_iq3s_wide(W, rb, X, y, n_in, n_out, ncols, s)) { check("iq_mmvq"); return; }
     switch (t) {
 #define STRATA_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
         STRATA_MMVQ_FMTS(STRATA_MMVQ)
