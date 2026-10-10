@@ -1,42 +1,52 @@
 // src/net/stage_link_test.cpp - the remote stage's link over loopback, no GPU: a worker (serve_stage) with handlers
-// that copy rows and record the image positions they get, and a StageClient driving it.  What it checks
-// (docs/remote-stage/ENGINEERING.md, "Images"):
+// that copy rows, keep a StageCkptStore and record the image positions they get, and a StageClient driving it.  What
+// it checks (docs/remote-stage/CHECKPOINTS.md; docs/remote-stage/ENGINEERING.md, "Images"):
 //
 //   0. the worker's table from what a Positions message carries (stage_positions_fill): the identity, the cells
 //      sent, the cells past them;
-//   1. the hello: an older side (protocol 4) is refused for its protocol, a main process with --vision refuses a
-//      worker without it, a matching one is served;
-//   2. Positions carries the table whole (cells x (t, h, w), values past 16 bits) and the identity as no table;
-//   3. a failed Positions comes back on the next reply - also when that is a Reset, which drops a failed Commit's
-//      error but not the next request's positions - and the link stays usable; a later table replaces a failed one;
-//      a handler's success is its return value; a malformed table is the next reply's error, not a reply of its own;
-//   4. a worker without a positions handler (started without --vision) answers a Positions with an error naming
+//   1. the hello: an older side (protocol 4) is refused for its protocol, a main process that would have the worker
+//      keep more than kStageCkptMax checkpoints is refused, a main process with --vision refuses a worker without it,
+//      a matching one is served;
+//   2. Reset / CkptSave / CkptRestore carry their id, position and keep[] whole (int64 ids beyond 32 bits);
+//   3. the worker's position: a checkpoint is saved only where the session is (0 after a reset, a chunk's end, a
+//      window's first position plus its accepted count, L after a restore); a failed Commit comes back on the
+//      CkptSave, and a CkptRestore drops it (the session is replaced);
+//   4. CkptSaveOk a=0 (not stored) leaves the store as it was; a restore of an id the store does not hold is the
+//      missing-id error (the main process's fallback), any other restore error is not;
+//   5. a keep[] longer than kStageCkptMax is a malformed message; a disconnect clears the store;
+//   6. Positions carries the table whole (cells x (t, h, w), values past 16 bits) and the identity as no table; a
+//      failed Positions comes back on the next reply - also when that is a Reset or a CkptRestore, which drop a failed
+//      Commit's error but not the next request's positions - and the link stays usable; a later table replaces a
+//      failed one; a handler's success is its return value; a malformed table is the next reply's error, not a reply
+//      of its own; a Positions does not move the session's position;
+//   7. a worker without a positions handler (started without --vision) answers a Positions with an error naming
 //      --vision;
-//   5. a new main process waits while the served one sends messages, and takes it over once it has been silent (not
+//   8. a new main process waits while the served one sends messages, and takes it over once it has been silent (not
 //      closed) for STRATA_REMOTE_TAKEOVER_S (1 s here): B served, A's next message fails as a lost link; one with a
 //      wrong token or another model is refused and A stays; when the served one closes, the one waiting is served at
 //      once; which errors stage_link_lost counts as a lost link;
-//   6. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
+//   9. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
 //      worker accepted while the served one was idle is closed when the served one sends again (and does not take
 //      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began;
-//   7. StageClient::alive: true on an idle served link, and it reads nothing (the next reply is in step); false, as
+//  10. StageClient::alive: true on an idle served link, and it reads nothing (the next reply is in step); false, as
 //      a lost link, once the worker's end closed it (a take-over by another main process, the worker stopped) or sent
 //      bytes no message asked for, and the link is marked failed; no check blocks;
-//   8. connect() with a deadline: a hello left unanswered and a connect no host answers are given up at it, as lost
+//  11. connect() with a deadline: a hello left unanswered and a connect no host answers are given up at it, as lost
 //      links; a stop flag ends the wait at once (also before a try that would fail at once), not as a lost link; a
 //      worker that answers is served as without one;
-//   9. StageHandlers::idle (a relay's look at its next worker): not while the served main process sends, about once
+//  12. StageHandlers::idle (a relay's look at its next worker): not while the served main process sends, about once
 //      a second while it is idle; false ends that connection, and the main process's next message finds it lost;
-//  10. a worker reads nothing but a hello first (another first message is answered and the connection closed, its
+//  13. a worker reads nothing but a hello first (another first message is answered and the connection closed, its
 //      body neither waited for nor drained; a hello sent a byte a second is given up at 10 s in all), and nothing
 //      after a hello - the first, or a second on a served connection - before its token is taken (a refused one's next
 //      headers, one with a body that never comes, neither end the worker nor hold it); a window's or a chunk's T is
 //      bounded before any product with it: T = 2^62, whose sizes wrap to 0, ends no worker - before the hello or
 //      after one;
-//  11. a hello's reply is read whole within connect()'s deadline (a worker that sends part of it is given up at it,
+//  14. a hello's reply is read whole within connect()'s deadline (a worker that sends part of it is given up at it,
 //      or at a stop flag), and an error reply of 2^62 bytes is not read: at the hello an unexpected reply, later a
 //      link out of step.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
+#include "strata/net/stage_ckpt_store.hpp"
 #include "strata/net/stage_link.hpp"
 
 #include <algorithm>
@@ -98,12 +108,31 @@ bool contains(const std::string& s, const char* part) { return s.find(part) != s
 // the worker's side the test looks at
 struct Shared {
     std::mutex mu;
-    int calls = 0;
-    bool identity = false;
-    std::vector<int32_t> table;
-    bool last(int n, bool ident, const std::vector<int32_t>& t) {
+    StageCkptStore store;
+    std::vector<int64_t> last_keep;
+    int64_t last_id = -1, last_L = -1;
+    int pos_calls = 0;   // the positions handler's
+    bool pos_identity = false;
+    std::vector<int32_t> pos_table;
+    size_t size() {
         std::lock_guard<std::mutex> lk(mu);
-        return calls == n && identity == ident && table == t;
+        return store.size();
+    }
+    bool has(int64_t id) {
+        std::lock_guard<std::mutex> lk(mu);
+        return store.find(id) != nullptr;
+    }
+    bool last(int64_t id, int64_t L, const std::vector<int64_t>& keep) {
+        std::lock_guard<std::mutex> lk(mu);
+        return last_id == id && last_L == L && last_keep == keep;
+    }
+    bool last_keep_is(const std::vector<int64_t>& keep) {
+        std::lock_guard<std::mutex> lk(mu);
+        return last_keep == keep;
+    }
+    bool positions_were(int n, bool identity, const std::vector<int32_t>& table) {
+        std::lock_guard<std::mutex> lk(mu);
+        return pos_calls == n && pos_identity == identity && pos_table == table;
     }
 };
 
@@ -393,7 +422,8 @@ int main() {
     buf.pf_row_floats = kD;
     Shared w;
     std::atomic<int32_t> worker_vision{1};
-    std::atomic<bool> fail_positions{false}, fail_commit{false}, stale_text{false};
+    std::atomic<bool> refuse_save{false}, fail_commit{false}, fail_positions{false}, stale_text{false};
+    std::atomic<int> disconnects{0};
     StageHandlers h;
     h.hello = [&](const StageHello&, StageHello& mine, std::string&) {
         mine = hello_of(worker_vision.load());
@@ -412,21 +442,61 @@ int main() {
         std::memcpy(out, in, (size_t) (T * kD) * 4);
         return true;
     };
-    h.reset = [](std::string&) { return true; };
-    std::atomic<int> disconnects{0};
-    h.disconnected = [&] { ++disconnects; };
+    h.reset = [&](const std::vector<int64_t>& keep, std::string&) {
+        std::lock_guard<std::mutex> lk(w.mu);
+        w.last_keep = keep;
+        w.store.prune(keep);
+        return true;
+    };
     h.positions = [&](const int32_t* table, int64_t cells, std::string& e) {
         std::lock_guard<std::mutex> lk(w.mu);
-        ++w.calls;
-        w.identity = table == nullptr;
-        w.table.clear();
-        if (table != nullptr) w.table.assign(table, table + cells * 3);
+        ++w.pos_calls;
+        w.pos_identity = table == nullptr;
+        w.pos_table.clear();
+        if (table != nullptr) w.pos_table.assign(table, table + cells * 3);
         if (stale_text.load()) e = "a message left from a retry (test)";   // and it succeeds
         // fail_positions, or a table starting at t = -7 (no reply tells when the worker has read a Positions, so a
         // flag flipped right after one is a race; the table's own content is not)
         if (!fail_positions.load() && (table == nullptr || table[0] != -7)) return true;
         e = "the positions failed (test)";
         return false;
+    };
+    h.ckpt_save = [&](int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string&) -> int {
+        std::lock_guard<std::mutex> lk(w.mu);
+        w.last_id = id;
+        w.last_L = L;
+        w.last_keep = keep;
+        if (refuse_save.load() || !w.store.admits(id, keep)) return 0;
+        StageCkptStore::Part p;
+        p.L = L;
+        w.store.put(id, std::move(p), keep);
+        return 1;
+    };
+    h.ckpt_restore = [&](int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& e) {
+        std::lock_guard<std::mutex> lk(w.mu);
+        w.last_keep = keep;
+        if (id == 99) {   // a relay's forwarded missing id: its own prefix first
+            e = std::string("relay: the next worker: remote stage (worker): ") + kStageCkptMissing + "99";
+            return false;
+        }
+        const StageCkptStore::Part* p = w.store.find(id);
+        if (p == nullptr) {
+            e = kStageCkptMissing + std::to_string(id);
+            return false;
+        }
+        if (p->L != L) {
+            e = "checkpoint saved at another position";
+            return false;
+        }
+        w.store.prune(keep);
+        return true;
+    };
+    h.disconnected = [&] {
+        {
+            std::lock_guard<std::mutex> lk(w.mu);
+            w.store.clear();
+        }
+        ++disconnects;
     };
     Worker wk;
     if (!wk.start(h, buf)) {
@@ -436,24 +506,103 @@ int main() {
     StageClient c;
     std::string err;
     StageHello peer;
-    auto greet = [&](StageClient& cl, const std::string& at, StageHello mine) {
+    auto greet_at = [&](const std::string& at, StageHello mine) {
         err.clear();
-        cl.close();
-        return cl.connect(at, mine, peer, err);
+        c.close();
+        return c.connect(at, mine, peer, err);
     };
+    auto greet = [&](StageHello mine) { return greet_at(wk.where, mine); };
 
     // 1. the hello
-    StageHello old = hello_of();
-    old.protocol = 4;
-    check(!greet(c, wk.where, old) && contains(err, "the worker refused:") && contains(err, "protocol 4/"),
-          "an older main process (protocol 4) is refused for its protocol");
+    StageHello old_side = hello_of();
+    old_side.protocol = 4;
+    check(!greet(old_side) && contains(err, "the worker refused:") && contains(err, "protocol 4/6"),
+          "a protocol 4 main process is refused for its protocol");
+    StageHello greedy = hello_of();
+    greedy.ckpt_max = kStageCkptMax + 1;
+    check(!greet(greedy) && contains(err, "at most 64"),
+          "a main process asking for more than 64 checkpoints is refused");
     worker_vision = 0;
-    check(!greet(c, wk.where, hello_of(1)) && contains(err, "--vision"), "a main with --vision refuses a worker without it");
-    check(greet(c, wk.where, hello_of(0)), "... one without --vision is served by it");
+    check(!greet(hello_of(1)) && contains(err, "--vision"), "a main with --vision refuses a worker without it");
+    check(greet(hello_of(0)), "... one without --vision is served by it");
     worker_vision = 1;
-    check(greet(c, wk.where, hello_of(1)) && peer.vision == 1, "both with --vision: served");
+    StageHello mine = hello_of();
+    mine.ckpt_max = kStageCkptMax;
+    check(greet(mine) && peer.vision == 1, "a matching main process is served");
 
-    // 2. the table whole, the identity as none
+    // 2-3. a reset, a prompt chunk, a checkpoint at its end, a window and its commit, another checkpoint
+    bool stored = false, missing = false;
+    check(c.reset({}, err) && w.last_keep_is({}), "a reset that keeps nothing");
+    std::vector<int64_t> tok((size_t) kChunk);
+    std::vector<float> rows((size_t) (kChunk * kD)), back(rows.size(), 0.0f);
+    for (size_t i = 0; i < rows.size(); ++i) rows[i] = (float) i;
+    for (size_t i = 0; i < tok.size(); ++i) tok[i] = (int64_t) i;
+    auto chunk = [&] {
+        std::fill(back.begin(), back.end(), 0.0f);
+        return c.prefill_send(tok.data(), kChunk, 0, 0, rows.data(), (size_t) kD, 0, err) &&
+               c.prefill_recv(back.data(), (size_t) kD, kChunk, 0, err) && back == rows;
+    };
+    check(chunk(), "a prompt chunk's rows come back");
+    check(c.reset({}, err) && !c.ckpt_save(7, 3, {7}, stored, err) && contains(err, "session is at 0") &&
+              w.size() == 0,
+          "after a reset the session is at 0, not at the chunk's end: a checkpoint elsewhere is a state error");
+    check(chunk(), "the prompt chunk again");
+    const int64_t big = ((int64_t) 1 << 40) + 7;
+    check(!c.ckpt_save(big, 5, {big}, stored, err) && contains(err, "session is at 8") && c.connected(),
+          "a checkpoint where the session is not is a state error (the link stays)");
+    check(c.ckpt_save(big, kChunk, {big}, stored, err) && stored && w.last(big, kChunk, {big}),
+          "CkptSave carries id, position and keep whole; stored at a chunk's end");
+    std::vector<int32_t> wtok(3, 1);
+    std::vector<float> win((size_t) (3 * kHbf), 2.0f), wout(win.size(), 0.0f);
+    check(c.run(3, wtok.data(), kChunk, win.data(), win.size(), wout.data(), wout.size(), err) && wout == win &&
+              c.commit(2, err),
+          "a window and its commit (two of three accepted)");
+    check(c.ckpt_save(2, kChunk + 2, {big, 2}, stored, err) && stored && w.size() == 2,
+          "a checkpoint at the window's position plus its accepted count");
+    refuse_save = true;
+    check(c.ckpt_save(3, kChunk + 2, {big, 2, 3}, stored, err) && !stored && w.size() == 2 && !w.has(3),
+          "CkptSaveOk a=0: not stored, the store as it was");
+    refuse_save = false;
+
+    // 4. restores
+    check(c.ckpt_restore(big, kChunk, {big}, missing, err) && !missing && w.size() == 1 && w.has(big),
+          "a restore puts the part back and prunes to its keep");
+    check(c.ckpt_save(5, kChunk, {big, 5}, stored, err) && stored && w.size() == 2,
+          "after a restore the session is at its L: a checkpoint there is stored");
+    check(!c.ckpt_restore(2, kChunk + 2, {big, 2}, missing, err) && missing && c.connected(),
+          "a restore of an id the store does not hold is the missing-id error");
+    check(!c.ckpt_restore(big, kChunk + 1, {big}, missing, err) && !missing,
+          "any other restore error is not the missing-id one");
+    check(!c.ckpt_restore(99, kChunk, {big}, missing, err) && !missing && contains(err, kStageCkptMissing),
+          "a relay's forwarded missing id is not the missing-id error (the state class)");
+    check(c.run(1, wtok.data(), kChunk, win.data(), (size_t) kHbf, wout.data(), (size_t) kHbf, err),
+          "a window after the restore");
+    fail_commit = true;
+    check(c.commit(1, err), "a commit that fails on the worker (one way: no reply)");
+    check(!c.ckpt_save(4, kChunk + 1, {big, 5, 4}, stored, err) && contains(err, "a commit failed (test)"),
+          "the failed commit comes back on the next CkptSave");
+    check(c.run(1, wtok.data(), kChunk, win.data(), (size_t) kHbf, wout.data(), (size_t) kHbf, err) &&
+              c.commit(1, err),
+          "another window whose commit fails");
+    // (the restore waits for its reply, so the worker has run that commit, failing, before fail_commit goes back)
+    check(c.ckpt_restore(big, kChunk, {big, 5}, missing, err), "a restore while the failed commit's error is pending");
+    fail_commit = false;
+    check(c.ckpt_save(6, kChunk, {big, 5, 6}, stored, err) && stored && w.size() == 3,
+          "a restore drops the failed commit: the next CkptSave is stored");
+
+    // 5. a malformed keep, a reset that keeps one, a disconnect
+    std::vector<int64_t> too_many((size_t) kStageCkptMax + 1, 1);
+    check(!c.reset(too_many, err) && contains(err, "bad checkpoint list"), "a keep[] of more than 64 ids is refused");
+    check(c.reset({big}, err) && w.last_keep_is({big}) && w.size() == 1, "a reset keeps the parts it names");
+    const int before = disconnects.load();
+    c.close();
+    for (int i = 0; i < 200 && disconnects.load() == before; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    check(disconnects.load() > before && w.size() == 0, "a disconnect clears the store");
+    check(greet(mine) && !c.ckpt_restore(big, kChunk, {big}, missing, err) && missing,
+          "the next main process finds none of the last one's parts");
+
+    // 6. image positions: the table whole, the identity as none, a failure outlives a reset and a restore
     const int64_t cells = 40;
     std::vector<int32_t> table((size_t) cells * 3);
     for (int64_t i = 0; i < cells; ++i) {   // a grid's (t, h, w), positions past 16 bits
@@ -462,58 +611,77 @@ int main() {
         table[(size_t) i * 3 + 2] = 70000 + (int32_t) (i % 8);
     }
     err.clear();
-    check(c.positions(table.data(), cells, err) && c.reset(err) && w.last(1, false, table),
+    check(c.positions(table.data(), cells, err) && c.reset({}, err) && w.positions_were(1, false, table),
           "a table arrives whole, before the reset");
-    check(c.positions(nullptr, 0, err) && c.reset(err) && w.last(2, true, {}), "the identity arrives as no table");
-
-    // 3. a failed Positions outlives the reset; a failed Commit does not
+    check(c.positions(nullptr, 0, err) && c.reset({}, err) && w.positions_were(2, true, {}),
+          "the identity arrives as no table");
     const int32_t one[3] = {5, 5, 5};
     fail_positions = true;
     err.clear();
     bool sent = c.positions(one, 1, err);
-    check(sent && !c.reset(err) && contains(err, "the positions failed (test)"), "a failed Positions comes back on the reset");
+    check(sent && !c.reset({}, err) && contains(err, "the positions failed (test)"),
+          "a failed Positions comes back on the reset");
     fail_positions = false;
     err.clear();
-    check(c.reset(err), "... once: the link is usable after it");
+    check(c.reset({}, err), "... once: the link is usable after it");
     fail_commit = true;
-    check(c.commit(1, err) && c.positions(one, 1, err) && c.reset(err) && w.last(4, false, {5, 5, 5}),
+    check(c.commit(1, err) && c.positions(one, 1, err) && c.reset({}, err) && w.positions_were(4, false, {5, 5, 5}),
           "a failed Commit is dropped by the reset (the positions after it applied)");
-    fail_positions = true;
-    err.clear();
-    sent = c.commit(1, err) && c.positions(nullptr, 0, err);
-    check(sent && !c.reset(err) && contains(err, "the positions failed (test)") && !contains(err, "a commit failed"),
-          "a failed Commit, then a failed Positions: the reset reports the positions only");
-    fail_commit = false;
-    fail_positions = false;
     const int32_t failing[3] = {-7, -7, -7};
     err.clear();
+    sent = c.commit(1, err) && c.positions(failing, 1, err);
+    check(sent && !c.reset({}, err) && contains(err, "the positions failed (test)") && !contains(err, "a commit failed"),
+          "a failed Commit, then a failed Positions: the reset reports the positions only");
+    fail_commit = false;
+    err.clear();
     sent = c.positions(failing, 1, err);
-    check(sent && c.positions(nullptr, 0, err) && c.reset(err) && w.last(7, true, {}),
+    check(sent && c.positions(nullptr, 0, err) && c.reset({}, err) && w.positions_were(7, true, {}),
           "a later table replaces a failed one (a refused request: no reset)");
     stale_text = true;
-    check(c.positions(one, 1, err) && c.reset(err), "a handler that succeeds with text left in its error: a success");
+    check(c.positions(one, 1, err) && c.reset({}, err), "a handler that succeeds with text left in its error: a success");
     stale_text = false;
     std::vector<int32_t> huge((size_t) (((int64_t) 1 << 22) + 1) * 3, 1);
     err.clear();
     sent = c.positions(huge.data(), (int64_t) (huge.size() / 3), err);
-    check(sent && !c.reset(err) && contains(err, "bad position table size") && w.last(8, false, {5, 5, 5}),
+    check(sent && !c.reset({}, err) && contains(err, "bad position table size") && w.positions_were(8, false, {5, 5, 5}),
           "a malformed table (over 4M cells): the next reply's error, no handler call");
-    check(c.reset(err), "... and only that reply's: the link is in step after it");
-    float rows[kHbf] = {1, 2, 3, 4}, back[kHbf] = {};
-    const int32_t tok = 7;
+    check(c.reset({}, err), "... and only that reply's: the link is in step after it");
+    check(chunk() && c.positions(one, 1, err) && c.ckpt_save(1, kChunk, {1}, stored, err) && stored,
+          "a Positions does not move the session: a checkpoint at the chunk's end after one");
+    fail_commit = true;
+    err.clear();
+    sent = c.run(1, wtok.data(), kChunk, win.data(), (size_t) kHbf, wout.data(), (size_t) kHbf, err) &&
+           c.commit(1, err) && c.positions(failing, 1, err);
+    check(sent && !c.ckpt_restore(1, kChunk, {1}, missing, err) && !missing &&
+              contains(err, "the positions failed (test)") && !contains(err, "a commit failed") && w.has(1),
+          "a failed Commit, then a failed Positions: a restore reports the positions only");
+    fail_commit = false;
     fail_positions = true;
     err.clear();
     sent = c.positions(one, 1, err);
-    check(sent && !c.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && contains(err, "the positions failed (test)"),
-          "a failed Positions comes back on the next window too");
-    fail_positions = false;
+    check(sent && !c.ckpt_restore(1, kChunk, {1}, missing, err) && !missing &&
+              contains(err, "the positions failed (test)") && w.has(1),
+          "a failed Positions comes back on a restore (not the missing-id error)");
     err.clear();
-    check(c.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && std::memcmp(rows, back, sizeof rows) == 0,
+    sent = c.positions(one, 1, err);
+    check(sent && !c.ckpt_save(2, kChunk, {1, 2}, stored, err) && contains(err, "the positions failed (test)") &&
+              !w.has(2),
+          "... and on a CkptSave");
+    fail_positions = false;
+    check(c.ckpt_restore(1, kChunk, {1}, missing, err), "a restore after them");
+    fail_positions = true;
+    err.clear();
+    sent = c.positions(one, 1, err);
+    check(sent && !c.run(1, wtok.data(), kChunk, win.data(), (size_t) kHbf, wout.data(), (size_t) kHbf, err) &&
+              contains(err, "the positions failed (test)"),
+          "... and on the next window");
+    fail_positions = false;
+    check(c.run(1, wtok.data(), kChunk, win.data(), (size_t) kHbf, wout.data(), (size_t) kHbf, err),
           "... and the next window runs");
     c.close();
     wk.stop();
 
-    // 4. a worker started without --vision: no positions handler
+    // 7. a worker started without --vision: no positions handler
     worker_vision = 0;
     StageHandlers plain = h;
     plain.positions = nullptr;
@@ -522,15 +690,15 @@ int main() {
         std::printf("stage_link_test: no loopback port to listen on\n");
         return 1;
     }
-    check(greet(c, wk2.where, hello_of(0)), "a main without --vision is served by a worker without it");
+    check(greet_at(wk2.where, hello_of(0)), "a main without --vision is served by a worker without it");
     err.clear();
     sent = c.positions(one, 1, err);
-    check(sent && !c.reset(err) && contains(err, "--vision"), "a Positions to it is an error naming --vision");
+    check(sent && !c.reset({}, err) && contains(err, "--vision"), "a Positions to it is an error naming --vision");
     check(!stage_link_lost(err), "... a worker's error is not a lost link");
     c.close();
     wk2.stop();
 
-    // 5. a new main process takes over a connection silent for STRATA_REMOTE_TAKEOVER_S (A's PC lost power: its socket
+    // 8. a new main process takes over a connection silent for STRATA_REMOTE_TAKEOVER_S (A's PC lost power: its socket
     //    is never closed)
     worker_vision = 1;
     Worker wk3;
@@ -561,24 +729,32 @@ int main() {
             p.done = true;
         });
     };
+    // main processes of their own (greet connects c)
+    auto greet_with = [&](StageClient& cl, const std::string& at, StageHello mine) {
+        err.clear();
+        cl.close();
+        return cl.connect(at, mine, peer, err);
+    };
+    float rows1[kHbf] = {1, 2, 3, 4}, back1[kHbf] = {};
+    const int32_t tok1 = 7;
     StageClient a, bad;
-    check(greet(a, wk3.where, with_token(hello_of(), "tok")) && a.reset(err), "main A is served");
+    check(greet_with(a, wk3.where, with_token(hello_of(), "tok")) && a.reset({}, err), "main A is served");
     const int disc0 = disconnects.load();
-    check(!greet(bad, wk3.where, with_token(hello_of(), "nope")) && contains(err, "wrong token"),
+    check(!greet_with(bad, wk3.where, with_token(hello_of(), "nope")) && contains(err, "wrong token"),
           "a main with a wrong token is refused (once A is idle)");
     check(!stage_link_lost(err), "... a refusal is not a lost link");
     StageHello other = with_token(hello_of(), "tok");
     other.pack_hash ^= 1;
-    check(!greet(bad, wk3.where, other) && contains(err, "differ"), "... and one with another model");
+    check(!greet_with(bad, wk3.where, other) && contains(err, "differ"), "... and one with another model");
     err.clear();
-    check(a.reset(err) && disconnects.load() == disc0, "... A is still served, never disconnected");
+    check(a.reset({}, err) && disconnects.load() == disc0, "... A is still served, never disconnected");
     Pending b;
     connect_later(b, with_token(hello_of(), "tok"), wk3.where);
     bool a_ok = true;
     SteadyClock::time_point a_last = SteadyClock::now();
     for (int i = 0; i < 6; ++i) {   // A busy: a message every 0.5 s, for 3 s (STRATA_REMOTE_TAKEOVER_S is 1)
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        a_ok = a_ok && a.reset(err);
+        a_ok = a_ok && a.reset({}, err);
         a_last = SteadyClock::now();
     }
     check(a_ok && !b.done.load() && disconnects.load() == disc0,
@@ -588,47 +764,48 @@ int main() {
     const double a_quiet_ms = std::chrono::duration<double, std::milli>(b.at - a_last).count();
     check(b.ok, "once A is silent past it, B, valid, takes the worker over");
     check(a_quiet_ms >= 1000 && a_quiet_ms < 4000, "... after A's 1 s without a message (not its keepalive or timeouts)");
-    check(b.cl.reset(err) && b.cl.run(1, &tok, 0, rows, kHbf, back, kHbf, err) &&
-              std::memcmp(rows, back, sizeof rows) == 0,
+    check(b.cl.reset({}, err) && b.cl.run(1, &tok1, 0, rows1, kHbf, back1, kHbf, err) &&
+              std::memcmp(rows1, back1, sizeof rows1) == 0,
           "... and B is served");
     for (int i = 0; i < 100 && disconnects.load() == disc0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     check(disconnects.load() == disc0 + 1, "A ended as a closed connection does (the disconnect step ran once)");
     err.clear();
-    check(!a.reset(err) && stage_link_lost(err), "A's next message fails as a lost link");
-    check(b.cl.reset(err), "... B is still served");
+    check(!a.reset({}, err) && stage_link_lost(err), "A's next message fails as a lost link");
+    check(b.cl.reset({}, err), "... B is still served");
     // a served connection that closes: the one waiting is served at once, not after the idle time
     Pending c3;
     connect_later(c3, with_token(hello_of(), "tok"), wk3.where);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    const bool b_last = b.cl.reset(err);
+    const bool b_last = b.cl.reset({}, err);
     const auto b_closed = SteadyClock::now();
     b.cl.close();
     for (int i = 0; i < 500 && !c3.done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     c3.t.join();
     const double c_ms = std::chrono::duration<double, std::milli>(c3.at - b_closed).count();
     check(b_last && c3.ok && c_ms < 900, "B closes: the main waiting is served at once (under the 1 s idle time)");
-    check(c3.cl.reset(err), "... and its messages are answered");
+    check(c3.cl.reset({}, err), "... and its messages are answered");
     a.close();
     c3.cl.close();
     bad.close();
     wk3.stop();
     err.clear();
-    check(!greet(a, wk3.where, with_token(hello_of(), "tok")) && contains(err, "cannot connect") && stage_link_lost(err),
+    check(!greet_with(a, wk3.where, with_token(hello_of(), "tok")) && contains(err, "cannot connect") &&
+              stage_link_lost(err),
           "nothing listening: a lost link (worth trying again)");
     a.close();
     err.clear();
-    check(!greet(a, "name.invalid:5000", with_token(hello_of(), "tok")) && contains(err, "cannot resolve") &&
+    check(!greet_with(a, "name.invalid:5000", with_token(hello_of(), "tok")) && contains(err, "cannot resolve") &&
               stage_link_lost(err),
           "a name that does not resolve: a lost link (a name service may answer later)");
     a.close();
-    check(!greet(a, "no-port", with_token(hello_of(), "tok")) && !stage_link_lost(err),
+    check(!greet_with(a, "no-port", with_token(hello_of(), "tok")) && !stage_link_lost(err),
           "an address without a port: not a lost link");
     a.close();
     auto ms_between = [](SteadyClock::time_point from, SteadyClock::time_point to) {
         return std::chrono::duration<double, std::milli>(to - from).count();
     };
 
-    // 6. STRATA_REMOTE_TAKEOVER_S=0: never taken over, however long the served one is silent
+    // 9. STRATA_REMOTE_TAKEOVER_S=0: never taken over, however long the served one is silent
     set_takeover("0");
     Worker wk4;
     const bool wk4_up = wk4.start(h, buf, "tok");
@@ -637,14 +814,14 @@ int main() {
         std::printf("stage_link_test: no loopback port to listen on\n");
         return 1;
     }
-    check(greet(a, wk4.where, with_token(hello_of(), "tok")) && a.reset(err),
+    check(greet_with(a, wk4.where, with_token(hello_of(), "tok")) && a.reset({}, err),
           "STRATA_REMOTE_TAKEOVER_S=0: main A is served");
     int disc = disconnects.load();
     Pending b4;
     connect_later(b4, with_token(hello_of(), "tok"), wk4.where);
     std::this_thread::sleep_for(std::chrono::milliseconds(2500));
     err.clear();
-    check(!b4.done.load() && disconnects.load() == disc && a.reset(err),
+    check(!b4.done.load() && disconnects.load() == disc && a.reset({}, err),
           "... B waits while A is silent for 2.5 s (past the 1 s above): A still served");
     const auto a4_closed = SteadyClock::now();
     a.close();
@@ -661,7 +838,7 @@ int main() {
         std::printf("stage_link_test: no loopback port to listen on\n");
         return 1;
     }
-    check(greet(a, wk5.where, with_token(hello_of(), "tok")) && a.reset(err), "main A is served");
+    check(greet_with(a, wk5.where, with_token(hello_of(), "tok")) && a.reset({}, err), "main A is served");
     disc = disconnects.load();
     // a valid hello (header, then the hello), of which the peer sends 8 bytes first
     std::vector<char> hello_bytes(sizeof(StageHeader) + sizeof(StageHello));
@@ -679,7 +856,7 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(1800));   // A silent past 1 s: the peer accepted meanwhile
     err.clear();
     const auto a5_sent = SteadyClock::now();
-    const bool a5_ok = a.reset(err);
+    const bool a5_ok = a.reset({}, err);
     const double a5_ms = ms_between(a5_sent, SteadyClock::now());
     for (int i = 0; i < 300 && !quiet.closed.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     check(a5_ok && a5_ms < 1000, "A sends again: it is answered at once (the peer's part of a hello not waited for)");
@@ -688,7 +865,7 @@ int main() {
     quiet.send_part(hello_bytes, 8, hello_bytes.size());   // the rest of its hello, too late
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     err.clear();
-    check(a.reset(err) && disconnects.load() == disc,
+    check(a.reset({}, err) && disconnects.load() == disc,
           "... its hello's rest does not take over at A's next 1 s without a message: A still served");
     quiet.close();
     a.close();
@@ -705,7 +882,7 @@ int main() {
         std::printf("stage_link_test: no loopback port to listen on\n");
         return 1;
     }
-    check(greet(a, wk6.where, with_token(hello_of(), "tok")) && a.reset(err), "a relay's main A is served");
+    check(greet_with(a, wk6.where, with_token(hello_of(), "tok")) && a.reset({}, err), "a relay's main A is served");
     disc = disconnects.load();
     Pending b6;
     connect_later(b6, with_token(hello_of(), "tok"), wk6.where);
@@ -716,7 +893,7 @@ int main() {
     bool a6_ok = a.prefill_send(ptok, 2, 0, 0, pin, kD, 0, err) && a.prefill_recv(pout, kD, 2, 0, err) &&
                  std::memcmp(pin, pout, sizeof pin) == 0;
     std::this_thread::sleep_for(std::chrono::milliseconds(400));   // A's own part before its next message
-    a6_ok = a6_ok && a.reset(err);
+    a6_ok = a6_ok && a.reset({}, err);
     check(a6_ok && !b6.done.load() && disconnects.load() == disc,
           "a chunk's reply out after 1.5 s, A's next message 0.4 s later: A still served, B waits");
     for (int i = 0; i < 500 && !b6.done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -726,7 +903,7 @@ int main() {
     a.close();
     wk6.stop();
 
-    // 7. alive(): the link between requests, checked with nothing sent and without blocking
+    // 10. alive(): the link between requests, checked with nothing sent and without blocking
     Worker wk7;
     if (!wk7.start(h, buf, "tok")) {
         std::printf("stage_link_test: no loopback port to listen on\n");
@@ -748,10 +925,10 @@ int main() {
         return false;
     };
     err.clear();
-    bool up = greet(a, wk7.where, with_token(hello_of(), "tok")) && a.reset(err);
+    bool up = greet_with(a, wk7.where, with_token(hello_of(), "tok")) && a.reset({}, err);
     for (int i = 0; i < 20 && up; ++i) up = alive_timed(a);
     check(up && err.empty(), "an idle served link is alive (20 checks)");
-    check(a.reset(err) && a.alive(err) && a.reset(err),
+    check(a.reset({}, err) && a.alive(err) && a.reset({}, err),
           "... the check sends nothing: the next messages and their replies are in step");
     Pending b7;
     connect_later(b7, with_token(hello_of(), "tok"), wk7.where);
@@ -760,16 +937,16 @@ int main() {
     check(b7.ok, "main B takes the worker over once A is silent past 1 s");
     check(alive_until_down(a) && stage_link_lost(err),
           "A's check finds its connection ended, as a lost link (nothing sent)");
-    check(!a.connected() && !a.alive(err) && stage_link_lost(err) && !a.reset(err) && stage_link_lost(err),
+    check(!a.connected() && !a.alive(err) && stage_link_lost(err) && !a.reset({}, err) && stage_link_lost(err),
           "... and marks the link failed: later calls fail at once, as lost");
-    check(b7.cl.alive(err) && b7.cl.reset(err), "B, served, is alive");
+    check(b7.cl.alive(err) && b7.cl.reset({}, err), "B, served, is alive");
     wk7.stop();
     check(alive_until_down(b7.cl) && stage_link_lost(err), "the worker stopped: B's check finds the link lost");
     b7.cl.close();
     a.close();
     Chatty idle_peer, chatty;
     err.clear();
-    up = idle_peer.start("") && greet(a, idle_peer.where, hello_of());
+    up = idle_peer.start("") && greet_with(a, idle_peer.where, hello_of());
     for (int i = 0; i < 20 && up; ++i) {
         up = alive_timed(a);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -778,14 +955,14 @@ int main() {
     a.close();
     idle_peer.stop();
     err.clear();
-    check(chatty.start(std::string("\x01\x02\x03", 3)) && greet(a, chatty.where, hello_of()) &&
+    check(chatty.start(std::string("\x01\x02\x03", 3)) && greet_with(a, chatty.where, hello_of()) &&
               alive_until_down(a) && contains(err, "out of step") && stage_link_lost(err) && !a.connected(),
           "a peer that sends bytes no message asked for: not alive, as lost (out of step)");
     a.close();
     chatty.stop();
     check(alive_worst_ms < 100, "no check above blocked (each under 100 ms)");
 
-    // 8. connect() with a deadline (timeout_s) and a stop flag: the connect and the hello's reply together
+    // 11. connect() with a deadline (timeout_s) and a stop flag: the connect and the hello's reply together
     Mute mute;
     if (!mute.start()) {
         std::printf("stage_link_test: no loopback port to listen on\n");
@@ -832,14 +1009,14 @@ int main() {
         return 1;
     }
     std::atomic<bool> never{false};
-    check(timed_connect(a, wk8.where, with_token(hello_of(), "tok"), 5, &never, ms) && a.reset(err) &&
-              a.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && std::memcmp(rows, back, sizeof rows) == 0,
+    check(timed_connect(a, wk8.where, with_token(hello_of(), "tok"), 5, &never, ms) && a.reset({}, err) &&
+              a.run(1, &tok1, 0, rows1, kHbf, back1, kHbf, err) && std::memcmp(rows1, back1, sizeof rows1) == 0,
           "a worker that answers: served within the deadline, the link blocking again for its messages");
     a.close();
     wk8.stop();
 
-    // 9. h.idle (a relay's look at its next worker): only while the served main process is idle, about once a
-    //    second; false ends that connection, which the main process's next message finds lost
+    // 12. h.idle (a relay's look at its next worker): only while the served main process is idle, about once a
+    //     second; false ends that connection, which the main process's next message finds lost
     std::atomic<int> idle_looks{0};
     std::atomic<bool> next_gone{false};
     StageHandlers relay_h = h;
@@ -854,16 +1031,16 @@ int main() {
         std::printf("stage_link_test: no loopback port to listen on\n");
         return 1;
     }
-    check(greet(a, wk9.where, with_token(hello_of(), "tok")) && a.reset(err), "a relay's main A is served");
+    check(greet_with(a, wk9.where, with_token(hello_of(), "tok")) && a.reset({}, err), "a relay's main A is served");
     bool busy_ok = true;
     for (int i = 0; i < 6; ++i) {   // a message every 0.3 s, for 1.8 s
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        busy_ok = busy_ok && a.reset(err);
+        busy_ok = busy_ok && a.reset({}, err);
     }
     check(busy_ok && idle_looks.load() == 0, "no look while A sends a message every 0.3 s");
     std::this_thread::sleep_for(std::chrono::milliseconds(2600));
     const int looks = idle_looks.load();
-    check(looks >= 1 && looks <= 3 && a.reset(err), "A idle for 2.6 s: about one look a second, and A still served");
+    check(looks >= 1 && looks <= 3 && a.reset({}, err), "A idle for 2.6 s: about one look a second, and A still served");
     disc = disconnects.load();
     next_gone = true;
     const auto gone_at = SteadyClock::now();
@@ -871,13 +1048,13 @@ int main() {
     check(disconnects.load() == disc + 1 && ms_between(gone_at, SteadyClock::now()) < 2500,
           "the next worker gone while A is idle: A's connection ends within the next look");
     err.clear();
-    check(!a.reset(err) && stage_link_lost(err), "... A's next message finds it lost (its main process connects again)");
+    check(!a.reset({}, err) && stage_link_lost(err), "... A's next message finds it lost (its main process connects again)");
     next_gone = false;
-    check(greet(a, wk9.where, with_token(hello_of(), "tok")) && a.reset(err), "... and connected again, A is served");
+    check(greet_with(a, wk9.where, with_token(hello_of(), "tok")) && a.reset({}, err), "... and connected again, A is served");
     a.close();
     wk9.stop();
 
-    // 10. a worker reads nothing but a hello before the hello, and bounds a message's T before any product with it
+    // 13. a worker reads nothing but a hello before the hello, and bounds a message's T before any product with it
     Worker wk10;
     if (!wk10.start(h, buf, "tok")) {
         std::printf("stage_link_test: no loopback port to listen on\n");
@@ -899,7 +1076,8 @@ int main() {
         err.clear();
         a.close();
         const bool ok = a.connect(wk10.where, with_token(hello_of(), "tok"), peer, err, 5) &&
-                        a.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && std::memcmp(rows, back, sizeof rows) == 0;
+                        a.run(1, &tok1, 0, rows1, kHbf, back1, kHbf, err) &&
+                        std::memcmp(rows1, back1, sizeof rows1) == 0;
         a.close();
         return ok;
     };
@@ -974,15 +1152,15 @@ int main() {
         p.header(StageMsg::Prefill, wrap, 0);
         ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::Error && contains(m, "bad prompt chunk size");
         p.header(StageMsg::Run, 1, 4 + kHbf * 4);
-        p.send(&tok, 4);
-        p.send(rows, sizeof rows);
-        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::RunOk && m.size() == sizeof rows &&
-             std::memcmp(m.data(), rows, sizeof rows) == 0;
+        p.send(&tok1, 4);
+        p.send(rows1, sizeof rows1);
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::RunOk && m.size() == sizeof rows1 &&
+             std::memcmp(m.data(), rows1, sizeof rows1) == 0;
         check(ok, "after the hello, a window and a chunk of T = 2^62: malformed, and the next window runs");
     }
     wk10.stop();
 
-    // 11. a hello's reply is read whole within the deadline, and an error reply's size is not taken on trust
+    // 14. a hello's reply is read whole within the deadline, and an error reply's size is not taken on trust
     {
         StageHeader ok_head;
         ok_head.type = (uint32_t) StageMsg::HelloOk;
@@ -1015,8 +1193,9 @@ int main() {
         liar.stop();
         Chatty liar2;
         err.clear();
-        check(liar2.start(std::string((const char*) &huge, sizeof huge)) && greet(a, liar2.where, hello_of()) &&
-                  !a.reset(err) && contains(err, "out of step") && stage_link_lost(err) && !a.connected(),
+        check(liar2.start(std::string((const char*) &huge, sizeof huge)) &&
+                  greet_with(a, liar2.where, hello_of()) && !a.reset({}, err) && contains(err, "out of step") &&
+                  stage_link_lost(err) && !a.connected(),
               "... as a later reply: not read, the link out of step (lost)");
         a.close();
         liar2.stop();
