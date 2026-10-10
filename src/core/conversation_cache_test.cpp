@@ -128,6 +128,17 @@ int main() {
         cache.put(image({9, 8, 7}));
         check(cache.evict_oldest() && cache.size() == 1, "the oldest unpinned conversation went (the pinned one is older)");
         check(!cache.evict_oldest() && cache.size() == 1, "only a pinned one is left: nothing more can go");
+        // #879: after non-finite logits every parked conversation goes, the pinned one too
+        cache.put(image({4, 5, 6}));
+        std::vector<ConversationKv> kv(1);
+        kv[0].cells = 3;
+        kv[0].k.resize(64, 1);
+        cache.retain(std::move(kv), 3);
+        check(cache.retained_bytes() > 0, "a retained K/V before clear()");
+        check(cache.clear() == 2, "clear() reports how many were parked");
+        check(cache.size() == 0 && cache.bytes() == 0 && cache.retained_bytes() == 0, "clear() leaves nothing parked");
+        check(cache.best(std::vector<int64_t>{1, 2, 3, 4}, {}, true).tokens == 0, "a cleared cache matches nothing");
+        check(cache.clear() == 0, "clear() on an empty cache");
     }
     {
         auto s = image({1, 2, 3});

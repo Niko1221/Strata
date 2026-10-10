@@ -382,7 +382,7 @@ class ReplicaEngine:
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         # imported here: serve.server imports this module
-        from serve.server import EngineDied
+        from serve.server import EngineDied, EngineNonFinite
         k = self.route(ids)
         if k < 0:
             raise EngineDied("no replica is running; this request was not sent")
@@ -390,6 +390,7 @@ class ReplicaEngine:
         self.tl.cur = e
         produced: list[int] = []
         held = False
+        nonfinite = False
         try:
             self.router.note(k, ids)
             if not int(getattr(e, "batch", 0) or 0):          # no slots: this replica takes one request at a time
@@ -406,10 +407,15 @@ class ReplicaEngine:
                 if t is not None:
                     produced.append(t)
                 yield t
+        except EngineNonFinite:
+            nonfinite = True
+            raise
         finally:
             if held:
                 self.run_locks[k].release()
             with self.lock:
                 self.inflight[k] -= 1
-            if produced:
+            if nonfinite:                       # #879: the engine dropped every cached conversation
+                self.router.forget(k)
+            elif produced:
                 self.router.note(k, list(ids) + produced)

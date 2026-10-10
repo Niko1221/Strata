@@ -743,6 +743,32 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **Non-finite logits end the request and drop the cached state (#879, on by default).** Rarely, a window's logits
+  become NaN and the reply degenerates into token 0 (`!`) repeated (#606); the poison sits in the conversation's K/V
+  and recurrent state, so with the prompt cache every later turn of that conversation stays poisoned. The q8_1 clamps
+  of 0.1.39 and later remove the overflows found so far; this guard catches whatever cause is left. Every verify window
+  of `--serve` (the decode windows, the `--pipeline-windows` decode windows of a layer split, the prompt's short
+  tail, batch slots) checks its head logits on the GPU beside the greedy pick (one small kernel into mapped flags, read
+  after the sync the window already does). A flagged window emits none of its tokens, the engine prints one
+  `non-finite logits (#879)` line with the position, ends the request with `DONE ... nonfinite` (a slot:
+  `BDONE <slot> <n> nonfinite`), and the next request first drops the live session, every checkpoint, every parked
+  conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
+  prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
+  started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
+  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
+  answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
+  3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
+  guard on and off gave byte-identical answers in 3 pairs (one of them with `STRATA_ROUTE_TAIL_SKIP=0`, one with
+  `STRATA_SH_STREAM=0`); one more guard-off run differed from all the others from its first answer on, while a second
+  guard-off run matched the guard-on runs, so that was a difference between runs, not the guard. Its cost there: 4.8 us of GPU time a window on average (7.8 us at most), 0.009% of the decode
+  time (Nsight Systems, 424 windows). The one-shot command line (`strata` without `--serve`) and the Intel (SYCL) port
+  in `sycl/` do not check.
+  Debug switch: `STRATA_NAN_INJECT=<n>[,<n>...]` reports the n-th window the guard checks in the engine process
+  (counted from 1 over prompt-tail, decode and batch windows) as non-finite, to exercise the whole path without a real
+  fire. With `=1,60` on that 3080: a new chat's first window was flagged and the server sent the request again from
+  token 0 (the client saw one normal answer); the 60th, mid-reply in the next turn, ended that reply as `"length"`
+  after 58 tokens; the turn after it reused 0 cached tokens and answered normally.
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
