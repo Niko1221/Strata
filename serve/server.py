@@ -149,12 +149,16 @@ REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
-# low-effort instruction in place of the xhigh one.  Both off by default.
+# low-effort instruction in place of the xhigh or medium one.  Both off by default.
 HIGH_EFFORT = EFFORT_TEXT["xhigh"]
 LOW_EFFORT = EFFORT_TEXT["low"]
 LOOP_CHECK_EVERY = 512           # output tokens between two looks at the reasoning (at a clean parser boundary)
 LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-word passages seen three times
 LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
+LOOP_SENTENCE_RUN = 5            # ... or the same sentence this many times in a row (catches a loop while it is
+                                 # still too short to fill the coverage window: a production loop of one ~20-word
+                                 # sentence repeated 15 times measured ~15% coverage, under the line above)
+LOOP_SENTENCE_TAIL = 5000        # how far back from the end the sentences are counted (bounds the cost of a look)
 
 
 def reasoning_repeat_coverage(text):
@@ -177,21 +181,50 @@ def reasoning_repeat_coverage(text):
     return len(covered) / (len(words) - start)
 
 
+def reasoning_sentence_run(text):
+    """How many times the last sentence repeats in a row at the end of the reasoning (0 when the tail is not a run).
+
+    The complement of the coverage look above: that one needs the loop to crowd out the 2,000-word window, this one
+    fires while the loop is young.  Sentences split on . ! ? 。 ！ ？ and newlines, lowercased, whitespace-collapsed
+    and stripped of edge punctuation; a piece shorter than 8 words and 40 characters (a code brace, a short return,
+    a numbered "Step 1:" / "Step 2:" line differs after normalizing anyway) never counts and stops the count, so
+    repeated code and a mid-sentence tail cannot trigger on their own.
+    """
+    tail = text[-LOOP_SENTENCE_TAIL * 4:]              # bound the split's cost; 4 chars per word on average
+    run, last = 0, None
+    for s in reversed(re.split(r"[.!?。！？\n]+", tail.lower())):
+        s = re.sub(r"\s+", " ", s).strip(" ,;:：，、")
+        if not s:
+            continue                             # a separator's empty tail piece is not evidence either way
+        if len(re.findall(r"\w+|[^\w\s]", s)) < 8 and len(s) < 40:
+            break
+        if s == last:
+            run += 1
+        elif last is None:
+            run, last = 1, s
+        else:
+            break
+    return run
+
+
 def focused_recovery_prompt(tok, ids, generated):
-    """The prompt's ids with the xhigh effort sentence of the first system message replaced by the low one, then
-    every token generated so far.  A splice of token ids: the prompt is never decoded and encoded again, so a literal
-    `</think>` or vision marker in it (#537, #554) stays what it was.  None when the sentence is not there as whole
-    tokens in the first system message (a user's text never counts).  No answer or end-of-thinking is inserted."""
+    """The prompt's ids with the xhigh or medium effort sentence of the first system message replaced by the low
+    one, then every token generated so far.  A splice of token ids: the prompt is never decoded and encoded again,
+    so a literal `</think>` or vision marker in it (#537, #554) stays what it was.  None when no effort sentence is
+    there as whole tokens in the first system message (a user's text never counts, and low splices to itself).
+    No answer or end-of-thinking is inserted."""
     end = tok.encode(IM_END, parse_special=True)
     if len(end) != 1 or end[0] not in ids:
         return None
     head = ids[:ids.index(end[0])]
     if not tok.decode(head).startswith("<|im_start|>system\n"):
         return None
-    old, new = tok.encode(HIGH_EFFORT, parse_special=False), tok.encode(LOW_EFFORT, parse_special=False)
-    for i in range(len(head) - len(old) + 1):
-        if head[i:i + len(old)] == old:
-            return ids[:i] + new + ids[i + len(old):] + list(generated)
+    old_candidates = [tok.encode(s, parse_special=False) for s in (HIGH_EFFORT, EFFORT_TEXT["medium"])]
+    new = tok.encode(LOW_EFFORT, parse_special=False)
+    for old in old_candidates:
+        for i in range(len(head) - len(old) + 1):
+            if head[i:i + len(old)] == old:
+                return ids[:i] + new + ids[i + len(old):] + list(generated)
     return None
 
 
@@ -3443,7 +3476,7 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         timings, before = None, None                    # this request's timings; the engine's `last` before it
-        recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
+        recovery_count, reasoning_text, repeat_coverage, sentence_run = 0, "", 0.0, 0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
@@ -3536,7 +3569,8 @@ class Service:
                                         and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
                                     repeat_coverage = reasoning_repeat_coverage(reasoning_text)
-                                    if repeat_coverage >= LOOP_COVERAGE:
+                                    sentence_run = reasoning_sentence_run(reasoning_text)
+                                    if repeat_coverage >= LOOP_COVERAGE or sentence_run >= LOOP_SENTENCE_RUN:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
@@ -3596,8 +3630,9 @@ class Service:
                             if trace is not None:
                                 trace["reasoning_recoveries"] = recovery_count
                                 trace["reasoning_repeat_coverage"] = round(repeat_coverage, 3)
+                            trace["reasoning_sentence_run"] = sentence_run
                             print(f"[strata] repeated reasoning detected at {n} tokens "
-                                  f"(coverage={repeat_coverage:.3f}); resuming the same output with the low-effort "
+                                  f"(coverage={repeat_coverage:.3f}, sentence_run={sentence_run}); resuming the same output with the low-effort "
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
@@ -3655,7 +3690,8 @@ class Service:
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
-                        print(f"[strata] the thinking repeated the same passages (coverage={repeat_coverage:.3f}) at "
+                        print(f"[strata] the thinking repeated the same passages (coverage={repeat_coverage:.3f}, "
+                              f"sentence_run={sentence_run}) at "
                               f"{n} tokens: ended as \"length\" (reasoning_loop_recovery: \"stop\" in "
                               "strata-<model>.json; remove it to turn this off)", flush=True)
                     elif repeated:
