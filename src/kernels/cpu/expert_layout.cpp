@@ -1,10 +1,13 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
 #include "strata/kernels/cpu/expert_layout.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -18,6 +21,68 @@
 namespace strata::kernels::cpu {
 namespace {
 ExpertLayout g_layout;
+
+float fp16_to_fp32(uint16_t h) {
+    const float sign = (h & 0x8000) ? -1.0f : 1.0f;
+    const int exp = (h >> 10) & 0x1f;
+    const int mant = h & 0x3ff;
+    if (exp == 0x1f) return mant == 0 ? sign * std::numeric_limits<float>::infinity()
+                                      : std::numeric_limits<float>::quiet_NaN();
+    if (exp == 0) return sign * std::ldexp((float) mant, -24);
+    return sign * std::ldexp((float) (1024 + mant), exp - 25);
+}
+
+// the Q2_0 kernels' activations on a CPU without AVX2 (q2_avx1.cpp reads them)
+void act_quant_q8_1_scalar(const float* x, int n, ActQ& a) {
+    a.nchunks = n / QKA;
+    for (int k = 0; k < a.nchunks; ++k) {
+        const float* xb = x + k * QKA;
+        float amax = 0.0f;
+        for (int j = 0; j < QKA; ++j) amax = std::max(amax, std::fabs(xb[j]));
+        const float scale = amax > 0.0f ? amax / 127.0f : 0.0f;
+        const float inv = scale > 0.0f ? 1.0f / scale : 0.0f;
+        int32_t sum = 0;
+        for (int j = 0; j < QKA; ++j) {
+            const float t = xb[j] * inv;
+            int q = (int) (t + (t >= 0.0f ? 0.5f : -0.5f));
+            q = std::max(-127, std::min(127, q));
+            a.q[k * QKA + j] = (int8_t) q;
+            sum += q;
+        }
+        a.scale[k] = scale;
+        a.sum[k] = sum;
+        a.hx[k] = scale * (float) sum;
+    }
+}
+}  // namespace
+
+void q2_0_gguf_rows_multi_scalar(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                                 float* const* out, int r0, int r1) {
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* row = w + (size_t) r * row_bytes;
+        for (int t = 0; t < nt; ++t) {
+            float acc = 0.0f, corr = 0.0f;
+            for (int b = 0; b < nblocks; ++b) {
+                const uint8_t* blk = row + (size_t) b * 18;
+                uint16_t h;
+                std::memcpy(&h, blk, sizeof(h));
+                const float d = fp16_to_fp32(h);
+                const uint8_t* codes = blk + 2;
+                for (int chunk = 0; chunk < 2; ++chunk) {
+                    int dot = 0;
+                    for (int j = 0; j < QKA; ++j) {
+                        const int i = chunk * QKA + j;
+                        const int q = (codes[i / 4] >> (2 * (i % 4))) & 3;
+                        dot += q * a[t]->q[b * QK + i];
+                    }
+                    const int k = 2 * b + chunk;
+                    acc += (d * a[t]->scale[k]) * (float) dot;
+                    corr += d * a[t]->hx[k];
+                }
+            }
+            out[t][r] = acc - corr;
+        }
+    }
 }
 
 const ExpertLayout& expert_layout() { return g_layout; }
@@ -348,12 +413,15 @@ void cpu_require_expert_support() {
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
-    else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx1_ok()) q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else q2_0_gguf_rows_multi_scalar(w, row_bytes, nblocks, a, nt, out, r0, r1);
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
-    else act_quant_q8_1_avx2(x, n, a);
+    else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
+    else act_quant_q8_1_scalar(x, n, a);
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)

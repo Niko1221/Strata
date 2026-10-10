@@ -189,6 +189,12 @@ void q2_0_gguf_rows_multi_avx2_legacy(const uint8_t* w, size_t row_bytes, int nb
 void q2_0_gguf_rows_multi_avx2_v(bool vnni, const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a,
                                  int nt, float* const* out, int r0, int r1);
 void act_quant_q8_1_avx2(const float* x, int n, ActQ& a);
+/// The Q2_0 rows for CPUs with AVX but not AVX2 (src/kernels/cpu/q2_avx1.cpp), bitwise equal to the scalar reference
+/// (src/kernels/cpu/expert_layout.cpp), which stays for CPUs without AVX.
+void q2_0_gguf_rows_multi_avx1(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                               float* const* out, int r0, int r1);
+void q2_0_gguf_rows_multi_scalar(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                                 float* const* out, int r0, int r1);
 
 void s2_expert_scalar(const uint8_t* blob, const float* x, float* out, bool quant_acts);
 
