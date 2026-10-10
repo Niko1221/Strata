@@ -1,0 +1,12 @@
+[
+  {"name":"fraction", "source":"\\frac{a_1+b^2}{\\sqrt{x}}", "display":false},
+  {"name":"integral", "source":"\\int_0^\\infty e^{-x^2}\\,dx=\\frac{\\sqrt{\\pi}}{2}", "display":true},
+  {"name":"sum", "source":"\\sum_{n=1}^{\\infty}\\frac{1}{n^2}=\\frac{\\pi^2}{6}", "display":true},
+  {"name":"matrix", "source":"\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}", "display":true},
+  {"name":"cases", "source":"f(x)=\\begin{cases}x^2&x>0\\\\0&x\\leq0\\end{cases}", "display":true},
+  {"name":"aligned", "source":"\\begin{aligned}a&=b+c\\\\d&=e+f\\end{aligned}", "display":true},
+  {"name":"unicode", "source":"α+β=γ", "display":false},
+  {"name":"invalid", "source":"\\frac{1}{", "display":false, "invalid":true},
+  {"name":"unsupported", "source":"\\strataUnknownCommand{x}", "display":false, "invalid":true},
+  {"name":"loop", "source":"\\def\\a{\\a}\\a", "display":false, "invalid":true}
+]
