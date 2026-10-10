@@ -46,7 +46,7 @@ bool vram_floor_armed() {
     return g_armed.load(std::memory_order_acquire) != 0;
 }
 
-bool vram_floor_allow(const char* where, std::string& err) {
+bool vram_floor_allow(const char* where, std::string& err, uint64_t needed_bytes) {
     if (!vram_floor_armed()) return true;
     int dev = 0;
     cudaGetDevice(&dev);
@@ -57,12 +57,15 @@ bool vram_floor_allow(const char* where, std::string& err) {
         return false;
     }
     const int64_t floor = strata::program::vram_cap::floor_mib((uint64_t) tb, g_frac);
-    if ((uint64_t) fb < ((uint64_t) floor << 20)) {
+    const uint64_t need_bytes = (uint64_t) floor << 20;
+    if ((uint64_t) fb < need_bytes || (uint64_t) fb - need_bytes < needed_bytes) {
         std::fprintf(stderr, "strata generate: --vram-frac %.6g: CUDA%d has %llu MiB free, needs %lld MiB "
-                             "kept free (%s). Use a smaller context/chunk or a larger fraction; cap not relaxed\n",
-                     g_frac, dev, (unsigned long long) (fb >> 20), (long long) floor, where);
-        std::fprintf(stderr, "strata vram: REFUSED %s free_mib=%llu floor_mib=%lld\n",
-                     where, (unsigned long long) (fb >> 20), (long long) floor);
+                             "kept free (%s)%s. Use a smaller context/chunk or a larger fraction; cap not relaxed\n",
+                     g_frac, dev, (unsigned long long) (fb >> 20), (long long) floor, where,
+                     needed_bytes ? " after this allocation" : "");
+        std::fprintf(stderr, "strata vram: REFUSED %s free_mib=%llu floor_mib=%lld%s\n",
+                     where, (unsigned long long) (fb >> 20), (long long) floor,
+                     needed_bytes ? (std::string(" needed_mib=") + std::to_string((needed_bytes + (1 << 20) - 1) >> 20)).c_str() : "");
         std::fflush(stderr);
         err = std::string("free VRAM is under the floor (") + where + "); cap not relaxed";
         return false;

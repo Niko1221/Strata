@@ -1052,15 +1052,16 @@ float* gdn_chunk_scratch() {
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return nullptr; }
     if (bufs[dev] == nullptr) {
         // The scratch is booked in the frozen cache budget at sizing time, but this first-use allocation is
-        // still a late one: check the cap floor before taking it.  A refusal prints the cap line and falls
-        // back to the default recurrence (the dispatcher treats a null scratch as NotSupported), rather
-        // than allocating under the floor.  With the cap off this is a single cheap no-op.
+        // still a late one: check the cap floor minus these bytes before taking them.  A refusal prints the
+        // cap line and returns null, which becomes cudaErrorMemoryAllocation and makes the dispatcher pick
+        // the default recurrence, rather than allocating under the floor.  With the cap off this is a cheap
+        // no-op (one branch, no device call).
+        const size_t n = (size_t) (GSB / GCH) * HV * (2 * GCH * GCH + GCH);
         std::string floor_err;
-        if (!strata::core::vram_floor_allow("before the chunked-GDN scratch", floor_err)) {
+        if (!strata::core::vram_floor_allow("before the chunked-GDN scratch", floor_err, (uint64_t) n * sizeof(float))) {
             std::fprintf(stderr, "strata generate: %s\n", floor_err.c_str());
             return nullptr;
         }
-        const size_t n = (size_t) (GSB / GCH) * HV * (2 * GCH * GCH + GCH);
         if (cudaMalloc((void**) &bufs[dev], n * sizeof(float)) != cudaSuccess) {
             cudaGetLastError();
             bufs[dev] = nullptr;

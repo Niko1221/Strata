@@ -10,9 +10,10 @@ namespace strata::core {
 void vram_floor_arm(double fraction);
 bool vram_floor_armed();
 
-// False when the cap is on and this device's free bytes are under the floor. err is set.
-// The refusal line matches check_vram_cap ("cap not relaxed").
-bool vram_floor_allow(const char* where, std::string& err);
+// False when the cap is on and this device's free bytes are under the floor, or under the floor once the
+// caller's `needed_bytes` (default 0) are taken. err is set. The refusal line matches check_vram_cap
+// ("cap not relaxed").
+bool vram_floor_allow(const char* where, std::string& err, uint64_t needed_bytes = 0);
 
 // One stderr line per label: "strata vram: <label> free_mib=N". No device call when disarmed.
 void vram_floor_log_once(const char* label);
