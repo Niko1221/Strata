@@ -58,7 +58,9 @@ int main() {
         const bool ok = sized ? c.open_sized(std::vector<int64_t>(kSlots, kBlob), 4, 64, err)
                               : c.open(kSlots, 4, 64, kBlob, err);
         if (!ok) {
-            if (err.find("virtual memory management") != std::string::npos) {
+            // #1475: a HIP build has no segmented cache ("--vram-elastic ... is CUDA-only for now"): a skip, not a failure
+            if (err.find("virtual memory management") != std::string::npos ||
+                err.find("CUDA-only") != std::string::npos) {
                 std::printf("%s: skipped\n", err.c_str());
                 return 77;
             }

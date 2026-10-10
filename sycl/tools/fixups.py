@@ -334,3 +334,9 @@ edit("src/program/generate.cpp", sub(
 edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
     "    item_ct1.barrier(sycl::access::fence_space::local_space);",
     "    sycl::group_barrier(item_ct1.get_sub_group());  // only subgroup row zero participates"))
+
+# MtpDrafter: CUDA's `cudaStream_t cs_ = nullptr` came out as the device's default in-order queue. A drafter that never
+# loads (no --mtp) kept it, and its destructor waited on and destroyed that queue: exit 139 after the output.
+edit("include/strata/core/mtp.hpp", lambda s: s.replace(
+    "    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();\n",
+    "    dpct::queue_ptr cs_ = nullptr;   // load() creates it; not the device's queue, which ~MtpDrafter would destroy\n"))

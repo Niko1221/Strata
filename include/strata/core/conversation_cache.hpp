@@ -196,8 +196,14 @@ public:
         bool live = false;
     };
 
-    ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
+    ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
+        : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
+    /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
+    /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
+    /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
+    /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
+    bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
@@ -332,6 +338,7 @@ public:
 
 private:
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0;
+    int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;
 };

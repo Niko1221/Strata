@@ -15,6 +15,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <vector>
 
 #ifndef STRATA_PLAN_LOCAL
 #define STRATA_PLAN_LOCAL 1   // 0: the original one-thread plan kernel (A/B)
@@ -2336,7 +2343,7 @@ code.
 */
 __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
                                          const sycl::float4 *src, long long n4,
-                                         const uint32_t *skip, uint32_t value) {
+                                         const uint32_t *skip, uint32_t value, bool pair) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const bool zero = *skip == value;
 #pragma unroll
@@ -2346,7 +2353,7 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
          i < n4; i += (long long)item_ct1.get_group_range(2) *
                       item_ct1.get_local_range(2))
         dst[i] = zero ? sycl::float4(0.f, 0.f, 0.f, 0.f)
-                      : const_cast<const sycl::float4 *>(src)[i];
+                      : (pair ? strata::load_mapped_float4(src + i) : const_cast<const sycl::float4 *>(src)[i]);
 }
 }  // namespace
 
@@ -2421,6 +2428,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
                               void* stream) {
     if (n <= 0) return;
     const long long n4 = n / 4;
+    const bool pair = strata::a770_fast();
     const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2434,7 +2442,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     copy_or_zero_kernel((sycl::float4 *)dst,
                                         (const sycl::float4 *)src, n4,
-                                        skip, value);
+                                        skip, value, pair);
                 });
     }
     check("copy_or_zero_from_mapped");
@@ -2517,32 +2525,54 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
     check("copy_indexed");
 }
 
-// a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
+// Opt-in GPU stage timestamps. DG2 has no comparable device-wide clock, so
+// read a live host USM clock uncached (the fork's gpu_stamp implementation).
+// The writer is joined before runtime teardown and exists only in profile mode.
 namespace {
-    __dpct_inline__ void gpu_stamp_kernel(unsigned long long *buf, int i) {
-    unsigned long long t;
-#if defined(STRATA_HIP_GFX906)
-    t = wall_clock64() * 40ull;   // gfx906: the wall clock runs at 25 MHz (hipDeviceAttributeWallClockRate) -> ns
-#elif defined(__HIPCC__)
-    t = wall_clock64() * 10ull;   // gfx10.3 / gfx11 / gfx12: a constant 100 MHz counter, in ns
-#else
-    /*
-    DPCT1053: Migration of device assembly code is not supported.
-    */
-    t = 0;   // SYCL: no %globaltimer equivalent; the stage profiler is inert on this backend
-#endif
-    buf[i] = t;
-} }
-void gpu_stamp(unsigned long long* buf, int i, void* stream) {
-    auto exp_props = sycl::ext::oneapi::experimental::properties{
-        sycl::ext::oneapi::experimental::use_root_sync};
+uint64_t profile_now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct ProfileHostClock {
+    sycl::context context;
+    uint64_t* word;
+    std::atomic<bool> stop{false};
+    std::thread writer;
+    explicit ProfileHostClock(const sycl::queue& q) : context(q.get_context()),
+        word(sycl::malloc_host<uint64_t>(8, context)) {
+        if (!word) throw std::runtime_error("gpu_stamp: host clock allocation failed");
+        __atomic_store_n(word, profile_now_ns(), __ATOMIC_RELEASE);
+        writer = std::thread([this] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                __atomic_store_n(word, profile_now_ns(), __ATOMIC_RELEASE);
+                for (int i = 0; i < 8; ++i) __builtin_ia32_pause();
+            }
+        });
+    }
+    ~ProfileHostClock() {
+        stop.store(true, std::memory_order_relaxed);
+        if (writer.joinable()) writer.join();
+        // Keep the word alive until context teardown, as in the fork: a graph
+        // may still retain its pointer when process-level statics are destroyed.
+    }
+};
+uint64_t* profile_clock_word(const sycl::queue& q) {
+    static std::mutex mu;
+    static std::vector<std::unique_ptr<ProfileHostClock>> clocks;
+    std::lock_guard<std::mutex> lock(mu);
+    for (const auto& clock : clocks) if (clock->context == q.get_context()) return clock->word;
+    clocks.push_back(std::make_unique<ProfileHostClock>(q));
+    return clocks.back()->word;
+}
+}
 
-    strata::q_of(stream)
-        ->parallel_for<dpct_kernel_name<class gpu_stamp_kernel_76ad79>>(
-            sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                gpu_stamp_kernel(buf, i);
-            });
+void gpu_stamp(unsigned long long* buf, int i, void* stream) {
+    auto& q = *strata::q_of(stream);
+    uint64_t* word = profile_clock_word(q);
+    q.single_task([=] {
+        sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::system);
+        buf[i] = strata::sys_load_mapped(word);
+    });
 }
 
 }  // namespace strata::kernels

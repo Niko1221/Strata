@@ -32,7 +32,8 @@ rem All of it in one block: cmd reads a .bat file while it runs it, and the git 
         if defined DIRTY (
           echo  You have local changes to tracked files here, so nothing was touched. To move to the new history
           echo  yourself ^(your untracked files, models and settings stay where they are^):
-          echo    git branch pre-cleanup-backup ^&^& git stash push
+          echo    git branch pre-cleanup-backup
+          echo    git stash push
           echo    git checkout -B main origin/main
           echo  then run UPDATE.bat again.
           pause
