@@ -201,6 +201,34 @@ class Structured(unittest.TestCase):
                     self.assertIn("only JSON objects", reply["error"]["message"])
             load.assert_not_called()
 
+    # ---- a reply the server stopped because it repeated itself -------------------------------------------------
+    def test_a_repetition_stop_is_named_not_blamed_on_the_budget(self):
+        self.svc.repeat_stop_period = 16                         # the phrase guard is opt-in
+        loop = '{"title":"x","sheet":"' + "[unclear] " * 100
+        code, reply = self.chat(loop, max_tokens=5000)
+        self.assertEqual(code, 502)
+        self.assertIn("repeated the same text", reply["error"]["message"])
+        self.assertNotIn("increase the output budget", reply["error"]["message"])
+        _, raw = self.chat(loop, max_tokens=5000, stream=True)
+        self.assertIn("repeated the same text", raw)
+        # the budget itself running out keeps the old advice
+        code, reply = self.chat(json.dumps(STORY), max_tokens=5)
+        self.assertIn("increase the output budget", reply["error"]["message"])
+
+    def test_plain_replies_name_the_cause_beside_length(self):
+        self.svc.repeat_stop_period = 16                         # "\\n" is two tokens here: a phrase
+        self.engine = self.svc.engine = MockEngine(self.tok, "ok " + "\\n" * 400, max_context=16384)
+        req = {"messages": [{"role": "user", "content": "x"}], "reasoning_effort": "none", "max_tokens": 5000}
+        code, reply = self.request("/v1/chat/completions", req)
+        self.assertEqual((code, reply["choices"][0]["finish_reason"], reply["choices"][0]["stop_cause"]),
+                         (200, "length", "repetition"))
+        _, raw = self.request("/v1/chat/completions", {**req, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")][-1]
+        self.assertEqual(last["choices"][0]["stop_cause"], "repetition")
+        _, reply = self.request("/v1/chat/completions", {**req, "max_tokens": 5})     # a real budget stop: no cause
+        self.assertEqual(reply["choices"][0]["finish_reason"], "length")
+        self.assertNotIn("stop_cause", reply["choices"][0])
+
     def test_the_server_does_not_import_jsonschema_at_start(self):
         import subprocess
         import sys
