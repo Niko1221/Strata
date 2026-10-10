@@ -680,6 +680,84 @@ void test_rotating_source(bool rotate, bool pin) {
     require(!src.has_resident(0, 0) && !src.exchange_rotation(), "reopen retained residency");
 }
 
+// STRATA_RAM_ADAPT: an expert read from the file takes the RAM place of another of its layer.
+void test_replace_resident(bool pin) {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+#if defined(_WIN32)
+    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
+#else
+    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
+#endif
+    TempDirectory dir;
+    std::string err;
+    require(expert_layout_load(dir.path.string(), 1, 5, err), err);
+    const size_t bytes = (size_t)BLOB;
+    std::vector<std::vector<uint8_t>> truth(5, std::vector<uint8_t>(bytes));
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary);
+        for (size_t e = 0; e < truth.size(); ++e) {
+            for (size_t i = 0; i < bytes; ++i) truth[e][i] = (uint8_t)((i * 131u + e * 37u) ^ (i >> 8));
+            out.write((const char*)truth[e].data(), (std::streamsize)bytes);
+        }
+        require((bool)out, "fixture write failed");
+    }
+    FileExpertSource src;
+    ExpertCache cache;
+    require(src.open(dir.path.string(), 1, 5, err), err);
+    require(cache.open(2, 1, 5, BLOB, err), err);
+    for (int e : {2, 3}) {
+        const int slot = cache.admit(0, e);
+        require(slot >= 0 && cache.fill_slot_blocking(slot, truth[e].data(), err), err);
+    }
+    const std::vector<std::pair<int32_t, int32_t>> rank{{0,0},{0,1},{0,2},{0,3},{0,4}};
+    // experts 2 and 3 are in VRAM, the RAM budget holds 0 and 1, expert 4 stays on the file tier
+    require(src.pin_cache_complement(cache, err, pin, {}, -1, 0, 2 * bytes, &rank), err);
+    require(src.reserve_exchanges(1, err), err);
+    require(src.has_resident(0, 0) && src.has_resident(0, 1) && !src.has_resident(0, 4), "fixture residency wrong");
+    std::vector<uint8_t> actual(bytes);
+    auto holds = [&](int e) {
+        const uint8_t* b = src.blob(0, e);
+        return b != nullptr && !std::memcmp(b, truth[(size_t)e].data(), bytes);
+    };
+    require(!src.replace_resident(0, 1, 0), "an expert already in RAM accepted");
+    require(!src.replace_resident(0, 4, 2), "a place the RAM does not hold accepted");
+    require(!src.replace_resident(0, 4, 4) && !src.replace_resident(0, 5, 0) && !src.replace_resident(1, 4, 0),
+            "invalid arguments accepted");
+    require(src.ram_adapts() == 0 && holds(0) && holds(1) && holds(4), "a refused call changed the copy");
+    // a staged exchange owns the tables until it commits
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(0), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 0, 2, 0), "stage rejected");
+    require(!src.replace_resident(0, 4, 1), "accepted beside a staged exchange");
+    require(cache.fill_slot_blocking(0, truth[0].data(), err), err);
+    require(src.commit_exchanges() == 1, "commit count wrong");   // RAM: 2 (in 0's place) and 1; VRAM: 0 and 3
+    const uint8_t* place = src.blob(0, 1);
+    require(src.replace_resident(0, 4, 1), "replace rejected");
+    require(src.ram_adapts() == 1 && src.has_resident(0, 4) && !src.has_resident(0, 1), "residency wrong");
+    require(src.blob(0, 4) == place && holds(4), "the incoming expert is not in the outgoing one's place");
+    require(holds(1) && holds(2), "another expert's bytes changed");
+    require(src.copy_blob(0, 1, actual.data()) && actual == truth[1], "the outgoing expert is not read from the file");
+    require(!src.transient(0, 4), "resident became transient");
+    if (pin) {
+        require(src.pinned(0, 4) && src.device_alias(0, 4), "mapping lost");
+        require(cudaMemcpy(actual.data(), src.device_alias(0, 4), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+                "device alias read failed");
+        require(actual == truth[4], "CUDA alias points at the old expert");
+    }
+    // and back, then an exchange with the VRAM tier still works on the moved place
+    require(src.replace_resident(0, 1, 4) && holds(1) && src.blob(0, 1) == place && !src.has_resident(0, 4),
+            "replace back wrong");
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(1), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 1, 3, 0), "stage after replace rejected");
+    require(cache.fill_slot_blocking(1, truth[1].data(), err), err);
+    require(src.commit_exchanges() == 1 && src.has_resident(0, 3) && holds(3) && !src.has_resident(0, 1),
+            "exchange after replace wrong");
+    require(src.ram_adapts() == 2, "accounting wrong");
+    std::cout << "replace_resident: pinned=" << pin << " exact_bytes=PASS\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -701,6 +779,8 @@ int main(int argc, char** argv) {
             test_rotating_source(false, true);
             test_rotating_source(true, true);
             test_rotating_source(true, false);
+            test_replace_resident(true);
+            test_replace_resident(false);
         }
         std::cout << "file_expert_source_test: PASS\n";
         return 0;

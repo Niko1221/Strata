@@ -166,6 +166,22 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   as far as the RAM allows, their experts are kept in RAM too (so a prompt reads nothing from the SSD either).
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
   RAM place of the one that replaces it, so the RAM copy keeps holding exactly what the GPU does not.
+- `STRATA_RAM_ADAPT=<n>` (opt-in, `--serve`, one GPU): the RAM copy follows the conversation too. Without it the
+  copy is chosen once, at start, so when the RAM cannot hold every expert the GPU does not, an expert outside the copy
+  is read from the SSD every time the conversation routes to it. With it, before a decode window and while no adaptive
+  round is in flight, up to `n` experts the windows keep routing to (the adaptive tier's decayed count, 2 or more) take
+  the RAM places of experts of their own layer that are not routed to (count below 0.5): one pair per layer, the
+  largest difference first, one blob read each. The RAM stays the same size; the routing, the weights and the VRAM
+  tier's rule are untouched, and an expert that left the copy is read from the file again when it is needed. It needs
+  the adaptive tier (`--adapt-every`), and does nothing with `STRATA_EXCHANGE_ROTATE=1`, a layer split, a peer or
+  helper GPU, or `--batch`. Prompt reads are not counted, so it does not change what a prompt reads. The log reports
+  how many experts moved.
+  Measured on an RTX 3060 12 GB with 32 GB of RAM (Linux, IQ2_XS, 20.5 GiB of experts in RAM and about 6,000 experts on
+  the file tier, `--adapt-async 1`, `--spec 3`), four fresh 4.2K-4.5K-token prompts in four languages with 768 new
+  tokens each, three fresh-process runs per arm: decode 35.7 / 35.2 / 35.2 tok/s without and 40.7 / 41.4 / 41.0 with
+  `STRATA_RAM_ADAPT=8`, prompt speed the same (463 and 467 tok/s), blob reads from the file about 68,000 -> 33,000 per
+  run. With the blocking tier and with `--spec 2` the same comparison gives 31.4 -> 35.7, 32.6 -> 38.3 and 28.1 -> 31.5
+  tok/s (medians of three). One machine and one quantization; not measured elsewhere.
 - `--adapt-async 1` (opt-in, `--serve`): the swaps of a round advance between decode windows on a helper thread
   (copy back, copy in, move into RAM) instead of one window waiting for the whole round. Not with `--batch` or
   `--peer-device` (the blocking tier runs there). With `--pipeline-windows 2` (two windows in flight, see
