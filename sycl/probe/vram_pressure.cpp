@@ -17,13 +17,40 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/prefill/gemm.hpp"
-#include "strata/sycl_queue.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <dxgi.h>
+#include <dxgi1_4.h>
+// Does DXGI give a live, per-process dedicated-VRAM figure on this backend?  If it does, it is the
+// answer to the OpenCL backend's missing free-VRAM query (#1549): the engine's own usage plus the
+// card's budget is the live `free` figure that dpct's get_memory_info cannot produce here.
+static void dxgi_state(const char* when) {
+    IDXGIFactory* f = nullptr;
+    if (FAILED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**) &f))) { std::printf("DXGI (%s): no factory\n", when); return; }
+    IDXGIAdapter* a = nullptr;
+    if (FAILED(f->EnumAdapters(0, &a))) { std::printf("DXGI (%s): no adapter\n", when); f->Release(); return; }
+    IDXGIAdapter3* a3 = nullptr;
+    if (SUCCEEDED(a->QueryInterface(__uuidof(IDXGIAdapter3), (void**) &a3))) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+        if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+            std::printf("DXGI (%s): this process uses %6.2f GiB of a %6.2f GiB budget (%.2f GiB left)\n", when,
+                        (double) info.CurrentUsage / 1073741824.0, (double) info.Budget / 1073741824.0,
+                        (double) (info.Budget > info.CurrentUsage ? info.Budget - info.CurrentUsage : 0) / 1073741824.0);
+        else std::printf("DXGI (%s): QueryVideoMemoryInfo failed\n", when);
+        a3->Release();
+    } else std::printf("DXGI (%s): no IDXGIAdapter3\n", when);
+    a->Release();
+    f->Release();
+}
+#else
+static void dxgi_state(const char*) {}
+#endif
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not take the log with it
@@ -66,6 +93,7 @@ int main(int argc, char** argv) {
                 (int) q.get_device().get_info<sycl::info::device::max_compute_units>());
 
     std::printf("--- card otherwise empty ---\n");
+    dxgi_state("before anything");
     const double gu_empty = timed(1280, N);
     const double dn_empty = timed(N, 640);
     std::printf("gate/up 1280x2560  %.1f us/call\ndown 2560x640        %.1f us/call\n", gu_empty, dn_empty);
@@ -77,9 +105,10 @@ int main(int argc, char** argv) {
     uint8_t* fill = sycl::malloc_device<uint8_t>((size_t) fill_b, q);
     if (!fill) { std::printf("alloc of %.2f GiB failed\n", fill_gib); return 1; }
     q.memset(fill, 1, (size_t) fill_b).wait();
+    dxgi_state("after 28 GiB fill");
     size_t free_b = 0, tot_b = 0;
     dpct::get_current_device().get_memory_info(free_b, tot_b);
-    std::printf("--- after allocating and touching %.2f GiB (free figure now %.2f GiB) ---\n",
+    std::printf("--- after allocating and touching %.2f GiB (dpct free figure now %.2f GiB) ---\n",
                 fill_gib, (double) free_b / 1073741824.0);
     const double gu_fill = timed(1280, N);
     const double dn_fill = timed(N, 640);

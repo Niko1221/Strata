@@ -206,6 +206,11 @@ strata_resolve(_core src/core/device.cu src/core/pinned.cu src/platform/memory.c
                      src/core/weights.cpp src/core/layout.cpp)
 add_library(strata_core STATIC ${_core})
 target_link_libraries(strata_core PUBLIC strata_includes)
+if(WIN32)
+  # #1549: the OpenCL backend has no free-VRAM query; src/core/expert_cache.cpp asks DXGI instead
+  # (own_gpu_local) so the expert cache is sized against a live figure rather than a setup-time constant.
+  target_link_libraries(strata_core PUBLIC dxgi)
+endif()
 # zeMemAllocHost for the host memory a kernel polls (include/strata/sycl_queue.hpp, host_malloc_polled): only when libze-dev's header is there
 find_library(STRATA_ZE_LOADER ze_loader)
 if(STRATA_ZE_LOADER)
@@ -369,7 +374,7 @@ if(STRATA_SYCL_PARITY)
   # costs 2.3 ms per expert GEMM at a 23.83 GiB cache and 54-122 ms at 28.82 GiB, with the same calls.
   #   vram_pressure [calls=800] [fill_gib=28]
   add_executable(vram_pressure ${CMAKE_CURRENT_SOURCE_DIR}/probe/vram_pressure.cpp)
-  target_link_libraries(vram_pressure PRIVATE strata_prefill strata_core strata_kernels)
+  target_link_libraries(vram_pressure PRIVATE strata_prefill strata_core strata_kernels dxgi)
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)

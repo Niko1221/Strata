@@ -66,7 +66,56 @@ static unsigned long long own_drm_local_bytes() {
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
 // NVIDIA's reference snippet): an expert cache that pushes the system into swap would be far slower than a smaller one.
+#if defined(_WIN32)
+#include <dxgi.h>
+#include <dxgi1_4.h>
+// #1549: this process's dedicated VRAM use and the OS's budget for it.  The OpenCL backend has no
+// free-VRAM query at all - `ext_intel_free_memory` needs Level Zero sysman, which this driver does not
+// expose - so `get_memory_info` answers from STRATA_DEVICE_FREE_MIB, a setup-time constant that cannot
+// see what is already resident.  DXGI can: its figures are live, and the budget is the OS's share for
+// this process, so whatever else holds the card (the display compositor, the browser) is already out of
+// it.  `sycl/probe/vram_pressure.cpp` measures both: the process's figure tracks an allocation exactly
+// (0.07 -> 28.07 GiB for a 28 GiB fill) where dpct's gives 0.00 and an error.  Returns false and leaves
+// both at 0 when there is no adapter or the query fails.  STRATA_DXGI_FREE=0 takes the old path.
+static bool own_gpu_local(uint64_t& own, uint64_t& budget) {
+    static const bool off = [] { const char* v = std::getenv("STRATA_DXGI_FREE"); return v && v[0] == '0'; }();
+    if (off) return false;
+    IDXGIFactory* f = nullptr;
+    if (FAILED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**) &f))) return false;
+    IDXGIAdapter* a = nullptr;
+    if (FAILED(f->EnumAdapters(0, &a))) { f->Release(); return false; }
+    IDXGIAdapter3* a3 = nullptr;
+    bool ok = false;
+    if (SUCCEEDED(a->QueryInterface(__uuidof(IDXGIAdapter3), (void**) &a3))) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+        if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+            own = info.CurrentUsage;
+            budget = info.Budget;
+            ok = budget > own;
+        }
+        a3->Release();
+    }
+    a->Release();
+    f->Release();
+    return ok;
+}
+#endif
 size_t device_free_bytes() try {
+#if defined(_WIN32)
+    // #1549: a live figure where the driver has none.  It is preferred over STRATA_DEVICE_FREE_MIB because
+    // the constant cannot see the weights, the native head and the MTP draft layer that are resident by
+    // the time the expert cache is sized - ~4 GiB on the B70, which is what let `auto` size a cache 4.4 GiB
+    // past the card and crawl.  The margin keeps what comes after the cache: the session's KV, the prompt
+    // path's buffers and the draft head, which the reserve below also prices but which the budget does not
+    // know about.
+    {
+        uint64_t own = 0, budget = 0;
+        if (own_gpu_local(own, budget)) {
+            const uint64_t margin = 256ull << 20;
+            return budget > own + margin ? (size_t) (budget - own - margin) : 0;
+        }
+    }
+#endif
     size_t free_b = 0, total_b = 0;
     /*
     DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions for
