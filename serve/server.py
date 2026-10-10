@@ -2087,6 +2087,25 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
+def engine_blob(exe: str, cfg: dict) -> bytes:
+    """the engine's bytes for a feature probe.  `exe` is the binary on CUDA/HIP, but on the SYCL port it is the
+    launcher sycl/serve/strata-sycl.sh, which execs ${STRATA_SYCL_BIN:-build-sycl-aot/strata} (repo-relative) in a
+    container - a script gets a second read through the variable (the config's "env", then the environment) or
+    that default; anything unreadable answers with the launcher's own text."""
+    try:
+        blob = Path(exe).read_bytes()
+    except OSError:
+        return b""
+    if not blob.startswith(b"#!"):
+        return blob
+    rel = (cfg.get("env") or {}).get("STRATA_SYCL_BIN") or os.environ.get("STRATA_SYCL_BIN") \
+        or "build-sycl-aot/strata"
+    try:
+        return (Path(exe).resolve().parents[2] / rel).read_bytes()
+    except (OSError, IndexError):
+        return blob
+
+
 def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
     """#458 (opt-in): the engine arguments for "effort_position": "end" - the id of "system" as --tail-role-token, so
     the engine checkpoints in front of the trailing effort turn - or None when the config leaves it at the top (the
@@ -2097,11 +2116,7 @@ def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
         raise ValueError(f'"effort_position" must be "start" (the default) or "end", not {pos!r}')
     if pos == "start":
         return None
-    try:
-        with open(exe, "rb") as f:
-            known = b"--tail-role-token" in f.read()
-    except OSError:
-        known = False
+    known = b"--tail-role-token" in engine_blob(exe, cfg)
     role = tok.encode("system", parse_special=True)
     if not known or len(role) != 1:
         print("[strata] effort_position \"end\" needs engine 0.1.39 or newer (--tail-role-token): the reasoning "
