@@ -1,0 +1,82 @@
+{
+  "browser": "webkit",
+  "vendor_bytes": 0,
+  "equations": [
+    {
+      "name": "fraction",
+      "ok": true,
+      "reason": null,
+      "ms": 3595,
+      "cached_ms": 1
+    },
+    {
+      "name": "integral",
+      "ok": true,
+      "reason": null,
+      "ms": 3398,
+      "cached_ms": 0
+    },
+    {
+      "name": "sum",
+      "ok": true,
+      "reason": null,
+      "ms": 3348,
+      "cached_ms": 2
+    },
+    {
+      "name": "matrix",
+      "ok": true,
+      "reason": null,
+      "ms": 3943,
+      "cached_ms": 1
+    },
+    {
+      "name": "cases",
+      "ok": true,
+      "reason": null,
+      "ms": 3804,
+      "cached_ms": 1
+    },
+    {
+      "name": "aligned",
+      "ok": true,
+      "reason": null,
+      "ms": 4509,
+      "cached_ms": 1
+    },
+    {
+      "name": "unicode",
+      "ok": true,
+      "reason": null,
+      "ms": 4752,
+      "cached_ms": 1
+    },
+    {
+      "name": "invalid",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 3806,
+      "cached_ms": 1
+    },
+    {
+      "name": "unsupported",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 3510,
+      "cached_ms": 4
+    },
+    {
+      "name": "loop",
+      "ok": false,
+      "reason": "limit",
+      "ms": 9424,
+      "cached_ms": 1
+    }
+  ],
+  "cold_chat_ms": 9990.66,
+  "vendor_transfer_bytes": 0,
+  "platform": "Windows",
+  "cpu": "Intel Core i7-8650U",
+  "playwright": "1.63.0",
+  "worker_transport": "native Windows Docker 28.5.1 through persistent SSH tunnel to middle-child"
+}

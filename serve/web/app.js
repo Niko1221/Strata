@@ -554,7 +554,7 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
@@ -633,16 +633,19 @@ function toolHtml(t, k) {
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
 // the answer's text with the tool blocks where the model called them
+function answerMarkdown(text) {
+  return settings.math ? StrataMath.markdown(text, markdown) : markdown(text);
+}
 function answerHtml(m) {
-  if (!m.tools || !m.tools.length) return markdown(m.text || "");
+  if (!m.tools || !m.tools.length) return answerMarkdown(m.text || "");
   let html = "", pos = 0;
   m.tools.forEach((t, k) => {
     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
-    if (at > pos) html += markdown(m.text.slice(pos, at));
+    if (at > pos) html += answerMarkdown(m.text.slice(pos, at));
     pos = at;
     html += toolHtml(t, k);
   });
-  return html + markdown(m.text.slice(pos));
+  return html + answerMarkdown(m.text.slice(pos));
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -678,7 +681,9 @@ function updateAssistant(el, m, streaming) {
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
+    bubble._mathGeneration = (bubble._mathGeneration || 0) + 1;
     bubble.innerHTML = answerHtml(m);
+    if (settings.math) StrataMath.hydrate(bubble);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
@@ -988,6 +993,7 @@ function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
@@ -1038,6 +1044,7 @@ function outputs() {
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+$("s-math").onclick = () => $("s-math").setAttribute("aria-checked", String($("s-math").getAttribute("aria-checked") !== "true"));
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
@@ -1047,10 +1054,17 @@ $("s-apply").onclick = async () => {
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+              math: $("s-math").getAttribute("aria-checked") === "true",
               show: $("s-show").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
+  StrataMath.reset();
+  // Keep the element captured by send() alive while an answer streams.
+  for (const el of $("chat").querySelectorAll(".st-msg--assistant")) {
+    const m = messages[+el.dataset.i];
+    updateAssistant(el, m, !!busy && busy.msg === m);
+  }
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
   if (share || sharedOn) {

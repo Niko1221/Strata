@@ -182,3 +182,11 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+/* Math never expands the chat or changes stored source. */
+.chat-math { overflow-wrap: normal; }
+.chat-math--display { display: block; text-align: center; overflow-x: auto; max-width: 100%; margin: .6em 0; padding: .25em 0; }
+.chat-math--display > * { margin: 0 !important; }
+.chat-math[data-math-error] { white-space: pre-wrap; }
+.chat-math img { vertical-align: middle; max-width: none; }
+[data-theme="dark"] .chat-math img { filter: invert(1); }
