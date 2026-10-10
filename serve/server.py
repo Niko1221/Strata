@@ -43,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from http.client import HTTPException
@@ -2162,6 +2163,32 @@ def layer_split_of(cfg: dict) -> bool:
     return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
 
 
+# Strata's own API paths: "forward" cannot take them over
+OWN_API_PATHS = {"/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/messages/count_tokens",
+                 "/v1/responses", "/v1/models", "/v1/load", "/v1/unload", "/v1/vram"}
+
+
+def forward_of(cfg: dict) -> dict:
+    """The config's "forward": {path: URL} - POST requests to these paths are answered by another server, e.g.
+    {"/v1/embeddings": "http://127.0.0.1:1234/v1/embeddings", "/v1/rerank": "http://127.0.0.1:8081/v1/rerank"} for
+    an embedding model and a reranker beside the main one, so apps keep one base URL.  Paths start with "/" and are
+    not Strata's own; URLs are http(s)."""
+    fwd = cfg.get("forward")
+    if fwd is None:
+        return {}
+    if not isinstance(fwd, dict):
+        raise ValueError('"forward" must be an object of path -> URL, e.g. {"/v1/embeddings": "http://127.0.0.1:1234/v1/embeddings"}')
+    out = {}
+    for path, url in fwd.items():
+        p = str(path).split("?")[0].rstrip("/")
+        if not p.startswith("/") or p in OWN_API_PATHS or p.startswith("/v1/responses"):
+            raise ValueError(f'"forward": {path!r} is not a path this server can hand on (Strata answers it itself)')
+        if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+            raise ValueError(f'"forward": the URL for {path!r} must start with http:// or https://')
+        out[p] = url
+    return out
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
@@ -2653,6 +2680,8 @@ class Service:
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+        self.forward = {}                               # "forward": {path: URL} answered by another server
+        self.forward_timeout_s = 600
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
@@ -4594,11 +4623,40 @@ def make_handler(svc: Service):
             except BadBody as e:                              # #893: a malformed or oversized chunked body
                 self._json(e.status, {"error": {"type": "invalid_request_error", "message": str(e)}})
 
+        def _forward(self, url):
+            """The request's body POSTed to `url` (the config's "forward") and that server's answer passed back as it
+            came: status, body and type.  The checks before it are Strata's own (Host, API key, web pages); Strata's
+            API key is not sent on.  A server that does not answer is a 502 naming it."""
+            body = self._body() or b""
+            headers = {"Content-Type": self.headers.get("Content-Type") or "application/json",
+                       "Accept": self.headers.get("Accept") or "application/json"}
+            try:
+                req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=svc.forward_timeout_s) as r:
+                    status, data, ctype = r.status, r.read(), r.headers.get("Content-Type") or "application/json"
+            except urllib.error.HTTPError as e:
+                with e:
+                    status, data, ctype = e.code, e.read(), e.headers.get("Content-Type") or "application/json"
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                reason = getattr(e, "reason", None) or e
+                self._json(502, {"error": {"type": "server_error", "code": "forward_failed",
+                                           "message": f"the server this path is forwarded to ({url}) did not answer: "
+                                                      f"{reason}"}})
+                return
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def _post(self):
             if not self._authorized():
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path in svc.forward:                          # "forward": another server answers this path
+                self._forward(svc.forward[path])
                 return
             if path == "/settings":
                 self._settings()
@@ -5802,6 +5860,12 @@ def main() -> int:
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
+    try:
+        svc.forward = forward_of(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    for path, url in svc.forward.items():
+        print(f"[strata] {path} is forwarded to {url}", flush=True)
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:

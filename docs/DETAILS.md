@@ -845,6 +845,12 @@ print(r.choices[0].message.content)
   each token on at once. The web app's settings and MCP tools only answer Strata's own page: when you open it through
   a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
   With the key set, any `Host` name reaches the server (see Host names below).
+- **Other servers behind the same address (`"forward"`).** `{"/v1/embeddings": "http://127.0.0.1:1234/v1/embeddings",
+  "/v1/rerank": "http://127.0.0.1:8081/v1/rerank"}` hands POST requests to those paths to another server (an embedding
+  model, a reranker: llama.cpp's `llama-server --embedding` / `--reranking`, LM Studio) and passes its answer back as
+  it came, so an app that expects them beside the chat model keeps one base URL. The Host, API-key and web-page checks
+  are Strata's own; Strata's API key is not sent on. Strata's own paths cannot be forwarded; a server that does not
+  answer is a `502` with `code: forward_failed`.
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
