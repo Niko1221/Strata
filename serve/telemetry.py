@@ -66,6 +66,16 @@ class _Nvml:
         except (AttributeError, OSError):
             return None
 
+    def energy_mj(self):
+        """NVML cumulative board energy in millijoules, when supported."""
+        value = ctypes.c_ulonglong()
+        try:
+            if self.lib.nvmlDeviceGetTotalEnergyConsumption(self.dev, ctypes.byref(value)) == 0:
+                return value.value
+        except (AttributeError, OSError):
+            pass
+        return None
+
     def name(self):
         buf = ctypes.create_string_buffer(96)
         try:
@@ -328,7 +338,7 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, electricity=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
@@ -342,6 +352,12 @@ class Telemetry:
         self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
+        # The optional electricity configuration enables energy monitoring.
+        self._energy_enabled = isinstance(electricity, dict)
+        self._energy_base_mj = self._energy_mj() if self._energy_enabled else None
+        self._energy_j = 0.0
+        self._energy_valid = self._energy_base_mj is not None
+        self._energy_prev = None
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
@@ -363,6 +379,16 @@ class Telemetry:
         self._disk_prev = None
         self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def _energy_mj(self):
+        readings = []
+        for _, gpu in self.gpus:
+            reader = getattr(gpu, "energy_mj", None)
+            value = reader() if reader else None
+            if value is None:
+                return None
+            readings.append(value)
+        return sum(readings) if readings else None
 
     def _disk(self):
         if not self.ps:
@@ -424,6 +450,23 @@ class Telemetry:
     def _loop(self):
         while not self._stop.is_set():
             s = self.sample()
+            if self._energy_enabled:
+                if self._energy_base_mj is not None:
+                    reading = self._energy_mj()
+                    if reading is not None and reading >= self._energy_base_mj:
+                        self._energy_j = max(self._energy_j, (reading - self._energy_base_mj) / 1000.0)
+                else:
+                    # Fallback: approximate energy from the existing 1 Hz GPU power samples.
+                    now, power = time.monotonic(), s.get("gpu_power")
+                    if isinstance(power, (int, float)) and 0 <= power < float("inf"):
+                        if self._energy_prev is not None:
+                            t0, p0 = self._energy_prev
+                            self._energy_j += (p0 + power) / 2.0 * max(0.0, now - t0)
+                        self._energy_prev = (now, power)
+                        self._energy_valid = True
+                    else:
+                        self._energy_prev = None
+                s["gpu_energy_kwh"] = self._energy_j / 3_600_000.0 if self._energy_valid else None
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",

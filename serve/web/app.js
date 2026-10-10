@@ -288,7 +288,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  const kwh = hw.gpu_energy_kwh;
+  const energy = Number.isFinite(kwh) ? (kwh < 1 ? `${fmt(kwh * 1000, 1)} Wh` : `${fmt(kwh, 3)} kWh`) : "";
+  const powerLimit = hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "";
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+            [powerLimit, energy].filter(Boolean).join(" · "));
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
