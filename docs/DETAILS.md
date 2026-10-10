@@ -28,6 +28,20 @@ argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previo
 IQ3 packs about even; on HIP they run on gfx11 and on gfx1200 / gfx1201, see AMD_HIP.md); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
 below are 0.1.26's.
 
+**RTX 20 prompt-attention experiment (manual opt-in):** a CUDA build can set `-DSTRATA_QSA_D1_CH=64` and an
+engine using Q4_0 K/V can set `STRATA_PROMPT_ATTN_Q4_TC=1` to run prompt attention through Turing's tensor cores.
+The setting affects prompt processing only, is never selected from the GPU name, and leaves the previous kernel in
+place when absent.
+
+**RTX 20 native-IQ prompt experts (manual opt-in):** set both `STRATA_PF_FUSED=1` and
+`STRATA_PF_FUSED_NATIVE_SM75=1` on an sm_75 card. `STRATA_PF_FUSED_NATIVE_SM75_ADAPTIVE=1` additionally lets each
+supported weight format use the qualified smaller work tile when it fits. These switches affect prompt processing
+only; unsupported packs and formats keep their previous expert path.
+
+**Combined RTX 20 measurement:** on an RTX 2080 Super Max-Q with IQ3_XXS, both experiments together with
+`STRATA_BF16_TC=1` and the prompt loan below processed a 31,258-token prompt at 825.3 tokens/s and generated 394
+tokens at 24.4 tokens/s. That combined run does not measure each switch separately.
+
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
@@ -585,6 +599,18 @@ own. Not with a layer split, the helper caches, `--peer-device` or the resident 
 12 GB with Q2_0 (4.8 GiB cache): `{"reserve_mib": 6000}` took 78 ms and freed 4.3 GiB (the cache keeps 0.5 GiB for
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
 the shrink. Without the flag nothing changes (the same answers as without it).
+
+**Using decode-only VRAM during a prompt (manual opt-in, experimental):**
+`STRATA_PREFILL_ELASTIC_LOAN=1` temporarily grows an elastic expert cache for a request's prompt and returns it to
+`--vram-reserve-mib` before verification. `STRATA_PREFILL_MTP_LOAN=1` additionally loads the MTP routed experts and
+draft head after the first prompt; `STRATA_PREFILL_HEAD_LOAN=1` also delays the native output head and verifier.
+`STRATA_PREFILL_RETAIN_STARTUP_CHUNK=1` retains the chunk fitted at startup for that first prompt instead of laying
+it out again, and later turns grow only what fits around the now-loaded decode weights. Every switch is off unless it
+is exactly requested in the config's `env` object. The MTP switch requires `--mtp` and `--spec 2` or higher; the head
+switch requires `--native` (or `--native-head-gguf`). The engine refuses this mode with batch slots, pipeline
+windows, a layer split, helper GPU caches, `--peer-device`, HIP, a segment below 64 MiB, or without `--serve` and
+`--vram-elastic`. The resize is best effort, like `POST /v1/vram`: segment granularity and the minimum prompt-cache
+floor can leave less free VRAM than the requested reserve; compare the logged free MiB with the reserve.
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.

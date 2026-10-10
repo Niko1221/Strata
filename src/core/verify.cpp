@@ -58,6 +58,7 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#include <new>
 
 namespace strata::core {
 namespace {
@@ -451,6 +452,14 @@ Verifier::~Verifier() {
 
 bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) {
     if (next_ && !next_->set_logit_bias(bias, err)) return false;
+    // A deferred native head can receive request sampling parameters before init().
+    // Cache the bias until the model geometry and vocabulary are available; the
+    // old code dereferenced g_ here and crashed with an access violation.
+    if (g_ == nullptr) {
+        logit_bias_host_ = bias;
+        sampling_.logit_bias = nullptr;
+        return true;
+    }
     if (le_ < g_->n_layers) return true;
     const OnDevice on_device(device_);
     if (!bias.empty() && bias.size() != (size_t) n_vocab_) {
@@ -465,6 +474,32 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
+    return true;
+}
+
+bool Verifier::release_decode_resources(std::string& err) {
+    if (next_ != nullptr || ext_stream_ != nullptr || !slots_.empty() || fl_active_ || b_running_ || commit_pending_) {
+        err = "verify: repeat prefill loans do not support split, pipeline or batch verifiers";
+        return false;
+    }
+    if (!wait_commit(err)) return false;
+    if (cs_ != nullptr && cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "verify: its stream failed before the repeat prefill loan";
+        return false;
+    }
+    if (sh_cs_ != nullptr && cudaStreamSynchronize(sh_cs_) != cudaSuccess) {
+        err = "verify: its side stream failed before the repeat prefill loan";
+        return false;
+    }
+    if (copy_ != nullptr && cudaStreamSynchronize(copy_) != cudaSuccess) {
+        err = "verify: its copy stream failed before the repeat prefill loan";
+        return false;
+    }
+    // The destructor is the single owner of all captured graphs, arenas, mapped staging, streams and events. Reuse it
+    // here rather than maintaining a second, easy-to-diverge partial teardown; the caller re-applies the small set of
+    // verifier options before init() on the other side of the prefill boundary.
+    this->~Verifier();
+    new (this) Verifier();
     return true;
 }
 
@@ -518,6 +553,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { err = "verify: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
+    // A prompt-time head loan may have cached a request bias before this
+    // verifier was initialized.  Clear the cache before replaying it so the
+    // normal upload path does not mistake it for an already-uploaded bias.
+    if (!logit_bias_host_.empty()) {
+        std::vector<float> cached_bias = std::move(logit_bias_host_);
+        logit_bias_host_.clear();
+        if (!set_logit_bias(cached_bias, err)) return false;
+    }
 
     const strata::kernels::QsaShapes s = shapes_of(g);
     cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);

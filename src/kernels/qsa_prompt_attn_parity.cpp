@@ -8,7 +8,7 @@
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
 // HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
-// Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
+// Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5] [--q4-only]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -42,13 +42,16 @@ uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uin
 
 int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
-    if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
-        int dev = 0, major = 0;
+    if (fmt == 2) {   // mode 4 (Q4_0 KV): sm_80+ by default, or the manual SM75 tensor-core path
+        int dev = 0, major = 0, minor = 0;
         ck(cudaGetDevice(&dev), "device");
         ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
-        if (major < 8) {
-            std::printf("SKIP q4_0 ctx %lld: the tensor-core kernel takes Q4_0 KV on sm_80+ only (this device: sm_%d)\n",
-                        (long long) ctx, major);
+        ck(cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev), "cc");
+        const int cc = 10 * major + minor;
+        const char* sm75 = std::getenv("STRATA_PROMPT_ATTN_Q4_TC");
+        if (cc < 80 && !(cc >= 75 && sm75 != nullptr && sm75[0] == '1')) {
+            std::printf("SKIP q4_0 ctx %lld: the tensor-core kernel needs sm_80+ or its manual SM75 opt-in "
+                        "(this device: sm_%d%d)\n", (long long) ctx, major, minor);
             return 0;
         }
     }
@@ -318,18 +321,37 @@ int main(int argc, char** argv) {
 #endif
     }
 #endif
+#if !defined(__HIP_PLATFORM_AMD__)
+    // Exercise the manual Turing Q4 dispatch when this test runs on sm_75. The variable is ignored on sm_80+.
+#if defined(_WIN32)
+    _putenv_s("STRATA_PROMPT_ATTN_Q4_TC", "1");
+#else
+    setenv("STRATA_PROMPT_ATTN_Q4_TC", "1", 1);
+#endif
+#endif
     const int64_t ctx = argc > 1 ? std::atoll(argv[1]) : 32768;
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
-    int fails = 0;
-    fails += run(1, ctx, nq, reps);
+    bool q4_only = false;
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--q4-only") == 0) q4_only = true;
 #if !defined(__HIP_PLATFORM_AMD__)
-    fails += run(0, ctx, nq, reps);   // FP16 KV: the RDNA4 kernel takes int8 KV only
+    int dev = 0, major = 0;
+    ck(cudaGetDevice(&dev), "device");
+    ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
+    const bool fp16_prompt_supported = major >= 8;
+#endif
+    int fails = 0;
+    if (!q4_only) fails += run(1, ctx, nq, reps);
+#if !defined(__HIP_PLATFORM_AMD__)
+    if (!q4_only && fp16_prompt_supported) fails += run(0, ctx, nq, reps);
     fails += run(2, ctx, nq, reps);   // Q4_0 KV (mode 4)
     fails += run(2, 1500, std::min<int64_t>(nq, 1500), reps);
 #endif
-    fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
-    fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
+    if (!q4_only) {
+        fails += run(1, 1500, std::min<int64_t>(nq, 1500), reps);   // short context: the selection is every cell
+        fails += run(1, 2100, std::min<int64_t>(nq, 256), reps);    // the identity-to-sparse edge
+    }
     std::printf("FAILURES: %d\n", fails);
     return fails;
 }

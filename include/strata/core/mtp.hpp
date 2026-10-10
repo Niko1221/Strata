@@ -43,7 +43,13 @@ public:
     /// Loads `rt_dir` (from tools/mtp_rt.py) and allocates the layer's K/V and buffers for up to `max_t` rows.
     /// Call before the VRAM expert tier is sized: this takes ~0.9 GB.
     bool load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
-              int64_t window = 32768, const MtpDrafter* shared = nullptr);
+              int64_t window = 32768, const MtpDrafter* shared = nullptr, bool defer_experts = false);
+    /// Completes a manually requested split load after prompt prefill. The prompt K/V pass does not need routed
+    /// MTP experts, so their VRAM can temporarily be used by the target model's prompt workspace.
+    bool load_experts(std::string& err);
+    /// Releases only decode-time routed experts, draft-head rows and decode graphs. Dense/KV prompt state remains
+    /// resident, so a later prompt can use the freed VRAM and the decode side can be rebound after the loan.
+    bool release_decode_resources(std::string& err);
     /// The prompt's length: prefill() skips the cells the attention window can never reach again.
     void set_prompt_len(int64_t n) { prompt_len_ = n; }
     /// STRATA_ROUTE_RESIDENT_MTP=1 (EXPERIMENTAL, opt-in, changes the output): the draft layer's router is biased like
@@ -70,6 +76,10 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
+    /// Bytes which a deferred expert load and bind will require at the prompt/decode boundary.
+    uint64_t deferred_bytes(uint64_t head_row_bytes, int64_t n_vocab) const;
+    /// Supplies target weights to the prompt-only MTP K/V pass before the normal bind allocates its draft head.
+    void set_prompt_weights(const WeightTable& wt) { wt_ = &wt; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
@@ -224,6 +234,8 @@ private:
     float chain_prob_[8] = {};
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
+    uint64_t experts_vram_ = 0;
+    uint64_t draft_head_vram_ = 0;
     cudaStream_t cs_ = nullptr;
     cudaGraphExec_t prefill_exec_[9] = {};
     cudaGraphExec_t prefill_dev_exec_[9] = {};
@@ -237,6 +249,7 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    bool experts_deferred_ = false;
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;

@@ -78,6 +78,10 @@ public:
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
+    /// Releases the verifier's decode-only device/graph state so a repeat prefill can grow the elastic expert cache.
+    /// The object is reset to its default state and must be initialized again before the next decode window. This is
+    /// restricted to the serialized single-GPU verifier; the caller must reapply its configuration after init().
+    bool release_decode_resources(std::string& err);
 
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.

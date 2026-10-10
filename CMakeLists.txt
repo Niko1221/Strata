@@ -56,6 +56,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(STRATA_ENABLE_CUDA "Build the CUDA targets (Phase 2+)" OFF)
+# Experimental prompt-attention work tile.  Keep the published default at 32;
+# SM75 Q4 measurements may opt into the qualified 64-cell shape explicitly.
+set(STRATA_QSA_D1_CH "32" CACHE STRING "Q4 prompt-attention tile cells (16, 32, 48, or 64)")
+if(NOT STRATA_QSA_D1_CH MATCHES "^(16|32|48|64)$")
+  message(FATAL_ERROR "STRATA_QSA_D1_CH must be 16, 32, 48, or 64 (got '${STRATA_QSA_D1_CH}')")
+endif()
 # AMD gfx906 (MI50, wave64): the same .cu sources compiled as HIP through the gfx906 compat layer.  The CUDA runtime and
 # cuBLAS names are mapped by the headers in include/strata/platform/hip_compat/, which go first on the include path,
 # and CUDA::cudart / CUDA::cublas become aliases of HIP's targets, so every CUDA target below stays as it is.  This is
@@ -379,6 +385,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  target_compile_definitions(strata_kernels PRIVATE D1_CH=${STRATA_QSA_D1_CH})
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)
