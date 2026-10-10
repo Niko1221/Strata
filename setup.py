@@ -2666,7 +2666,9 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
              "10-20 minutes, once) ...")
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
-                 "-DSTRATA_PREFILL_MMQ=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+                 # the K-quant MMQ kernels (Q4_K / Q5_K / Q5_1 / Q6_K): UD-Q4_K_XL's experts take the int8 MMQ path in the
+                 # prompt instead of dequantize + FP16 hipBLAS (measured on an RX 6900 XT, below in docs/AMD_HIP.md)
+                 "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
                  f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
@@ -5216,10 +5218,11 @@ def main() -> int:
             warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
                  "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
         if hip and MODELS[model].get("nvidia_only"):
-            # #429 (jkuepker): checked before the 111 GB download.  The HIP engine has no prompt kernels for its
-            # Q4_K / Q5_K experts (STRATA_MMQ_KQUANTS is CUDA-only) and it has not been run on AMD: asked, not refused
-            confirm_risk(f"{model} has not been run on AMD cards yet: its prompt kernels are NVIDIA-only, so on "
-                         f"{gpu_name(gpu)} long prompts read much more slowly, and it may not work at all",
+            # #429 (jkuepker): checked before the 111 GB download.  The HIP engine this setup builds now carries the MMQ
+            # prompt kernels for its Q4_K / Q5_K experts (STRATA_MMQ_KQUANTS=ON, build_engine_hip); it has run on one
+            # RX 6900 XT (docs/AMD_HIP.md, RDNA2) and on no other AMD card: asked, not refused
+            confirm_risk(f"{model} has been run on one AMD card so far (an RX 6900 XT, docs/AMD_HIP.md): on "
+                         f"{gpu_name(gpu)} it is untested and may not work at all",
                          bool(a.model), a.yes, f"{model} is NVIDIA-only so far", "choose one of the 2-3-bit models, "
                          f"or --model {model} --yes to try it on AMD anyway", "  Try it anyway?")
             warn(f"installing {model} on an AMD card, as you chose (please report how it runs)")
