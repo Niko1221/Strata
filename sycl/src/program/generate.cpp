@@ -4347,18 +4347,9 @@ int main(int argc, char **argv) try {
         // this size. Under WDDM an over-subscribed allocation does not fail, it pages to system memory and
         // crawls (the P5 note above) - and with the prompt path borrowing cache slots, which is the default
         // with a profile, `prefill_mib` is 0, so P5 reserves nothing for it and the reserve is all there is.
-        // Measured on an Arc Pro B70 (32 GB, IQ3_XXS pack, OpenCL backend, eager, driver 32.0.101.8976),
-        // 64-token prompt, the same 3,668 gate/up and 3,668 down naive GEMM calls at every size:
-        //   auto -> 17,687 slots (28.82 GiB): 111 ms per expert GEMM call, the prompt reads 426 s, ~15 GiB
-        //       of GPU memory held in shared memory while it runs
-        //   14,704 slots (23.87 GiB): 2.35 ms per call, the prompt reads 10 s
-        //   the cliff is between 14,704 and 15,382 slots (23.87 and 24.95 GiB); above it the times are noisy
-        //   (205-472 s measured) but every size up to 14,704 slots is stable at ~10 s
-        // Both sizes give identical greedy output tokens on a scrambled 48-token prompt, so this is a
-        // performance cut, not a behaviour change. So `auto` keeps about a sixth of what is free for the
-        // session's other buffers. An explicit --expert-cache is the user's own budget and is not cut here
-        // (#831's warning still fires when it asks for more than the profile holds).
-        const size_t headroom = auto_cache ? (size_t) (free_b / 6) : 0;
+        // The measurements behind the default and the STRATA_EXPERT_CACHE_HEADROOM A/B live with the helper,
+        // include/strata/core/expert_cache.hpp.
+        const size_t headroom = auto_cache ? (size_t) (free_b * strata::core::expert_cache_headroom()) : 0;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
         if (free_b > keep_free + headroom) free_room = free_b - keep_free - headroom;   // when it still leaves room
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
