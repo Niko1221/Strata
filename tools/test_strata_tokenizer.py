@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import random
 import sys
 import unittest
+from pathlib import Path
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))
 import strata_tokenizer as ST  # noqa: E402
@@ -27,18 +27,18 @@ ADDED = ["<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>"
          "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
 
 
-def vocab_gguf() -> pathlib.Path | None:
+def vocab_gguf() -> Path | None:
     cands = [os.environ.get("STRATA_GGUF_PY"), ROOT / "third_party" / "llama.cpp" / "gguf-py", "/opt/llama.cpp/gguf-py"]
     for c in cands:
-        if c and (pathlib.Path(c).parent / "models" / "ggml-vocab-qwen35.gguf").is_file():
-            return pathlib.Path(c).parent / "models" / "ggml-vocab-qwen35.gguf"
+        if c and (Path(c).parent / "models" / "ggml-vocab-qwen35.gguf").is_file():
+            return Path(c).parent / "models" / "ggml-vocab-qwen35.gguf"
     return None
 
 
 def load_tokenizer():
     pack = os.environ.get("STRATA_TOKENIZER")
-    if pack and (pathlib.Path(pack) / "vocab.json").is_file():
-        t = pathlib.Path(pack)
+    if pack and (Path(pack) / "vocab.json").is_file():
+        t = Path(pack)
         vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
         tokens = [None] * len(vocab)
         for s, i in vocab.items():
@@ -187,9 +187,7 @@ class Prompts(unittest.TestCase):
         cls.template = ChatTemplate(ROOT / "serve" / "chat_template.jinja")
 
     def check(self, enc, text):
-        got = enc.encode(text)
-        self.assertEqual(got, self.tk.encode(text, parse_special=True))
-        return got
+        self.assertEqual(enc.encode(text), self.tk.encode(text, parse_special=True))
 
     def test_chat_golden(self):
         cases = json.loads((ROOT / "serve" / "chat_golden.json").read_text(encoding="utf-8"))
@@ -202,11 +200,12 @@ class Prompts(unittest.TestCase):
     def test_conversations(self):
         for seed in range(3):
             prompts = conversation_prompts(self.template, random.Random(seed))
+            wants = [self.tk.encode(prompt, parse_special=True) for _, prompt in prompts]
             for keep in (1, 2, 4):
                 enc = ST.PromptEncoder(self.tk, keep=keep)
-                for what, prompt in prompts:
+                for (what, prompt), want in zip(prompts, wants):
                     with self.subTest(seed=seed, keep=keep, what=what):
-                        self.check(enc, prompt)
+                        self.assertEqual(enc.encode(prompt), want)
 
     def test_growing_turn_reuses_the_previous_prompt(self):
         enc = ST.PromptEncoder(self.tk)
