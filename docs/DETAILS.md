@@ -643,7 +643,8 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
-| Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
+| Gemini API (stream and non-stream, tools; what Gemini CLI speaks, [below](#the-gemini-api-and-gemini-cli)) | `POST /v1beta/models/{model}:generateContent`, `:streamGenerateContent`, `:countTokens` |
+| Model list / health | `GET /v1/models`, `GET /models`, `GET /health` (the same list in Gemini's shape: `GET /v1beta/models`) |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (busy or idle, with `n_prompt_tokens`; one entry per slot with `--batch`) |
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
@@ -813,6 +814,7 @@ print(r.choices[0].message.content)
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
 - **Codex CLI** (0.1.39): see [the Responses API](#the-responses-api-and-codex-cli) below.
+- **Gemini CLI**: see [the Gemini API](#the-gemini-api-and-gemini-cli) below.
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
   `max_tokens` would run past the context is refused too (400); agents that always ask for their full output cap
   can instead get it shortened to the room left: add `"fit_max_tokens": true` to `strata-<model>.json` (or pass
@@ -1155,6 +1157,61 @@ one that would not fit the context with the kept tools. Off by default: the prom
 one the client sent. The author measured, with Codex CLI 0.160.0 and an engine that only counts the shared prompt start,
 that a compaction after an 85,000-token conversation reused 84,895 of its 84,997 tokens and read 102; without it, 41 of
 80,683.
+
+## The Gemini API and Gemini CLI
+
+`POST /v1beta/models/{model}:generateContent` (and `:streamGenerateContent`, `:countTokens`, plus `GET /v1beta/models`)
+speaks Google's Gemini API, which Gemini CLI (Google's command-line client; its core calls the API through
+`@google/genai`) uses: the whole conversation is sent every turn in `contents`, with `systemInstruction`,
+`tools[].functionDeclarations` and `generationConfig`, and the answer comes back as `candidates[].content.parts`
+with a `finishReason` and `usageMetadata`. A request becomes the same template messages, tools and kwargs an OpenAI
+or Anthropic request does, runs through the same path, and its events come back in Gemini's shapes (`serve/gemini.py`),
+so the model, the conversation cache, the thinking levels and the tool parser are the ones every other dialect uses.
+
+```bash
+set GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8080   # Gemini CLI's base-URL override (GOOGLE_GENAI_API_VERSION stays v1beta)
+set GEMINI_API_KEY=none                            # or the api_key you set in strata-<model>.json
+gemini -m strata "say hello in five words"
+```
+
+- **The key.** `@google/genai` sends it as `x-goog-api-key` (some Google endpoints use `?key=`); Strata accepts that
+  header, `?key=`, `x-api-key` and `Authorization: Bearer` alike. The model name in the path is ignored, as every
+  route ignores a name it does not know - `GET /v1beta/models` lists what is loaded, in Gemini's shape.
+- **Streaming** is `:streamGenerateContent?alt=sse`: every `data:` event is one whole `GenerateContentResponse`, which
+  is what the SDK parses - there is no `[DONE]` sentinel, and a chunk that carries `error.code` 400..599 ends the
+  turn with an error. An engine that ends in the middle of a stream writes such a chunk (503) rather than leaving
+  the client with a dropped connection. While the engine is quiet (reading a long prompt) the heartbeat is an empty
+  `{"candidates": []}` event, **not** an SSE comment: the SDK matches `/^\s*data: /` only at the start of its buffer,
+  so a comment line leaves a leftover buffer and the client fails with "Incomplete JSON segment at the end".
+  A streamed tool call arrives as one whole `functionCall` part (Gemini's format has no partial form for a call),
+  and the model's reasoning arrives as parts marked `thought`.
+- **The thinking level** comes in both of Gemini's spellings: `thinkingConfig.thinkingBudget` (2.5's token count:
+  `0` turns thinking off, `-1` is dynamic thinking so the level stays as the shared settings have it, a number picks
+  a level) and `thinkingConfig.thinkingLevel` (3's word: minimal, low, medium or high - the same words the other
+  routes' `reasoning_effort` takes); the budget wins when a client sends both. `includeThoughts: false` hides the
+  `thought` parts while the model still thinks, and `thoughtsTokenCount` still counts them. A tool's schema type
+  names are lowercased (Gemini's own schemas spell them `STRING`, `OBJECT`, and the template's tool parser reads the
+  JSON Schema names).
+- **Forcing a call** is `toolConfig.functionCallingConfig`: `mode` `NONE` offers no tools, `ANY` or `VALIDATED` with
+  one `allowedFunctionNames` is the forced call the other routes force, `ANY` on its own only says a tool has to be
+  called. **Structured output** is `generationConfig.responseMimeType` `application/json` with `responseSchema`
+  (or `responseJsonSchema`) - the same `response_format` the OpenAI and Responses routes take, so Gemini CLI's
+  background calls (the next-speaker check, loop detection, chat compression) get the JSON they parse rather than
+  prose that fails quietly; the answer is only sent once it validates, and one that does not ends the turn with a
+  502. `:countTokens` answers with `totalTokens`, which is `CountTokensResponse`'s own field.
+- **Left alone**, as the other dialects leave what they cannot run: `safetySettings` (this model produces no safety
+  scores), `cachedContent` (the conversation cache is Strata's own, keyed by the prompt), `logprobs`,
+  `mediaResolution`, and `thoughtSignature` (Strata's reasoning carries no signature). A `fileData` part is refused,
+  and so is an `inlineData` part whose `mimeType` is not an image (a PDF or an audio file): only base64 pictures
+  reach this server's encoder.
+- **Checked** with the mock engine (`serve/test_gemini.py`, 30 tests: `python -m unittest serve.test_gemini -v`),
+  against the shapes `@google/genai` 1.30.0 sends and reads, and against **Gemini CLI 0.63.0 itself** on the mock
+  engine: `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8096` with a 262,144-token mock (its own system prompt is
+  39,246 tokens, so a 32,768 mock rejects it before the first request), `--output-format json`. One request, 0 errors,
+  63 ms, `prompt` 39,246 / `candidates` 77 / `thoughts` 26, and the CLI printed the mock's answer. With the mock
+  answering a tool call first: 2 requests, `run_shell_command` called once by the CLI's own runner (success, 19 ms),
+  its result sent back as a `functionResponse` part, and the second answer continued the same conversation.
+  Not yet run on a real GPU - the rig's server still runs the previous build, without these routes.
 
 ## Tools from MCP servers
 
