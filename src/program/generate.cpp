@@ -10874,6 +10874,8 @@ int main(int argc, char** argv) {
                             }
                             undo_ple[0] = ss.ple_prev[0];
                             undo_ple[1] = ss.ple_prev[1];
+                            if (!check_vram_cap("before a pipelined window"))
+                                return die("free VRAM is under the floor (before a pipelined window); cap not relaxed");
                             if (!V0(A).pl_commit_async(A.T, err) || !snap_take(B.seq) ||
                                 !V0(B).pl_launch(B.T, B.tok, B.p, err))
                                 return die(err.empty() ? std::string("the GDN snapshot failed") : err);
@@ -10891,6 +10893,8 @@ int main(int argc, char** argv) {
                     if (A.finished && !A.s1) {
                         if (chain_kind == 1 && !B.ready) ++pl_late;   // stage 0 idles until the chain has B
                         if (ajob) a_gap(1);   // --adapt-async: stage 1 is idle until this launch
+                        if (!check_vram_cap("before a pipelined window"))
+                            return die("free VRAM is under the floor (before a pipelined window); cap not relaxed");
                         if (!V1(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.s1 = true;
                         tre("L1", A.seq, A.T);
