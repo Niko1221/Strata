@@ -493,11 +493,12 @@ runtimes. You may need to adjust the code.
 // at ~60 GB/s. Every column's arithmetic is the original's; the output norm, which needs all 128 columns of a head,
 // moves to gdn_out_norm_kernel: this kernel leaves the unnormalized output `oc` in y and the second kernel sums the
 // squares by the same warps (columns 32w..32w+31, the same butterfly) in the same order.
-// S26: OUT = false (the commit, whose outputs nobody reads) drops the output reduction and its two barriers; the
+// S26: WRITE_OUT = false (the commit, whose outputs nobody reads) drops the output reduction and its two
+// barriers; the
 // norm kernel below has the old kernel's code shape (S x RG threads, rg 0 holding oc), which makes it bitwise equal -
 // the 128-thread version differed from the old kernel by 1 ulp in ~7% of the outputs.
 constexpr int GS_COLS = 32;
-template <bool OUT>
+template <bool WRITE_OUT>
 /*
 DPCT1110: The total declared local variable size in device function
 gdn_step_split_kernel exceeds 128 bytes and may cause high register pressure.
@@ -580,7 +581,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        if (!OUT) continue;
+        if (!WRITE_OUT) continue;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
@@ -2353,17 +2354,26 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+int g_mirror_layers = 0;       // the table's layer count: the slice of a call's layer must be inside it
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int n_layers) {
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
+    g_mirror_layers = n_layers;
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
-    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
-        mir = g_mirror_table + (res_layer - g_mirror_res);
+    // SYCL port: the slice was found from the pointer alone (`res_layer >= g_mirror_res`), which is a pointer
+    // comparison, not a layer index: a layer-split stage whose own residency table happens to sit above this one read
+    // a slice far outside the table (device lost, experts short of the second card - TeppeiLan1104 in #1390). The
+    // difference in int32 entries is the layer index, and it has to be inside the table's own layers.
+    if (g_mirror_table != nullptr && g_mirror_res != nullptr && n_expert > 0 && res_layer >= g_mirror_res) {
+        const long long layer = (res_layer - g_mirror_res) / n_expert;
+        if (layer < g_mirror_layers)
+            mir = g_mirror_table + layer * (long long) n_expert;
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

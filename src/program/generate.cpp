@@ -4473,7 +4473,12 @@ int main(int argc, char** argv) {
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
         uint64_t used = 0;
         const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
-        size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
+        // #1549: the same headroom the SYCL port takes, so a card of any backend can be A/B'd with
+        // STRATA_EXPERT_CACHE_HEADROOM=<fraction> (see include/strata/core/expert_cache.hpp).  The default
+        // is zero on CUDA and HIP because it has been measured only on the B70, so this build's default path
+        // stays byte-identical to the last release.
+        const size_t headroom = auto_cache ? (size_t) (free_b * strata::core::expert_cache_headroom()) : 0;
+        size_t free_room = free_b > keep_free + headroom ? free_b - keep_free - headroom : 0;
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
             const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
@@ -4488,6 +4493,11 @@ int main(int argc, char** argv) {
                                  "%zu slots (the profile is the ceiling on a native pack; a profile that ranks every "
                                  "(layer, expert) pair lifts it - tools/make_profile.py)\n", o.expert_cache,
                          profile.size(), o.expert_profile.c_str(), profile.size());
+        if (auto_cache && headroom > 0)
+            std::fprintf(stderr, "strata generate: expert cache auto: %zu slots (%.2f GiB), keeping %.2f GiB "
+                                 "of %.2f GiB free for the session's other buffers (#1549)\n",
+                         sized_slots.size(), (double) used / 1073741824.0,
+                         (double) (keep_free + headroom) / 1073741824.0, (double) free_b / 1073741824.0);
         o.expert_cache = (int) sized_slots.size();
     }
     // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,

@@ -888,10 +888,10 @@ int main(int argc, char** argv) {
             zeros += want[(size_t) t] == 0;
         }
         const double expect = 1.0 / (1.0 + std::exp(1.5 / 0.7)), share = (double) zeros / NT9;
-        const bool near = std::fabs(share - expect) < 0.014;
+        const bool near_enough = std::fabs(share - expect) < 0.014;
         std::printf("  %-34s %s (token 0 drawn %.4f of %d, expected %.4f; twice-penalised would be 0.0255)\n",
-                    "one penalties stage (#53)", near ? "yes" : "*** NO ***", share, NT9, expect);
-        if (!near) ++bad;
+                    "one penalties stage (#53)", near_enough ? "yes" : "*** NO ***", share, NT9, expect);
+        if (!near_enough) ++bad;
         bad += run("sampled chain: #53's example", l, NT9, p, want, hist, 1);
     }
 
@@ -1394,9 +1394,19 @@ int main(int argc, char** argv) {
                   "fixture 18 fill");
             dpct::experimental::command_graph_ptr graph = nullptr;
             dpct::experimental::command_graph_exec_ptr exec = nullptr;
-            check(DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)),
-                  "begin capture");
+            // SYCL port: the OpenCL backend has no command graphs (the SYCL Graph extension): capturing there
+            // ends the process in the runtime, so the captured half is skipped and the uncaptured half below
+            // (the same stream, the same fallback) still runs.
+            static const bool have_graph = [] {
+                try { return dpct::get_current_device().get_backend() != sycl::backend::opencl; }
+                catch (...) { return false; }
+            }();
+            if (have_graph) check(DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)),
+                                  "begin capture");
+            else std::printf("  %-34s skipped (no command graphs on this backend)\n",
+                             "fallbacks: graph capture");
             strata::kernels::sample_tokens(rows.l, T, nv, rows.h, H, p, rows.o, cs);
+            if (have_graph) {
             check(
                 DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph)),
                 "end capture");
@@ -1421,6 +1431,7 @@ int main(int argc, char** argv) {
                                            .wait()),
                       "back");
                 compare("captured graph", got, lists, k, p);
+            }
             }
             delete (exec);
             delete (graph);

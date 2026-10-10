@@ -256,7 +256,7 @@ What the port had to get right beyond compiling (each is an entry in `sycl/tools
   stays unreliable on this platform, which is why the all-resident path waits for the window instead.
 - **Bounded spins.** A device spin that never sees its flag is not a hang of one process: the xe driver
   times the queue out and resets the GT node by node - a window graph has 2,400 - and the card stays
-  wedged until a reboot (twice). Every spin is capped (`kSpinMax`).
+  wedged until a reboot (twice). Every spin is capped (`strata::spin_max(queue)`, chosen per device at run time).
 - **32-lane sub-groups.** The kernels are written for warps; dpct pinned 134 of 289 launches, the rest
   would run at Xe2's default 16 (`-fsycl-default-sub-group-size=32`).
 - **Synchronous copies.** `cudaMemcpy` blocks; dpct's default-queue `memcpy` did not wait. With the
@@ -711,14 +711,179 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   and is not for a CPU layer in the first request (cold pages, 13 s for a 26-token prompt). The GPU gave up, went on with the
   experts' outputs missing, the next layers' routing was garbage (one expert chosen ten times for a token: `nt=10`) and the
   CPU pool wrote past its token arrays and died with a segmentation fault (exit code 139); when it did not die the logits were NaN
-  and the sampler's answer was token 0. Later requests ran with warm pages and were right. The bound is now a build option,
-  `STRATA_SYCL_SPIN_MAX` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`): 2,000,000 reads (a few seconds) unless the build is an
-  AOT build for a `bmg` card, which keeps 20,000. Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
+  and the sampler's answer was token 0. Later requests ran with warm pages and were right. The bound is now chosen per device
+  at run time (`strata::spin_max(queue)`): 20,000 reads on a card under the `xe` driver, 2,000,000 (a few seconds) elsewhere, so
+  an A-series card on `i915` keeps the long bound this case needs. `STRATA_SPIN_MAX=<reads>` overrides at run time, and
+  `-DSTRATA_SYCL_SPIN_MAX=<reads>` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`) fixes one bound for every device in the build.
+  Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
   token 0 in the first request; with 2,000,000 reads 4 of 4 were right in all three requests.
 - **Speed.** About 10 to 15 tok/s decode (76 to 92% of the drafts accepted), a 26-token first prompt in 13 s and later short prompts in 0.2 to
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
   has already printed "stopped"); it is not a GPU event.
+## Windows: native, OpenCL (experimental)
+
+`setup --backend sycl` runs on Windows too. There is no container and no Docker: the engine is built from source
+with Intel oneAPI (`sycl\tools\build.bat`, `icx` for C and CXX, MSVC `cl` is not supported) and launched through
+`sycl\serve\strata-sycl.bat`. Setup detects the card the way `amd_gpus_windows` does - the display adapters plus
+the display-class registry's 64-bit VRAM size, which is the true VRAM (WMI's `AdapterRAM` stops at 4 GB) - and
+`setup --check` names it. The Monitor tab reads the name and VRAM from the same detection; util, temperature and
+power are not read yet.
+
+**How much context this card takes, measured.** All experts resident (12,288 slots, 23.42 GiB), so the KV cache has
+what the card has left; `--kv-resident` is the only variable. 16,386-token prompt, 128 greedy tokens after it,
+medians of three interleaved runs, INT8 KV:
+
+| `--kv-resident` | KV cache streams? | prompt reading | decode after it |
+|---|---|---|---|
+| 32,768 | yes, above 32,768 | 178.4 tok/s | 40.7 tok/s |
+| 65,536 | yes, above 65,536 | 178.6 | 42.1 |
+| **131,072** | **no - it all fits** | **181.6** | 41.2 |
+| 196,608 | - | **never finished (>25 min)** | - |
+
+Two results, both against expectation. **Within the range that works, the resident KV is nearly free**: the expert
+cache is 12,288 slots / 23.42 GiB in every run and the prompt borrows almost the same slots throughout (1,036, 1,036,
+969), so it is not being squeezed, and decode does not fall off as the reservation grows (40.7 / 42.1 / 41.2 is inside
+the run-to-run noise, individual runs 39.2-45.9). The "about 3.6 GiB of VRAM to context costs ~6% of decode" note above
+is therefore not the rule here: the expert pool is sized from the *free* VRAM, so the KV is what gets what is left
+rather than the other way round. A 128K cache on this card is close to free, and it is worth setting
+`--kv-resident` to the context rather than leaving it at 32,768.
+
+**Past the ceiling the prompt does not merely slow down, it stops.** At 196,608 the prefill ran past 25 minutes
+without finishing, with the Windows GPU counters showing the card at **100% and 30.83 of 32.00 GiB dedicated memory in
+use** (system RAM unremarkable), the log stopped at the plain-SYCL prompt GEMM's banner, and the expert cache still
+fully resident. Same shape as the prompt collapse in #1549, reached by over-reserving the KV instead of by not fitting
+the experts - so 131,072 is this card's ceiling for `--kv-resident` on this backend, and both collapses are reported
+there as one problem.
+
+Two more numbers for planning agentic work here, both from this sweep: prompt reading is much faster than the 2,048-token
+figures elsewhere in this file (178-186 tok/s against 74.7 at 2,048 tokens - a short prompt is the worst case for it),
+and decode after a 16,386-token prompt is 40.7-42.1 tok/s against 43.6 at 2,048.
+
+**The Monitor tab reads this card through the OS's own counters.** xe exposes nothing on Windows - no sysfs, no
+user-mode Level Zero adapter - so the reader (`sycl/serve/xe_telemetry.py`) takes load and VRAM-in-use from the PDH
+counters Windows keeps for every WDDM adapter, `GPU Engine` (per process, per engine, summed per card as Task Manager
+does) and `GPU Adapter Memory` (dedicated bytes). The card is the adapter holding the most dedicated memory and every
+instance is filtered to its LUID, so an iGPU beside it does not add to the numbers. Measured on the B70: 2.9% idle,
+100% while decoding, and 30.01 of 32.00 GiB of dedicated memory in use - the 23.4 GiB of experts, the KV and the
+driver's own buffers.
+
+Two things about that path are worth knowing if it is read again: PDH's wildcard API answers `PDH_INVALID_ARGUMENT` on
+this machine for *every* path, core counters included (`PdhExpandWildCardPathW` and `PdhGetFormattedCounterArrayW`),
+so the instance list comes from `Get-Counter -ListSet` and each instance gets its own counter - sampling is then pure
+PDH, 3.8 ms to collect the 392 instances of the two sets and 0.4 ms to read them, against a PowerShell call per
+sample. And a byte counter has to be asked for as `PDH_FMT_LARGE`: with `PDH_FMT_DOUBLE` PDH fills the union with a
+double, whose bits read as an integer are nonsense (4.4 GB shown as 4.4 billion GB).
+
+Temperature, power and the PCIe link have **no** Windows counter at all - only the driver knows, and there is no
+user-mode adapter to ask - so those three tiles stay empty and the dashboard says so rather than showing a bare dash.
+Linux does fill them from the card's hwmon (`sycl/tools/gpustat.py` for load and VRAM, which xe only accounts
+per-client fdinfo).
+
+
+Measured 2026-10-07 on Windows 10, Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900 / 64 GB, conda-forge
+`dpcpp_win-64` 2026.1.1, Coder IQ1_M (12,288/12,288 experts resident, `--stream-experts`, INT8 KV,
+`--spec 4 --spec-min-p 0.5 --mtp`), greedy. Each row is an A/B of this branch's engine (0.1.40-sycl) against the
+previous 0.1.39-based build of this port, run interleaved (v1, v2, v1, v2, ...) from the command line, the way
+the numbers above were measured:
+
+| | 0.1.39-sycl | 0.1.40-sycl |
+|---|---|---|
+| decode, 256 tokens, 3 pairs | 69.6-69.9 (median 69.7) | **77.2-77.3 (median 77.3)** |
+| decode, 128 tokens after a 2,048-token prompt, 2 pairs | 37.6 | **38.2-41.1 (median 39.6)** |
+| decode, 256 tokens, `--spec 2` (no draft layer), 3 pairs | 53.4-53.9 (median 53.6) | **22.0-22.9 (median 22.3)** |
+| prompt reading, 2,048 tokens | 8.0-14.5 tok/s | **71-73 tok/s** |
+| `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | byte-exact, 0 failures |
+
+The same card on Linux (Level Zero, AOT, command graphs) does **78.2 tok/s** on the first row.
+
+**Measure long runs here.** Short generations are not comparable on this backend: the same build and mode gave
+48.9 and 67.5 tok/s on two consecutive 128-token runs, and a 155-token answer through the API varied by 25% around
+a number that a 256-token run contradicts. Interleave the builds and take medians of 256-token runs.
+
+**`--spec 2` is the outlier.** Without the draft layer this release decodes at 22.3 tok/s against 53.6 for the
+previous build on the same card, same flags, interleaved - the one reproducible regression in the table.
+
+**0.1.40.3 changed the device's spin bound on host flags, and the bound is worth about 3x of decode in either
+direction.** It made the bound a build option (`STRATA_SYCL_SPIN_MAX`) and gave 20,000 only to a `bmg` **AOT** build,
+2,000,000 to everything else - the A-series JIT build, where the GPU really does wait on the host's slow per-layer CPU
+expert work. A JIT build of a B70 is not an AOT build, so it inherited the long bound.
+
+What the bound decides is whether *speculation works at all*. A window that spins on a host flag it cannot see runs out
+and goes on without what it was waiting for, which is harmless when the thing it wanted is a plan it already has and
+ruinous when it was a draft. Same build, one `-DSTRATA_SYCL_SPIN_MAX` apart, Coder IQ1_M with `--ple-gguf`, 256 greedy
+tokens after a 2,048-token prompt, medians of two interleaved runs, `suffix drafts` and `accepted` from the engine's own
+speculation line:
+
+| mode | | 2,000,000 | 20,000 (this branch's default) |
+|---|---|---|---|
+| `--spec 4 --mtp` (what setup writes) | tok/s | 26.2 | **45.4** |
+| | tokens per round | 2.28 (73 of 126 drafts accepted) | **4.19 (99 of 99)** |
+| `--spec 2` | tok/s | **68.8** | 21.8 |
+| | tokens per round | **2.17** (2 suffix windows drafted) | 1.03 (**0 drafted**) |
+| `--spec 4`, no `--mtp` | tok/s | **69.7** | 18.9 |
+
+So with the MTP drafter on, the short bound is both faster and better: the window's waits are the kind that expire, and
+the MTP record path has already published what the window needs, so the drafts are right and accepted. Without
+`--mtp` the suffix drafter's own waits run out inside 20,000, it produces **no draft at all**, every round verifies a
+single token and decode is 3.7x slower - a silent loss, since the answer is still correct. One constant cannot serve
+both because the drafting waits want the long bound and the window's want the short one; that is the shape of the
+upstream report.
+
+Upstream has since made the bound a run-time, per-device choice (`strata::spin_max(queue)`,
+`sycl/include/strata/sycl_doorbell.hpp`): 20,000 reads on a card under the `xe` driver, 2,000,000 everywhere else -
+Windows included, on the reading of #1397 that "a JIT/OpenCL B-series build measured faster with the long bound". That
+reading is the `--spec 2` half of the table above. `intel_gpu_driver()` reads `/sys/class/drm`, so on Windows it
+returns nothing and every card there gets the long bound whatever the drafting configuration, which leaves the
+`--spec 4 --mtp` configuration - the one setup writes - at 1.18 tokens per round.
+
+This branch therefore chooses in the launcher, which is the place that knows the configuration:
+`sycl/serve/strata-sycl.bat` sets `STRATA_SPIN_MAX=20000` when `--mtp` is in the arguments *and* the working
+adapter's name is a B-series Arc, and leaves the default alone otherwise. An A-series card keeps the long bound even
+with `--mtp`, because there the GPU genuinely waits on the host's per-layer CPU expert work and a short bound made it
+go on with the experts' outputs missing. A `STRATA_SPIN_MAX` already in the environment wins, and `-DSTRATA_SYCL_SPIN_MAX`
+still fixes one bound for every device in a build.
+
+Re-measured after the rebase onto that change, so these are against the run-time choice and not the build option: the
+same binary, one `STRATA_SPIN_MAX` apart, Coder IQ1_M, `--spec 4 --mtp`, 256 greedy tokens after a 2,049-token prompt,
+medians of three interleaved runs - **44.1 against 24.9 tok/s (+77%)**, 2.15 against 1.18 tokens per round, and with
+the long bound 204 of 217 rounds accepted no draft at all against 48 of 120 with the short one. Prefill is unchanged
+by the bound (72.9 tok/s both ways), so this is the decode path alone. At 20,000 this release decodes *faster* than
+0.1.40.2 did, so the decode regression that release shipped is the bound and not its kernels.
+
+`STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host clocks under `STRATA_VERIFY_EAGER=1`): a
+4-token window is ~65 ms and the GDN hyper-connection read is ~24 ms of it, nearly flat from T=2 (23.6 ms) to T=6
+(25.6 ms) - a per-layer *fixed* cost of ~0.5 ms over 48 layers, i.e. kernel dispatch, not arithmetic. That is the
+shape of a backend without command graphs: this Windows driver exposes no user-mode Level Zero adapter
+(`sycl-ls` lists only `opencl:gpu`), so there is neither the Graph extension nor sysman's free-VRAM query, and
+every window, commit and draft step is enqueued one kernel at a time.
+
+**The prompt path is the one place this backend was far off, and it is fixed.** oneMKL SYCL BLAS has no OpenCL Xe2
+backend, so every prompt GEMM runs through the port's plain SYCL kernel. That kernel gave each work-item its own four
+columns of W and so read the whole weight matrix once *per row*: a 2,048-row chunk of one 2,560 x 4,096 projection
+moved 86 GB of weights (T x N x K x 2 bytes), and a 2,048-token prompt read at 8.0-14.5 tok/s where the Linux rows
+above read 790-1,002. `fallback_gemm_tiled` (`sycl/src/prefill/gemm.dp.cpp`) gives a work-group a 64 x 64 corner of Y
+and walks K in 16-wide tiles with the activations and weights staged in local memory: **71-73 tok/s**, 5-9x, with
+decode unchanged. The old kernel stays for T < 64, which is all a decode window asks for.
+
+It is the same arithmetic, not an approximation: both kernels accumulate over k in ascending order and spell the
+fused multiply-add out, so the compiler cannot round them differently. `STRATA_FALLBACK_SELFTEST=1` runs both over one
+problem whose rows, columns and k count all cross the tile edges and prints the bitwise difference - **0 of 4,189
+values, largest 0**.
+
+**Do not use the model's own output to check a change on this backend.** With a 2,048-token prompt the engine is not
+run-to-run deterministic here: the same binary diverges at token 60 (and the state hash differs between two runs of
+one binary). The web app is a second trap - it answers a `temperature: 0.0` request with its own Chat defaults
+(temperature 1.0, top_p 0.95), so a "greedy" run through it is sampled. The kernel-level self-tests and the CLI's
+`--greedy` are the checks that hold.
+
+The VRAM sizes come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB` (setup writes them from the
+registry), because the free query needs Level Zero sysman.
+
+**Windows-SDK macro names.** `<sycl/sycl.hpp>` reaches the Windows SDK, whose headers define `OUT` (minwindef.h),
+`small` (rpcndr.h) and `near` (windef.h) as macros. An identifier with one of those names is macro-expanded away,
+so `template <bool OUT>` loses its parameter and every use is a parse error ("expected expression") - this hit
+`verify_kernels.dp.cpp`, `generate.cpp` and `sampler_parity.cpp`. Renamed, not worked around.
 
 ## Not done
 
@@ -793,6 +958,61 @@ twice the GEMM (20 us), and the fused dequant+XMX kernel (`xmx_gemm_bench`) is 0
 on this card for this model is the dequant kernels (at ~200 GB/s against a 600 GB/s card), the host grouping, and the QSA
 prompt attention (14%); the multi-column int8 DPAS decode kernels of llama.cpp PR 29864 target K-quant and Q8_0 weights, not
 the IQ-quant experts, and were not ported.
+
+## A cache that fills the card costs 36x on the prompt (Windows, OpenCL)
+
+The IQ3_S rows above are the Linux VM (xe driver, Level Zero), where the same mirror design reads a 4K
+prompt at 980-1,002 tok/s. On Windows with the OpenCL backend the same model is a different story, and
+the reason is not the mirror.
+
+**What is measured.** Arc Pro B70, 32 GB, Windows, OpenCL, eager, driver 32.0.101.8976, Flash-Next
+IQ3_XXS, `--prefill 4096`, greedy, 64-token prompt, `STRATA_PREFILL_TIMING=1`. The same 3,668 gate/up
+and 3,668 down GEMM calls at every cache size - only the cache size and the memory left over change:
+
+| expert cache | VRAM of experts | prefill | per expert GEMM pair |
+|---|---|---|---|
+| 17,687 slots (`auto` before) | 28.82 GiB | 426 s | 111 ms |
+| 15,382 slots | 24.95 GiB | 472 s | 122 ms |
+| 14,704 slots | 23.87 GiB | 9.7 s | 2.32 ms |
+| 10,698 slots | 17.36 GiB | 10.3 s | 2.39 ms |
+
+A cliff, not a slope: every size up to 14,704 slots is stable at ~10 s, every size from 15,382 up takes
+minutes. With `STRATA_PREFILL_SYNC=1` (the host waits at every phase mark, so the numbers are what the GPU
+ran) the whole prefill is 36x slower with the same work, and it is spread across most kernels rather
+than the expert path: `gdn` 55x, the QSA projections 42x, the GDN output projection 53x, the two expert
+GEMMs 39x.
+
+**It is not the mirror.** 35% of the same pack mirrored in pinned host memory over PCIe costs nothing
+(2.05 ms per expert against 2.01 with every expert resident), and the slow arm streams *fewer* experts
+than the fast one. Nor the prompt length (the cost is fixed per expert call, not per token), subnormals
+(there are none in either pack's dequantized weights or activations), or `--kv-resident` (7,589 ms against
+7,587 ms). The kernel calls and their shapes are identical in every arm, and the cut and uncut sizing give
+identical greedy output tokens - eight tokens, `271 71093 271 550 18381 198 12 1510`, from a scrambled
+48-token prompt. `sycl/probe/vram_pressure.cpp` times the engine's own `Gemm::f16` at these shapes with
+the card empty and again after allocating and touching 28 GiB of it: 1.00x both, so a full card does not
+slow the GEMM either.
+
+**Why nothing stops it.** The engine sizes the cache, then reads the free VRAM again and shrinks the cache
+while it is short of `--vram-reserve-mib` ("only N MiB free once the slots are written"). That check cannot
+fire on this backend: `STRATA_DEVICE_FREE_MIB` makes `dpct`'s `get_memory_info` return a setup-time
+constant - `(32 - 1.0) * 1024` = 31,744 MiB here - before the allocation and after it alike, and the Linux
+DRM correction does not run on Windows. A printed check gives:
+
+```
+expert cache auto: 31.00 GiB free, 2048 MiB reserved -> 13283 slots
+post-write free 31.00 GiB, want 2048 MiB, cache 17687 slots (28.82 GiB)
+```
+
+So on Windows/OpenCL the only thing that constrains the cache size is the arithmetic at sizing time,
+which is what `STRATA_EXPERT_CACHE_HEADROOM`'s default of a sixth is for (#1549). On CUDA `cudaMemGetInfo`
+is live, the check works, and a 1/6 headroom changes nothing - measured on an RTX 5070 Ti (16 GB, Windows,
+WDDM), Coder IQ1_M, three alternating rounds: 2,022 tok/s prompt and 64.5 decode at headroom 0 against
+2,064 and 66.6 at 1/6, both arms' caches settling within 0.3 GiB of each other after the check.
+
+**Not measured:** what the GPU is doing with the last 2 GiB. The 20-55x slowdown across ordinary kernels
+with a flat 28 GiB allocation costing 1.00x points at contention between VRAM traffic and the concurrent
+PCIe mirror reads, but that is a candidate, not a result. Full findings and the A/B protocol are in
+[docs/EXPERT_CACHE_HEADROOM.md](EXPERT_CACHE_HEADROOM.md) and #1549.
 
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 

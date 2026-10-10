@@ -304,8 +304,16 @@ private:
     void accumulate_profile(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
     // pipelined windows (pl_launch ...)
     dpct::queue_ptr ext_stream_ =
-        &dpct::get_in_order_queue(); ///< set_stream: the stage's shared stream
-                                     ///< (not destroyed here)
+        nullptr; ///< set_stream: the stage's shared stream (not destroyed here).
+                 ///< SYCL port: upstream's `cudaStream_t ext_stream_ = nullptr` migrated to
+                 ///< `dpct::queue_ptr ext_stream_ = &dpct::get_in_order_queue();`, which is *evaluated* when the
+                 ///< Verifier is constructed - so "none" became "the constructing device's in-order queue". A later
+                 ///< stage is constructed on CUDA0 and init'ed on its own card, and init()'s
+                 ///< `if (ext_stream_ != &dpct::get_in_order_queue()) cs_ = ext_stream_;` then took CUDA0's default
+                 ///< queue: stage [17, 48) had cs_ on 0000:0d:00.0 with sh_cs_/copy_ on 0000:b0:00.0, which fails the
+                 ///< first window ("cannot submit to a queue with a dependency from a graph that is associated with a
+                 ///< different context", or UR_RESULT_ERROR_DEVICE_LOST with STRATA_SH_STREAM=0). nullptr = none again.
+                 ///< Reported upstream; sycl/tools/fixups.py carries the same correction for a re-migration.
     bool always_publish_ = false;
     void pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2]);
     dpct::event_ptr ev_done_ = nullptr, ev_commit_ = nullptr;
@@ -353,6 +361,9 @@ private:
     bool staged_ = false;
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
+    // SYCL port, STRATA_VERIFY_EAGER=1: the bodies capture_commit/capture_window record into command
+    // graphs, replayed on the queue where the backend has no graph (the OpenCL adapter).
+    bool record_commit(std::string& err);
     bool record_window(int T, dpct::queue_ptr cs, std::string &err);
     // #649: STRATA_VERIFY_TRACE=1 - a host event ring (trace_ev) and GPU breadcrumbs: the profiler's stamp points,
     // per layer and token group, written to mapped memory (null when the trace is off)

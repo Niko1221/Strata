@@ -333,4 +333,23 @@ edit("src/program/generate.cpp", sub(
 # CUDA's early-exit block pattern must not become a divergent SYCL work-group barrier.
 edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
     "    item_ct1.barrier(sycl::access::fence_space::local_space);",
-    "    sycl::group_barrier(item_ct1.get_sub_group());  // only subgroup row zero participates"))
+    "    sycl::group_barrier(item_ct1.get_sub_group());  # only subgroup row zero participates"))
+
+# TeppeiLan1104 (#1390): upstream's `cudaStream_t ext_stream_ = nullptr` migrated to
+# `dpct::queue_ptr ext_stream_ = &dpct::get_in_order_queue();`, which is *evaluated* when the Verifier is
+# constructed: "no stream" became "the constructing device's in-order queue". A later stage of a layer split is
+# constructed on CUDA0 and init'ed on its own card, and init()'s `if (ext_stream_ != &dpct::get_in_order_queue())
+# cs_ = ext_stream_;` then took CUDA0's queue - stage [17, 48) ran with cs_ on 0000:0d:00.0 while sh_cs_/copy_ were on
+# 0000:b0:00.0, which fails the first window ("cannot submit to a queue with a dependency from a graph that is
+# associated with a different context"; UR_RESULT_ERROR_DEVICE_LOST with STRATA_SH_STREAM=0). nullptr = none again,
+# and the two tests against the in-order queue become tests for nullptr.
+edit("include/strata/core/verify.hpp", sub(
+    r"dpct::queue_ptr ext_stream_ =\s*&dpct::get_in_order_queue\(\);",
+    "dpct::queue_ptr ext_stream_ = nullptr;  # nullptr = none until set_stream() (a member initialiser would capture"
+    " this device's queue)"))
+edit("src/core/verify.cpp", sub(
+    r"if \(ext_stream_ != &dpct::get_in_order_queue\(\)\) cs_ =\s*ext_stream_;",
+    "if (ext_stream_ != nullptr) cs_ = ext_stream_;   # set_stream (pipelined windows): the stage's shared stream"))
+edit("src/core/verify.cpp", sub(
+    r"if \(cs_ && cs_ != ext_stream_\) dpct::get_current_device\(\)\.destroy_queue\(\s*cs_\);",
+    "if (cs_ && cs_ != ext_stream_) dpct::get_current_device().destroy_queue(cs_);"))

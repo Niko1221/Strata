@@ -115,6 +115,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <limits>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -907,7 +908,7 @@ void usage() {
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
                  "  --shared-expert-arena FILE  Linux: back the resident arena with one MAP_SHARED file.\n"
                  "                       Put this file on /dev/shm, not ordinary SSD storage.\n"
-                 "                       A small header binds an existing backing file to the same pack.\n"
+                 "                       A small_chunk header binds an existing backing file to the same pack.\n"
                  "  --resident-cpu-experts  with mmap and a static profile, keep the experts the GPU cache does not\n"
                  "                       hold resident in ordinary RAM (and the prompt path's lend region as far as\n"
                  "                       RAM allows); adaptive swaps exchange them, so none is read from the file again.\n"
@@ -2067,7 +2068,7 @@ int main(int argc, char **argv) try {
         // copies them back after it, so on cards that hold (nearly) every expert of their layers a 2K prompt read
         // 37% slower than 0.1.29's own buffers (2x RX 9070 XT / R9700: 1570 -> 990 tok/s; 2x A5000 in #340: -35%).
         // So a split keeps 0.1.29's own buffers (2048-token chunks, priced into the split search) when they are a
-        // small part of every card - at most 12% of its VRAM (16 GB and larger cards) - and borrows on smaller cards,
+        // small_chunk part of every card - at most 12% of its VRAM (16 GB and larger cards) - and borrows on smaller cards,
         // where the reserve would cost the cache (and the context) the paragraph above is about.  Measured with own
         // buffers on the 9070 XT + R9700: 2K 1588 tok/s, 16K 2006 (0.1.29 1568 / 1935, 0.1.31 993 / 1852).
         // OPT-IN (the owner's choice for 0.1.32): own buffers change which experts a full card keeps resident, so the
@@ -2166,7 +2167,7 @@ int main(int argc, char **argv) try {
     }
 #endif
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
-        o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small
+        o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small_chunk
         o.prefill_chunk = 2048;
     }
     if (!have_tokens && o.serve) {   // plan v0.3 P8: requests bring their own tokens
@@ -3532,7 +3533,7 @@ int main(int argc, char **argv) try {
         };
         const int64_t L = g.n_layers;
         // share the layers in proportion to speed: the fallback beyond four GPUs, and the only placement a
-        // model too small to hold four stages has (see the ns == 4 branch).
+        // model too small_chunk to hold four stages has (see the ns == 4 branch).
         auto proportional = [&]() {
             double total = 0;
             for (const double c : layer_ms) total += 1.0 / c;
@@ -4101,7 +4102,7 @@ int main(int argc, char **argv) try {
                      src.gguf_mode() ? "the GGUF shards in place, no experts.bin" : "the A/B arm of R2.1");
         // #286: with a RAM budget the hottest experts live in it, and the rest are read from the drive unbuffered
         // when the file cache could not keep them beside the budget anyway (a 32 GB PC) - the mapped reads' page
-        // faults are small requests on the critical path, and their pages take the RAM the budget was sized for
+        // faults are small_chunk requests on the critical path, and their pages take the RAM the budget was sized for
         // #773: without a RAM budget there is no RAM copy and the file cache IS the expert tier (measured on a
         // 32 GB, 2 x 16 GB rig: forcing unbuffered reads there re-read 163-629 GB from the drive and halved the
         // speed), so STRATA_UNBUFFERED_LOAD=1 is not honoured in that mode
@@ -4185,7 +4186,7 @@ int main(int argc, char **argv) try {
     strata::core::ExpertCache xcache;
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
-    bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits
+    bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small_chunk card's cache fits
     // --pipeline-windows: what it allocates on CUDA0 after the cache (see kPipeWindowMib)
     const int64_t pipe_first = o.pipeline_windows <= 0 ? 0
         : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
@@ -4228,7 +4229,7 @@ int main(int argc, char **argv) try {
         std::fprintf(stderr, "strata generate: expert cache auto: %.2f GiB free, %d MiB reserved (+%lld MiB for the "
                              "draft head) -> %d slots\n",
                      (double) free_b / 1073741824.0, o.vram_reserve_mib, (long long) (mtp_bind >> 20), o.expert_cache);
-        // #496: the verify window cannot start without a cache (#174), and a cache too small to lend the prompt path
+        // #496: the verify window cannot start without a cache (#174), and a cache too small_chunk to lend the prompt path
         // a 256-token chunk's buffers (plus the 128 slots a loan leaves; one slot without --prefill) makes it
         // allocate its own on top - more than the reserve.  When the default reserve leaves less than that (a 6 GB
         // card), the reserve shrinks to what leaves exactly that cache, down to kSmallReserveMib: what is allocated
@@ -4257,7 +4258,7 @@ int main(int argc, char **argv) try {
             }
         }
         if (o.expert_cache == 0) {
-            // what is short, and what makes room: the numbers a small card picks from
+            // what is short, and what makes room: the numbers a small_chunk card picks from
             const int64_t at_reserve = o.vram_reserve_given ? o.vram_reserve_mib
                                                             : std::min(o.vram_reserve_mib, kSmallReserveMib);
             const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + min_slots * blob;
@@ -4267,7 +4268,7 @@ int main(int argc, char **argv) try {
             const std::string reserve_tip =
                 o.vram_reserve_given && o.vram_reserve_mib > kSmallReserveMib
                     ? ", a smaller --vram-reserve-mib (" + std::to_string(o.vram_reserve_mib) + " now; " +
-                          std::to_string(kSmallReserveMib) + " is enough on a small card)"
+                          std::to_string(kSmallReserveMib) + " is enough on a small_chunk card)"
                     : std::string();
             std::fprintf(stderr, "strata generate: no VRAM is left for the expert cache: it needs at least %lld slots "
                                  "(%lld MiB), about %lld MiB more than this card has free. To make room: a smaller "
@@ -4342,7 +4343,15 @@ int main(int argc, char **argv) try {
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
         uint64_t used = 0;
         const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
+        // #1549: `auto` used to fill all but the reserve, and that leaves the prompt path crawling on a card
+        // this size. Under WDDM an over-subscribed allocation does not fail, it pages to system memory and
+        // crawls (the P5 note above) - and with the prompt path borrowing cache slots, which is the default
+        // with a profile, `prefill_mib` is 0, so P5 reserves nothing for it and the reserve is all there is.
+        // The measurements behind the default and the STRATA_EXPERT_CACHE_HEADROOM A/B live with the helper,
+        // include/strata/core/expert_cache.hpp.
+        const size_t headroom = auto_cache ? (size_t) (free_b * strata::core::expert_cache_headroom()) : 0;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
+        if (free_b > keep_free + headroom) free_room = free_b - keep_free - headroom;   // when it still leaves room
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
             const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
@@ -4357,6 +4366,11 @@ int main(int argc, char **argv) try {
                                  "%zu slots (the profile is the ceiling on a native pack; a profile that ranks every "
                                  "(layer, expert) pair lifts it - tools/make_profile.py)\n", o.expert_cache,
                          profile.size(), o.expert_profile.c_str(), profile.size());
+        if (auto_cache && headroom > 0)
+            std::fprintf(stderr, "strata generate: expert cache auto: %zu slots (%.2f GiB), keeping %.2f GiB "
+                                 "of %.2f GiB free for the session's other buffers (#1549)\n",
+                         sized_slots.size(), (double) used / 1073741824.0,
+                         (double) (keep_free + headroom) / 1073741824.0, (double) free_b / 1073741824.0);
         o.expert_cache = (int) sized_slots.size();
     }
     // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,
@@ -4435,7 +4449,7 @@ int main(int argc, char **argv) try {
             }
             if (!ok) {
                 // Issue #60: on Windows a device allocation is also charged to the system commit (RAM + page file),
-                // so with a small page file the cache's one big cudaMalloc fails while the VRAM is free.  An auto
+                // so with a small_chunk page file the cache's one big cudaMalloc fails while the VRAM is free.  An auto
                 // cache then tries three quarters of the size, a few times, instead of stopping the engine.
                 char commit[96] = "";
 #if defined(_WIN32)
@@ -4608,7 +4622,12 @@ int main(int argc, char **argv) try {
                                     const Fill& g2 = (*fl)[j];
                                     if (!gguf_src.read_into(g2.l, g2.e, other.data(), blob_cap)) continue;
                                     const size_t nb2 = (size_t) lay.blob_bytes(g2.l);
-                                    const void* hit = memmem(other.data(), nb2, probe, 64);
+                                    const uint8_t* hit = nullptr;   // SYCL port: memmem is POSIX; std::search is
+                                    {                                  // the same search over the same bytes
+                                        const auto it = std::search(other.begin(), other.begin() + (ptrdiff_t) nb2,
+                                                               probe, probe + 64);
+                                        if (it != other.begin() + (ptrdiff_t) nb2) hit = (const uint8_t*) &*it;
+                                    }
                                     if (hit != nullptr)
                                         std::fprintf(stderr, "    the wrong data at byte %zu is expert (layer %d, expert %d), slot %d (fill %zu), byte %zu of its blob\n",
                                                      fd + 4096, (int) g2.l, (int) g2.e, (int) g2.slot, j, (size_t) ((const uint8_t*) hit - other.data()));
@@ -4702,12 +4721,22 @@ int main(int argc, char **argv) try {
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
         uint64_t avail = 0;
+#if defined(_WIN32)
+        // SYCL port: there is no /proc/meminfo here, so the mirror's default size was 0 on Windows and no expert
+        // outside VRAM was ever mirrored - a model that does not fit entirely in VRAM then refused to run
+        // ("experts are neither in VRAM nor mirrored") or, with a host plan, read every miss from the SSD.  The same
+        // reading process_mem() takes above: the available physical memory.
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms)) avail = ms.ullAvailPhys;
+#else
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
             while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+#endif
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -5302,7 +5331,7 @@ int main(int argc, char **argv) try {
     }
 
     // ---- prefill is the DECODE PATH ONE TOKEN AT A TIME, which `phase-2-correct-engine.md:12-13` says is
-    // fine here: "process the prompt through the decode-style graphs in small batches; a 19K-token prompt will
+    // fine here: "process the prompt through the decode-style graphs in small_chunk batches; a 19K-token prompt will
     // take minutes".  A real batched prefill is P2.S6's other half and is not this.
     //
     // **THE LOOP IS `feed -> 48 layers -> head -> sample -> feed`, AND THE FIRST GENERATED TOKEN COMES FROM THE
@@ -5890,8 +5919,8 @@ int main(int argc, char **argv) try {
             // one falls back to the old rule, which takes the largest chunk whose ring clears kRingMin (the
             // value at or below which ring_slots() returns STAGE and streaming is off).
             constexpr int64_t kRingMin = 16;
-            const int64_t small = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
-            const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small);
+            const int64_t small_chunk = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
+            const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small_chunk);
             const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
             // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
             // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
@@ -5921,12 +5950,12 @@ int main(int argc, char **argv) try {
             int64_t c = scan(ring_max);
             if (c == 0 && ring_max < strata::prefill::Prefill::ring_default_slots()) c = scan(kRingMin);
             // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed it)
-            if (small >= c) {   // the scan bought nothing: 0.1.39's choice
+            if (small_chunk >= c) {   // the scan bought nothing: 0.1.39's choice
                 strata::prefill::Prefill::set_ring_budget(0, 0);
-                if (small > 0) { chunk = small; return slots_for(small); }
+                if (small_chunk > 0) { chunk = small_chunk; return slots_for(small_chunk); }
                 return 0;
             }
-            strata::prefill::Prefill::set_ring_budget((int) room_of(c), small);
+            strata::prefill::Prefill::set_ring_budget((int) room_of(c), small_chunk);
             chunk = c;
             return slots_for(c);
         }
@@ -6219,7 +6248,7 @@ int main(int argc, char **argv) try {
     };
     // ---- the resident RAM mode (--resident-experts / --resident-cpu-experts): the experts the GPU cache does not
     // hold are copied from experts.bin into RAM once, so no decode or prompt step reads the file (the plain mmap
-    // mode reads them through the OS file cache, which a small-RAM PC keeps giving back to the SSD).  Built here,
+    // mode reads them through the OS file cache, which a small_chunk-RAM PC keeps giving back to the SSD).  Built here,
     // after the prompt path's lend plan is known: the slots it may lend (the cache's last ones) have their experts
     // streamed during a prompt and copied back after it, so those are kept in RAM too as far as RAM allows.  The
     // bytes are the file's bytes and the placement is the same, so the answers are the plain mmap mode's; the
@@ -6405,7 +6434,7 @@ int main(int argc, char **argv) try {
             }
         }
         std::vector<PfPart> pf_parts;
-        // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
+        // a cache too small_chunk to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
         if (pf_borrow && d_res != nullptr) {
@@ -6479,8 +6508,8 @@ int main(int argc, char **argv) try {
                     return 0;
                 }
                 if (!strata::prefill::Prefill::ring_bytes_enabled()) return old_pick(only);   // STRATA_RING_BYTES=0
-                const int64_t small = old_pick(only);
-                const int64_t cap = strata::prefill::Prefill::ring_cap_for(small);
+                const int64_t small_chunk = old_pick(only);
+                const int64_t cap = strata::prefill::Prefill::ring_cap_for(small_chunk);
                 auto probe = [&](int64_t floor) -> int64_t {
                     return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
                         const int64_t room = ring_room(t, only, cap);
@@ -6493,10 +6522,10 @@ int main(int argc, char **argv) try {
                 };
                 int64_t c = probe(cap);
                 if (c == 0 && cap < strata::prefill::Prefill::ring_default_slots()) c = probe(kRingMin);
-                return std::max(c, small);   // never a smaller chunk than 0.1.39's
+                return std::max(c, small_chunk);   // never a smaller chunk than 0.1.39's
             };
             const int64_t chunk = scan(nullptr);
-            // #448: a small card in a layer split caps every stage's chunk (an RTX 3080's 512-slot cache held a
+            // #448: a small_chunk card in a layer split caps every stage's chunk (an RTX 3080's 512-slot cache held a
             // 32 GB card's split to 512 tokens: prompts 6.2x slower, decode the same).  Named when it bites, so the
             // regression is one log line: each stage that cannot fund the chunk CUDA0 alone would read in.
             const int64_t alone = pf_parts.size() > 1 ? scan(&pf_parts[0]) : chunk;
@@ -6505,10 +6534,10 @@ int main(int argc, char **argv) try {
             if (chunk > 0 && o.prefill_auto && strata::prefill::Prefill::ring_bytes_enabled()) {
                 // a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one chunk: the smaller ring only slowed
                 // it); the byte-budget ring is for the chunks past it
-                const int64_t small = old_pick(nullptr);
+                const int64_t small_chunk = old_pick(nullptr);
                 strata::prefill::Prefill::set_ring_budget(
-                    small >= chunk ? 0 : (int) ring_room(chunk, nullptr, strata::prefill::Prefill::ring_cap_for(small)),
-                    small);
+                    small_chunk >= chunk ? 0 : (int) ring_room(chunk, nullptr, strata::prefill::Prefill::ring_cap_for(small_chunk)),
+                    small_chunk);
             }
             if (chunk > 0 && alone > chunk) {
                 for (size_t i = 1; i < pf_parts.size(); ++i) {
@@ -6541,7 +6570,7 @@ int main(int argc, char **argv) try {
                                  (long long)alone,
                                  (long long)part_slots(p, alone), pct.c_str());
                     // the helper tiers start at CUDA1 without a split (and are enabled in order)
-                    std::fprintf(stderr, "strata serve:   a card this small can serve as a helper expert cache "
+                    std::fprintf(stderr, "strata serve:   a card this small_chunk can serve as a helper expert cache "
                                          "instead of a split stage: without --layer-split, with %s "
                                          "(docs/SECOND_GPU.md)\n",
                                  dev == 1 ? "--expert-cache-device1 N" : "--expert-cache-device1..3 N, in order");
@@ -6608,7 +6637,7 @@ int main(int argc, char **argv) try {
                 borrow = lend_first >= 0 ? xcache.device_slot(lend_first) : nullptr;
                 borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             } else if (o.prefill_auto) {
-                o.prefill_chunk = 1024;   // nothing lendable: small buffers of its own
+                o.prefill_chunk = 1024;   // nothing lendable: small_chunk buffers of its own
             } else if (pf_parts.size() > 1) {
                 // An explicit chunk no stage can lend in full.  main falls back to the prompt path's own buffers
                 // here and so do we, rather than refusing to start - but say what every stage has, because a split
@@ -6623,7 +6652,7 @@ int main(int argc, char **argv) try {
                                  (long long) part_slots(p, o.prefill_chunk));
             }
         } else if (o.prefill_auto && d_res == nullptr) {
-            o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
+            o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small_chunk buffers of its own
         }
         bool any_loan = borrow != nullptr;
         for (size_t i = 1; i < pf_parts.size(); ++i) any_loan = any_loan || pf_parts[i].first >= 0;
@@ -6847,7 +6876,7 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, g.n_layers);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -10168,7 +10197,7 @@ int main(int argc, char **argv) try {
             // A prompt read from token 0 also stops at its FIRST turn boundary: the end of the system prompt (with
             // the tools), which every new chat of the same client shares.  That checkpoint becomes the chain's root,
             // which the retention policy pins (conv_cache.hpp), so the next new chat reads only what comes after it.
-            // (PR #65, code-martin.)  Only for a system prompt of --prompt-cache-root tokens or more: a small one
+            // (PR #65, code-martin.)  Only for a system prompt of --prompt-cache-root tokens or more: a small_chunk one
             // is cheaper to read again than the extra part costs (~0.3 s).
             const int64_t last_turn = turn_at;   // ckpt=0 drops the split there, the root is still looked for before it
             if (!req_ckpt) turn_at = -1;
@@ -11946,7 +11975,7 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, g.n_layers);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
