@@ -17,6 +17,11 @@
 #include <cstring>
 
 namespace strata::prefill {
+#if defined(_WIN32) && defined(STRATA_HIP_GFX906)
+// HIP 5.7 on Windows must retain the host-addressed symbol for hipMemcpyToSymbol.
+// An anonymous-namespace device global was omitted from the PAL symbol table.
+__device__ int g_act_f16 = 0;
+#endif
 namespace {
 
 constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
@@ -49,7 +54,9 @@ __device__ __forceinline__ uint16_t hf_sat(float f) { return hf(isnan(f) ? f : f
 // The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16, or FP16 where the GEMM library is fast
 // only in FP16 (prompt_f16() in gemm.cu: rocBLAS on gfx103x).  Set once per device before the first prompt.
 #if defined(__HIPCC__)   // HIP only (#835): the CUDA kernels stay exactly as they were, they never read the flag
+#if !defined(_WIN32) || !defined(STRATA_HIP_GFX906)
 __device__ int g_act_f16 = 0;
+#endif
 __device__ __forceinline__ uint16_t act16(float f) { return g_act_f16 ? hf_sat(f) : bf(f); }
 #else
 __device__ __forceinline__ uint16_t act16(float f) { return bf(f); }

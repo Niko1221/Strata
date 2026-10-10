@@ -520,7 +520,10 @@ kernels, plus the layer-split weight trim and the mapped arena, which are separa
 
 For comparison on the same machine: llama.cpp (3cf0325, ROCm) on the same Coder IQ1_M measured 26.9 tok/s `tg128`.
 
-**Not done:** setup.py detection and an automatic build, Windows, images (`--vision`), MI60 and Radeon VII (the
+An experimental native Windows HIP 5.7 recipe is in [AMD_GFX906_WINDOWS.md](AMD_GFX906_WINDOWS.md), including
+the private SDK repairs and the checks to run. It is separate from the ready-made wave32 Windows engine.
+
+**Not done:** setup.py detection and an automatic build, images (`--vision`), MI60 and Radeon VII (the
 same gfx906 ISA; not run), a single-card run, the tensor-split experiment (the halves of every layer on two cards;
 it works but is not part of this build).
 

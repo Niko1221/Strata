@@ -314,6 +314,8 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
+#if !defined(STRATA_HIP_GFX906)
+    // Legacy Windows HIP device properties have no DXGI LUID; use the RAM cap below.
     int dev = 0;
     cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
@@ -327,6 +329,9 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
         return true;
     }
     (void) cudaGetLastError();
+#else
+    std::string err = "GPU LUID unavailable on HIP gfx906";
+#endif
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
