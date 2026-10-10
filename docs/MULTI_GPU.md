@@ -197,6 +197,76 @@ Prompts are read in chunks that flow through the cards in turn; while a later ca
 already reads chunk c+1. Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
 
+## Prompt chunks sized for the pipeline (`--prefill-pipe`, opt-in; setup's `--calibrate` sets it)
+
+`--prefill auto` takes the largest chunk the buffers allow (up to 8192), which is what one card wants: a chunk costs a
+fixed pass over its layers' experts (b: dequantized, or streamed over PCIe where they are not in VRAM) plus a part per
+token (a), so few large chunks are cheapest. A layer split reads a prompt as a pipeline - stage s reads chunk c while
+stage s+1 reads chunk c-1 - and then takes about sum_i (b + a C_i) + (S - 1) max_i (b + a C_i) for chunks C_i over S
+stages: large or uneven chunks keep the later cards waiting (a 10.7K-token prompt in a 7680 and a 3011 chunk over
+four stages: the first stage carried 24 of the 36 s), small ones pay b again and again.
+
+`--prefill-pipe R` reads each prompt in the chunk count with the least pipeline time for b/a = R tokens, when that
+beats today's split by 3% or more: every count from the fewest the buffers allow is tried, each chunk evened out on the
+256-token grid (at least 512, at most the buffers' chunk; keep `--prefill auto` so long prompts may use large chunks).
+b/a differs by an order of magnitude between rigs - about 700 tokens on four GP100 dies (every expert in VRAM, slow
+arithmetic), about 5000 on two RTX 3090 Ti (part of the experts streamed per chunk, fast arithmetic) - and a wrong one
+costs: a fixed 1024 read 19-24% slower on the two RTX 3090 Ti and 22-36% slower on two RTX 4090 (reported in the PR by
+MistyMoonR). So it is neither guessed nor learned from the prompts the engine serves (that made a prompt's chunks, and
+so its output bits, depend on how busy the PC happened to be): like the PCIe share and the draft floor, it is a
+setting of the PC that setup's `--calibrate` measures once (`tools/calibrate.py`: on a layer split, the prompt read
+speed of a 2K- and an 8K-token prompt - the same text every time, after a header of its own so nothing is reused -
+with the chunks off, evened out and b/a 768, 1536, 3072 and 6144; the best is kept only when it reads faster than off
+in each of three paired rounds and by more than 3% in the median) and writes into the config. Measured so: four GP100
+dies keep b/a 768 (355-356 against 219-220 tok/s in every round, +62%); two RTX 3090 Ti keep it off (nothing read
+faster than off, b/a 768 20% slower). A first version that read a different stretch of text per value and confirmed in
+two rounds picked 1536 on the RTX 3090 Ti pair from one fast read - where the experts are streamed, the read speed
+depends on the text. `--prefill-pipe 1` needs no
+b/a: it is `STRATA_PREFILL_EQUAL=1`'s rule (#693) - today's chunk count, evened out on the 256-token grid, and only
+when today's last chunk has 1024 tokens or more (3072 with `STRATA_PREFILL_CPU_SHARE` set). A chunk that size streams
+every expert its card does not hold, a shorter one only the experts it routes to, so a prompt just past the chunk size
+reads as one full chunk and a nearly free tail, and evening that out would add a second full pass over the experts:
+the first version evened every split out, and on two RTX 4090 MistyMoonR's calibration read 1,601 tok/s with it
+against 2,129 off. 0 (the default) is today's split;
+`STRATA_PREFILL_PIPE=<R>` is the same as the flag where the config cannot carry it. The chunk geometry changes the
+rounding, which is why it is opt-in.
+
+A prompt segment (the prompt between two of its cuts: the system-prompt root, the last turn, a `pin=`) is planned once,
+on its whole length and R, and every run of it reads in that chunk. So its chunks, and the loan its buffers are laid
+out for, are the same whether it is read in one run, in pieces between the windows of decoding `--batch` slots, or goes
+on after a `BYIELD` or from a periodic checkpoint taken inside it (the slot and the checkpoint keep the plan; the read
+goes on in it when it continues the same segment, else it plans again and says so in the log). The output bits then
+match as far as the experts the cards hold do (`--adapt-swaps 0` for byte-identical repeats, as without the pipe).
+Before this, a read beside decoding slots re-planned every piece, and one that went on after a `BYIELD` re-planned what
+was left. A chunk the pipe planned takes no `STRATA_PREFILL_CPU_SHARE`: the stages read
+such chunks at the same time, and which stage got the CPU pool first would decide which experts the CPU computed. The
+DONE line ends with `chunk=` (the first chunk of the request's longest batched segment) and `experts_streamed=` (the
+expert blobs its prompt copied to the cards), and the INFO line carries `prefill_cap`, `prefill_stages`,
+`stream_all_min` and `prefill_pipe`. One line in the log says what a plan chose:
+
+    strata prefill: 10058 tokens in 1280-token chunks over 4 stages (--prefill-pipe 706: b/a)
+
+Four GP100 dies (PH402 SKU 200, `--layer-split 12,24,36`, Flash-Next IQ3_XXS, 64K context), prompt tok/s, fresh
+prompts, two interleaved rounds (each within 0.2%), with b/a 1024 (the same chunks as 700-890, measured on this rig):
+
+| Prompt tokens | `--prefill auto` | `--prefill 2048` | `--prefill auto` + `--prefill-pipe 1024` (chunk) |
+| ---: | ---: | ---: | ---: |
+| 2,013 | 180.9 | 181.4 | 228.0 (1024) |
+| 3,865 | 207.6 | 276.5 | 312.4 (1024) |
+| 10,041 | 261.1 | 433.0 | 432.6 (2048) |
+| 28,998 | 475.7 | 554.1 | 559.7 (3328) |
+
+Two RTX 3090 Ti (CUDA 12.9 build for sm_86, two stages, Swift 1.5 IQ3_XXS, 1M context, 13,371 of 24,576 experts in
+VRAM), prompt tok/s, fresh prompts, two starts per arm, each reading the four prompts twice (the cold first pass after
+a card was freed is left out); b/a 5836 and 6432 (timed on the rig), against 1024:
+
+| Prompt tokens | `--prefill auto` | + b/a 5836 / 6432 (chunk) | for comparison: b/a 1024 |
+| ---: | ---: | ---: | ---: |
+| 2,035 | 694-815 | 698-816 (today's) | 560-562 |
+| 3,887 | 1,127-1,207 | 1,115-1,227 (today's) | 880-885 |
+| 10,063 | 1,437-1,553 | 1,654-1,681 (2 x 5120) | 1,109-1,113 |
+| 29,019 | 2,532-2,603 | 2,566-2,620 (today's) | 2,064-2,089 |
+
 ## Limits (for now)
 
 - **Works across cards** (bench/results/2026-09-29-layer-split-limits):

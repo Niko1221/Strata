@@ -919,6 +919,13 @@ class StrataEngine:
             self.last.update(prompt_read=int(f[14]))
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
+        for tok in f[16:]:                                # key=value fields after the positional ones (the prompt's
+            key, eq, value = tok.partition("=")           # first chunk and its streamed expert blobs)
+            if eq and key in ("chunk", "experts_streamed"):
+                try:
+                    self.last[key] = int(value)
+                except ValueError:
+                    pass
 
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
@@ -996,6 +1003,10 @@ class StrataEngine:
                 v = tune.get(k)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
                     keys += f" {k}={float(v)!r}"
+            # a layer split's prompt chunks (--prefill-pipe): 0 off, 1 evened out, > 1 the rig's b/a in tokens
+            v = tune.get("prefill_pipe")
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 262144.0:
+                keys += f" pipe={float(v)!r}"
             # --aux-cpus for this request: 1 puts the engine's threads that are neither pool workers nor the host on the
             # spare CPUs, 0 leaves them where they were created (true/false or 1/0; the engine started without a spare CPU
             # ignores a 1).  Anything else is not sent.
@@ -4061,13 +4072,13 @@ def request_stats(segments: list[dict]) -> dict:
     if not segments:
         return {}
     result = dict(segments[-1])
-    for key in ("reused", "prompt_read"):
+    for key in ("reused", "prompt_read", "chunk"):
         if key in segments[0]:
             result[key] = segments[0][key]
         else:
             result.pop(key, None)
     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
-                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb"):
+                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed"):
         if any(segment.get(key) is not None for segment in segments):
             result[key] = sum(segment.get(key) or 0 for segment in segments)
     return result

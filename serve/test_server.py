@@ -25,7 +25,7 @@ from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unma
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
-                          request_timings, serve, start_failure_hint)
+                          request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1522,6 +1522,13 @@ class SamplingKeys(unittest.TestCase):
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
 
+    def test_tune_prefill_pipe(self):
+        self.assertIn("pipe=1536.0", self.keys(temperature=0, strata_tune={"prefill_pipe": 1536}))
+        self.assertIn("pipe=0.0", self.keys(temperature=0, strata_tune={"prefill_pipe": 0}))
+        for bad in (-1, True, "800", 1e9):
+            self.assertFalse([x for x in self.keys(temperature=0, strata_tune={"prefill_pipe": bad})
+                              if x.startswith("pipe=")], bad)
+
     def test_tune_aux_cpus(self):
         for val, want in ((True, "aux_cpus=1"), (1, "aux_cpus=1"), (False, "aux_cpus=0"), (0, "aux_cpus=0"),
                           (1.0, "aux_cpus=1"), (0.0, "aux_cpus=0")):
@@ -2271,6 +2278,30 @@ class CancelledRead(unittest.TestCase):
         self.assertEqual((e.last["prompt_tokens"], e.last["prompt_read"], e.last["finish"]), (98179, 12288, "cancel"))
         StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0")
         self.assertNotIn("prompt_read", e.last)
+
+    def test_parse_done_chunk_fields(self):
+        """The prompt's first chunk and its streamed expert blobs come as key=value fields after the positional ones,
+        with or without the five --lookup-chain fields; an older line has neither."""
+        e = SimpleNamespace()
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=1536 "
+                                    "experts_streamed=24576")
+        self.assertEqual((e.last["chunk"], e.last["experts_streamed"], e.last["offloaded"]), (1536, 24576, 2))
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 1 2 3 4 5 chunk=8192 "
+                                    "experts_streamed=0")
+        self.assertEqual((e.last["chunk"], e.last["experts_streamed"]), (8192, 0))
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2")
+        self.assertNotIn("chunk", e.last)
+        self.assertNotIn("experts_streamed", e.last)
+        StrataEngine._parse_done(e, "DONE 5 12000 900.0 80.0 stop 3 4 0 7 9 0 0 0.0 12000 2 chunk=x other=1")
+        self.assertNotIn("chunk", e.last)
+        self.assertNotIn("other", e.last)
+
+    def test_request_stats_chunk_fields(self):
+        """Across a request's continuations the streamed blobs add up; the chunk is the request's own read's."""
+        stats = request_stats([{"prompt_ms": 10.0, "chunk": 1536, "experts_streamed": 100},
+                               {"prompt_ms": 2.0, "chunk": 64, "experts_streamed": 5}])
+        self.assertEqual((stats["chunk"], stats["experts_streamed"], stats["prompt_ms"]), (1536, 105, 12.0))
+        self.assertNotIn("chunk", request_stats([{"prompt_ms": 1.0}, {"prompt_ms": 1.0, "chunk": 64}]))
 
     def test_prompt_tokens_seen(self):
         last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}
