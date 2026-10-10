@@ -302,8 +302,17 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
             z.writestr(setup.EXE, b"engine")
 
     def get_prebuilt(self, updating, digest):
+        # engine/ is this test's own folder and the HEAD check on the published file passes, so the run reaches the
+        # checksum step on any PC.  Without those two: an engine compiled in this checkout makes get_prebuilt return
+        # None at once, and a release with no asset for this OS answers the HEAD with a 404 and stops before the
+        # download - either way the checksum path, which is what these tests are about, is never taken and no word
+        # is said.
         out = io.StringIO()
-        with contextlib_redirect(out),                 mock.patch.object(setup, "download", self.fake_download),                 mock.patch.object(setup, "engine_digest", return_value=digest):
+        with contextlib_redirect(out), \
+             mock.patch.object(setup, "engine_dir", lambda toolkit=13: Path(self.tmp.name) / "engine"), \
+             mock.patch.object(setup.urllib.request, "urlopen", return_value=io.BytesIO()), \
+             mock.patch.object(setup, "download", self.fake_download), \
+             mock.patch.object(setup, "engine_digest", return_value=digest):
             return setup.get_prebuilt(setup.PREBUILT_URL, {"arch": 89}, "gpu", updating=updating), out
 
     def test_updating_keeps_the_installed_engine_instead_of_stopping(self):
@@ -323,9 +332,8 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.assertIsNone(eng, "a refusal must not escape get_prebuilt as SystemExit")
 
     def test_a_first_install_stops_because_there_is_nothing_to_fall_back_to(self):
-        with mock.patch.object(setup, "download", self.fake_download),                 mock.patch.object(setup, "engine_digest", return_value=(999, "f" * 64)):
-            with self.assertRaises(SystemExit):
-                setup.get_prebuilt(setup.PREBUILT_URL, {"arch": 89}, "gpu")
+        with self.assertRaises(SystemExit):
+            self.get_prebuilt(updating=False, digest=(999, "f" * 64))
 
     def test_the_cuda_and_amd_paths_both_verify(self):
         # get_prebuilt_hip downloads the AMD engine from a SECOND `download(base + ...)` call site, which
