@@ -29,7 +29,8 @@ the head and the drafter on the worker would have saved that return trip and mov
 ### The protocol
 
 One TCP connection per main process. Every message is a 40-byte header (`magic` "STRM", `type`, three int64 fields
-`a b c`, payload `bytes`) and a payload. Protocol version 3.
+`a b c`, payload `bytes`) and a payload. Protocol version 4 (3 before the conversation checkpoints, which added
+`CkptSave` / `CkptRestore`, a keep list on `Reset` and the hello's `ckpt_max`: [CHECKPOINTS.md](CHECKPOINTS.md)).
 
 | message | header fields | payload | reply |
 |---|---|---|---|
@@ -37,7 +38,9 @@ One TCP connection per main process. Every message is a 40-byte header (`magic` 
 | Run (a verify window) | a = T, b = first position | int32 tokens[T], fp32 rows[T x 12,804] | RunOk: a = the worker's time (us), rows[T x 12,804] |
 | Commit | a = accepted count | none | none (an error comes back on the next reply) |
 | Prefill (a prompt chunk) | a = T, b = first position, c = flags (bit 0: the prompt is one chunk) and `skip` << 8 | int64 tokens[T], fp32 rows[T x 10,240] | PrefillOk: a = the worker's time (us), rows[(T - skip) x 10,240] |
-| Reset (a fresh prompt) | | none | ResetOk |
+| Reset (a fresh prompt) | | int64 keep[] (empty: none) | ResetOk |
+| CkptSave | a = id, b = position | int64 keep[] | CkptSaveOk: a = 1 stored, 0 not |
+| CkptRestore | a = id, b = position | int64 keep[] | CkptRestoreOk |
 | Error | | the message | |
 
 **The hello** carries what both sides must agree on, and each side checks the other's: the protocol, `n_embd`, `hc`,
@@ -451,7 +454,9 @@ reasons. The script and the files: [default_path_check.py](../../bench/results/2
   done. So far the start of every benchmark answer (the 100-160 characters the benchmark keeps) was read: coherent and
   on topic in every configuration.
 - **Reconnecting** without restarting the main engine (a broken link now ends the main engine at the next prompt's
-  reset, and the server starts it again; read from the code, not tested); conversation checkpoints across stages.
+  reset, and the server starts it again; read from the code, not tested); conversation checkpoints across stages
+  ([CHECKPOINTS.md](CHECKPOINTS.md): built, opt-in with `--prompt-cache N`, checked on two GPUs; a relay is not
+  run).
 - **A ring topology** for three or more PCs.
 - **A bf16 hand-off** (half the traffic); its effect on the answers would need measuring.
 - **Windows as the main PC** (only workers were run on Windows), and the clock behaviour of an in-process split on

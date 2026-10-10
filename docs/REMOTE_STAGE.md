@@ -398,7 +398,11 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 - **Refused at start** with a remote stage: `--batch`, `--pipeline-windows`, `--vision`, `--peer-device`,
   `--control-vector` (and the speed projection, which is one), `--expert-cache-remote`.
 - **Turned off without an error:** the prompt cache, the conversation cache and mid-prompt checkpoints (each PC
-  holds only its layers' state, so every prompt is read from token 0), and `--kv-grow`.
+  holds only its layers' state, so every prompt is read from token 0), and `--kv-grow`. With `--prompt-cache N`
+  given on the main process, conversation checkpoints at the prompt's turn boundaries come back: the worker keeps its
+  layers' part of each ([remote-stage/CHECKPOINTS.md](remote-stage/CHECKPOINTS.md): later turns of a 16K-token chat
+  get their first token in 0.33-0.49 s instead of 14-15 s on an RTX 3080 + RTX 2080 Ti). Mid-prompt checkpoints and
+  parking stay off, and session files are refused.
 - **Not checked** with a remote stage: `STRATA_PREFILL_HELP`, `--adapt-async 1`, `--resident-experts`,
   `--mmap-experts` / `--resident-budget-gib` (the mapped expert source gets no layer range; it maps the whole pack),
   `STRATA_PF_FUSED=1`.
