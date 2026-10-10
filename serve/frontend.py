@@ -1247,6 +1247,16 @@ class OutputParser:
                     i = call_end(self.buf)
                     if i >= 0:
                         drop = len(CALL_END)
+                    # the call's own </function> followed by neither its </tool_call> nor a call of the same wrapper
+                    # (recover's batch) but by another <tool_call> or by text: the model left the closer out, so the
+                    # call ends at its </function> instead of running on to a later </tool_call> (two calls merged
+                    # into the first one's name) or to the end of the output (its arguments lost)
+                    f = function_end(self.buf)
+                    nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                    # (a piece of one of those still arriving: wait for the rest)
+                    if nxt and not any(t.startswith(nxt) or nxt.startswith(t) for t in (CALL_END, FUNC_START,
+                                                                                         PARAM_START)):
+                        i, drop = f, 0
                     if self.recover:                # a batch in one wrapper: the next call follows this one's
                         f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
                         nxt = self.buf[f:].lstrip() if f >= 0 else ""
