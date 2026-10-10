@@ -1,0 +1,275 @@
+{
+  "config": {
+    "builds": [
+      {
+        "label": "main",
+        "commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+        "source": "/home/dflanag3/strata-cache-bench-20261008/main",
+        "config": "/home/dflanag3/strata-cache-bench-20261008/main.json",
+        "modes": [
+          "cold",
+          "pinned"
+        ]
+      },
+      {
+        "label": "pr1489",
+        "commit": "b299af0e8fc9f7ee1792c63a155707cc166ae7e4",
+        "source": "/home/dflanag3/strata-cache-bench-20261008/pr1489",
+        "config": "/home/dflanag3/strata-cache-bench-20261008/pr1489.json",
+        "modes": [
+          "cold",
+          "pinned"
+        ]
+      }
+    ],
+    "targets": "1024,2048,3072,4096,5120,6144,7168,8192"
+  },
+  "blocks": 10,
+  "samples_per_block": 20,
+  "started": 1791447234.06426,
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "results": [
+    {
+      "name": "block-00-main-cold",
+      "output": "block-00-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.57431173324585
+    },
+    {
+      "name": "block-00-main-pinned",
+      "output": "block-00-main-pinned-retry-1791454169",
+      "exit_code": 0,
+      "elapsed_s": 246.51750993728638
+    },
+    {
+      "name": "block-00-pr1489-cold",
+      "output": "block-00-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 342.74467420578003
+    },
+    {
+      "name": "block-00-pr1489-pinned",
+      "output": "block-00-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.46321034431458
+    },
+    {
+      "name": "block-01-pr1489-pinned",
+      "output": "block-01-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.11732292175293
+    },
+    {
+      "name": "block-01-pr1489-cold",
+      "output": "block-01-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.73072147369385
+    },
+    {
+      "name": "block-01-main-pinned",
+      "output": "block-01-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.04789876937866
+    },
+    {
+      "name": "block-01-main-cold",
+      "output": "block-01-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.6666693687439
+    },
+    {
+      "name": "block-02-main-cold",
+      "output": "block-02-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.96139454841614
+    },
+    {
+      "name": "block-02-main-pinned",
+      "output": "block-02-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.04204869270325
+    },
+    {
+      "name": "block-02-pr1489-cold",
+      "output": "block-02-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.56397557258606
+    },
+    {
+      "name": "block-02-pr1489-pinned",
+      "output": "block-02-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.95521903038025
+    },
+    {
+      "name": "block-03-pr1489-pinned",
+      "output": "block-03-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.41772651672363
+    },
+    {
+      "name": "block-03-pr1489-cold",
+      "output": "block-03-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.08342361450195
+    },
+    {
+      "name": "block-03-main-pinned",
+      "output": "block-03-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.12342190742493
+    },
+    {
+      "name": "block-03-main-cold",
+      "output": "block-03-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.0865943431854
+    },
+    {
+      "name": "block-04-main-cold",
+      "output": "block-04-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.27760767936707
+    },
+    {
+      "name": "block-04-main-pinned",
+      "output": "block-04-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.16798520088196
+    },
+    {
+      "name": "block-04-pr1489-cold",
+      "output": "block-04-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.0462701320648
+    },
+    {
+      "name": "block-04-pr1489-pinned",
+      "output": "block-04-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.13038325309753
+    },
+    {
+      "name": "block-05-pr1489-pinned",
+      "output": "block-05-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.28733801841736
+    },
+    {
+      "name": "block-05-pr1489-cold",
+      "output": "block-05-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.12403297424316
+    },
+    {
+      "name": "block-05-main-pinned",
+      "output": "block-05-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.26053500175476
+    },
+    {
+      "name": "block-05-main-cold",
+      "output": "block-05-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.9919226169586
+    },
+    {
+      "name": "block-06-main-cold",
+      "output": "block-06-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.9066050052643
+    },
+    {
+      "name": "block-06-main-pinned",
+      "output": "block-06-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.51678371429443
+    },
+    {
+      "name": "block-06-pr1489-cold",
+      "output": "block-06-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.06355476379395
+    },
+    {
+      "name": "block-06-pr1489-pinned",
+      "output": "block-06-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.73188042640686
+    },
+    {
+      "name": "block-07-pr1489-pinned",
+      "output": "block-07-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 207.39438366889954
+    },
+    {
+      "name": "block-07-pr1489-cold",
+      "output": "block-07-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.1731951236725
+    },
+    {
+      "name": "block-07-main-pinned",
+      "output": "block-07-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 207.4763786792755
+    },
+    {
+      "name": "block-07-main-cold",
+      "output": "block-07-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.9328808784485
+    },
+    {
+      "name": "block-08-main-cold",
+      "output": "block-08-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.35486912727356
+    },
+    {
+      "name": "block-08-main-pinned",
+      "output": "block-08-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.14019513130188
+    },
+    {
+      "name": "block-08-pr1489-cold",
+      "output": "block-08-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.87467432022095
+    },
+    {
+      "name": "block-08-pr1489-pinned",
+      "output": "block-08-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 209.33985042572021
+    },
+    {
+      "name": "block-09-pr1489-pinned",
+      "output": "block-09-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.4794898033142
+    },
+    {
+      "name": "block-09-pr1489-cold",
+      "output": "block-09-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 341.0243821144104
+    },
+    {
+      "name": "block-09-main-pinned",
+      "output": "block-09-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 208.50256609916687
+    },
+    {
+      "name": "block-09-main-cold",
+      "output": "block-09-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 340.87101101875305
+    }
+  ],
+  "active": null,
+  "finished": 1791464861.8754268
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "build": "main",
+    "comparison": "cold vs pinned",
+    "pairs": 1600,
+    "identical_requests": 1600,
+    "identical_output_text": 958,
+    "pairs_with_errors": 0
+  },
+  {
+    "build": "pr1489",
+    "comparison": "cold vs pinned",
+    "pairs": 1600,
+    "identical_requests": 1600,
+    "identical_output_text": 958,
+    "pairs_with_errors": 0
+  }
+]
