@@ -327,7 +327,8 @@ struct Options {
     /// the head is one norm, two bf16 projections and one 794 MB GEMV, all of which can be recomputed in Python
     /// from the manifest.  If Python agrees with the engine on the same `R`, the head is right and the layers
     /// are wrong; if it disagrees, the head is wrong.  Nothing else in the engine can be split that cheaply.
-    std::string ple_gguf;              // the ORIGINAL second GGUF shard: the PLE table is not in the pack
+    std::string ple_gguf;
+    int skip_ple_shard = 0;
     bool no_ple = false;              // explicit diagnostic ablation; never a normal inference default
     bool stream_token = false;        // R2.6 experiment: ordered work on the session stream
     bool check_logits = false;        // optional full-vocabulary finite scan
@@ -361,8 +362,7 @@ struct Options {
     bool cpu_oracle_q8_0 = false;      // pinned x86 activation scales/codes at both expert stages
     std::string native_head_gguf;      // native output.weight experiment; same model shard as the pack
     std::vector<std::string> native_dense_gguf; // repeat for native GDN/QSA projection shards
-    /// Every shard of --native's model (strata::gguf_split_paths: the metadata shard first; a missing shard is an
-    /// error) and of --native-head-gguf's (the same list unless that names another model).
+    /// Every shard of --native's model, except an explicitly skipped PLE-only shard.
     std::vector<std::string> native_shards, native_head_shards;
     /// Plan v0.3 P1: the whole native arithmetic set as ONE switch (model shard 1). It enables exactly the
     /// combination recorded in bench/results/2026-09-23-attention-ple plus the native indexer, and never the
@@ -654,8 +654,8 @@ void usage() {
                  "  --gpu LIST           run on these GPUs, comma-separated nvidia-smi/PCI indices (default: every\n"
                  "                       visible one); sets CUDA_VISIBLE_DEVICES/CUDA_DEVICE_ORDER inside the engine,\n"
                  "                       so a caller never has to export environment variables\n"
-                 "  --ple-gguf PATH      required PLE table (original second GGUF shard); with --native, the model's\n"
-                 "                       shard that holds per_layer_token_embd.weight when not given\n"
+                 "  --ple-gguf PATH      required PLE table (original shard or an external strata-ple file)\n"
+                 "  --skip-ple-shard N   skip model shard N when --ple-gguf supplies its PLE table\n"
                  "  --no-ple             explicit diagnostic ablation of the PLE layer\n"
                  "  --ple-io direct|mmap|ram  n-gram table reads (plan v0.3 P2). direct (default): unbuffered SSD\n"
                  "                       reads, the table never enters RAM or the file cache; mmap: A/B arm;\n"
@@ -783,8 +783,8 @@ void usage() {
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
-                 "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
-                 "                       which changes every number downstream - pass it for any real run\n"
+                 "  --ple-gguf PATH      the n-gram/PLE shard or an external strata-ple file\n"
+                 "  --skip-ple-shard N   skip model shard N when --ple-gguf supplies its PLE table\n"
                  "  --dump-mixed PATH    write the post-attention residual (n_embd, f32)\n"
                  "  --stage-timing       per-stage KERNEL-COUNT shares.  NOT a time profile: an uncaptured\n"
                  "                       event interval includes host gaps, so run with --gpu-only-full first\n"
@@ -1678,6 +1678,13 @@ int main(int argc, char** argv) {
         else if (a == "--dump-halves") o.dump_halves = next("--dump-halves");
         else if (a == "--dump-routing") o.dump_routing = next("--dump-routing");
         else if (a == "--ple-gguf") o.ple_gguf = next("--ple-gguf");
+        else if (a == "--skip-ple-shard") {
+            o.skip_ple_shard = std::atoi(next("--skip-ple-shard"));
+            if (o.skip_ple_shard < 1) {
+                std::fprintf(stderr, "strata generate: --skip-ple-shard needs a positive shard number\n");
+                return 2;
+            }
+        }
         else if (a == "--no-ple") o.no_ple = true;
         else if (a == "--ple-io") o.ple_io = next("--ple-io");
         else if (a == "--ple-row-cache") o.ple_row_cache = std::atoll(next("--ple-row-cache"));
@@ -2201,12 +2208,35 @@ int main(int argc, char** argv) {
     strata::core::layer_set_shared_early(!o.shared_late);
     if (!o.native_preset.empty()) {
         try {
-            // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
-            // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
-            o.native_shards = strata::gguf_split_paths(o.native_preset);
-            // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
-            // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
+            if (o.skip_ple_shard) {
+                if (o.ple_gguf.empty())
+                    throw std::runtime_error("--skip-ple-shard requires an explicit --ple-gguf");
+                const strata::GgufFile ple(o.ple_gguf);
+                const auto present_shards = strata::gguf_split_paths(o.native_preset, o.skip_ple_shard);
+                const strata::GgufFile model_meta(present_shards.front());
+                const std::string ple_error = strata::check_external_ple(model_meta, ple);
+                if (!ple_error.empty()) throw std::runtime_error(ple_error);
+                const std::string skipped_path = strata::gguf_split_shard_path(o.native_preset, o.skip_ple_shard);
+                if (!skipped_path.empty() && std::filesystem::exists(skipped_path)) {
+                    const strata::GgufFile skipped(skipped_path);
+                    const auto* count = skipped.get("split.count");
+                    const auto* number = skipped.get("split.no");
+                    const auto* total = skipped.get("split.tensors.count");
+                    const auto* model_count = model_meta.get("split.count");
+                    const auto* model_total = model_meta.get("split.tensors.count");
+                    const auto* tensor = skipped.find("per_layer_token_embd.weight");
+                    const auto* external = ple.find("per_layer_token_embd.weight");
+                    if (!count || !number || !total || !model_count || !model_total || count->u != model_count->u ||
+                        number->u != (uint64_t) o.skip_ple_shard - 1 || total->u != model_total->u ||
+                        skipped.tensors().size() != 1 || tensor == nullptr || external == nullptr ||
+                        tensor->shape != external->shape)
+                        throw std::runtime_error("the skipped shard is not the model's PLE-only shard");
+                }
+            }
+            o.native_shards = strata::gguf_split_paths(o.native_preset, o.skip_ple_shard);
             if (o.ple_gguf.empty() && !o.no_ple) {
+                if (o.skip_ple_shard)
+                    throw std::runtime_error("--skip-ple-shard requires an explicit --ple-gguf");
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
                 if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
@@ -2242,6 +2272,10 @@ int main(int argc, char** argv) {
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
+    }
+    if (o.skip_ple_shard && o.native_preset.empty()) {
+        std::fprintf(stderr, "strata generate: --skip-ple-shard requires --native\n");
+        return 2;
     }
     if (o.logits_stride > 1 && (o.max_new != 1 || o.dump_logits.empty())) {
         std::fprintf(stderr, "strata generate: --logits-stride > 1 requires --max-new 1 and --dump-logits\n");
@@ -2591,7 +2625,7 @@ int main(int argc, char** argv) {
         const strata::core::ModelGeometry g0;
         const auto embed_t0 = std::chrono::steady_clock::now();
         if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g0.n_embd,
-                               248320, err)) {
+                               248320, err, o.embd_gguf.empty() ? o.skip_ple_shard : 0)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -3847,7 +3881,9 @@ int main(int argc, char** argv) {
         const bool last = i + 1 == stages.size();
         const strata::core::WeightRef* wo_s = st.wt.find("output.weight");
         if (wo_s == nullptr ||
-            (last && !o.native_head_gguf.empty() && !st.head.load(o.native_head_shards, g.n_embd, wo_s->ne1, err))) {
+            (last && !o.native_head_gguf.empty() &&
+             !st.head.load(o.native_head_shards, g.n_embd, wo_s->ne1, err,
+                           o.native_head_gguf == o.native_preset ? o.skip_ple_shard : 0))) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d head: %s%s\n", st.dev,
                          wo_s == nullptr ? "output.weight is missing" : err.c_str(),
                          wo_s == nullptr ? "" : vram_free_note().c_str());
@@ -4014,7 +4050,8 @@ int main(int argc, char** argv) {
     strata::core::NativeHead native_head;
     if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
-        if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+        if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err,
+                              o.native_head_gguf == o.native_preset ? o.skip_ple_shard : 0)) {
             std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str());
             return 1;
         }

@@ -19,7 +19,8 @@ public:
     NativeHead(const NativeHead&) = delete;
     NativeHead& operator=(const NativeHead&) = delete;
 
-    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err,
+              int skipped_ple_shard = 0);
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }
     bool loaded() const { return weights_ != nullptr; }
@@ -46,7 +47,8 @@ public:
     ~NativeEmbed();
     NativeEmbed(const NativeEmbed&) = delete;
     NativeEmbed& operator=(const NativeEmbed&) = delete;
-    bool load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err);
+    bool load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err,
+              int skipped_ple_shard = 0);
     /// Rows for device token ids.
     void gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const;
     /// One row for a host token id.
