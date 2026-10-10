@@ -127,7 +127,13 @@ inline float f16_bits_to_f32(uint16_t h) {
 // float bits -> BF16, round to nearest even: the rounding the F32 -> BF16 path has always used.  F16 -> BF16 goes
 // through F32 (exact) and keeps 3 bits fewer of the mantissa, exactly as the F32 -> BF16 copy of an F32 router does;
 // the F16 range (max 65504) cannot overflow BF16 (max ~3.39e38) and its subnormals stay normal in BF16.
-inline uint16_t f32_bits_to_bf16(uint32_t u) { return (uint16_t) ((u + 0x7fffu + ((u >> 16) & 1u)) >> 16); }
+// NaN is special-cased: the rounding addition carries a NaN whose low mantissa bits are all ones into infinity
+// (F16 0x7c01 -> 0x7f80) or into a signed zero (F16 0x7fff -> 0x8000).  A NaN keeps a nonzero BF16 mantissa;
+// infinity and every finite value still take the rounding path.
+inline uint16_t f32_bits_to_bf16(uint32_t u) {
+    if (((u >> 23) & 0xffu) == 0xffu && (u & 0x7fffffu) != 0u) return (uint16_t) ((u >> 16) | 0x0040u);   // NaN stays NaN
+    return (uint16_t) ((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+}
 inline uint16_t f16_bits_to_bf16(uint16_t h) {
     uint32_t u;
     const float f = f16_bits_to_f32(h);
