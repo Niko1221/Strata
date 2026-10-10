@@ -219,6 +219,8 @@
       <label class="st-label" for="s-seed">Seed <output>empty = random</output></label>
       <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random">
     </div>
+    <div class="toggle-row"><span>Render math<br><span class="muted small">typeset equations in answers</span></span>
+      <button class="st-toggle" id="s-math" role="switch" aria-checked="false" aria-label="Render math"></button></div>
     <div class="toggle-row"><span>Show thinking<br><span class="muted small">expanded while it streams</span></span>
       <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking"></button></div>
     <div class="toggle-row" id="mcp-row" hidden><span>Use tools from MCP servers<br><span class="muted small"
@@ -238,6 +240,8 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
+<script src="web/math.js"></script>
+<script src="web/math-adapter.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>
