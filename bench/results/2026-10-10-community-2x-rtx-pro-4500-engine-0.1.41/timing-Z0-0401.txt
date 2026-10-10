@@ -1,0 +1,12 @@
+strata serve: prompt 30796 tokens = 0 reused + 30796 read in 6054 ms (5086.7 tok/s), 256 generated in 1604 ms (159.6 tok/s), drafts accepted 136 of 199, 2 checkpoints
+strata serve: prompt 30796 tokens = 0 reused + 30796 read in 5895 ms (5224.5 tok/s), 256 generated in 1455 ms (175.9 tok/s), drafts accepted 157 of 232, 2 checkpoints
+strata serve: prompt 30794 tokens = 0 reused + 30794 read in 5900 ms (5219.2 tok/s), 256 generated in 1445 ms (177.1 tok/s), drafts accepted 158 of 235, 2 checkpoints
+strata serve: prompt 30795 tokens = 0 reused + 30795 read in 5897 ms (5222.2 tok/s), 256 generated in 1482 ms (172.7 tok/s), drafts accepted 156 of 220, 2 checkpoints
+strata serve: prompt 120609 tokens = 0 reused + 120609 read in 19472 ms (6194.0 tok/s), 256 generated in 1901 ms (134.7 tok/s), drafts accepted 114 of 211, 6 checkpoints
+strata serve: prompt 120608 tokens = 0 reused + 120608 read in 19636 ms (6142.3 tok/s), 256 generated in 2003 ms (127.8 tok/s), drafts accepted 105 of 194, 6 checkpoints
+strata serve: prompt 120608 tokens = 0 reused + 120608 read in 19606 ms (6151.6 tok/s), 256 generated in 1814 ms (141.1 tok/s), drafts accepted 126 of 212, 6 checkpoints
+strata serve: prompt 120609 tokens = 0 reused + 120609 read in 19645 ms (6139.4 tok/s), 256 generated in 1938 ms (132.1 tok/s), drafts accepted 117 of 228, 6 checkpoints
+strata serve: prompt 248488 tokens = 0 reused + 248488 read in 40921 ms (6072.4 tok/s), 256 generated in 1528 ms (167.5 tok/s), drafts accepted 166 of 244, 6 checkpoints
+strata serve: prompt 248488 tokens = 0 reused + 248488 read in 41190 ms (6032.7 tok/s), 256 generated in 1758 ms (145.6 tok/s), drafts accepted 149 of 258, 6 checkpoints
+strata serve: prompt 248490 tokens = 0 reused + 248490 read in 41175 ms (6035.0 tok/s), 256 generated in 1713 ms (149.4 tok/s), drafts accepted 149 of 229, 6 checkpoints
+strata serve: prompt 248489 tokens = 0 reused + 248489 read in 41203 ms (6030.8 tok/s), 256 generated in 1755 ms (145.9 tok/s), drafts accepted 146 of 248, 6 checkpoints
