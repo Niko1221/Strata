@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "tokens": [
+    9419,
+    1017,
+    11,
+    1204,
+    513,
+    488,
+    30,
+    248046
+  ],
+  "last": {
+    "generated": 8,
+    "prompt_tokens": 18,
+    "prompt_ms": 125.3,
+    "decode_ms": 58.8,
+    "finish": "stop",
+    "drafts_accepted": 3,
+    "drafts_offered": 4,
+    "reused": 0,
+    "hits": 0,
+    "lookups": 0
+  },
+  "frontend": "existing installed Python frontend"
+}

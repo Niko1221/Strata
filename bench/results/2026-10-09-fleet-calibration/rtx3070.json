@@ -1,0 +1,289 @@
+{
+  "label": "RTX 3070",
+  "quantization": "IQ3_XXS",
+  "configuration": {
+    "backend": "cuda",
+    "gpu": 0,
+    "model_name": "qwen3.8-flash-next-gsq-rco-iq3_xxs",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--kv",
+      "int8",
+      "--pool-workers",
+      "7",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "64",
+      "--pcie-frac",
+      "0",
+      "--vram-reserve-mib",
+      "1024",
+      "--mtp",
+      "$MTP",
+      "--spec",
+      "2",
+      "--spec-min-p",
+      "0.5",
+      "--suffix-draft",
+      "0",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0",
+      "--stats",
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--max-context",
+      "16384",
+      "--ple-io",
+      "direct",
+      "--kv-resident",
+      "16384",
+      "--rope-scaling",
+      "none",
+      "--rope-scale",
+      "1",
+      "--prompt-cache-root",
+      "512",
+      "--prompt-cache-every",
+      "16384",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--mmap-experts"
+    ],
+    "env": {
+      "STRATA_IQ_MT_MIN": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "STRATA_ATTN_MERGE_V2": "1",
+      "STRATA_PREFILL_CPU_SHARE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0",
+      "STRATA_PREFILL_LAYER_CACHE": "0"
+    }
+  },
+  "candidate_configuration": {
+    "backend": "cuda",
+    "gpu": 0,
+    "model_name": "qwen3.8-flash-next-gsq-rco-iq3_xxs",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "1024",
+      "--mtp",
+      "$MTP",
+      "--spec",
+      "2",
+      "--suffix-draft",
+      "0",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0",
+      "--stats",
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--max-context",
+      "16384",
+      "--ple-io",
+      "direct",
+      "--kv-resident",
+      "16384",
+      "--rope-scaling",
+      "none",
+      "--rope-scale",
+      "1",
+      "--prompt-cache-root",
+      "512",
+      "--prompt-cache-every",
+      "16384",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--mmap-experts",
+      "--spec-min-p",
+      "0.5",
+      "--adapt-every",
+      "1",
+      "--adapt-swaps",
+      "160",
+      "--adapt-decay",
+      "0.97"
+    ],
+    "env": {
+      "STRATA_IQ_MT_MIN": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "STRATA_ATTN_MERGE_V2": "1",
+      "STRATA_PREFILL_CPU_SHARE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0",
+      "STRATA_PREFILL_LAYER_CACHE": "0"
+    }
+  },
+  "calibration": {
+    "settings": {
+      "--adapt-every": "1",
+      "--adapt-swaps": "160",
+      "--adapt-decay": "0.97"
+    },
+    "report": {
+      "default": {
+        "pcie_frac": 0.55,
+        "spec_min_p": 0.5,
+        "pool_workers": 7
+      },
+      "pcie_sweep": {
+        "0.0": [
+          10.823883575602288,
+          11.02915833735438,
+          10.995996769925949
+        ],
+        "0.2": [
+          10.85896076352068,
+          10.84295504409186,
+          11.111979234488805
+        ],
+        "0.35": [
+          11.095988973360958,
+          10.742761225346204,
+          11.088011088011088
+        ],
+        "0.55": [
+          11.248593925759279,
+          10.825256676984488,
+          10.908842980841344
+        ],
+        "0.75": [
+          11.067781515075527,
+          10.91889309721227,
+          10.929148380266058
+        ],
+        "0.9": [
+          10.929988301496897,
+          11.004221150456933,
+          11.094065541659083
+        ],
+        "1.0": [
+          10.766888453353298,
+          10.907634491985446,
+          11.144001393000174
+        ]
+      },
+      "min_p_sweep": {
+        "0.3": [
+          10.644225092097495,
+          10.58017374629074,
+          10.67449462939489
+        ],
+        "0.5": [
+          11.00526189084156,
+          10.966039546280115,
+          11.05249069604787
+        ],
+        "0.7": [
+          11.097624414773712,
+          11.227676221886952,
+          11.287577491865008
+        ]
+      },
+      "confirm": {
+        "0.55/0.5": [
+          11.116128808142564,
+          10.946720259984607,
+          10.911911886311518
+        ],
+        "0.35/0.7": [
+          11.167140688524016,
+          11.103400416377514,
+          11.159157483609988
+        ]
+      },
+      "workers": {
+        "7": [
+          11.12820914078054,
+          10.95852881750625
+        ],
+        "5": [
+          10.969798772753762,
+          10.798771639725981
+        ],
+        "4": [
+          10.748263903467155,
+          10.59208076461583
+        ],
+        "2": [
+          9.509446297630811,
+          9.400083719495628
+        ]
+      },
+      "adapt": {
+        "default": [
+          11.798383653070585,
+          11.65560551826045
+        ],
+        "1/80/0.97": [
+          11.739405439595194,
+          12.078976428185142
+        ],
+        "1/160/0.97": [
+          12.176042219175432,
+          12.176019378280179
+        ]
+      },
+      "seconds": 3012,
+      "tok_s": 12.2
+    },
+    "started": 1791565711.1652973,
+    "finished": 1791568723.7703516,
+    "exe_sha256": "45b63cffaaa2ced00497c2b9867f85e890cec0450f284a2108262ac7fb5e4ce6"
+  },
+  "pcie_draft_comparison": {
+    "default": 10.946720259984607,
+    "candidate": 11.159157483609988,
+    "gain_pct": 1.9406472311340517,
+    "candidate_key": "0.35/0.7"
+  },
+  "generated_token_count_note": "Up to 128 or 512; actual counts and decode milliseconds are in timing-lines.txt.",
+  "candidate_status": "selected by the tuner; no independent full-configuration check",
+  "source_commit": "76ce987ae5af9f08c4e6ce59edabb8099714a06d",
+  "hardware": {
+    "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+    "ram_gib": 62.68013000488281,
+    "os": "Ubuntu 24.04.5 LTS",
+    "storage_inventory": [
+      "nvme0n1 INTEL SSDPEKNW010T8    0 953.9G"
+    ],
+    "gpu_inventory": {
+      "code": 0,
+      "output": "NVIDIA GeForce RTX 3070, 8192 MiB, 595.91.07, 1, 16, 240.00 W"
+    },
+    "profile": {
+      "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+      "bytes": 196632
+    },
+    "inventory_note": "Inventory after the original sweep; current PCIe generation can be downclocked at idle. Historical binary identity comes from calibration.exe_sha256."
+  }
+}

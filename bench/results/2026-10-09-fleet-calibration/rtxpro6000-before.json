@@ -1,0 +1,215 @@
+{
+  "label": "RTX PRO 6000 (old build)",
+  "quantization": "IQ3_S",
+  "configuration": {
+    "gpu": 0,
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--mtp",
+      "$MTP",
+      "--max-context",
+      "16384",
+      "--kv",
+      "int8"
+    ],
+    "env": {
+      "STRATA_PREFILL_LAYER_CACHE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0"
+    }
+  },
+  "candidate_configuration": {
+    "gpu": 0,
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--mtp",
+      "$MTP",
+      "--max-context",
+      "16384",
+      "--kv",
+      "int8",
+      "--pcie-frac",
+      "0.90",
+      "--spec-min-p",
+      "0.70"
+    ],
+    "env": {
+      "STRATA_PREFILL_LAYER_CACHE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0"
+    }
+  },
+  "calibration": {
+    "settings": {
+      "--pcie-frac": "0.90",
+      "--spec-min-p": "0.70"
+    },
+    "report": {
+      "default": {
+        "pcie_frac": 0.55,
+        "spec_min_p": 0.5,
+        "pool_workers": 15
+      },
+      "pcie_sweep": {
+        "0.0": [
+          176.11447440836542,
+          175.36648856007673,
+          175.27043680679174
+        ],
+        "0.2": [
+          175.9208356239692,
+          175.39051795012332,
+          175.24644030668128
+        ],
+        "0.35": [
+          175.82417582417582,
+          175.55890824303938,
+          175.19846701341362
+        ],
+        "0.55": [
+          175.7035003431709,
+          175.55890824303938,
+          175.19846701341362
+        ],
+        "0.75": [
+          175.77588574567426,
+          175.58299039780522,
+          175.1505199781062
+        ],
+        "0.9": [
+          175.72762218561232,
+          175.60707916037865,
+          175.10259917920658
+        ],
+        "1.0": [
+          175.65527651982984,
+          175.60707916037865,
+          175.07864861168105
+        ]
+      },
+      "min_p_sweep": {
+        "0.3": [
+          174.05493608920318,
+          175.55890824303938,
+          175.51076374605788
+        ],
+        "0.5": [
+          174.98291182501708,
+          174.8872796830168,
+          174.67248908296943
+        ],
+        "0.7": [
+          181.58604057313096,
+          181.58604057313096,
+          181.4573291749362
+        ]
+      },
+      "confirm": {
+        "0.55/0.5": [
+          174.60100941208566,
+          174.48200654307524,
+          174.50579413769597
+        ],
+        "0.9/0.7": [
+          181.32880011333052,
+          181.3031161473088,
+          181.25177003681677
+        ]
+      },
+      "workers": {
+        "15": [
+          181.6375762735916,
+          181.56028368794327
+        ],
+        "10": [
+          181.7923590399091,
+          181.7923590399091
+        ],
+        "8": [
+          181.89569418786414,
+          181.81818181818184
+        ],
+        "4": [
+          181.92154633314382,
+          181.71493469619534
+        ]
+      },
+      "failed_starts": {
+        "the expert tier 1/80/0.97": "the engine exited before it was ready (see $LOCAL_PATH)",
+        "the expert tier 1/160/0.97": "the engine exited before it was ready (see $LOCAL_PATH)"
+      },
+      "adapt": {
+        "default": [
+          175.40448039825765,
+          179.39538583929993
+        ]
+      },
+      "seconds": 296,
+      "tok_s": 177.4
+    },
+    "started": 1791565711.003039,
+    "finished": 1791566007.624734,
+    "exe_sha256": "e2d390fd58466a75e7d80ae34e02c66950c962835e23f099e3d19b647fd60587"
+  },
+  "pcie_draft_comparison": {
+    "default": 174.50579413769597,
+    "candidate": 181.3031161473088,
+    "gain_pct": 3.8951841359773587,
+    "candidate_key": "0.9/0.7"
+  },
+  "generated_token_count_note": "Up to 128 or 512; actual counts and decode milliseconds are in timing-lines.txt.",
+  "candidate_status": "selected by the tuner; no independent full-configuration check",
+  "hardware": {
+    "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
+    "ram_gib": 124.9084243774414,
+    "os": "Ubuntu 24.04.5 LTS",
+    "storage_inventory": [
+      "nvme0n1 WD_BLACK SN8100 2000GB    0   1.8T"
+    ],
+    "gpu_inventory": {
+      "code": 0,
+      "output": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 97887 MiB, 595.91.07, 4, 16, 400.00 W"
+    },
+    "profile": {
+      "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+      "bytes": 196632
+    },
+    "inventory_note": "Inventory after the original sweep; current PCIe generation can be downclocked at idle. Historical binary identity comes from calibration.exe_sha256."
+  }
+}
