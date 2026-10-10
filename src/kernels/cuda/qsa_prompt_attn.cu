@@ -1254,57 +1254,77 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     for (int j = 0; j < 4; ++j) acc[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
     const int n_chunks = (n + WCH - 1) / WCH;
-    for (int ci = 0; ci < n_chunks; ++ci) {
+    // chunk ci's cell for this lane (lane = cell index): its pool row, or -1 (past the selection, or a block the KV
+    // streaming left non-resident: masked as in the decode kernel)
+    auto row_of = [&](int ci) -> long long {
         const int c0 = ci * WCH;
-        // this lane's cell of the chunk (lane = cell index): its pool row, or -1 (past the selection, or a block the
-        // KV streaming left non-resident: masked as in the decode kernel)
-        long long myrow = -1;
+        long long r = -1;
         if (c0 + lane < n) {
             const int cell = __ldg(ids + c0 + lane);
             const long long page = (long long) __ldg(p.page_table + cell / page_size);
-            if (page >= 0) myrow = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
-        // stage this wave's V slice of the chunk (64 bytes of each row) and the V scale; the K fragments come straight
-        // from global memory (8 consecutive codes per lane)
-        {
-            uint4 v0 = make_uint4(0, 0, 0, 0), v1 = v0, v2 = v0, v3 = v0;
-            float vsc = 0.0f;
-            if (myrow >= 0) {
-                const uint4* src = reinterpret_cast<const uint4*>(p.v_q + myrow * HD + dim0);
-                v0 = __ldg(src); v1 = __ldg(src + 1); v2 = __ldg(src + 2); v3 = __ldg(src + 3);
-                vsc = __half2float(__ushort_as_half(__ldg(p.v_scale + myrow * (HD / KV_Q8_GROUP) + warp)));
-            }
-            uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
-            dst[0] = v0; dst[1] = v1; dst[2] = v2; dst[3] = v3;
-            S.vs[warp][lane] = vsc;
-            if (warp == 0) S.valid[lane] = myrow >= 0;
+        return r;
+    };
+    // a chunk's global reads: this wave's V slice (64 bytes of each row) and V scale, and the K fragments (8 or 16
+    // consecutive codes per lane) and K scales of its two 16-cell tiles
+    struct Chunk {
+        long long row;
+        uint4 v[4];
+        float vsc, ksc[2];
+        uint32_t kx[2][4][PA_KL / 4];
+    };
+    auto fetch = [&](long long row, Chunk& d) {
+        d.row = row;
+        d.v[0] = d.v[1] = d.v[2] = d.v[3] = make_uint4(0, 0, 0, 0);
+        d.vsc = 0.0f;
+        if (row >= 0) {
+            const uint4* src = reinterpret_cast<const uint4*>(p.v_q + row * HD + dim0);
+            d.v[0] = __ldg(src); d.v[1] = __ldg(src + 1); d.v[2] = __ldg(src + 2); d.v[3] = __ldg(src + 3);
+            d.vsc = __half2float(__ushort_as_half(__ldg(p.v_scale + row * (HD / KV_Q8_GROUP) + warp)));
         }
-        // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
-            const long long rr = __shfl(myrow, nt * 16 + col);
-            wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-            float ksc = 0.0f;
-            if (rr >= 0) ksc = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
+            const long long rr = __shfl(row, nt * 16 + col);
+            d.ksc[nt] = 0.0f;
+            if (rr >= 0) d.ksc[nt] = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
 #pragma unroll
             for (int kk = 0; kk < 4; ++kk) {
-                uint32_t kx[PA_KL / 4] = {};
+#pragma unroll
+                for (int i = 0; i < PA_KL / 4; ++i) d.kx[nt][kk][i] = 0;
                 if (rr >= 0) {
                     const uint32_t* src = reinterpret_cast<const uint32_t*>(p.k_q + rr * HD + dim0 + kk * 16 + PA_KOFF(half));
 #if STRATA_PA_GFX11
                     const uint4 v = __ldg(reinterpret_cast<const uint4*>(src));
-                    kx[0] = v.x; kx[1] = v.y; kx[2] = v.z; kx[3] = v.w;
+                    d.kx[nt][kk][0] = v.x; d.kx[nt][kk][1] = v.y; d.kx[nt][kk][2] = v.z; d.kx[nt][kk][3] = v.w;
 #else
                     const uint2 v = __ldg(reinterpret_cast<const uint2*>(src));
-                    kx[0] = v.x; kx[1] = v.y;
+                    d.kx[nt][kk][0] = v.x; d.kx[nt][kk][1] = v.y;
 #endif
                 }
-                const wh8 b = i8_to_h(kx);
+            }
+        }
+    };
+    auto chunk = [&](const Chunk& cd) {
+        // stage this wave's V slice and scale
+        {
+            uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
+            dst[0] = cd.v[0]; dst[1] = cd.v[1]; dst[2] = cd.v[2]; dst[3] = cd.v[3];
+            S.vs[warp][lane] = cd.vsc;
+            if (warp == 0) S.valid[lane] = cd.row >= 0;
+        }
+        // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
+#pragma unroll
+        for (int nt = 0; nt < 2; ++nt) {
+            wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+            for (int kk = 0; kk < 4; ++kk) {
+                const wh8 b = i8_to_h(cd.kx[nt][kk]);
                 s = wmma_f16(qh[kk], b, s);
                 if constexpr (SPLIT) s = wmma_f16(ql[kk], b, s);
             }
 #pragma unroll
-            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * ksc;
+            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * cd.ksc[nt];
         }
         __syncthreads();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
@@ -1380,6 +1400,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         }
         // no barrier here: `v`/`vs` are this wave's own, and `p`/`alpha`/`valid` are rewritten only after the next
         // chunk's first barrier (which every wave reaches after its p.v)
+    };
+    // all of a chunk's reads are issued before its compute (they were interleaved with the q.k WMMAs and the V
+    // staging): 32K context, 2,048 queries, gfx1151, STRATA_PA_FAST=1: 12.54 -> 11.32 ms; the same bits
+    for (int ci = 0; ci < n_chunks; ++ci) {
+        Chunk d;
+        fetch(row_of(ci), d);
+        chunk(d);
     }
     float inv[8];
 #pragma unroll
