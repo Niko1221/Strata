@@ -189,8 +189,9 @@ failed overall: 17/17 lifecycle and 10/12 final workflow checks passed. The
 supervisor tried an unavailable search tool, then read the worker log despite
 having complete feedback. The worker compiled only once and passed 2,096 cases.
 The later independent and function-continuation stages again did not run.
-There was no third repeat. These are two lifecycle successes and zero strict
-workflow successes on .42, not reliable autonomous acceptance.
+There was no third unchanged repeat. These two attempts are lifecycle successes
+and strict workflow failures. The separately patched Hermes qualification below
+does not relabel either attempt.
 
 The repeat agent interval was 265.892 seconds; sampled minima were 9.423 GiB
 RAM and 322 MiB native VRAM, with clean owned-process teardown. A separate
@@ -210,6 +211,48 @@ the corrected source is checked by
 [run 38073750104](https://github.com/midhatn/Strata/actions/runs/38073750104).
 This is a test-ownership fix, not a performance improvement or an imported
 research technique. The measured runtime and native hashes above are unchanged.
+
+## Hermes delegated-evidence correction and complete .42 workflow
+
+The separate [Hermes PR #136266](https://github.com/NousResearch/hermes-agent/pull/136266)
+clarifies when complete, consistent worker check evidence can satisfy supervisor
+verification and adds compact terminal outcome/exit/truncation metadata linked
+to the actual tool call. Missing, failed, truncated, conflicting or unsupported
+evidence still needs follow-up; explicitly required independent checks remain.
+The stop-verification hook is unchanged. This is not a task-verified flag.
+
+Paired Hermes source `873419f6bfc7c19cd18406d4da91027b4cbcf65e` passed the original
+strict task on the same frozen Strata runtime, native binary and supplied fixture.
+The [allowlisted result](hermes-evidence01-results.json) records all **17 lifecycle
+and 12 workflow gates passing**, one sequential worker, exactly one child compiler
+command and no additional supervisor command. The build passed 2,096 fixture
+cases; all 104 independent cases, the initial vision check and the real post-agent
+function-call/result continuation also passed. Both model process identities
+remained unchanged through the final continuation, and cleanup left no survivors.
+
+The agent interval was **215.382 s** and the full harness **287.691 s**, including
+startup, independent checks and cleanup. The compiler took 2.179 s; the foreground
+wrapper deliberately held the lease for an additional 15 seconds to test renewal.
+Minimum sampled available RAM was **4.572 GiB** and native free VRAM **322 MiB**.
+All six tool-bearing model requests used high reasoning. This is one bounded
+success, not a matched speedup or a general instruction-following guarantee.
+
+The harness now continues independent correctness/function checks after a
+workflow-only failure while retaining failed overall status. Resource, ownership
+or containment failures still abort. Nine checker regressions passed, and no gate
+was relaxed. The earlier failed records and their skipped stages remain intact.
+
+The Hermes patch has 20 passing regression tests; the untouched base fails 17 of
+those tests. Its broader focused suite passed 188 tests with four skips and three
+optional-schema/provider dependency failures reproduced on the untouched base.
+All 11 repository checks passed. External API read-back behavior was not exercised
+by this local compiler fixture. The standalone upstream PR contains no middleware
+dependency; this paired validation includes the existing resource middleware.
+
+The test retains the bounded explicit zero additional return allowance described
+above. The separately installed adaptive package now pins this tested Hermes
+source, while its default additional return allowance remains 256 MiB. No Strata
+kernel/configuration change caused this agent improvement.
 
 ## Limits
 
