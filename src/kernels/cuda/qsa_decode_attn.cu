@@ -18,7 +18,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
-constexpr int G = 12;            // query heads per KV head (24 / 2)
+constexpr int G_FLASH = 12;      // query heads per KV head: Flash-Next 24 / 2 (the kernels' G; Qwen3.6's 16 / 2 = 8 is
+                                 // their other instance)
 constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
@@ -84,6 +85,54 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
     } else load8_q4(p, value, row, d0, out);
 }
 
+// A selected cell's row (`srow`): >= 0 a VRAM pool row; -1 masked (past the selection, or not resident in a layer
+// without a host copy); <= -2 the host copy's row -2 - r (KV streaming: a block the resolve could not make resident,
+// read in place over PCIe).
+__device__ __forceinline__ long long cell_row(const QsaAttnPools& p, int cell, int kvh, int n_kv_heads, int page_size) {
+    const long long block = cell / page_size, page = (long long) p.page_table[block];
+    if (page >= 0) return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+    if (p.host_k_pool == nullptr && p.host_k_q == nullptr && p.host_k_q4 == nullptr) return -1;
+    return -2 - ((block * n_kv_heads + kvh) * page_size + (cell % page_size));
+}
+// One V element of pool row `row`, dimension `d` (the value loop's own thread index), per KV format.
+template <int KV_MODE>
+__device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, int d) {
+    if constexpr (KV_MODE == 0) {
+        return __half2float(__ushort_as_half(p.v_pool[row * HD + d]));
+    } else if constexpr (KV_MODE == 1) {
+        const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
+        return (float) p.v_q[row * HD + d] * sc;
+    } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
+        constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
+        const int b = d / QK4_0;
+        const int rem = d % QK4_0;
+        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + row * bytes_per_head) + b;
+        const float dd = __half2float(__ushort_as_half(blk->d));
+        const int j = rem < 16 ? rem : (rem - 16);
+        const uint8_t byte = blk->qs[j];
+        const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
+        return (float) nibble * dd;
+    }
+}
+// The host copy as pools, for a row <= -2 (its own row: -2 - r).
+__device__ __forceinline__ QsaAttnPools host_pools(const QsaAttnPools& p) {
+    QsaAttnPools h;
+    h.k_pool = p.host_k_pool; h.v_pool = p.host_v_pool;
+    h.k_q = p.host_k_q; h.v_q = p.host_v_q;
+    h.k_scale = p.host_k_scale; h.v_scale = p.host_v_scale;
+    h.k_q4 = p.host_k_q4; h.v_q4 = p.host_v_q4;
+    return h;
+}
+template <int KV_MODE>
+__device__ __forceinline__ void load8r(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
+    if (row >= 0) load8<KV_MODE>(p, value, row, d0, out);
+    else load8<KV_MODE>(host_pools(p), value, -2 - row, d0, out);
+}
+template <int KV_MODE>
+__device__ __forceinline__ float load_v1r(const QsaAttnPools& p, long long row, int d) {
+    return row >= 0 ? load_v1<KV_MODE>(p, row, d) : load_v1<KV_MODE>(host_pools(p), -2 - row, d);
+}
+
 // Exact-intent score reduce-scatter: the same butterfly pairs as twelve warp_sum calls,
 // with 16 shuffle exchanges instead of 60. Used only by the opt-in gfx906 INT8
 // query-swizzled specialization; softmax, value accumulation and merge are unchanged.
@@ -114,7 +163,7 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
 }
 
-template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
+template <int KV_MODE, bool LANE_CELL = false, int G = G_FLASH, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -152,13 +201,9 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     }
     if (t < CHUNK) {
         long long r = -1;
-        if (t < n_here) {
-            const int cell = ids[c0 + t];
-            const long long page = (long long) p.page_table[cell / page_size];
-            // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
-            // (score -FLT_MAX, weight 0) instead of being read from before the pool.
-            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-        }
+        // a block the KV streaming could not make resident (page -1) is read from the host copy in place; with no host
+        // copy its cells are masked (score -FLT_MAX, weight 0) instead of being read from before the pool
+        if (t < n_here) r = cell_row(p, ids[c0 + t], kvh, n_kv_heads, page_size);
         srow[t] = r;
     }
     __syncthreads();
@@ -169,7 +214,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         // reductions per cell
         constexpr int HPT = G * CHUNK / THREADS;   // heads per thread (3)
         const int c = t % CHUNK, h0 = (t / CHUNK) * HPT;
-        if (c >= n_here || srow[c] < 0) {
+        if (c >= n_here || srow[c] == -1) {
 #pragma unroll
             for (int j = 0; j < HPT; ++j) sp[h0 + j][c] = -FLT_MAX;
         } else {
@@ -177,7 +222,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
             for (int l = 0; l < 32; ++l) {
                 float k8[8];
-                load8<KV_MODE>(p, false, srow[c], l * 8, k8);
+                load8r<KV_MODE>(p, false, srow[c], l * 8, k8);
 #pragma unroll
                 for (int j = 0; j < HPT; ++j) {
                     const float4 qa = *reinterpret_cast<const float4*>(&sq[h0 + j][l * 8]);
@@ -199,13 +244,13 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     } else
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
-        if (c >= n_here || srow[c] < 0) {
+        if (c >= n_here || srow[c] == -1) {
             if (lane < G) sp[lane][c] = -FLT_MAX;
             continue;
         }
         if constexpr (REDUCE12) {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        load8r<KV_MODE>(p, false, srow[c], lane * 8, k8);
         float part[16];
 #pragma unroll
         for (int h = 0; h < G; ++h) {
@@ -223,7 +268,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         if ((lane & 1) == 0 && head < G) sp[head][c] = score * scale;
         } else {
         float k8[8];
-        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        load8r<KV_MODE>(p, false, srow[c], lane * 8, k8);
 #pragma unroll
         for (int h = 0; h < G; ++h) {
             const int qflip = QUERY_SWIZZLE ? (lane & 4) : 0;
@@ -241,8 +286,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
         const float m = warp_max(fmaxf(a, b));
-        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
+        const float ea = (lane < n_here && srow[lane] != -1) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && srow[lane + 32] != -1) ? __expf(b - m) : 0.0f;
         sp[h][lane] = ea;
         sp[h][lane + 32] = eb;
         const float l = warp_sum(ea + eb);
@@ -254,24 +299,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
     for (int c = 0; c < n_here; ++c) {
-        if (srow[c] < 0) continue;   // masked above, weight 0
-        float v;
-        if constexpr (KV_MODE == 0) {
-            v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
-        } else if constexpr (KV_MODE == 1) {
-            const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
-            v = (float) p.v_q[srow[c] * HD + t] * sc;
-        } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
-            constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
-            const int b = t / QK4_0;
-            const int rem = t % QK4_0;
-            const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + srow[c] * bytes_per_head) + b;
-            const float d = __half2float(__ushort_as_half(blk->d));
-            const int j = rem < 16 ? rem : (rem - 16);
-            const uint8_t byte = blk->qs[j];
-            const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
-            v = (float) nibble * d;
-        }
+        if (srow[c] == -1) continue;   // masked above, weight 0
+        const float v = load_v1r<KV_MODE>(p, srow[c], t);
 #pragma unroll
         for (int h = 0; h < G; ++h) acc[h] = fmaf(sp[h][c], v, acc[h]);
     }
@@ -343,28 +372,8 @@ __device__ __forceinline__ int head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
 }
 
-// One V element of pool row `row`, dimension `d` (the value loop's own thread index), per KV format.
-template <int KV_MODE>
-__device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, int d) {
-    if constexpr (KV_MODE == 0) {
-        return __half2float(__ushort_as_half(p.v_pool[row * HD + d]));
-    } else if constexpr (KV_MODE == 1) {
-        const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
-        return (float) p.v_q[row * HD + d] * sc;
-    } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
-        constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
-        const int b = d / QK4_0;
-        const int rem = d % QK4_0;
-        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + row * bytes_per_head) + b;
-        const float dd = __half2float(__ushort_as_half(blk->d));
-        const int j = rem < 16 ? rem : (rem - 16);
-        const uint8_t byte = blk->qs[j];
-        const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
-        return (float) nibble * dd;
-    }
-}
 
-template <int KV_MODE, int NC_ = 2, bool DPP_ = false>
+template <int KV_MODE, int G = G_FLASH, int NC_ = 2, bool DPP_ = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -399,13 +408,9 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
     if (t < CHUNK) {
         long long r = -1;
-        if (t < n_here) {
-            const int cell = ids[c0 + t];
-            const long long page = (long long) p.page_table[cell / page_size];
-            // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
-            // (score -FLT_MAX, weight 0) instead of being read from before the pool.
-            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-        }
+        // a block the KV streaming could not make resident (page -1) is read from the host copy in place; with no host
+        // copy its cells are masked (score -FLT_MAX, weight 0) instead of being read from before the pool
+        if (t < n_here) r = cell_row(p, ids[c0 + t], kvh, n_kv_heads, page_size);
         srow[t] = r;
     }
     __syncthreads();
@@ -421,12 +426,12 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 #pragma unroll
         for (int j = 0; j < NC; ++j) {
             cc[j] = warp + WARPS * (i + j);
-            all_ok = all_ok && cc[j] < n_here && srow[cc[j]] >= 0;
+            all_ok = all_ok && cc[j] < n_here && srow[cc[j]] != -1;
         }
         if (all_ok) {
             float kk[NC][8];
 #pragma unroll
-            for (int j = 0; j < NC; ++j) load8<KV_MODE>(p, false, srow[cc[j]], lane * 8, kk[j]);
+            for (int j = 0; j < NC; ++j) load8r<KV_MODE>(p, false, srow[cc[j]], lane * 8, kk[j]);
             float pp[NC][16];
 #pragma unroll
             for (int h = 0; h < G; ++h) {
@@ -447,12 +452,12 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
         } else {
             for (int k = 0; k < NC; ++k) {   // a masked or out-of-range cell in the group: one cell at a time
                 const int c = cc[k];
-                if (c >= n_here || srow[c] < 0) {
+                if (c >= n_here || srow[c] == -1) {
                     if (lane < G) sp[lane][c] = -FLT_MAX;
                     continue;
                 }
                 float k8[8];
-                load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+                load8r<KV_MODE>(p, false, srow[c], lane * 8, k8);
                 float part[16];
 #pragma unroll
                 for (int h = 0; h < G; ++h) {
@@ -473,8 +478,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
         const float m = warp_max_x<DPP_>(fmaxf(a, b));
-        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
-        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
+        const float ea = (lane < n_here && srow[lane] != -1) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && srow[lane + 32] != -1) ? __expf(b - m) : 0.0f;
         spt[lane][h] = ea;
         spt[lane + 32][h] = eb;
         const float l = warp_sum_x<DPP_>(ea + eb);
@@ -511,14 +516,15 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
         fold(c + 3, v3);
     }
     for (; c < n_here; ++c) {
-        if (srow[c] < 0) continue;   // masked above, weight 0
-        fold(c, load_v1<KV_MODE>(p, srow[c], t));
+        if (srow[c] == -1) continue;   // masked above, weight 0
+        fold(c, load_v1r<KV_MODE>(p, srow[c], t));
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
 #endif  // STRATA_ATTN_PRE75_BUILT
 
+template <int G = G_FLASH>
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
                                                         const float* __restrict__ part_m,
                                                         const float* __restrict__ part_l, int n_chunks,
@@ -605,20 +611,19 @@ bool pre75_attn() {
 #endif
 }
 #if defined(__HIPCC__)
-#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, 8, true> : attn_chunk_kernel<M>)
+#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, GG, 8, true> : attn_chunk_kernel<M, false, GG>)
 #else
-#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M> : attn_chunk_kernel<M>)
+#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, GG> : attn_chunk_kernel<M, false, GG>)
 #endif
 #else
-#define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M>
+#define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M, false, GG>
 #endif
 
-}  // namespace
-
-void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+template <int GG>
+void decode_attn_batch_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                         int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return;
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
+    if (s.head_dim != HD || s.n_head != (int64_t) GG * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
         !pools.page_table || n_q > 65535) {
         std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");
         std::exit(1);
@@ -649,7 +654,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                      use_query_swizzle, (long long) n_q, (long long) cap, kv_mode, lane_cell);
     }
 #endif
-#define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+#define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true, GG><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
         if (kv_mode == 3) STRATA_ATTN_LC(3);
         else if (kv_mode == 2) STRATA_ATTN_LC(2);
@@ -669,7 +674,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             return v && v[0] == '1' && v[1] == '\0';
         }();
         if (reduce12) {
-            attn_chunk_kernel<1, false, true, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
+            attn_chunk_kernel<1, false, GG, true, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
                 (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
             static const bool trace = [] {
                 const char* v = std::getenv("STRATA_GFX906_ATTN_REDUCE12_TRACE");
@@ -682,7 +687,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                              (long long) n_q, (long long) cap);
             }
         } else {
-            attn_chunk_kernel<1, false, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
+            attn_chunk_kernel<1, false, GG, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
                 (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
         }
     } else
@@ -699,7 +704,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     else
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
+    attn_merge_kernel<GG><<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
                                                                                   attn, stride);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -708,14 +713,39 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
 }
 
+template <int GG>
+void decode_attn_step_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                        int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream);
+
+}  // namespace
+
+// query heads per KV head: 12 (Flash-Next) or 8 (Qwen3.6); anything else is refused by the body's geometry check
+void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+    if (s.n_head_kv > 0 && s.n_head == 8 * s.n_head_kv)
+        decode_attn_batch_g<8>(q, pools, ids, steps, cap, s, scratch, attn, n_q, stream);
+    else
+        decode_attn_batch_g<G_FLASH>(q, pools, ids, steps, cap, s, scratch, attn, n_q, stream);
+}
+
+void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
+    if (s.n_head_kv > 0 && s.n_head == 8 * s.n_head_kv)
+        decode_attn_step_g<8>(q, pools, ids, step, cap, s, scratch, attn, stream);
+    else
+        decode_attn_step_g<G_FLASH>(q, pools, ids, step, cap, s, scratch, attn, stream);
+}
+
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
     const int64_t chunks = (cap + CHUNK - 1) / CHUNK;
     return (uint64_t) chunks * (uint64_t) s.n_head * (HD + 2) + 64;
 }
 
-void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
-                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
+namespace {
+template <int GG>
+void decode_attn_step_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                        int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
+    if (s.head_dim != HD || s.n_head != (int64_t) GG * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
         !pools.page_table) {
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
@@ -747,12 +777,13 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     else
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
+    attn_merge_kernel<GG><<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
 }
+}  // namespace
 
 }  // namespace strata::kernels

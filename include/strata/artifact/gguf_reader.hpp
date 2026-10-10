@@ -588,7 +588,17 @@ struct Qwen4ExpGuard {
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
+    if (arch->s == "qwen35moe") {
+        // Qwen3.6-35B-A3B: its shape is read and checked against the kernels by core::geometry_from_gguf, which
+        // runs before any loader; here only that the keys the loaders' callers rely on are present.
+        for (const char* key : {"qwen35moe.block_count", "qwen35moe.embedding_length", "qwen35moe.expert_count",
+                                "qwen35moe.expert_used_count", "qwen35moe.attention.head_count",
+                                "qwen35moe.attention.head_count_kv"})
+            if (!g.get(key)) return std::string("missing ") + key;
+        return {};
+    }
+    if (arch->s != "qwen4exp")
+        return "architecture is '" + arch->s + "', this engine requires 'qwen4exp' or 'qwen35moe'";
     struct Req {
         const char* key;
         uint64_t want;

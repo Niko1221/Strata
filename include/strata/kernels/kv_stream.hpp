@@ -68,14 +68,14 @@ struct KvStreamMap {
     int32_t* slot_block = nullptr;  ///< (n_slots,) slot -> block, or -1
     int32_t* slot_stamp = nullptr;  ///< (n_slots,) the resolve epoch that last used the slot
     int32_t* slot_ref = nullptr;    ///< (n_slots,) clock reference bit
-    int32_t* ctl = nullptr;         ///< kKvCtlInts: epoch, hand, misses of the last call, overflow, u64 counters
+    int32_t* ctl = nullptr;         ///< kKvCtlInts: epoch, hand, blocks copied by the last call, overflow, u64 counters
     int32_t* miss_block = nullptr;  ///< (n_slots,)
     int32_t* miss_slot = nullptr;   ///< (n_slots,)
     int64_t n_blocks = 0;
     int64_t n_slots = 0;
 };
 
-inline constexpr int kKvCtlInts = 16;   ///< [0] epoch [1] hand [2] misses [3] overflow; u64 at [4] misses, [6] lookups, [8] calls
+inline constexpr int kKvCtlInts = 16;   ///< [0] epoch [1] hand [2] copies [3] overflow; u64 at [4] misses (copied or read in place), [6] lookups, [8] calls
 /// Bytes of the map's arrays besides the page table (which the state already has): 5 per-slot ints + ctl.
 inline uint64_t kv_stream_map_bytes(int64_t n_slots) { return (uint64_t) n_slots * 4 * 5 + kKvCtlInts * 4; }
 
@@ -83,8 +83,9 @@ inline uint64_t kv_stream_map_bytes(int64_t n_slots) { return (uint64_t) n_slots
 void kv_stream_reset(const KvStreamMap& m, void* stream);
 
 /// Make every block named by the selections of `n_q` queries resident (ids [n_q][cap], width from
-/// steps[q * kStepCount + kStepWidth]). Capturable. `n_slots` must hold the distinct blocks of one call
-/// (n_q x (cap / page_size + 2)); a call that cannot sets ctl[3] (see `kv_stream_counters`).
+/// steps[q * kStepCount + kStepWidth]). Capturable. When the call names more blocks than `n_slots` can take (a dense
+/// selection - qwen35moe attends every cell - past the resident cells), the rest keep page -1 and the attention reads
+/// them from the host copy in place (QsaAttnPools::host_*); the call sets ctl[3] (see `kv_stream_counters`).
 void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const KvHostPools& host, int fmt,
                        const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap, const QsaShapes& s,
                        void* stream);
@@ -110,7 +111,7 @@ void kv_unstage_to_host(const QsaAttnPools& stage, const KvHostPools& host, int 
 
 struct KvStreamCounters {
     uint64_t misses = 0, lookups = 0, calls = 0;
-    bool overflow = false;
+    bool overflow = false;   ///< some call named more blocks than the slots hold (the rest read from RAM in place)
 };
 /// Synchronous read of the counters (debug and the end-of-request summary).
 KvStreamCounters kv_stream_counters(const KvStreamMap& m);

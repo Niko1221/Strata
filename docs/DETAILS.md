@@ -1572,7 +1572,8 @@ tokens identical to 0.1.42 without the change, on the RTX 3060, the RTX A4000 al
 
 Where it applies: serve on a CUDA build with one GPU or a layer split (every stage skips by itself). Not applied, and no line printed: when every expert is
 in VRAM (nothing is missed), with `--batch` / `parallel` slots (a window then mixes requests, and one request's skip would depend on another's
-tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds. The request log gets
+tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds, and for the qwen35moe models (Qwen3.6-35B-A3B and its fine-tunes: measured
+on Flash-Next's 10-of-512 routing only; `STRATA_ROUTE_TAIL_SKIP=7` turns it on there). The request log gets
 `route tail skip: N missed experts skipped` (cumulative) while it is active.
 
 **Answers differ slightly from 0.1.41** (`STRATA_ROUTE_TAIL_SKIP=0` brings them back). Teacher-forced KL of the decode path (the default's own greedy text and the default sampled at T=0.8, 28 chat prompts of code,

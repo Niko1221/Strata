@@ -107,8 +107,12 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
 bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z, std::string& error) {
     z = {};
     const auto key = geometry_key(g);
-    for (size_t i = 0; i < key.size(); ++i)
-        if (key[i] < 0 || (i != 1 && key[i] == 0)) return fail(error, "invalid model geometry");
+    for (size_t i = 0; i < key.size(); ++i) {
+        // zero is a real value only for what a model may not have: the indexer's widths (12, 13) without an indexer,
+        // the hyper-connections' low rank (15) with one residual stream
+        const bool may_be_zero = ((i == 12 || i == 13) && !g.has_indexer) || (i == 15 && !g.has_hc());
+        if (key[i] < 0 || (i != 1 && key[i] == 0 && !may_be_zero)) return fail(error, "invalid model geometry");
+    }
     size_t recurrence = 0, convolution = 0;
     if (!product(recurrence, {(uint64_t) g.ssm_state_size, (uint64_t) g.ssm_v_heads, (uint64_t) g.ssm_state_size}) ||
         !product(convolution, {(uint64_t) g.ssm_conv_channels, (uint64_t) (g.ssm_d_conv - 1)}) ||

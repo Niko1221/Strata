@@ -34,7 +34,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     }
     const auto s = strata::kernels::qsa_real_shapes();
     const bool int8_keys = st.kv_int8 || st.kv_hybrid;
-    if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
+    if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || (g.has_indexer && g.idx_key_dim <= 0) ||
         (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;

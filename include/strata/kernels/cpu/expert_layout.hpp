@@ -18,6 +18,7 @@ namespace strata::kernels::cpu {
 struct ExpertLayout {
     bool native = false;
     int64_t n_layers = 0, n_expert = NE;
+    int64_t n_embd = H, n_ff = FF;        ///< the model's expert widths (Flash-Next's, or Qwen3.6's 2048 / 512)
     std::vector<NativeFmt> fmt;           ///< per layer (native packs)
     std::vector<uint64_t> offset, bytes;  ///< per layer: where its 512 blobs start, bytes per blob
     /// Plan v0.3 P6: per layer, the absolute offsets of the gate / up / down tensors in their GGUF files, so the
@@ -93,7 +94,10 @@ void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const A
 const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+/// `n_embd` / `n_ff` are the model's expert widths: Flash-Next's by default, Qwen3.6's from its geometry (a native
+/// pack only; the canonical Q2_0 layout is Flash-Next's).
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,
+                        int64_t n_embd = H, int64_t n_ff = FF);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;

@@ -64,6 +64,9 @@ public:
     /// callbacks stay.  The device `init` ran on must be current.
     void reset();
 
+    /// Whether this prompt path runs model `g` (the geometry `init` requires): Flash-Next's.  For another model
+    /// (Qwen3.6 until its prompt path exists) the prompt is read through the decode windows instead.
+    static bool supports(const core::ModelGeometry& g);
     /// `host_res`: the static residency table (n_layers x n_expert, slot or -1) or null; `cache` its slots.
     /// `borrow`/`borrow_bytes`: device memory to carve every buffer from (the top slots of the expert cache,
     /// lent for the prompt and refilled after it); null = allocate normally.

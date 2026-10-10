@@ -130,6 +130,10 @@ inline double qsa_freq_base() { return 1e7; }
 /// not fill one.  So the plan's "selection skipped when context <= 2,048" is conservative by two - the source's
 /// own bound is 2,051, and `ref/qsa.py` L292-294 records the disagreement.  Below the bound the selection is
 /// the IDENTITY, which `topk_512` is required to reproduce exactly rather than approximately.
+/// `idx_top_k` of a model without the sparse-attention indexer (Qwen3.6): a budget no context reaches, so the
+/// selection width is n_kv and every cached cell is attended (the ids are written by qsa_select_all).
+inline constexpr int64_t kDenseTopK = int64_t{1} << 30;
+
 inline int64_t qsa_selection_width(int64_t n_kv, const QsaShapes& s) {
     const int64_t w = s.idx_top_k + s.idx_block - 1;
     return n_kv < w ? n_kv : w;

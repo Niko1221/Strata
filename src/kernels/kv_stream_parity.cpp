@@ -8,6 +8,8 @@
 //   2. the residency map is consistent after every call (slot_block and page_table invert each other);
 //   3. no call overflowed, and the hit/miss counters add up;
 //   4. a ring (the MTP drafter's layout) restored from the host copy reads the same values as the resident pool.
+//   5. a dense selection (every cell, qwen35moe) larger than the slots: the blocks that do not fit are read from the
+//      host copy in place, bitwise the resident output, and none is left claimed.
 // INT8, FP16, Q4_0 (PR #21) and hybrid K8V4 pools; K8V4's appends are the engine's folded calls (layer.cpp), its host
 // copy written through kv_hybrid_k_half / kv_hybrid_v_half.
 #include "strata/kernels/kv_q4.hpp"
@@ -232,6 +234,48 @@ bool run(int fmt) {
         const bool ok = std::memcmp(a.data(), b2.data(), (size_t) NH * D * 4) == 0;
         std::printf("  %s ring restore: %s\n", name, ok ? "identical" : "DIFFERS");
         if (!ok) ++bad;
+    }
+
+    // 5. a dense selection (qwen35moe: every cell) names more blocks than the slots hold: the resolve takes what fits,
+    //    leaves no claimed (-2) block behind, and the attention reads the rest from the host copy in place - bitwise
+    //    the resident pool's output, on the first call (slots taken) and on the next (every slot in use: none taken)
+    {
+        const int dq = 2;
+        int32_t* dids = dalloc<int32_t>((size_t) dq * N);
+        int32_t* dsteps = dalloc<int32_t>(dq * k::kStepCount);
+        float* dscratch = dalloc<float>((size_t) dq * k::qsa_decode_attn_scratch_floats(N, s));
+        std::vector<int32_t> hids((size_t) dq * N, 0), hst(dq * 4, 0);
+        for (int t = 0; t < dq; ++t) {
+            const int64_t p = N - dq + t, n_kv = p + 1;
+            for (int64_t c = 0; c < n_kv; ++c) hids[(size_t) t * N + c] = (int32_t) c;
+            hst[t * 4 + 0] = (int32_t) p; hst[t * 4 + 1] = (int32_t) n_kv; hst[t * 4 + 2] = (int32_t) (n_kv / 4);
+            hst[t * 4 + 3] = (int32_t) n_kv;
+        }
+        ck(cudaMemcpy(dids, hids.data(), hids.size() * 4, cudaMemcpyHostToDevice), "dense ids");
+        ck(cudaMemcpy(dsteps, hst.data(), hst.size() * 4, cudaMemcpyHostToDevice), "dense steps");
+        k::QsaAttnPools sp = slots.attn(m.page_table);
+        sp.host_k_pool = host.p.k_pool; sp.host_v_pool = host.p.v_pool; sp.host_k_q = host.p.k_q; sp.host_v_q = host.p.v_q;
+        sp.host_k_scale = host.p.k_scale; sp.host_v_scale = host.p.v_scale; sp.host_k_q4 = host.p.k_q4; sp.host_v_q4 = host.p.v_q4;
+        bool ok = true;
+        for (int call = 0; call < 2; ++call) {
+            k::qsa_decode_attn_batch(q, ref.attn(ident), dids, dsteps, N, s, dscratch, out_ref, dq, nullptr);
+            k::kv_stream_resolve(m, slots.attn(m.page_table), host.p, fmt, dids, dsteps, dq, N, s, nullptr);
+            k::qsa_decode_attn_batch(q, sp, dids, dsteps, N, s, dscratch, out_str, dq, nullptr);
+            ck(cudaDeviceSynchronize(), "dense");
+            ck(cudaMemcpy(a.data(), out_ref, (size_t) dq * NH * D * 4, cudaMemcpyDeviceToHost), "a");
+            ck(cudaMemcpy(b2.data(), out_str, (size_t) dq * NH * D * 4, cudaMemcpyDeviceToHost), "b");
+            if (std::memcmp(a.data(), b2.data(), (size_t) dq * NH * D * 4) != 0) {
+                std::fprintf(stderr, "  %s dense call %d: streamed attention differs\n", name, call);
+                ok = false;
+            }
+            ck(cudaMemcpy(pt.data(), m.page_table, n_blocks * 4, cudaMemcpyDeviceToHost), "pt");
+            const int64_t claimed = std::count_if(pt.begin(), pt.end(), [](int32_t v) { return v < -1; });
+            if (claimed != 0) { std::fprintf(stderr, "  %s dense call %d: %lld blocks left claimed\n", name, call, (long long) claimed); ok = false; }
+        }
+        const bool over = k::kv_stream_counters(m).overflow;
+        std::printf("  %s dense (%lld blocks, %lld slots): %s, overflow %d\n", name, (long long) n_blocks,
+                    (long long) n_slots, ok ? "identical" : "DIFFERS", (int) over);
+        if (!ok || !over) ++bad;
     }
     return bad == 0;
 }

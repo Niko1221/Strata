@@ -2413,14 +2413,27 @@ int main(int argc, char** argv) {
         o.spec = std::max(o.spec, std::min(o.mtp_max_t + o.lookup_chain, 8));   // kVerifyMaxT
     }
     strata::core::layer_set_shared_early(!o.shared_late);
+    // The model's geometry, from its metadata shard's general.architecture: Flash-Next (qwen4exp) keeps the
+    // compiled-in numbers, Qwen3.6-35B-A3B (qwen35moe) brings its own.  Without --native (a canonical Q2_0 pack)
+    // the model is Flash-Next.
+    strata::core::ModelGeometry model_geom;
     if (!o.native_preset.empty()) {
         try {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
+            std::string geom_err;
+            if (!strata::core::geometry_from_gguf(strata::GgufFile(o.native_shards.front()), model_geom, geom_err))
+                throw std::runtime_error(geom_err);
+            if (model_geom.arch != strata::core::ModelArch::kQwen4Exp)
+                std::fprintf(stderr, "strata generate: model architecture %s: %lld layers, n_embd %lld, %lld experts "
+                                     "(%lld per token), no PLE / hyper-connections / indexer\n",
+                             strata::core::arch_name(model_geom.arch), (long long) model_geom.n_layers,
+                             (long long) model_geom.n_embd, (long long) model_geom.n_expert,
+                             (long long) model_geom.n_expert_used);
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
-            if (o.ple_gguf.empty() && !o.no_ple) {
+            if (o.ple_gguf.empty() && !o.no_ple && model_geom.has_ple) {
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
                 if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
@@ -2429,18 +2442,36 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), e.what());
             return 2;
         }
-        if (o.no_ple || o.ple_gguf.empty()) {
+        if (model_geom.has_ple && (o.no_ple || o.ple_gguf.empty())) {
             std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
                                  "shard of the model holds per_layer_token_embd.weight\n");
+            return 2;
+        }
+        if (!model_geom.has_ple && !o.ple_gguf.empty()) {
+            std::fprintf(stderr, "strata generate: --ple-gguf: a %s model has no PLE table\n",
+                         strata::core::arch_name(model_geom.arch));
+            return 2;
+        }
+        if (!model_geom.has_ple) o.no_ple = true;   // the model has no PLE block: every PLE path stays off
+        // Qwen3.6 / Ornith (one residual stream): one GPU.  The layer split, the peer tier and the remote expert caches
+        // carry Flash-Next's shapes (10 experts per token, 2560 wide) and have not been run with this model.
+        if (!model_geom.has_hc() && (o.peer_device >= 1 || !o.layer_split.empty() || o.expert_cache_remote[0] > 0)) {
+            std::fprintf(stderr, "strata generate: a %s model runs on one GPU: %s is not supported for it\n",
+                         strata::core::arch_name(model_geom.arch),
+                         o.peer_device >= 1 ? "--peer-device" : !o.layer_split.empty() ? "--layer-split"
+                                                                                       : "--expert-cache-device1..3");
             return 2;
         }
         o.stream_token = true;
         o.gr_native_mmvf = true;
         o.native_bf16 = o.native_bf16_extra = true;
-        o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
-        o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
+        o.native_moe_combine = o.native_gdn = o.native_router = true;
+        o.native_qsa = o.native_qsa_indexer = o.native_rope = true;   // (a model without an indexer never calls it)
+        if (model_geom.has_ple) o.native_ple_key = o.native_ple_postops = true;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
-        if (o.native_dense_gguf.empty()) {
+        if (o.native_dense_gguf.empty() && o.ple_gguf.empty()) {
+            o.native_dense_gguf = o.native_shards;
+        } else if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
             o.native_dense_gguf = o.native_shards;
@@ -2627,8 +2658,8 @@ int main(int argc, char** argv) {
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
-        const strata::core::ModelGeometry g0;
-        if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err)) {
+        const strata::core::ModelGeometry g0 = model_geom;
+        if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err, g0.n_embd, g0.n_ff)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -2648,6 +2679,17 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // a model the batched prompt path does not run on this GPU (qwen35moe below sm_75, or on HIP): every prompt is
+    // read through the verify windows, in serve (every part a short read) as in one-shot generate
+    const bool no_prompt_path = native_pack && !model_geom.has_hc() && !strata::prefill::Prefill::supports(model_geom);
+    if (no_prompt_path) {
+        std::fprintf(stderr, "strata generate: this GPU has no batched prompt path for a %s model (NVIDIA sm_75+): "
+                             "prompts are read through the decode windows (slower)\n",
+                     strata::core::arch_name(model_geom.arch));
+        o.prefill_chunk = 0;
+        o.prefill_auto = false;
+        o.short_read = std::numeric_limits<int64_t>::max();
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -2689,6 +2731,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
         }
     }
+    mem_mark("the CUDA context (the PCIe probe)");
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
     if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
     else if (!strata::kernels::cpu::cpu_avx512_ok())
@@ -2699,8 +2742,9 @@ int main(int argc, char** argv) {
                             ? "AVX1 128-bit (iq_avx1, the older-CPU build)"
                             : "ggml-cpu vec_dot (no AVX2: the older-CPU build)")
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
+    strata::core::ModelGeometry g = model_geom;   // the model file's geometry (canonical defaults without --native)
+    int64_t K = g.n_expert_used;
+    strata::kernels::gdn_set_out_gate_silu(g.gdn_gate_silu);   // qwen35moe: silu(z) on the GDN output
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
     // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats
@@ -2709,20 +2753,18 @@ int main(int argc, char** argv) {
     // model file decides; an explicit value - `none` and `1` included, the opt-outs - wins over the model file.
     {
         // The model file's rope keys (llama.cpp's names under the arch prefix), when it carries any - the
-        // artifact today ships none, so this is a no-op defaults channel for future fine-tunes.
+        // Flash-Next artifact today ships none, so for it this is a no-op defaults channel for future fine-tunes;
+        // qwen35moe files carry rope.freq_base.  (The MoE shape is in `model_geom`, from geometry_from_gguf.)
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
         if (!o.native_preset.empty()) {
-            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-            // is the authority on its own MoE shape - everything else in the geometry is unchanged
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                const std::string ap = std::string(strata::core::arch_name(g.arch)) + ".";
+                if (const strata::MetaValue* v = model_gguf.get(ap + "rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(ap + "rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get(ap + "rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(ap + "rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
@@ -2805,12 +2847,12 @@ int main(int argc, char** argv) {
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
         if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
-            (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
+            (o.prefill_chunk <= 0 && o.tokens.size() > 1 && !no_prompt_path)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
         }
-        const strata::core::ModelGeometry g0;
+        const strata::core::ModelGeometry g0 = model_geom;
         const auto embed_t0 = std::chrono::steady_clock::now();
         if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g0.n_embd,
                                248320, err)) {
@@ -2943,12 +2985,15 @@ int main(int argc, char** argv) {
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
+        // a model file that carries MTP layers after its main ones (qwen35moe): those belong to the draft
+        const int64_t dense_hi = g.n_mtp_layers > 0 ? g.n_layers : -1;
+        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key, 0, dense_hi)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
             return 1;
         }
         std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights, in %.1f s\n",
                      native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0), load_s());
+        mem_mark("the native projections");
     }
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
@@ -3199,7 +3244,7 @@ int main(int argc, char** argv) {
         }
         ss.ple.emb_dev = ple_emb_dev;
         ss.ple.scratch = ple_scratch;
-    } else {
+    } else if (g.has_ple) {   // (a model without a PLE block - qwen35moe - has nothing to switch off)
         std::fprintf(stderr,
                      "strata generate: PLE OFF by explicit --no-ple diagnostic request.\n"
                      "  The tokens below are NOT this model's; this is only useful for A/B measurement.\n");
@@ -4131,6 +4176,10 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
+        mem_mark("the weights (before the session)");
+        if (std::getenv("STRATA_TRACE"))
+            std::fprintf(stderr, "strata trace: the session takes %lld MiB\n",
+                         (long long) (strata::core::session_bytes(g, o.max_context, K, 0, hi0) >> 20));
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
@@ -4153,6 +4202,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: zeroing the session state failed\n");
             return 1;
         }
+        mem_mark("the session");
         if (!o.ple_gguf.empty()) {
             if (!ss.ple.ready()) {
                 std::fprintf(stderr, "strata generate: the PLE run is not ready after construction\n");
@@ -4324,7 +4374,9 @@ int main(int argc, char** argv) {
     strata::core::MtpDrafter mtp;
     // the draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the batch
     // slots' draft-KV copies use this one too
-    static const strata::core::ModelGeometry draft_geometry{};
+    // Flash-Next: the canonical geometry (below); a qwen35moe model's MTP block is its own, of the model's shape
+    static strata::core::ModelGeometry draft_geometry;
+    draft_geometry = g.arch == strata::core::ModelArch::kQwen4Exp ? strata::core::ModelGeometry{} : g;
     std::vector<std::unique_ptr<strata::core::MtpDrafter>> slot_mtp;
     if (!o.mtp.empty()) {
         if (o.spec < 2) {
@@ -4728,7 +4780,12 @@ int main(int argc, char** argv) {
         if (stages.empty())
             for (const auto& d : slot_mtp)
                 mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
+        // a model without the indexer (qwen35moe) attends the whole context: the verifier's selection and attention
+        // partials grow with it and are allocated after the cache (443 MiB at 256K: without this a 256K context
+        // failed on every card, "verify: the device arena does not fit").  0 for Flash-Next.
+        const int64_t dense_attn = (int64_t) strata::core::Verifier::dense_attention_bytes(
+            g, ss, batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch));
+        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -4736,6 +4793,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: expert cache auto: %.2f GiB free, %d MiB reserved (+%lld MiB for the "
                              "draft head) -> %d slots\n",
                      (double) free_b / 1073741824.0, o.vram_reserve_mib, (long long) (mtp_bind >> 20), o.expert_cache);
+        if (dense_attn > 0)
+            std::fprintf(stderr, "strata generate: expert cache auto: +%lld MiB kept for the dense attention at %lld "
+                                 "tokens of context\n", (long long) (dense_attn >> 20), (long long) o.max_context);
 #if defined(STRATA_USE_HIP) && !defined(_WIN32)
         // An APU's "VRAM" is system RAM: the device-free figure above counts the whole GPU-addressable pool and does not
         // subtract ordinary CPU allocations (the host expert arena), so a cache sized from it alone can ask the OOM killer
@@ -4766,15 +4826,20 @@ int main(int argc, char** argv) {
         // ends LOW (`reserve_adapted`).  A reserve given on the command line is kept.  No slot at all: the start
         // stops, saying what is short and what makes room.  A card the default reserve leaves that much is sized as
         // before.
-        constexpr int kSmallReserveMib = 300;
+        // Flash-Next: 300 MiB (#496, IQ3_XXS at 32K ended with 5 MiB left).  A model without the indexer allocates
+        // more after the cache besides its dense attention (counted above): its prompt path's own part, the
+        // verifier and the windows' graphs.  Measured on Qwen3.6 UD-IQ3_S (RTX 4070 Ti, int8 K/V, MTP, a given
+        // reserve): 400 MiB failed in the graph instantiation at 8K, 32K and 64K; 450 started at all three and
+        // ended with 136-204 MiB free.  500 keeps 50 MiB over that.
+        const int kSmallReserveMib = g.has_indexer ? 300 : 500;
         const int64_t min_slots = (o.prefill_chunk > 0 && pf_borrow)
             ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + 128 : 1;
         if (o.expert_cache < min_slots && !o.vram_reserve_given && o.vram_reserve_mib > kSmallReserveMib) {
             // the largest reserve (in MiB) that still leaves min_slots
-            const int64_t fit_mib = ((int64_t) free_b - mtp_bind - pipe_first - min_slots * blob) / (1 << 20) - prefill_mib;
+            const int64_t fit_mib = ((int64_t) free_b - mtp_bind - pipe_first - dense_attn - min_slots * blob) / (1 << 20) - prefill_mib;
             if (fit_mib >= kSmallReserveMib) {
                 const int r = (int) std::min<int64_t>(fit_mib, o.vram_reserve_mib);
-                int64_t s2 = ((int64_t) free_b - ((((int64_t) r + prefill_mib) << 20) + mtp_bind + pipe_first)) / blob;
+                int64_t s2 = ((int64_t) free_b - ((((int64_t) r + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn)) / blob;
                 if (!profile.empty()) s2 = std::min<int64_t>(s2, (int64_t) profile.size());
                 std::fprintf(stderr, "strata generate: expert cache auto: the %d MiB reserve leaves too few slots on "
                                      "this card (a working cache needs %lld): a %d MiB reserve instead -> %lld slots\n",
@@ -4784,11 +4849,14 @@ int main(int argc, char** argv) {
                 reserve_adapted = true;
             }
         }
-        if (o.expert_cache == 0) {
+        // a model without the indexer whose cache stays under min_slots cannot lend the prompt path its buffers,
+        // and they do not fit beside it either (measured: "prefill: device buffers ... do not fit" mid-start)
+        const bool too_small = o.expert_cache == 0 || (!g.has_indexer && o.expert_cache < min_slots);
+        if (too_small) {
             // what is short, and what makes room: the numbers a small card picks from
             const int64_t at_reserve = o.vram_reserve_given ? o.vram_reserve_mib
                                                             : std::min(o.vram_reserve_mib, kSmallReserveMib);
-            const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + min_slots * blob;
+            const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn + min_slots * blob;
             const int64_t short_mib = std::max<int64_t>(1, (need_b - (int64_t) free_b + (1 << 20) - 1) >> 20);
             const int64_t session_mib =
                 (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) >> 20);
@@ -4805,6 +4873,9 @@ int main(int argc, char** argv) {
                          (long long) min_slots, (long long) ((min_slots * blob) >> 20), (long long) short_mib,
                          (long long) session_mib, (long long) o.max_context, (long long) (mtp_bind >> 20),
                          reserve_tip.c_str());
+            // the start stops here, as #496 meant it to: on one GPU the verify windows cannot run without a cache
+            // (#174), and going on only failed later with a message about the prompt path's buffers
+            if (native_pack && !multi_gpu) return 1;
         }
     } else if (multi_gpu && o.expert_cache > 0) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
@@ -6738,7 +6809,7 @@ int main(int argc, char** argv) {
         return false;
     };
     if (o.serve) {
-        if (o.spec < 2 || o.prefill_chunk <= 0 ||
+        if (o.spec < 2 || (o.prefill_chunk <= 0 && !no_prompt_path) ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
             std::fprintf(stderr, "strata serve: needs --spec T and --prefill CHUNK (and a fillable "
                                  "--expert-cache; the graphed hit path additionally needs --expert-profile P)\n");
@@ -6845,7 +6916,7 @@ int main(int argc, char** argv) {
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
-        if (pf_borrow && d_res != nullptr) {
+        if (pf_borrow && d_res != nullptr && !no_prompt_path) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
@@ -7065,7 +7136,7 @@ int main(int argc, char** argv) {
                                          "their experts are streamed from the model file during every chunk\n",
                                  (long long) (borrowed - kept), (long long) borrowed);
             }
-        } else {
+        } else if (!no_prompt_path) {
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
         }
         rss_probe("the prompt path set up");
@@ -7100,7 +7171,7 @@ int main(int argc, char** argv) {
             return 0;
         };
         static constexpr int64_t kStepChunks[] = {6144, 4096, 3072, 2048, 1536, 1024, 512};
-        {
+        if (!no_prompt_path) {
             // First by arithmetic: a prompt path without a loan allocates its buffers, so the chunk must leave
             // headroom on that device (a chunk that fits to the last MiB left hipBLAS nothing: its GEMMs then
             // failed to launch on gfx1201 and the prompt hung).  `bytes_needed` is the same count `init` makes.
@@ -7138,7 +7209,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        for (;;) {
+        while (!no_prompt_path) {   // no prompt path: every read goes through the windows (windows_ok)
             const int r = init_prompt_paths();
             if (r == 0) break;
             int64_t next = 0;
@@ -7630,7 +7701,8 @@ int main(int argc, char** argv) {
                 in.embedding = o.embd_gguf;
                 in.ple = o.ple_gguf;
                 in.pack = o.pack;
-                in.mtp = o.mtp.empty() ? std::string() : o.mtp + "/dense.bin";
+                // (a qwen35moe draft layer is the model file's own MTP block: --mtp names that GGUF)
+                in.mtp = o.mtp.empty() ? std::string() : g.has_hc() ? o.mtp + "/dense.bin" : o.mtp;
                 if (srcp != nullptr) in.experts = srcp->model_inputs();
                 std::vector<strata::core::SessionModelFile> files = strata::core::session_model_inputs(in);
                 // the pack's other files the loader reads (weights.cpp, expert_layout.cpp)
@@ -7640,7 +7712,7 @@ int main(int argc, char** argv) {
                         files.push_back({std::string("pack ") + n, o.pack + "/" + n, true});
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
-                if (!o.mtp.empty()) {
+                if (!o.mtp.empty() && g.has_hc()) {
                     for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
                     files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
                 }
@@ -8073,7 +8145,10 @@ int main(int argc, char** argv) {
         {
             const char* tse = std::getenv("STRATA_ROUTE_TAIL_SKIP");
 #if !defined(STRATA_USE_HIP)
-            const bool tail_default_ok = tse == nullptr && !all_experts_resident && o.batch == 0 && o.peer_device < 0;
+            // (Flash-Next only: measured on its 10-of-512 routing; a qwen35moe model routes 8 of 256 and keeps 0.1.41's
+            // answers until it is measured - STRATA_ROUTE_TAIL_SKIP=7 turns it on there)
+            const bool tail_default_ok = tse == nullptr && !all_experts_resident && o.batch == 0 && o.peer_device < 0 &&
+                                         g.has_indexer;
 #else
             const bool tail_default_ok = false;   // HIP and SYCL stay as they were
 #endif
@@ -10247,6 +10322,7 @@ int main(int argc, char** argv) {
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
             int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
+                if (no_prompt_path) return true;
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
@@ -12034,7 +12110,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: KV streaming: %.2f%% of %llu block reads hit VRAM, %.1f MiB read "
                                      "from RAM%s\n", look ? 100.0 * (double) (look - miss) / (double) look : 100.0,
                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
-                             over ? " - OVERFLOW (too few resident cells)" : "");
+                             over ? " (more than the resident cells hold: the rest read from RAM in place)" : "");
             }
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
@@ -12091,7 +12167,14 @@ int main(int argc, char** argv) {
     std::vector<float> final_r_host(final_r ? (size_t) (g.hc * g.n_embd) : 0);
     std::vector<std::pair<int32_t, int32_t>> lent;     // (residency index, slot) lent to the prompt path
     const int64_t n_batched = (o.prefill_until > 0 && o.prefill_until < n_prompt - 1) ? o.prefill_until : n_prompt - 1;
-    if (o.prefill_chunk > 0 && n_prompt > 1) {
+    // a model the batched prompt path does not run yet (Qwen3.6): every prompt token but the last is read through
+    // the verify windows below, as the serve's short reads do; the loop then starts at the last one
+    const bool prompt_windows = native_pack && !strata::prefill::Prefill::supports(g);
+    if (prompt_windows && n_prompt > 1) {
+        pos_start = n_prompt - 1;
+        tok = o.tokens[(size_t) pos_start];
+    }
+    if (o.prefill_chunk > 0 && n_prompt > 1 && !prompt_windows) {
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         if (!o.no_prefill_borrow && !host_res.empty() && d_res != nullptr) {
@@ -12633,6 +12716,40 @@ int main(int argc, char** argv) {
             ms_adapt += std::chrono::duration<double, std::milli>(Clock::now() - ta).count();
             return true;
         };
+        if (prompt_windows && spec_pos > 0) {
+            // the prompt's tokens [0, spec_pos) through the verify windows, o.spec at a time: every token is
+            // committed and the picks are discarded (no head sampling), as the serve's read_windows
+            const Clock::time_point tw = Clock::now();
+            ver.set_head_sampling(false);
+            std::vector<int32_t> win((size_t) o.spec), outw((size_t) o.spec), nxt((size_t) o.spec);
+            for (int64_t q = 0; q < spec_pos;) {
+                const int T = (int) std::min<int64_t>(o.spec, spec_pos - q);
+                for (int t = 0; t < T; ++t) {
+                    win[(size_t) t] = (int32_t) o.tokens[(size_t) (q + t)];
+                    nxt[(size_t) t] = (int32_t) o.tokens[(size_t) (q + t + 1)];
+                }
+                drive.d.layers = 0;
+                drive.d.experts = 0;
+                drive.d.failed = false;
+                if (!ver.run(T, win.data(), q, &drive_pool_multi, &drive, outw.data(), err) || drive.d.failed ||
+                    !ver.commit(T, err) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, err))) {
+                    if (drive.d.failed && drive.d.fail) err = drive.d.fail;
+                    std::fprintf(stderr, "strata generate: reading the prompt through the verify windows: %s\n",
+                                 err.c_str());
+                    return 1;
+                }
+                q += T;
+            }
+            if (!ver.wait_commit(err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            ver.set_head_sampling(true);
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - tw).count();
+            prefill_ms += ms;
+            std::fprintf(stderr, "strata generate: prompt read through the verify windows: %lld tokens in %.1f ms "
+                                 "(%.1f tok/s)\n", (long long) spec_pos, ms, ms > 0 ? 1000.0 * (double) spec_pos / ms : 0.0);
+        }
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
         std::vector<int32_t> drafts((size_t) o.spec, 0);
@@ -12947,6 +13064,7 @@ int main(int argc, char** argv) {
     if (o.stage_timing) strata::core::stage_timing_report(g.n_layers);
 
     const int64_t decoded = (int64_t) produced.size();
+    mem_mark("the answer (the windows' and the draft step's graphs)");
     std::printf("prompt  :");
     for (int64_t t : o.tokens) std::printf(" %lld", (long long) t);
     std::printf("\noutput  :");

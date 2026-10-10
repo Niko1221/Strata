@@ -5,7 +5,8 @@ Strata runs one model, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-
 The installer recommends one for your PC; this page explains the choice. Back to the [README](../README.md).
 
 > **On this page:** [Pick by RAM](#pick-by-ram) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
-> [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Adding another model](#adding-or-switching-models)
+> [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Qwen3.6-35B-A3B](#qwen36-35b-a3b) ·
+> [Adding another model](#adding-or-switching-models)
 
 ## Pick by RAM
 
@@ -149,6 +150,26 @@ machines run it without a RAM budget. Manual workflow: [UD-Q6_K_XL](UNSLOTH_Q6.m
 
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
 explicit packing conversion and is not an installer menu option.
+
+### Qwen3.6-35B-A3B
+
+**[Qwen3.6-35B-A3B](QWEN36.md)** - not a version of Flash-Next but a second, smaller model of the same family
+(Unsloth's UD-IQ4_XS and UD-IQ3_S, with the MTP draft layer in the file). Its experts take 12-14 GB of RAM, so it is
+the choice for 16-32 GB PCs and 8-12 GB graphics cards: 105-127 tokens/s on a 12 GB RTX 4070 Ti and 75-89 tokens/s
+with an 8 GB card's VRAM (emulated), and it reads long prompts at 2,700-4,500 tokens/s
+([measurements](QWEN36.md#speed-measured)). NVIDIA, one GPU, no images yet.
+
+```
+START-HERE.bat --setup --family qwen36
+```
+
+**[Ornith-1.5-35B-A3B](QWEN36.md#ornith-15-35b-a3b)** - ornith-ai's fine-tune of Qwen3.6-35B-A3B for coding agents
+(bartowski's IQ4_XS and IQ3_XXS). The same engine path and the same RAM and VRAM needs; its draft layer is accepted
+less often, so it writes 102-110 tokens/s on the 4070 Ti ([measurements](QWEN36.md#ornith-15-35b-a3b)).
+
+```
+START-HERE.bat --setup --family ornith
+```
 
 ## Adding or switching models
 

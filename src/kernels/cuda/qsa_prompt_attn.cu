@@ -103,7 +103,7 @@ struct Smem {
     long long row[CH];
 };
 
-template <int KV_MODE>
+template <int KV_MODE, int GQ = G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                               const int32_t* __restrict__ ids,
                                                               const int32_t* __restrict__ steps, int n_kv_heads,
@@ -112,10 +112,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     extern __shared__ __align__(16) unsigned char smem_raw[];
     Smem<KV_MODE>& S = *reinterpret_cast<Smem<KV_MODE>*>(smem_raw);
     const int qi = blockIdx.x, kvh = blockIdx.y;
-    const int n_head = n_kv_heads * G;
-    q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    const int n_head = n_kv_heads * GQ;
+    q += (size_t) qi * n_head * HD + (size_t) kvh * GQ * HD;
+    attn += (size_t) qi * n_head * HD + (size_t) kvh * GQ * HD;
+    if (ids != nullptr) ids += (size_t) qi * cap;   // null: dense, cell = index
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -123,7 +123,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     // q: 12 heads + 4 zero rows, scaled by a power of two that puts its largest value near 2^14 (exact, and the
     // lo halves stay out of FP16's subnormal range), then split into hi + lo halves
     float qm = 0.0f;
-    for (int i = t; i < G * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
+    for (int i = t; i < GQ * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
     if (lane == 0) S.qmax[warp] = qm;
@@ -134,7 +134,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     const float qup = ldexpf(1.0f, 14 - qe), qdown = ldexpf(scale_log2, qe - 14);
     for (int i = t; i < 16 * HD; i += THREADS) {
         const int h = i / HD, d = i % HD;
-        const float x = h < G ? q[(size_t) h * HD + d] * qup : 0.0f;
+        const float x = h < GQ ? q[(size_t) h * HD + d] * qup : 0.0f;
         const __half hi = __float2half_rn(x);
         S.qh[h][d] = hi;
         S.ql[h][d] = __float2half_rn(x - __half2float(hi));
@@ -150,7 +150,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         if (t < CH) {
             long long r = -1;
             if (t < nh) {
-                const int cell = ids[c0 + t];
+                const int cell = ids != nullptr ? ids[c0 + t] : c0 + t;
                 const long long page = (long long) p.page_table[cell / page_size];
                 r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
             }
@@ -417,7 +417,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     for (int j = 0; j < 8; ++j) {
         const int d = warp * 64 + j * 8 + 2 * tig;
         *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
-        if (gid + 8 < G)
+        if (gid + 8 < GQ)
             *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
     }
 }
@@ -461,6 +461,7 @@ __device__ __forceinline__ void cp_async_wait1() {
 #endif
 }
 
+template <int GQ = G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                  const int32_t* __restrict__ ids,
                                                                  const int32_t* __restrict__ steps, int n_kv_heads,
@@ -469,10 +470,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     extern __shared__ __align__(16) unsigned char smem_raw[];
     Smem2& S = *reinterpret_cast<Smem2*>(smem_raw);
     const int qi = blockIdx.x, kvh = blockIdx.y;
-    const int n_head = n_kv_heads * G;
-    q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    const int n_head = n_kv_heads * GQ;
+    q += (size_t) qi * n_head * HD + (size_t) kvh * GQ * HD;
+    attn += (size_t) qi * n_head * HD + (size_t) kvh * GQ * HD;
+    if (ids != nullptr) ids += (size_t) qi * cap;   // null: dense, cell = index
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -480,7 +481,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 
     // q: the power-of-two prescale over all 12 heads (as v1), then this warp's 64 dims as hi/lo A fragments
     float qm = 0.0f;
-    for (int i = t; i < G * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
+    for (int i = t; i < GQ * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
     if (lane == 0) S.qmax[warp] = qm;
@@ -497,7 +498,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
         for (int r = 0; r < 4; ++r) {
             const int row = gid + (r & 1) * 8, col = dim0 + kk * 16 + 2 * tig + (r >> 1) * 8;
             float2 x = make_float2(0.f, 0.f);
-            if (row < G) x = *reinterpret_cast<const float2*>(q + (size_t) row * HD + col);
+            if (row < GQ) x = *reinterpret_cast<const float2*>(q + (size_t) row * HD + col);
             x.x *= qup;
             x.y *= qup;
             const __half2 hi = __floats2half2_rn(x.x, x.y);
@@ -510,7 +511,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 
     // the chunk pipeline: cells two chunks ahead, their pool rows one chunk ahead, the data (cp.async) one ahead
     const int n_chunks = (n + CH2 - 1) / CH2;
-    auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
+    auto cell_of = [&](int c) -> int { return c < n ? (ids != nullptr ? __ldg(ids + c) : c) : -1; };
     auto row_of = [&](int cell) -> long long {
         if (cell < 0) return -1;
         const long long page = (long long) __ldg(p.page_table + cell / page_size);
@@ -671,11 +672,12 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     for (int j = 0; j < 8; ++j) {
         const int d = dim0 + j * 8 + 2 * tig;
         *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
-        if (gid + 8 < G)
+        if (gid + 8 < GQ)
             *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
     }
 }
 
+template <int GQ>
 bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs this on several)
@@ -684,7 +686,7 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     const int bytes = (int) sizeof(Smem2);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_i8_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_i8_kernel<GQ>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -694,8 +696,8 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_i8_kernel<<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_i8_kernel<GQ><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -706,7 +708,7 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     return true;
 }
 
-template <int KV_MODE>
+template <int KV_MODE, int GQ = G>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // per device, as above
@@ -715,7 +717,7 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     const int bytes = (int) sizeof(Smem<KV_MODE>);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE, GQ>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -725,8 +727,8 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_kernel<KV_MODE><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_kernel<KV_MODE, GQ><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -1450,6 +1452,38 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
 
 }  // namespace
 
+template <int GQ>
+bool dispatch_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st, bool volta, bool turing) {
+    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
+        static const bool q4_off = [] {
+            const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
+            return v != nullptr && v[0] == '0';
+        }();
+        // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
+        if (q4_off || turing || pools.v_q4 == nullptr) return false;
+        return launch<4, GQ>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
+        if (!pools.k_scale) return false;
+        if (volta) return GQ == G && launch70<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        return launch<3, GQ>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (pools.k_q != nullptr) {
+        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
+        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
+        // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
+        // exist before sm_80.
+        static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
+        if (volta) return GQ == G && launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (v1 || turing) return launch<1, GQ>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        return launch_i8<GQ>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (!pools.k_pool || !pools.v_pool) return false;
+    if (volta) return GQ == G && launch70<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    return launch<0, GQ>(q, pools, ids, steps, cap, s, attn, n_q, st);
+}
+
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return true;
@@ -1490,36 +1524,15 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     return false;
 #endif
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
+    // query heads per KV head: 12 (Flash-Next) or 8 (Qwen3.6); ids null = dense (every cell of the width, which
+    // the Volta and AMD kernels do not take: the caller's old kernel then runs)
+    const int64_t gq = s.n_head_kv > 0 ? s.n_head / s.n_head_kv : 0;
+    if (s.head_dim != HD || s.n_head != gq * s.n_head_kv || (gq != G && gq != 8) || (ids != nullptr && cap <= 0) ||
+        !steps || !pools.page_table)
         return false;
-    cudaStream_t st = (cudaStream_t) stream;
-    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
-        static const bool q4_off = [] {
-            const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
-            return v != nullptr && v[0] == '0';
-        }();
-        // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
-        if (q4_off || turing || pools.v_q4 == nullptr) return false;
-        return launch<4>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
-        if (!pools.k_scale) return false;
-        if (volta) return launch70<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        return launch<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (pools.k_q != nullptr) {
-        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
-        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
-        // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
-        // exist before sm_80.
-        static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
-        if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (!pools.k_pool || !pools.v_pool) return false;
-    if (volta) return launch70<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    if (volta && (gq != G || ids == nullptr)) return false;
+    return gq == 8 ? dispatch_g<8>(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream, volta, turing)
+                   : dispatch_g<G>(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream, volta, turing);
 }
 
 }  // namespace strata::kernels

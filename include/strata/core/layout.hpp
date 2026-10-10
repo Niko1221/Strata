@@ -20,11 +20,20 @@
 #include <cstdint>
 #include <string>
 
+namespace strata { class GgufFile; }
+
 namespace strata::core {
+
+/// Which model the geometry describes, from the GGUF's `general.architecture`.  Flash-Next (`qwen4exp`) is the
+/// default and the field initialisers below are its numbers; Qwen3.6-35B-A3B (`qwen35moe`) is the same family
+/// (GDN + gated full attention every 4th layer, softmax router, shared expert) without the hyper-connection
+/// residual, the PLE block or the QSA indexer, and with SiLU instead of sigmoid on the GDN output gate.
+enum class ModelArch : int32_t { kQwen4Exp = 0, kQwen35Moe = 1 };
 
 /// The model's geometry, taken from `docs/semantics.md` and the artifact's own metadata.  Every field here
 /// is a number a kernel depends on, so a change is a change to a kernel contract and not a tuning knob.
 struct ModelGeometry {
+    ModelArch arch = ModelArch::kQwen4Exp;
     int64_t n_embd = 2560;
     int64_t n_layers = 48;
     int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... 47
@@ -51,12 +60,31 @@ struct ModelGeometry {
     // MoE, on every layer
     int64_t n_expert = 512;
     int64_t n_ff = 640;
+    int64_t n_expert_used = 10;
 
+    // what the model has besides the shared GDN/attention/MoE core (all true for qwen4exp)
+    bool has_ple = true;           ///< the per-layer embedding block at layer 1
+    bool has_indexer = true;       ///< QSA's sparse-attention indexer; false = every cached cell is attended
+    bool gdn_gate_silu = false;    ///< GDN output gate: false = sigmoid(z) (qwen4exp), true = silu(z) (qwen35moe)
+    int64_t n_mtp_layers = 0;      ///< MTP layers stored in the model file after the n_layers main layers
+
+    /// The hyper-connection residual (hc streams mixed through hc_lr): qwen4exp has 4.  hc = 1 is a plain
+    /// residual stream `x += f(norm(x))`, so hc_dim() is n_embd and every residual buffer keeps its formula.
+    bool has_hc() const { return hc > 1; }
     int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
     int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
 };
+
+/// The geometry of the model in `gguf` (its metadata shard), by `general.architecture`.  qwen4exp keeps every
+/// default except the MoE shape (`expert_count` / `expert_used_count`: a pruned variant such as the GSQ-RCO Coder
+/// ships fewer experts); qwen35moe is read from its own keys and checked against what the kernels support.
+/// Returns false and fills `err` for any other architecture or an unsupported shape.
+bool geometry_from_gguf(const GgufFile& gguf, ModelGeometry& g, std::string& err);
+
+/// The short name of `arch` for messages ("qwen4exp", "qwen35moe").
+const char* arch_name(ModelArch arch);
 
 /// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval
 /// = 4` and an explicit `attention.compress_ratios` array - and this is the first of the two.
