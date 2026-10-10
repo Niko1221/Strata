@@ -15,6 +15,8 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
+  // the chat list wants to know whether the browser took it (private mode, or the storage is full)
+  setChecked(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -556,15 +558,196 @@ function markdown(text) {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
+// ------------------------------------------------------------------ the chat list (this browser only, opt-in)
+// "strata.history" is the switch and it is off by default: with it off the page keeps one chat under
+// "strata.chat" exactly as before. With it on every conversation lives under "strata.chats", and the one on
+// the screen is the open one. A browser that only had "strata.chat" gets it as the first entry.
+const TITLE_MAX = 60;
+const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls;
+  if (text != null) n.textContent = text; return n; };
+
+function newChat() {
+  return {id: `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
+          title: "", time: Date.now(), messages: []};
+}
+// the name in the list: what the user called it, else the first line of their first question
+function chatTitle(c) {
+  if (c.title) return c.title;
+  const first = (c.messages.find((m) => m.role === "user") || {}).text || "";
+  return first.split("\n")[0].trim().slice(0, TITLE_MAX) || "New chat";
+}
+function loadChats() {
+  let list = store.get("chats", null);
+  if (!Array.isArray(list)) {
+    const old = store.get("chat", []);                        // the single chat from before the sidebar
+    list = old.length ? [{...newChat(), messages: old, time: old[old.length - 1].time || Date.now()}] : [];
+  }
+  return list.filter((c) => c && c.id && Array.isArray(c.messages));
+}
+
+let historyOn = store.get("history", false);
+let chats = [], chat = null, chatId = "";
+let messages = store.get("chat", []);         // off: the single chat; on: the open chat's messages
+let sidebarQuery = "", sidebarOpen = true, quotaWarned = false;
+
+// turning the switch on: the chat on the screen becomes the first entry of the list
+function openHistory() {
+  chats = loadChats();
+  chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || newChat();
+  if (!chats.includes(chat)) chats.push(chat);
+  chatId = chat.id;
+  if (!chat.messages.length && messages.length) chat.messages = messages;
+  messages = chat.messages;
+}
+
+// pictures are kept as their names only: a data URL would fill the browser's storage
+const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                                                  files: (m.files || []).map((f) => ({name: f.name}))}));
+function persistChats() {
+  const clean = chats.map((c) => ({...c, messages: cleanMessages(c.messages)}));
+  if (!store.setChecked("chats", clean) && !quotaWarned) {
+    quotaWarned = true;
+    toast("warn", "Chat list not saved", "This browser cannot keep more; the chats on the screen are still there.", 6000);
+  }
+  renderSidebar();
+}
 function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+  if (!historyOn) { store.set("chat", cleanMessages(messages)); return; }   // off: one chat, as before
+  chat.time = Date.now();
+  persistChats();
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+function groupName(t) {
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (!days) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days <= 7) return "Previous 7 days";
+  if (days <= 30) return "Previous 30 days";
+  return "Older";
+}
+function chatItem(c) {
+  const t = chatTitle(c);
+  const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
+  row.dataset.id = c.id;
+  row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}">${esc(t)}</button>` +
+    `<span class="chat-item__actions">` +
+    `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
+    `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +
+    `</span>`;
+  return row;
+}
+function renderSidebar() {
+  const q = sidebarQuery.trim().toLowerCase();
+  const list = chats.filter((c) => !q || chatTitle(c).toLowerCase().includes(q) ||
+                                   c.messages.some((m) => (m.text || "").toLowerCase().includes(q)))
+                     .sort((a, b) => b.time - a.time);
+  const box = $("sidebar-list");
+  box.innerHTML = "";
+  if (!list.length) {
+    box.appendChild(node("p", "muted small sidebar-empty", q ? "No chat matches" : "No chats yet"));
+  } else {
+    let group = "";
+    for (const c of list) {
+      const g = groupName(c.time);
+      if (g !== group) { group = g; box.appendChild(node("p", "sidebar-group", g)); }
+      box.appendChild(chatItem(c));
+    }
+  }
+  $("sidebar-foot").textContent = `${fmt(chats.length)} chat${chats.length === 1 ? "" : "s"} · kept in this browser`;
+}
+
+function showChat(c) {
+  chat = c; chatId = c.id; messages = c.messages;
+  store.set("chatId", chatId);
+  renderChat();
+  persistChats();
+}
+function openChat(id) {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const c = chats.find((x) => x.id === id);
+  if (c) showChat(c);
+}
+function startChat() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (!messages.length) { $("input").focus(); return; }        // already a fresh chat
+  const prev = chatId, c = newChat();
+  chats.push(c);
+  showChat(c);
+  $("input").focus();
+  toast("info", "New chat", "The one you were in is in the list on the left.", 6000,
+        {label: "Undo", run: () => openChat(prev)});
+}
+function deleteChat(c) {
+  if (busy && c.id === chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const i = chats.indexOf(c), wasOpen = c.id === chatId;
+  chats.splice(i, 1);
+  if (wasOpen) {
+    const next = chats[0] || newChat();
+    if (!chats.includes(next)) chats.push(next);
+    showChat(next);
+  } else {
+    persistChats();
+  }
+  toast("info", "Chat deleted", chatTitle(c), 6000, {label: "Undo", run: () => {
+    chats.splice(i, 0, c);
+    if (wasOpen) showChat(c); else persistChats();
+  }});
+}
+// rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
+function renameChat(row, c) {
+  const title = row.querySelector(".chat-item__title");
+  const input = node("input", "st-input chat-item__input");
+  input.value = chatTitle(c);
+  input.setAttribute("aria-label", "Name for this chat");
+  title.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (keep) => {
+    if (done) return;
+    done = true;
+    if (keep) c.title = input.value.trim();
+    renderSidebar();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function setSidebar(open, save) {
+  sidebarOpen = open;
+  $("sidebar").dataset.open = String(open);
+  if (save) store.set("sidebar", open);
+}
+$("sidebar-toggle").onclick = () => setSidebar(!sidebarOpen, true);
+$("sidebar-new").onclick = startChat;
+$("sidebar-search").addEventListener("input", () => { sidebarQuery = $("sidebar-search").value; renderSidebar(); });
+$("sidebar-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".chat-item");
+  if (!row) return;
+  const c = chats.find((x) => x.id === row.dataset.id);
+  if (!c) return;
+  if (e.target.closest("[data-delete]")) { deleteChat(c); return; }
+  if (e.target.closest("[data-rename]")) { renameChat(row, c); return; }
+  openChat(c.id);
+});
+
+// the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
+function setHistory(on, save) {
+  historyOn = on;
+  $("history-toggle").setAttribute("aria-checked", String(on));
+  $("sidebar").hidden = !on;
+  $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
+  if (save) store.set("history", on);
+  if (on) openHistory(); else messages = chat ? chat.messages : messages;
+  renderChat();
+}
+$("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true);
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -689,6 +872,7 @@ function renderChat() {
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
+  if (historyOn) renderSidebar();                   // the name in the list follows the first question
   scrollDown(true);
 }
 function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
@@ -875,12 +1059,17 @@ $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  if (!historyOn) {                                   // off: the old behaviour, clear with an Undo
+    if (!messages.length) return;
+    const backup = messages;
+    messages = [];
+    saveChat();
+    renderChat();
+    toast("info", "New chat", "The last one was cleared.", 6000,
+          {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+    return;
+  }
+  startChat();
 };
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
@@ -1072,7 +1261,9 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 
 // ------------------------------------------------------------------ start
 setBusy(false);
-renderChat();
+// a narrow screen starts with the list closed so the chat has room
+setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
+setHistory(historyOn, false);                        // off by default: the page as it was
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });

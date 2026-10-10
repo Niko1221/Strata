@@ -37,36 +37,52 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
-    <div class="chat-scroll" id="chat-scroll">
-      <div class="chat" id="chat">
-        <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+    <!-- the conversations kept in this browser: the open one is the chat on the right -->
+    <aside class="chat-sidebar" id="sidebar" data-open="true" aria-label="Chats" hidden>
+      <div class="sidebar-head">
+        <button class="st-btn st-btn--icon" id="sidebar-toggle" title="Collapse the chat list" aria-label="Collapse the chat list">
+          <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button>
+        <span class="card-title sidebar-title">Chats</span>
+        <button class="st-btn st-btn--icon" id="sidebar-new" title="New chat" aria-label="New chat">
+          <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+      </div>
+      <input class="st-input sidebar-search" id="sidebar-search" type="search" placeholder="Search chats"
+             autocomplete="off" aria-label="Search chats">
+      <div class="sidebar-list" id="sidebar-list"></div>
+      <p class="muted small sidebar-foot" id="sidebar-foot"></p>
+    </aside>
+    <div class="chat-main">
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat" id="chat">
+          <div class="chat-empty" id="chat-empty">
+            <div class="chat-empty__title">Ask anything</div>
+            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="composer-wrap">
-      <form class="st-composer" id="composer">
-        <div class="attachments" id="attachments" hidden></div>
-        <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
-        <div class="st-composer__bar">
-          <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
-            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
-          <input type="file" id="file" multiple hidden>
-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
-          <span class="spacer"></span>
-          <span class="composer-hint" id="composer-hint"></span>
-          <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
-          <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
-            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
-        </div>
-      </form>
+      <div class="composer-wrap">
+        <form class="st-composer" id="composer">
+          <div class="attachments" id="attachments" hidden></div>
+          <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
+          <div class="st-composer__bar">
+            <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
+              <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
+            <input type="file" id="file" multiple hidden>
+            <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
+              <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+            <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+              <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+            <span class="spacer"></span>
+            <span class="composer-hint" id="composer-hint"></span>
+            <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
+            <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
+              <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+          </div>
+        </form>
+      </div>
     </div>
   </section>
 
@@ -168,6 +184,8 @@
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
         </div>
+        <div class="toggle-row"><span>Chat history sidebar<br><span class="muted small">keeps every chat in this browser; off = one chat, as before</span></span>
+          <button class="st-toggle" id="history-toggle" role="switch" aria-checked="false" aria-label="Chat history sidebar"></button></div>
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
