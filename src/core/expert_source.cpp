@@ -304,7 +304,8 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
                 if (c == "memory") v1_path = line.substr(c2 + 1);
             continue;
         }
-        auto path = (root / line.substr(4)).lexically_normal();
+        // "0::/" (WSL, no systemd) would give "/sys/fs/cgroup/", which never compares equal to root.
+        auto path = line.size() > 4 ? (root / line.substr(4)).lexically_normal() : root;
         if (path.string().rfind(root.string(), 0) != 0 || !std::filesystem::is_directory(path)) return false;
         v2 = true;
         while (path.string().rfind(root.string(), 0) == 0) {
