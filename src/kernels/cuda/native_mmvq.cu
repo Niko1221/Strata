@@ -1637,6 +1637,25 @@ void small_f32(const void* weights, const float* x, void* scratch_q8_1,
     small_mmvq<Weight, Qi>(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+// STRATA_Q8_SM60=1 (opt-in, written for Pascal GP100): every Q8_0 dense matrix and the head get the packed planes
+// below and run q8sm60::kernel on them (q8_sm60.cuh) instead of the exact kernels.
+bool q8_sm60_on() {
+#if defined(__HIPCC__)
+    return false;   // a CUDA kernel for one NVIDIA chip: HIP builds never compile it
+#else
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_Q8_SM60");
+        const bool yes = v && v[0] == '1' && v[1] == '\0';
+        if (yes) std::fprintf(stderr, "strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)\n");
+        return yes;
+    }();
+    return on;
+#endif
+}
+#if !defined(__HIPCC__)
+#include "q8_sm60.cuh"
+#endif
+
 // ============================ STRATA_Q8_PACKED=1: the packed Q8_0 decode layout (opt-in) ============================
 //
 // A lossless load-time repack of a Q8_0 matrix: the SAME int8 values in a qs plane (row-major, n_in bytes per row)
@@ -1736,8 +1755,30 @@ void q8_packed_launch(const Q8Packed& w, const Q81Block* x, float* y, cudaStream
                                                                                     persist ? grid : w.n_out);
 }
 
+bool q8_packed_shape(int n_in, int n_out) {   // the shapes native_q8_0_packed_kernel was measured on
+    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
+           n_out >= 2048;
+}
+
 bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     auto& registry = q8_packed_registry();
+#if !defined(__HIPCC__)
+    if (q8_sm60_on() && !registry.empty()) {
+        const auto found = registry.find(weights);
+        if (found != registry.end() && found->second.n_in == n_in && found->second.n_out == n_out) {
+            validate_pointer(x_q8_1);
+            validate_pointer(y);
+            validate_stream(stream);
+            if (q8sm60::launch(found->second.qs, found->second.d, static_cast<const Q81Block*>(x_q8_1), y, n_in,
+                               n_out, ncols, static_cast<cudaStream_t>(stream))) {
+                launch_check();
+                return true;
+            }
+            // a shape the Pascal kernel declines: the exact packed kernel only where it was measured, else the GGUF layout
+            if (!q8_packed_shape(n_in, n_out)) return false;
+        }
+    }
+#endif
     if (registry.empty() || (ncols > 1 && !g_multi_exact)) return false;   // packed = the EXACT layout only
     const auto found = registry.find(weights);
     if (found == registry.end() || found->second.n_in != n_in || found->second.n_out != n_out) return false;
@@ -1903,12 +1944,61 @@ bool native_q8_0_packed_enabled() {
         const char* v = std::getenv("STRATA_Q8_PACKED");
         return v && v[0] == '1' && v[1] == '\0';
     }();
-    return enabled;
+    return enabled || q8_sm60_on();
 }
 
 bool native_q8_0_packed_eligible(int n_in, int n_out) {
-    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
-           n_out >= 2048;
+    if (q8_sm60_on()) return n_in >= 128 && n_in % 32 == 0 && n_out > 0;   // the Pascal kernel takes any of them
+    return q8_packed_shape(n_in, n_out);
+}
+
+namespace {
+std::unordered_map<const void*, void*>& q8_sm60_owned() {   // packed copies made here (the head), freed by release
+    static std::unordered_map<const void*, void*> owned;
+    return owned;
+}
+} // namespace
+
+bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char* what) {
+#if defined(__HIPCC__)
+    (void) weights; (void) n_in; (void) n_out; (void) what;
+    return false;
+#else
+    if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
+    if (q8_packed_registry().count(weights)) return true;
+    const std::size_t count = std::size_t(n_in / 32) * std::size_t(n_out);
+    const std::size_t bytes = count * 34;
+    void* packed = nullptr;
+    if (cudaMalloc(&packed, bytes) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: no VRAM for the packed %s (%.0f MiB); it keeps the GGUF layout\n", what,
+                     double(bytes) / 1048576.0);
+        return false;
+    }
+    auto* qs = static_cast<int8_t*>(packed);
+    auto* d = reinterpret_cast<half*>(qs + std::size_t(n_in) * n_out);
+    q8sm60::pack_kernel<<<unsigned((count + 255) / 256), 256>>>(static_cast<const Q80Block*>(weights), qs, d, count);
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        cudaGetLastError();
+        cudaFree(packed);
+        std::fprintf(stderr, "strata q8 sm60: packing the %s failed; it keeps the GGUF layout\n", what);
+        return false;
+    }
+    q8_packed_registry()[weights] = Q8Packed{qs, d, n_in, n_out};
+    q8_sm60_owned()[weights] = packed;
+    std::fprintf(stderr, "strata q8 sm60: packed %s (%d x %d, %.0f MiB more VRAM)\n", what, n_out, n_in,
+                 double(bytes) / 1048576.0);
+    return true;
+#endif
+}
+
+void native_q8_0_sm60_release(const void* weights) {
+    auto& owned = q8_sm60_owned();
+    const auto it = owned.find(weights);
+    if (it == owned.end()) return;
+    q8_packed_registry().erase(weights);
+    cudaFree(it->second);
+    owned.erase(it);
 }
 
 void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out) {
