@@ -1,0 +1,318 @@
+{
+  "groups": [
+    {
+      "workload": "code",
+      "tokens": 4096,
+      "equal_output_ids": true,
+      "PP": {
+        "A": 347.99158315618337,
+        "B": 347.9871563843177,
+        "change_percent": -0.0012720916481745448,
+        "A_runs": [
+          348.05366960393604,
+          347.9294967084307
+        ],
+        "B_runs": [
+          348.0684579955472,
+          347.90585477308827
+        ]
+      },
+      "TG": {
+        "A": 53.524751149383476,
+        "B": 53.42794546528446,
+        "change_percent": -0.18086153045128173,
+        "A_runs": [
+          53.57049437614439,
+          53.47900792262256
+        ],
+        "B_runs": [
+          53.425157823342204,
+          53.430733107226715
+        ]
+      },
+      "engine_total_s": {
+        "A": 30.90175,
+        "B": 30.936549999999997,
+        "change_percent": 0.11261498135217707,
+        "A_runs": [
+          30.8833,
+          30.9202
+        ],
+        "B_runs": [
+          30.9348,
+          30.938299999999998
+        ]
+      }
+    },
+    {
+      "workload": "code",
+      "tokens": 65536,
+      "equal_output_ids": true,
+      "PP": {
+        "A": 598.2815475060785,
+        "B": 598.3050342260045,
+        "change_percent": 0.003925696860274108,
+        "A_runs": [
+          598.2935633413732,
+          598.2695316707837
+        ],
+        "B_runs": [
+          598.287009057928,
+          598.323059394081
+        ]
+      },
+      "TG": {
+        "A": 47.730250109059156,
+        "B": 48.294940131025086,
+        "change_percent": 1.1830862412739673,
+        "A_runs": [
+          47.724910632308465,
+          47.73558958580985
+        ],
+        "B_runs": [
+          48.28662639637473,
+          48.30325386567544
+        ]
+      },
+      "engine_total_s": {
+        "A": 130.9943,
+        "B": 130.73915,
+        "change_percent": -0.19477946750355857,
+        "A_runs": [
+          130.9945,
+          130.9941
+        ],
+        "B_runs": [
+          130.74609999999998,
+          130.7322
+        ]
+      }
+    },
+    {
+      "workload": "ru",
+      "tokens": 65536,
+      "equal_output_ids": true,
+      "PP": {
+        "A": 597.9207879496071,
+        "B": 598.0072419450554,
+        "change_percent": 0.014459105150832485,
+        "A_runs": [
+          597.7582242377753,
+          598.083351661439
+        ],
+        "B_runs": [
+          597.8940146736562,
+          598.1204692164546
+        ]
+      },
+      "TG": {
+        "A": 49.74704284218691,
+        "B": 50.447451377100634,
+        "change_percent": 1.4079400400454745,
+        "A_runs": [
+          49.784865206505096,
+          49.70922047786872
+        ],
+        "B_runs": [
+          50.45528006622256,
+          50.43962268797872
+        ]
+      },
+      "engine_total_s": {
+        "A": 130.19065,
+        "B": 129.889,
+        "change_percent": -0.23169866653249827,
+        "A_runs": [
+          130.2048,
+          130.1765
+        ],
+        "B_runs": [
+          129.9066,
+          129.8714
+        ]
+      }
+    }
+  ],
+  "runs": [
+    {
+      "tag": "code4096-A1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 11768.3,
+      "decode_ms": 19115,
+      "PP": 348.05366960393604,
+      "TG": 53.57049437614439,
+      "engine_total_s": 30.8833,
+      "accepted": 684,
+      "offered": 855,
+      "output_ids_sha256": "0af681458e937914e536b7a5b78531d638fd9742da28a04e9c0c9443b0c57abd"
+    },
+    {
+      "tag": "code4096-B1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 11767.8,
+      "decode_ms": 19167,
+      "PP": 348.0684579955472,
+      "TG": 53.425157823342204,
+      "engine_total_s": 30.9348,
+      "accepted": 684,
+      "offered": 855,
+      "output_ids_sha256": "0af681458e937914e536b7a5b78531d638fd9742da28a04e9c0c9443b0c57abd"
+    },
+    {
+      "tag": "code4096-B2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 11773.3,
+      "decode_ms": 19165,
+      "PP": 347.90585477308827,
+      "TG": 53.430733107226715,
+      "engine_total_s": 30.938299999999998,
+      "accepted": 684,
+      "offered": 855,
+      "output_ids_sha256": "0af681458e937914e536b7a5b78531d638fd9742da28a04e9c0c9443b0c57abd"
+    },
+    {
+      "tag": "code4096-A2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 4096,
+      "actual_outputs": 1024,
+      "prompt_ms": 11772.5,
+      "decode_ms": 19147.7,
+      "PP": 347.9294967084307,
+      "TG": 53.47900792262256,
+      "engine_total_s": 30.9202,
+      "accepted": 684,
+      "offered": 855,
+      "output_ids_sha256": "0af681458e937914e536b7a5b78531d638fd9742da28a04e9c0c9443b0c57abd"
+    },
+    {
+      "tag": "code65536-A1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109538.2,
+      "decode_ms": 21456.3,
+      "PP": 598.2935633413732,
+      "TG": 47.724910632308465,
+      "engine_total_s": 130.9945,
+      "accepted": 648,
+      "offered": 872,
+      "output_ids_sha256": "186fecea5448e82653f96f6d88abac69b05ad7665d375f6de5930952ed506b70"
+    },
+    {
+      "tag": "code65536-B1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109539.4,
+      "decode_ms": 21206.7,
+      "PP": 598.287009057928,
+      "TG": 48.28662639637473,
+      "engine_total_s": 130.74609999999998,
+      "accepted": 648,
+      "offered": 872,
+      "output_ids_sha256": "186fecea5448e82653f96f6d88abac69b05ad7665d375f6de5930952ed506b70"
+    },
+    {
+      "tag": "code65536-B2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109532.8,
+      "decode_ms": 21199.4,
+      "PP": 598.323059394081,
+      "TG": 48.30325386567544,
+      "engine_total_s": 130.7322,
+      "accepted": 648,
+      "offered": 872,
+      "output_ids_sha256": "186fecea5448e82653f96f6d88abac69b05ad7665d375f6de5930952ed506b70"
+    },
+    {
+      "tag": "code65536-A2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109542.6,
+      "decode_ms": 21451.5,
+      "PP": 598.2695316707837,
+      "TG": 47.73558958580985,
+      "engine_total_s": 130.9941,
+      "accepted": 648,
+      "offered": 872,
+      "output_ids_sha256": "186fecea5448e82653f96f6d88abac69b05ad7665d375f6de5930952ed506b70"
+    },
+    {
+      "tag": "ru65536-A1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109636.3,
+      "decode_ms": 20568.5,
+      "PP": 597.7582242377753,
+      "TG": 49.784865206505096,
+      "engine_total_s": 130.2048,
+      "accepted": 671,
+      "offered": 851,
+      "output_ids_sha256": "e47db5313dabf2c8b118ea872710a398f2c18cba7d6ead8b4a4f74ef3d7b342a"
+    },
+    {
+      "tag": "ru65536-B1",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109611.4,
+      "decode_ms": 20295.2,
+      "PP": 597.8940146736562,
+      "TG": 50.45528006622256,
+      "engine_total_s": 129.9066,
+      "accepted": 671,
+      "offered": 850,
+      "output_ids_sha256": "e47db5313dabf2c8b118ea872710a398f2c18cba7d6ead8b4a4f74ef3d7b342a"
+    },
+    {
+      "tag": "ru65536-B2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109569.9,
+      "decode_ms": 20301.5,
+      "PP": 598.1204692164546,
+      "TG": 50.43962268797872,
+      "engine_total_s": 129.8714,
+      "accepted": 671,
+      "offered": 850,
+      "output_ids_sha256": "e47db5313dabf2c8b118ea872710a398f2c18cba7d6ead8b4a4f74ef3d7b342a"
+    },
+    {
+      "tag": "ru65536-A2",
+      "passed": true,
+      "kv": "int8",
+      "prompt_tokens": 65536,
+      "actual_outputs": 1024,
+      "prompt_ms": 109576.7,
+      "decode_ms": 20599.8,
+      "PP": 598.083351661439,
+      "TG": 49.70922047786872,
+      "engine_total_s": 130.1765,
+      "accepted": 671,
+      "offered": 851,
+      "output_ids_sha256": "e47db5313dabf2c8b118ea872710a398f2c18cba7d6ead8b4a4f74ef3d7b342a"
+    }
+  ]
+}

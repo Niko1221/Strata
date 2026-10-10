@@ -958,6 +958,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+  if(STRATA_HIP_GFX906)
+    add_test(NAME qsa_topk_gfx906_guarded COMMAND qsa_topk_parity 24577 6 3 204800 0)
+    set_tests_properties(qsa_topk_gfx906_guarded PROPERTIES
+      ENVIRONMENT "STRATA_GFX906_TOPK_REG=2" TIMEOUT 120)
+  endif()
 
   # ---- P2.S4: the PLE n-gram hash, the IQ4_NL table read, and the PLE block ----
   # `ngram.cpp` is host-only but lives in `strata_kernels` because `ple.cu` shares its geometry constants, and

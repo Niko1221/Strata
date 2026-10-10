@@ -18,6 +18,7 @@ namespace {
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
 constexpr int SCORE_WARPS = 8;
 constexpr int TOPK_T = 256;
+constexpr int64_t GFX906_TOPK_SHORT_CELLS = 24576;
 
 __device__ __forceinline__ uint32_t order_key(float s) {
     const float v = s + 0.0f;
@@ -55,6 +56,7 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_kernel(const fl
     }
 }
 
+template <bool SHORT_ONLY = false>
 __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restrict__ scores,
                                                             const int32_t* __restrict__ steps, int64_t max_blocks,
                                                             int64_t cap, int32_t* __restrict__ ids) {
@@ -64,6 +66,9 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
     const int64_t qi = blockIdx.x;
     const int32_t* st = steps + qi * kStepCount;
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    if constexpr (SHORT_ONLY) {
+        if (steps[((int64_t) gridDim.x - 1) * kStepCount + kStepNKv] > GFX906_TOPK_SHORT_CELLS) return;
+    }
     int32_t* out = ids + qi * cap;
     const int t = threadIdx.x;
     if (n_kv <= width) {                               // everything is selected: the identity, ascending
@@ -594,7 +599,7 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     return r;
 }
 
-template <int PER>
+template <int PER, bool LONG_ONLY = false>
 __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __restrict__ scores,
                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
                                                               int64_t cap, int32_t* __restrict__ ids) {
@@ -604,6 +609,9 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     const int64_t qi = blockIdx.x;
     const int32_t* st = steps + qi * kStepCount;
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    if constexpr (LONG_ONLY) {
+        if (steps[((int64_t) gridDim.x - 1) * kStepCount + kStepNKv] <= GFX906_TOPK_SHORT_CELLS) return;
+    }
     int32_t* out = ids + qi * cap;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     if (n_kv <= width) {
@@ -1203,7 +1211,7 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
-    block_topk_kernel<<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    block_topk_kernel<false><<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
@@ -1309,7 +1317,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         return;
 #endif
     // the blocks a query can have: the call's active count when the caller knows it (the prompt path), else the capacity.
-    // Decode (no count) keeps the capacity rule and the original register width: nothing changes there.
+    // Decode (no count) keeps the capacity rule; gfx906 can opt into the guarded 66-key path below.
 #if defined(__HIPCC__)
     const bool counted = active_blocks > 0;
 #else
@@ -1325,7 +1333,18 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
                          (any_card || topk_active_turing_device());
 #endif
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
-    const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
+#if defined(STRATA_HIP_GFX906)
+    // Opt-in only: retain the existing register kernel at larger decode capacities. The device-side
+    // guard uses the current context, not the capacity or a host value frozen during graph capture.
+    static const bool decode_reg66 = [] {
+        const char* v = std::getenv("STRATA_GFX906_TOPK_REG");
+        return v && std::atoi(v) == 2;
+    }();
+    const bool extended_decode = decode_reg66 && !counted && nq <= 8;
+#else
+    const bool extended_decode = false;
+#endif
+    const int64_t fit = (int64_t) TK_T * ((counted || extended_decode) ? TK_PER_MAX : TK_PER);
 #if defined(__HIPCC__)
     constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
     const bool too_small = counted && reach < kRegMinBlocks;
@@ -1342,6 +1361,18 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
+#if defined(STRATA_HIP_GFX906)
+    // Both launches read current device steps: capture is safe across growth and restores.
+    // Use the final query for the whole window, so a threshold crossing does not run both bodies.
+    // Each guard precedes every barrier. Exactly one arm writes all rows.
+    if (extended_decode && reach > (int64_t) TK_T * TK_PER) {
+        block_topk_kernel<true><<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        block_topk_reg_kernel<TK_PER_MAX, true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk guarded: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
+#endif
 #if !defined(__HIPCC__)
     // Turing prefill (the `counted` bound) above ~90K cells (22,528 blocks): the wide kernel, which reads the keys
     // coalesced, instead of the register kernel's uncoalesced per-thread runs (PR #743: 131K, 1.03 -> 0.75 ms); the
