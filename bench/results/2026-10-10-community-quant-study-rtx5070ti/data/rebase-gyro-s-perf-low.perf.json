@@ -1,0 +1,171 @@
+{
+  "version": "0.4.0",
+  "timestamp": "2026-10-09 10:46:11Z",
+  "latency_mode": "generation",
+  "latency_ms": 245.54176199793196,
+  "model": "gyro-s-strata",
+  "prefix_caching_enabled": false,
+  "max_concurrency": 1,
+  "benchmarks": [
+    {
+      "concurrency": 1,
+      "context_size": 0,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": {
+        "mean": 480.5955189705944,
+        "std": 0.0,
+        "values": [
+          480.5955189705944
+        ]
+      },
+      "pp_req_throughput": {
+        "mean": 480.5955189705944,
+        "std": 0.0,
+        "values": [
+          480.5955189705944
+        ]
+      },
+      "tg_throughput": {
+        "mean": 6132.406156295633,
+        "std": 0.0,
+        "values": [
+          6132.406156295633
+        ]
+      },
+      "tg_req_throughput": {
+        "mean": 6132.406156295633,
+        "std": 0.0,
+        "values": [
+          6132.406156295633
+        ]
+      },
+      "peak_throughput": {
+        "mean": 6156.454807888949,
+        "std": 0.0,
+        "values": [
+          6156.454807888949
+        ]
+      },
+      "peak_req_throughput": {
+        "mean": 6156.454807888949,
+        "std": 0.0,
+        "values": [
+          6156.454807888949
+        ]
+      },
+      "ttfr": {
+        "mean": 4735.828454354002,
+        "std": 189.510969408516,
+        "values": [
+          4941.230663040187,
+          4782.221483998001,
+          4484.033216023818
+        ]
+      },
+      "est_ppt": {
+        "mean": 4238.491454025886,
+        "std": 0.0,
+        "values": [
+          4238.491454025886
+        ]
+      },
+      "e2e_ttft": {
+        "mean": 4484.033216023818,
+        "std": 0.0,
+        "values": [
+          4484.033216023818
+        ]
+      },
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 32768,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": {
+        "mean": 1997.6407953429934,
+        "std": 271.44470244084414,
+        "values": [
+          2269.0854977838376,
+          1726.1960929021493
+        ]
+      },
+      "pp_req_throughput": {
+        "mean": 1997.6407953429934,
+        "std": 271.44470244084414,
+        "values": [
+          2269.0854977838376,
+          1726.1960929021493
+        ]
+      },
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": {
+        "mean": 256.0,
+        "std": 0.0,
+        "values": [
+          256.0,
+          256.0
+        ]
+      },
+      "peak_req_throughput": {
+        "mean": 256.0,
+        "std": 0.0,
+        "values": [
+          256.0,
+          256.0
+        ]
+      },
+      "ttfr": {
+        "mean": 17708.23058631504,
+        "std": 2011.4341608613308,
+        "values": [
+          15584.320328955073,
+          17131.41941401409,
+          20408.952015975956
+        ]
+      },
+      "est_ppt": {
+        "mean": 17751.094410467584,
+        "std": 2412.3158435104424,
+        "values": [
+          15338.77856695714,
+          20163.410253978025
+        ]
+      },
+      "e2e_ttft": {
+        "mean": 17996.636172465514,
+        "std": 2412.3158435104415,
+        "values": [
+          15584.320328955073,
+          20408.952015975956
+        ]
+      },
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 131072,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": null,
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    }
+  ]
+}
