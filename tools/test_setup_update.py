@@ -85,6 +85,45 @@ class Update(unittest.TestCase):
         self.assertIn("Qwen IQ3_S: up to date", out)
         self.assertIn("Strata is updated", out)
 
+    def local_engine(self, d: Path, archs=(89,)) -> Path:
+        eng = Path(d) / "engine"
+        eng.mkdir()
+        (eng / setup.EXE).write_bytes(b"")
+        (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": list(archs), "src": "stale",
+                                                  "vision": "none", "version": "0.1.38"}), encoding="utf-8")
+        return eng
+
+    def rebuild(self, cards, eng):
+        with mock.patch.object(setup, "engine_dir", return_value=eng), \
+                mock.patch.object(setup, "gpus", return_value=cards), \
+                mock.patch.object(setup, "get_llama_cpp", return_value=None), \
+                mock.patch.object(setup, "build_engine") as build, \
+                contextlib.redirect_stdout(io.StringIO()):
+            setup.update_installed_engine("URL", 13)
+        return build
+
+    def test_a_local_rebuild_uses_a_card_the_engine_serves(self):
+        """#1485: the most-VRAM pick can be a card the model does not run on - a V100 (sm_70) beside the model's
+        two 4090s entered the CUDA 13 rebuild's arch list, which CUDA 13 cannot compile."""
+        cards = [{"index": 0, "name": "RTX 4090", "vram_gb": 24.0, "arch": "89"},
+                 {"index": 1, "name": "Tesla V100", "vram_gb": 32.0, "arch": "70"},
+                 {"index": 2, "name": "RTX 4090", "vram_gb": 24.0, "arch": "89"}]
+        with tempfile.TemporaryDirectory() as d:
+            build = self.rebuild(cards, self.local_engine(Path(d), (89,)))
+        build.assert_called_once()
+        gpu = build.call_args[0][0]
+        self.assertEqual(gpu["archs"], [89])
+        self.assertEqual(int(gpu["arch"]), 89)
+
+    def test_a_local_rebuild_without_a_served_card_keeps_the_union(self):
+        """No card this engine was built for is installed (the folder moved PCs): the old union stands, so the
+        card that is here gets code."""
+        cards = [{"index": 0, "name": "RTX 2080 Ti", "vram_gb": 11.0, "arch": "75"}]
+        with tempfile.TemporaryDirectory() as d:
+            build = self.rebuild(cards, self.local_engine(Path(d), (89,)))
+        build.assert_called_once()
+        self.assertEqual(build.call_args[0][0]["archs"], [75, 89])
+
     def test_installed_configs_lists_only_model_configs(self):
         with tempfile.TemporaryDirectory() as d:
             p = self.config(Path(d))
