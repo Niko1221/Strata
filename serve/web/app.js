@@ -509,11 +509,21 @@ function blocks(text) {
   const out = [], lines = text.split("\n");
   let para = [], list = null;
   const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; };
-  const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
+  // an ordered list keeps the number it was written with: one continued after a code block or a paragraph goes on counting
+  const flushList = () => { if (list) out.push(`<${list.tag}${list.start !== 1 ? ` start="${list.start}"` : ""}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     let m;
-    if (!l.trim()) { flushPara(); flushList(); continue; }
+    if (!l.trim()) {
+      flushPara();
+      if (list) {                           // a blank line between two items keeps the list open (a loose list, #671)
+        let j = i + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        if (j === lines.length || !(list.tag === "ol" ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/).test(lines[j])) flushList();
+        i = j - 1;                        // the blank lines were already read; visit the next non-blank line once
+      }
+      continue;
+    }
     if ((m = l.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<${m[1].length <= 2 ? "h3" : "h4"}>${inline(m[2])}</${m[1].length <= 2 ? "h3" : "h4"}>`); continue; }
     if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(l)) { flushPara(); flushList(); out.push("<hr>"); continue; }
     if ((m = l.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
@@ -530,7 +540,7 @@ function blocks(text) {
     if ((m = l.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/))) {
       flushPara();
       const tag = m[1] ? "ol" : "ul";
-      if (!list || list.tag !== tag) { flushList(); list = {tag, items: []}; }
+      if (!list || list.tag !== tag) { flushList(); list = {tag, items: [], start: m[1] ? +m[1] : 1}; }
       list.items.push(m[2]);
       continue;
     }
