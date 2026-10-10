@@ -3489,7 +3489,8 @@ class ForcedToolChoice(unittest.TestCase):
         extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n<function=", parse_special=True)
         self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT[:20]) + extra)
 
-    def test_auto_absent_and_none_leave_the_tools_to_the_model(self):
+    def test_auto_absent_and_none_render_identical_prompt_tokens(self):
+        reference = None
         for extra in ({}, {"tool_choice": "auto"}, {"tool_choice": "none"}):
             with self.subTest(extra=extra):
                 self.engine.prompts = []
@@ -3498,8 +3499,60 @@ class ForcedToolChoice(unittest.TestCase):
                 self.assertEqual(b["choices"][0]["message"]["content"], CallingEngine.ANSWER)
                 self.assertEqual(b["choices"][0]["finish_reason"], "stop")
                 self.assertEqual(len(self.engine.prompts), 1)
-                offered = "search the web" in self.tok.decode(self.engine.prompts[0])
-                self.assertEqual(offered, extra.get("tool_choice") != "none")   # "none": no tools in the prompt
+                prompt = self.engine.prompts[0]
+                self.assertIn("search the web", self.tok.decode(prompt))
+                if reference is None:
+                    reference = prompt
+                else:
+                    self.assertEqual(prompt, reference)   # none disables calls, not the cached tool prefix
+
+    def test_none_does_not_emit_tool_calls_even_when_the_model_writes_one(self):
+        call = "<tool_call>\n<function=search>\n" + CallingEngine.ARGS
+        for thinking in (False, True):
+            for stream in (False, True):
+                with self.subTest(thinking=thinking, stream=stream):
+                    script = ("</think>\n\n" if thinking else "") + call
+                    engine = MockEngine(self.tok, script, max_context=CTX)
+                    with mock.patch.object(self.svc, "engine", engine):
+                        code, b = self.openai(tool_choice="none", stream=stream,
+                                              chat_template_kwargs={"enable_thinking": thinking})
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("stop", []))
+                    if stream:
+                        chunks = [json.loads(line[6:]) for line in b.splitlines() if line.startswith("data: {")]
+                        deltas = [c["choices"][0]["delta"] for c in chunks]
+                        self.assertTrue(all("tool_calls" not in d for d in deltas))
+                        content = "".join(d.get("content") or "" for d in deltas)
+                    else:
+                        self.assertNotIn("tool_calls", b["choices"][0]["message"])
+                        content = b["choices"][0]["message"]["content"]
+                    self.assertEqual(content, call)
+        # The same model output is still a real tool call under auto.
+        with mock.patch.object(self.svc, "engine", MockEngine(self.tok, call, max_context=CTX)):
+            code, b = self.openai(tool_choice="auto", **self.NO_THINKING)
+        finish, calls, _ = self.call_of(code, b, False)
+        self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
+
+    def test_none_keeps_mcp_declarations_but_does_not_enter_the_execution_loop(self):
+        hub = SimpleNamespace(wait=mock.Mock(), template_tools=mock.Mock(return_value=[{
+            "name": "mcp_action", "description": "MCP prefix must stay", "parameters": {"type": "object"},
+        }]))
+        with mock.patch.object(self.svc, "mcp", hub), mock.patch(
+                "serve.server.run_with_mcp", side_effect=AssertionError("MCP execution is forbidden")) as run:
+            code, b = self.openai(tool_choice="none", strata_mcp=True)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+        self.assertNotIn("tool_calls", b["choices"][0]["message"])
+        self.assertIn("MCP prefix must stay", self.tok.decode(self.engine.prompts[0]))
+        run.assert_not_called()
+
+    def test_none_with_tool_declarations_still_accepts_a_json_response_format(self):
+        engine = MockEngine(self.tok, '</think>\n\n{"ok": true}', max_context=CTX)
+        with mock.patch.object(self.svc, "engine", engine):
+            code, b = self.openai(tool_choice="none", response_format={"type": "json_object"})
+        self.assertEqual(code, 200, b)
+        self.assertEqual(json.loads(b["choices"][0]["message"]["content"]), {"ok": True})
+        self.assertNotIn("tool_calls", b["choices"][0]["message"])
 
     def test_a_call_cut_by_max_tokens_is_not_a_tool_call(self):
         code, b = self.openai(tool_choice="required", max_tokens=5, **self.NO_THINKING)

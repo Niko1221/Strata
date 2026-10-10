@@ -3,7 +3,7 @@ import copy
 from pathlib import Path
 import unittest
 
-from serve.frontend import ChatTemplate, anthropic_to_messages, openai_to_messages
+from serve.frontend import ChatTemplate, OutputParser, anthropic_to_messages, openai_to_messages
 from serve.server import ByteTokenizer, MockEngine, Service
 
 
@@ -92,6 +92,37 @@ class EmptyTurnsSwitch(unittest.TestCase):
         self.assertEqual(template.render(msgs), clean)
         with mock.patch.dict(os.environ, {"STRATA_KEEP_EMPTY_TURNS": "1"}):
             self.assertNotEqual(template.render(msgs), clean)
+
+
+class ContentOnlyToolParsing(unittest.TestCase):
+    CALL = '<tool_call>\n<function=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n</tool_call>'
+    TOOLS = [{"name": "search", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}]
+
+    def test_disabled_tool_parsing_preserves_text_across_stream_boundaries(self):
+        cases = [
+            (False, self.CALL, "", self.CALL),
+            (False, "before\n\n" + self.CALL + "\n\nafter", "", "before\n\n" + self.CALL + "\n\nafter"),
+            (False, self.CALL[:40], "", self.CALL[:40]),
+            (True, "Thinking.</think>\n\n" + self.CALL, "Thinking.", self.CALL),
+            (True, self.CALL + "</think>\n\nAnswer.", self.CALL, "Answer."),
+            (True, self.CALL, self.CALL, ""),
+        ]
+        for thinking, text, reasoning, content in cases:
+            for step in (1, 7, len(text)):
+                for stream_tools in (False, True):
+                    for finish in ("stop", "length"):
+                        for recover in (False, True):
+                            with self.subTest(thinking=thinking, text=text, step=step, stream_tools=stream_tools,
+                                              finish=finish, recover=recover):
+                                parser = OutputParser(thinking=thinking, tools=self.TOOLS, stream_tools=stream_tools,
+                                                      recover=recover, parse_tools=False)
+                                events = []
+                                for at in range(0, len(text), step):
+                                    events.extend(parser.feed(text[at:at + step]))
+                                events.extend(parser.finish(finish))
+                                self.assertTrue(all(e.kind in ("reasoning", "content") for e in events))
+                                self.assertEqual("".join(e.text or "" for e in events if e.kind == "reasoning"), reasoning)
+                                self.assertEqual("".join(e.text or "" for e in events if e.kind == "content"), content)
 
 
 class ForcedCallOpening(unittest.TestCase):

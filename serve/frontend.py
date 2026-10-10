@@ -594,7 +594,8 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
     There is no grammar here: the server writes this opening itself, so the model can only go on with a call.
     "required" / Anthropic "any": any of the tools; a named function: that one.  A value it cannot honour (an
     unknown shape, a name that is not one of the tools, "required" with no tools) is logged and acts as "auto",
-    not a 400: a client's odd choice must not stop its request.  "none" is handled by the caller (no tools)."""
+    not a 400: a client's odd choice must not stop its request.  "none" has no forced opening; the caller
+    handles prompt declarations and disabling output tool parsing separately."""
     kind, name = tool_choice_of(tool_choice)
     names = {t.get("name") for t in tools or [] if isinstance(t, dict)}
     if kind in ("auto", "none"):
@@ -700,14 +701,17 @@ RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that
 
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
-    until it is complete, so clients never see `<tool_` or `</thi`."""
+    until it is complete. With parse_tools=False, tool markup is ordinary text and is not held or parsed."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, *, parse_tools: bool = True):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
-        self.schemas = {t.get("name"): t for t in tools or []}
+        # Prompt tool declarations and output tool parsing are independent: tool_choice=none can keep the
+        # same cached prompt while returning any tool-shaped output as ordinary text, never executable calls.
+        self.parse_tools = parse_tools
+        self.schemas = {t.get("name"): t for t in tools or []} if parse_tools else {}
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -1017,6 +1021,11 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
+                if not self.parse_tools:
+                    if self.buf:
+                        out.append(Event("content", self.buf))
+                        self.buf = ""
+                    return out
                 i = self.buf.find(CALL_START)
                 b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
                 if b >= 0 and (i < 0 or b < i):
