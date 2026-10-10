@@ -1803,6 +1803,68 @@ class ClientHangUp(unittest.TestCase):
 class EngineDeath(unittest.TestCase):
     """Issue #27: a dead engine is an error (not "length"), and the next request starts it again."""
 
+    def test_watchdog_line_survives_long_trace_tail(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.silent_note = None
+        engine.last_err = None
+        engine.proc = mock.Mock()
+        engine.proc.poll.return_value = -6
+        watchdog = ("strata serve: no progress for 60 s during a request (request -1) - stopping the engine so the "
+                    "server starts it again (issue #29)")
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = str(Path(d) / "engine.log")
+            Path(engine.log_path).write_text(watchdog + "\n" + "strata verify trace: " + "x" * 40_000 + "\n",
+                                             encoding="utf-8")
+            note = engine.death_note()
+        self.assertIn("issue #29", note)
+        self.assertIn("no progress for 60 s", note)
+
+    def test_watchdog_line_without_trailing_newline(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.silent_note = None
+        engine.last_err = None
+        engine.proc = mock.Mock()
+        engine.proc.poll.return_value = -6
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = str(Path(d) / "engine.log")
+            Path(engine.log_path).write_text("strata serve: no progress (issue #29)", encoding="utf-8")
+            self.assertIn("issue #29", engine.death_note())
+
+    def test_watchdog_from_previous_run_does_not_explain_current_exit(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.silent_note = None
+        engine.last_err = None
+        engine.proc = mock.Mock()
+        engine.proc.poll.return_value = 1
+        previous = "strata serve: no progress (issue #29)\nprevious path: caf\u00e9\n".encode("utf-8")
+        current = b"strata: current run failed to open model\n"
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = str(Path(d) / "engine.log")
+            Path(engine.log_path).write_bytes(previous + current)
+            engine.log_start = len(previous)
+            note = engine.death_note()
+            self.assertNotIn("issue #29", note)
+            self.assertIn("current run failed to open model", note)
+            # No output from the new run must not fall back to the predecessor's last line either.
+            Path(engine.log_path).write_bytes(previous)
+            self.assertNotIn("issue #29", engine.death_note())
+
+    def test_watchdog_line_split_across_reverse_read_boundary(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.silent_note = None
+        engine.last_err = None
+        engine.proc = mock.Mock()
+        engine.proc.poll.return_value = -6
+        previous = b"strata serve: old watchdog (issue #29)\n"
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = str(Path(d) / "engine.log")
+            engine.log_start = len(previous)
+            # The first reverse read begins inside the issue marker; only rejoining the line finds it.
+            Path(engine.log_path).write_bytes(previous + b"strata serve: current watchdog (issue #29)\n" + b"x" * 8186)
+            note = engine.death_note()
+        self.assertIn("current watchdog", note)
+        self.assertNotIn("old watchdog", note)
+
     def test_error_then_restart(self):
         tok = ByteTokenizer()
         eng = DyingEngine(tok, "</think>\n\n" + ANSWER, max_context=CTX)

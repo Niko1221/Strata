@@ -779,29 +779,52 @@ class StrataEngine:
             q.put(None)
 
     def death_note(self) -> str:
-        """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
+        """Why this engine run most likely ended: its watchdog (issue #29), its last error, else the RAM hint."""
         if getattr(self, "silent_note", None):          # #481: the server ended it, not the OS or the engine itself
             return self.silent_note
+        watchdog = ""
         tail = ""
         try:
             with open(self.log_path, "rb") as f:
                 f.seek(0, 2)
-                f.seek(max(0, f.tell() - 4096))
-                tail = f.read().decode("utf-8", "replace")
+                end = f.tell()
+                begin = min(end, max(0, getattr(self, "log_start", 0)))
+                # Trace dumps can put the watchdog line tens of kilobytes before EOF. Walk backward in bounded
+                # reads, stopping at this engine's start: a previous run's watchdog must not explain a new exit.
+                carry = b""
+                while end > begin:
+                    start = max(begin, end - 8192)
+                    f.seek(start)
+                    parts = (f.read(end - start) + carry).split(b"\n")
+                    carry = parts[0]
+                    for raw in reversed(parts[1:]):
+                        line = raw.decode("utf-8", "replace")
+                        if not tail and line.strip().startswith(("strata", "ERR")):
+                            tail = line.strip()
+                        if "issue #29" in line:
+                            watchdog = line
+                            break
+                    if watchdog:
+                        break
+                    end = start
+                if not watchdog and carry:
+                    line = carry.decode("utf-8", "replace")
+                    if not tail and line.strip().startswith(("strata", "ERR")):
+                        tail = line.strip()
+                    if "issue #29" in line:
+                        watchdog = line
         except (OSError, TypeError):
             pass
-        for line in reversed(tail.splitlines()):
-            if "issue #29" in line:
-                return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
-                        "line: " + line.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
+        if watchdog:
+            return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
+                    "line: " + watchdog.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
         proc = self.proc                                 # None while a restart has not started the next one yet
         rc = proc.poll() if proc is not None else None
         if rc is not None and rc >= 0 and self.last_err:  # its own last words on stdout: they say why
             return (f"The engine exited (code {rc}) after it reported: {self.last_err} - please report it at "
                     "github.com/Niko1221/Strata/issues with the log.")
-        last = next((x.strip() for x in reversed(tail.splitlines()) if x.strip().startswith(("strata", "ERR"))), "")
-        if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
-            return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
+        if rc is not None and rc >= 0 and tail:          # it ended by itself: its own last words say why (#215)
+            return (f"The engine exited (code {rc}). Its last log line: {tail} - if that does not explain it, please "
                     "report it at github.com/Niko1221/Strata/issues with the log.")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "

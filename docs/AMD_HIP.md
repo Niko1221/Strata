@@ -236,15 +236,22 @@ chunk above 32768, `--spec` above 4.
 ## Linux: verify timeouts while the kernel reclaims host memory (experimental workarounds)
 
 A `verify: timed out at layer N` or "no progress for 60 s" message does not by itself mean a kernel or handshake bug. Two
-community reports found the same mechanism: the GPU's queues are suspended while the kernel reclaims host pages the GPU
-has pinned through a KFD userptr, and a restore that keeps returning `-EAGAIN` leaves them suspended for tens of seconds.
-Each report is one machine, one workaround, and the cause is not confirmed on either; neither is a default or a general
-speed claim, and neither is known to matter on Windows or on other ROCm versions.
+community reports (#750 and #1705) describe the same possible mechanism: the GPU's queues are suspended while the kernel
+reclaims host pages the GPU has pinned through a KFD userptr, and a restore that keeps returning `-EAGAIN` leaves them
+suspended for tens of seconds. Each report is one machine and one workaround; the cause is not confirmed, and neither
+workaround is a default or a general speed claim. These reports do not establish behavior on Windows or other ROCm
+versions.
 
 - **Paged host allocations (#750, two Radeon AI PRO R9700, ROCm 7.2):** tracing correlated a timeout with about 31 s of
   USERPTR queue suspension on both cards. ROCr uses USERPTR for paged host allocations unless `HSA_USERPTR_FOR_PAGED_MEM=0`.
   With it in the server JSON `env`, five paired runs gave the same outputs and the same median (7 requests: 16.65 s against
   16.63 s), without the 29.8 s and 42.2 s outliers; solo requests were a little slower (3.55 s to 3.69 s).
+- **Paged host allocations (#1705, RX 7900 XTX gfx1100, ROCm pip wheels 7.10 alpha):** nine long-context engine deaths
+  were reported during memory reclaim on Pop!_OS 24.04 with zram and `vm.swappiness=180`. The report's clean 4 h 54 min
+  run followed both `swapoff -a` and setting `HSA_USERPTR_FOR_PAGED_MEM=0` within 12 seconds, so it cannot attribute the
+  improvement to either change alone. Swap was later re-enabled with `vm.swappiness=20`; the reported follow-up was only
+  29 minutes. It reports no interleaved speed or output-parity A/B, and does not establish that the workaround caused the
+  clean interval. See [the full report](https://github.com/Niko1221/Strata/issues/1705).
 - **`--mmap-experts` (#920, RX 6800 gfx1030, ROCm 7.2.4, 31 GiB RAM, IQ3_XXS):** every run stalled until
   `GPU_PINNED_MIN_XFER_SIZE=1048576` was in the `env`, and none has since. HIP pins the pageable source pages of large
   copies, here the mapped expert file. (The engine already sets this variable for `STRATA_ARENA_MMAP=1`.)
@@ -252,6 +259,11 @@ speed claim, and neither is known to matter on Windows or on other ROCm versions
 ```json
 "env": { "GPU_PINNED_MIN_XFER_SIZE": "1048576" }
 ```
+
+`STRATA_DOORBELL_STORE=1` is a separate verify-window diagnostic: it stores the verify step's known sequence number
+instead of incrementing the mapped host word. It does not change the prompt-side `doorbell_ring()` path, which is
+captured into replayable layer graphs and must advance on every replay. The verify trace now prints both scopes so this
+setting is not mistaken for an A/B of prompt stalls.
 
 Change one setting at a time with the rest of the configuration the same, restart the engine so the runtime reads it, and
 remove it to go back to the default. Check free RAM and the driver's GTT limit before large-context tests. If the engine

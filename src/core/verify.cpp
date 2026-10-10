@@ -120,7 +120,8 @@ struct Bump {
 
 // #649 (HIP, opt-in A/Bs for the gfx1030 verify timeouts; CUDA never reads them)
 //   STRATA_VERIFY_COHERENT=1  the handshake words and rows in explicitly coherent (fine-grained) host memory
-//   STRATA_DOORBELL_STORE=1   the GPU stores each step's ring instead of read-modify-writing it over PCIe
+//   STRATA_DOORBELL_STORE=1   the VERIFY path stores each step's ring instead of read-modify-writing it over PCIe;
+//                              prompt-side doorbell_ring() remains an increment and is not covered by this A/B
 bool env_on(const char* name) {
     const char* e = std::getenv(name);
     return e != nullptr && e[0] != 0 && e[0] != '0';
@@ -569,7 +570,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             trace_n_ = 0;
         }
 #if defined(STRATA_USE_HIP)
-        std::fprintf(stderr, "strata verify trace (#649): on; coherent words %s, doorbell %s, HIP_HOST_COHERENT=%s "
+        std::fprintf(stderr, "strata verify trace (#649): on; coherent words %s, verify doorbell %s; prompt "
+                             "doorbell incremented (STRATA_DOORBELL_STORE is verify-only); HIP_HOST_COHERENT=%s "
                              "HSA_ENABLE_SDMA=%s GPU_MAX_HW_QUEUES=%s\n", g_coherent ? "explicit" : "default",
                      g_doorbell_store ? "stored" : "incremented", std::getenv("HIP_HOST_COHERENT") ? std::getenv("HIP_HOST_COHERENT") : "-",
                      std::getenv("HSA_ENABLE_SDMA") ? std::getenv("HSA_ENABLE_SDMA") : "-",
