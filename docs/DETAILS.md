@@ -294,7 +294,9 @@ engine 0.1.31 or newer). It also lists each request's speculative drafts, `draft
 Its `hit_rate` is the VRAM share of the experts looked up while answering: experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
 (engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
-beside the hit rate.
+beside the hit rate. The tab's request list has the prompt's own speed there too (0.1.42): what the cache already
+held is not read again, so it is the fresh tokens (`prompt_tokens` minus `reused`) over the prompt time
+(`prompt_ms`), and a request that read no new token shows no number.
 
 **Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
 `STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
@@ -429,6 +431,10 @@ Python 3.12 if you have none (for your user account, no admin), a private Python
 (from pip, ~0.4 GB), the ready-made Strata engine for RTX 20/30/40/50, the model and the MTP draft layer. If no
 ready-made engine fits your PC, it offers to install the build tools (Visual Studio Build Tools + CUDA Toolkit on
 Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GPU (asks first; 20-40 minutes once).
+The compiler it takes is the Visual Studio its CUDA toolkit accepts: 2019 or 2022 with CUDA 13.0-13.2, Visual Studio
+2026 only with CUDA 13.3 or newer (#985); with no CUDA toolkit any of them works, since the CPU image encoder is
+built by MSVC alone (#881). `STRATA_VCVARS=<path to vcvars64.bat>` names an install `vswhere` cannot use; the
+message and its fix are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 
