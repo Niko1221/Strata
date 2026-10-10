@@ -101,8 +101,7 @@ def sycl_path(path) -> str:
 
 
 def sycl_version() -> str:
-    m = re.search(r"project\(\s*\S+\s+VERSION\s+([\d.]+)", (ROOT / "sycl" / "CMakeLists.txt").read_text())
-    return m.group(1) if m else "0"
+    return S.source_version()
 
 
 def flag(args, name):
