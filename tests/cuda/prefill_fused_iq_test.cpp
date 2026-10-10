@@ -418,7 +418,7 @@ void reference_part(const Pair& p, cudaStream_t s) {
 
 // part 2: one layer at a real chunk, timed
 void timing_part(const Pair& p, int T, cudaStream_t s) {
-    constexpr int E = 512;
+    static const int E = [] { const char* v = std::getenv("S20_E"); return v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : 512; }();   // S20_E=256: the Coder pack
     const Geo geo(p);
     std::mt19937 rng(1360);
     const int64_t rows = (int64_t) T * K;
@@ -626,7 +626,9 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     cudaEventDestroy(a);
     cudaEventDestroy(b);
     delete mbp;
-    if (efm.rms > 0.05) throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
+    // the two int8 paths at the real shape, every tile of the layer: R9700 rel RMS 1.3-1.9e-4, worst row 2.9e-3-8.3e-3
+    if (mq && !no_mmq && (efm.rms > 1e-3 || efm.worst > 2e-2))
+        throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
 }
 }  // namespace
 
@@ -640,7 +642,11 @@ int main(int argc, char** argv) {
 #endif
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
-        if (!fused::available()) { std::printf("the fused kernels need sm_80 or newer: skipped\n"); return 77; }
+        // gfx12: only the native kernels exist (fused::available() is the Q2_0 pack's), so they decide there
+        if (!fused::available() && !fused::native_supported(GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL)) {
+            std::printf("the fused kernels need sm_80 or newer (or gfx11 / gfx12 matrix cores): skipped\n");
+            return 77;
+        }
         if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
         const std::vector<Pair> pairs = {
             {GGML_TYPE_IQ2_S, GGML_TYPE_Q2_0, "IQ2_S / Q2_0"},       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_0, "IQ2_XXS / Q2_0"},
@@ -648,7 +654,10 @@ int main(int argc, char** argv) {
             {GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, "IQ3_S / IQ4_NL"},   {GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_0, "IQ4_XS / Q2_0"},
             // (HIP only) UD-Q4_K_XL's: 47 layers Q4_K / Q5_1, 4 Q4_K / Q8_0, and the one Q5_K layer
             {GGML_TYPE_Q4_K, GGML_TYPE_Q5_1, "Q4_K / Q5_1"},         {GGML_TYPE_Q4_K, GGML_TYPE_Q8_0, "Q4_K / Q8_0"},
-            {GGML_TYPE_Q5_K, GGML_TYPE_Q5_1, "Q5_K / Q5_1"},         {GGML_TYPE_Q5_K, GGML_TYPE_Q8_0, "Q5_K / Q8_0"}};
+            {GGML_TYPE_Q5_K, GGML_TYPE_Q5_1, "Q5_K / Q5_1"},         {GGML_TYPE_Q5_K, GGML_TYPE_Q8_0, "Q5_K / Q8_0"},
+            // the Coder IQ1_M pack's other pairs (appended: the default timing set takes pairs 0, 1, 4, 3 by index)
+            {GGML_TYPE_IQ2_S, GGML_TYPE_IQ4_NL, "IQ2_S / IQ4_NL"},   {GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_0, "IQ3_XXS / Q2_0"},
+            {GGML_TYPE_IQ3_S, GGML_TYPE_Q2_0, "IQ3_S / Q2_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, "IQ4_XS / IQ4_NL"}};
         const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
         for (int i = 1; i < argc; ++i)
             if (std::strncmp(argv[i], "--only=", 7) == 0) only = argv[i] + 7;

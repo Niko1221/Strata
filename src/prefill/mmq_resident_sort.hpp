@@ -21,7 +21,10 @@ inline bool mmq_resident_sort_requested() {
 inline bool mmq_resident_sort_eligible(bool requested, bool use_mmq, bool native_layout, bool has_cache,
                                       const int32_t* layer_resident, int64_t n_expert,
                                       bool stream_all, bool layer_stream_empty) {
-    if (!requested || !use_mmq || native_layout || !has_cache || !layer_resident || n_expert <= 0) return false;
+    // native-layout packs too: slot/src/off are built the same way for both layouts, and nothing reads off[e + 1] as a
+    // count (4x GP100, sm_60: 1.2K prompt 7.27 -> 5.32 s, 35K 63.3 -> 54.1 s, the same bits)
+    (void) native_layout;
+    if (!requested || !use_mmq || !has_cache || !layer_resident || n_expert <= 0) return false;
     // All experts, including unselected ones: leave every partial/streamed layer in ID order.
     if (stream_all && !layer_stream_empty) return false;
     for (int64_t e = 0; e < n_expert; ++e) if (layer_resident[e] < 0) return false;

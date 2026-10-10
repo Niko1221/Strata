@@ -20,6 +20,7 @@
 // ldmatrix.  The products are mma.sync m16n8k32 (m16n8k16 for the formats with a scale per 16 values); the epilogues
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -655,10 +656,27 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 // A work item = NW_ROWS weight rows x a 64-row tile; 8 waves: 4 along the weight rows (32 each) x 2 along the tile
 // (32 each), each 2 x 2 WMMA tiles.  Gate/up: local row r is feature r / 2, its gate (r even) or up (r odd) row, so a
 // lane pair l, l + 16 holds gate and up of one feature.
+// gfx12 (RDNA4: gfx1200 / gfx1201, wave32) has the same instruction with another layout (checked on gfx1201, R9700):
+// A lane l holds A[l % 16][8 (l / 16) + j], B lane l B[8 (l / 16) + j][l % 16] (j = 0..7: 8 int8, two VGPRs, no
+// replication), C/D lane l holds D[8 (l / 16) + i][l % 16].  A WMMA still contracts 16 k; lane half hi supplies k
+// 8 hi .. 8 hi + 7 of them, so a 16-value k-step is still one WMMA (the K16 scales stay per WMMA).  NW_DROW is the
+// D row of a lane's element i; on gfx12 a lane's 8 rows are consecutive, so a feature's gate (even local row) and up
+// (odd) sit in one lane (elements 2j, 2j + 1) and the SwiGLU needs no cross-lane exchange.
 #if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
 #define STRATA_NAT_W11 1
 #else
 #define STRATA_NAT_W11 0
+#endif
+#if defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_NAT_W12 1
+#else
+#define STRATA_NAT_W12 0
+#endif
+#define STRATA_NAT_WMMA (STRATA_NAT_W11 || STRATA_NAT_W12)
+#if STRATA_NAT_W12
+#define NW_DROW(i, hi) (8 * (hi) + (i))
+#else
+#define NW_DROW(i, hi) (2 * (i) + (hi))
 #endif
 // The VGPR cap of the occupancy variant (amdgpu_waves_per_eu).  8 was measured against ROCm 7's clang; clang 22 (ROCm 7.10)
 // computes wrong results with it (#1180: gfx1100, every run), so there the cap is off.  -DSTRATA_W_LB=N sets it.
@@ -670,19 +688,31 @@ constexpr int NW_LB = 1;
 constexpr int NW_LB = 8;
 #endif
 typedef int nw_i4 __attribute__((ext_vector_type(4)));
+typedef int nw_i2 __attribute__((ext_vector_type(2)));
 typedef int nw_i8 __attribute__((ext_vector_type(8)));
 constexpr int NW_ROWS = 128;
 constexpr int NW_THREADS = 256;
 
-__device__ __forceinline__ nw_i8 nw_wmma(nw_i4 a, nw_i4 b, nw_i8 c) {
+// one A / B fragment: gfx11 16 int8 per lane (uint4), gfx12 8 (uint2)
+#if STRATA_NAT_W12
+typedef uint2 nw_frag;
+typedef nw_i2 nw_ab;
+__device__ __forceinline__ nw_ab nw_v(uint2 v) { return nw_ab{(int) v.x, (int) v.y}; }
+#else
+typedef uint4 nw_frag;
+typedef nw_i4 nw_ab;
+__device__ __forceinline__ nw_ab nw_v(uint4 v) { return nw_ab{(int) v.x, (int) v.y, (int) v.z, (int) v.w}; }
+#endif
+__device__ __forceinline__ nw_i8 nw_wmma(nw_ab a, nw_ab b, nw_i8 c) {
 #if STRATA_NAT_W11
     return __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, a, true, b, c, false);
+#elif STRATA_NAT_W12
+    return __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a, true, b, c, false);
 #else
     __builtin_trap();
     return c;
 #endif
 }
-__device__ __forceinline__ nw_i4 nw_u4(uint4 v) { return nw_i4{(int) v.x, (int) v.y, (int) v.z, (int) v.w}; }
 
 // W (X1): ALIAS = the H tile lives on the weight buffers (one extra barrier); LB > 0 = amdgpu_waves_per_eu(LB) (VGPR cap).
 // Disable both with -DSTRATA_W_NO_OCC (the launch sites then use <WT, GU, false, 0> and grid factor wgp_blocks).
@@ -690,7 +720,7 @@ template <int WT, bool GU, bool ALIAS = false, int LB = 0>
 __global__ void __launch_bounds__(NW_THREADS) __attribute__((amdgpu_waves_per_eu(LB > 0 ? LB : 1)))
 native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
                   const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
-#if STRATA_NAT_W11
+#if STRATA_NAT_WMMA
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;  // 64-value stages along K
     constexpr int NFB = (GU ? 1280 : 2560) / NW_ROWS;     // work items per tile
     constexpr int ACT_LD = NS * AB;
@@ -766,13 +796,18 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
             for (int nt = 0; nt < 2; ++nt)
 #pragma unroll
                 for (int i = 0; i < 8; ++i) acc[mt][nt][i] = 0.0f;
-        uint4 bq[2][4];
+        nw_frag bq[2][4];        // B per 16-value k-step: bq[nt][2 h + kk] = k 32 h + 16 kk .. (gfx12: this lane's 8 of them)
         float2 bx[2], bsum[2];   // the activation scales, and (the formats with a minimum) the codes' sums per 32 values
-        auto fetch_b = [&](int s, uint4 (&q)[2][4], float2 (&x)[2], float2 (&sm)[2]) {
+        auto fetch_b = [&](int s, nw_frag (&q)[2][4], float2 (&x)[2], float2 (&sm)[2]) {
 #pragma unroll
             for (int nt = 0; nt < 2; ++nt) {
+#if STRATA_NAT_W12
+                const uint2* p = reinterpret_cast<const uint2*>(brow[nt] + s * AB + 8 * hi);   // k 16 j + 8 hi .. + 7
+                q[nt][0] = p[0]; q[nt][1] = p[2]; q[nt][2] = p[4]; q[nt][3] = p[6];
+#else
                 const uint4* p = reinterpret_cast<const uint4*>(brow[nt] + s * AB);
                 q[nt][0] = p[0]; q[nt][1] = p[1]; q[nt][2] = p[2]; q[nt][3] = p[3];
+#endif
                 x[nt] = *reinterpret_cast<const float2*>(brow[nt] + s * AB + 64);
                 if constexpr (has_min(WT)) sm[nt] = *reinterpret_cast<const float2*>(brow[nt] + s * AB + 72);
                 else sm[nt] = make_float2(0.0f, 0.0f);
@@ -781,7 +816,7 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
         if (on) fetch_b(0, bq, bx, bsum);
         for (int s = 0; s < NS; ++s) {
             __syncthreads();                                      // stage s's weights are in buffer s & 1
-            uint4 nbq[2][4];
+            nw_frag nbq[2][4];
             float2 nbx[2], nbsum[2];
             if (on && s + 1 < NS) fetch_b(s + 1, nbq, nbx, nbsum);
             if (on) {
@@ -791,18 +826,24 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
 #pragma unroll
                     for (int mt = 0; mt < 2; ++mt) {
                         const int rb = 32 * wm + 16 * mt;
+#if STRATA_NAT_W12
+                        // k 32 h + 8 hi .. + 7 (A0) and 32 h + 16 + 8 hi .. + 7 (A1) of row rb + l16
+                        const uint2* ap = reinterpret_cast<const uint2*>(&wt[bf][rb + l16][32 * h + 8 * hi]);
+                        const nw_ab A0 = nw_v(ap[0]), A1 = nw_v(ap[2]);
+#else
                         const uint4* ap = reinterpret_cast<const uint4*>(&wt[bf][rb + l16][32 * h]);
-                        const nw_i4 A0 = nw_u4(ap[0]), A1 = nw_u4(ap[1]);
+                        const nw_ab A0 = nw_v(ap[0]), A1 = nw_v(ap[1]);
+#endif
                         float w0[8], w1[8];
 #pragma unroll
                         for (int i = 0; i < 8; ++i) {
-                            const float2 sw = *reinterpret_cast<const float2*>(&ws[bf][rb + 2 * i + hi][2 * h]);
+                            const float2 sw = *reinterpret_cast<const float2*>(&ws[bf][rb + NW_DROW(i, hi)][2 * h]);
                             w0[i] = sw.x; w1[i] = sw.y;
                         }
 #pragma unroll
                         for (int nt = 0; nt < 2; ++nt) {
                             const float dx = h ? bx[nt].y : bx[nt].x;
-                            const nw_i4 B0 = nw_u4(bq[nt][2 * h]), B1 = nw_u4(bq[nt][2 * h + 1]);
+                            const nw_ab B0 = nw_v(bq[nt][2 * h]), B1 = nw_v(bq[nt][2 * h + 1]);
                             const nw_i8 m = nw_i8{MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC};
                             if constexpr (K16) {
                                 const nw_i8 d0 = nw_wmma(A0, B0, m), d1 = nw_wmma(A1, B1, m);
@@ -844,13 +885,23 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
 #pragma unroll
                 for (int mt = 0; mt < 2; ++mt)
 #pragma unroll
-                    for (int nt = 0; nt < 2; ++nt)
+                    for (int nt = 0; nt < 2; ++nt) {
+#if STRATA_NAT_W12
+                        // lane l: local rows rb + 8 hi + i = features 16 wm + 8 mt + 4 hi + j, gate (i = 2j) and up (2j + 1)
+#pragma unroll
+                        for (int j = 0; j < 4; ++j) {
+                            const float gt = acc[mt][nt][2 * j], up = acc[mt][nt][2 * j + 1];
+                            hs[32 * wn + 16 * nt + l16][16 * wm + 8 * mt + 4 * hi + j] = gt / (1.0f + __expf(-gt)) * up;
+                        }
+#else
 #pragma unroll
                         for (int i = 0; i < 8; ++i) {
                             const float up = __shfl_xor_sync(0xffffffffu, acc[mt][nt][i], 16);
                             const float gt = acc[mt][nt][i];
                             if (hi == 0) hs[32 * wn + 16 * nt + l16][16 * wm + 8 * mt + i] = gt / (1.0f + __expf(-gt)) * up;
                         }
+#endif
+                    }
             }
             __syncthreads();
             // H block fb (features 64 fb ..) to int8 per 32, natural order: a thread per (tile row, half)
@@ -885,9 +936,16 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
                     for (int nt = 0; nt < 2; ++nt) {
                         const int r = 32 * wn + 16 * nt + l16;
                         if (r < nrows) {
+#if STRATA_NAT_W12
+                            // columns rbase + 32 wm + 16 mt + 8 hi .. + 7: contiguous, 32-byte aligned (dm: 16, checked in experts_native)
+                            float4* d = reinterpret_cast<float4*>(dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + 8 * hi);
+                            d[0] = make_float4(acc[mt][nt][0], acc[mt][nt][1], acc[mt][nt][2], acc[mt][nt][3]);
+                            d[1] = make_float4(acc[mt][nt][4], acc[mt][nt][5], acc[mt][nt][6], acc[mt][nt][7]);
+#else
                             float* d = dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + hi;
 #pragma unroll
                             for (int i = 0; i < 8; ++i) d[2 * i] = acc[mt][nt][i];
+#endif
                         }
                     }
             }
@@ -904,6 +962,7 @@ unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 // per device: whether every kernel here runs (sm_80+, device code in this build, fits), and their occupancy
 struct DevInfo {
     bool done = false, ok = false;
+    bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
     int sms = 0, occ = 1;
 };
 std::mutex g_mu;
@@ -939,6 +998,20 @@ static int wgp_blocks(int occ) {
     }();
     return env > 0 ? env : 2 * std::max(occ, 1);
 }
+// The occupancy variants' (W, X1) blocks per WGP: as many as are resident at once, so the persistent grid has no second
+// wave.  gfx12 (a WGP: 128 KB of LDS, 1536 VGPRs per SIMD; the compiler's occupancy, -Rpass-analysis=kernel-resource-usage,
+// clang 23): gate/up IQ2_S (37,120 B of LDS) and IQ2_XS (203 VGPRs) 3, every other one 4.  R9700, IQ2_S / IQ4_NL, one
+// layer, 4 runs each: 4K 8.80-8.93 ms at 4, 8.18-8.33 at 3; 16K -3%; IQ3_S / IQ4_NL 2-3% slower at 3.  gfx11 keeps 4
+// (measured on gfx1151).  Not from the occupancy API: it counts 64 KB of LDS per multiprocessor (37,120 B -> 1 block).
+// STRATA_PF_OCC_W=N sets it for every occupancy variant (an experiment knob).
+static int occ_blocks(bool w12, int type, bool gu) {
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_PF_OCC_W");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    if (env > 0) return env;
+    return w12 && gu && (type == T_IQ2_S || type == T_IQ2_XS) ? 3 : 4;
+}
 #endif
 const DevInfo& dev_info() {
     int dev = 0;
@@ -952,12 +1025,19 @@ const DevInfo& dev_info() {
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
 #elif defined(__HIPCC__)
-    {   // gfx11 with this build's code: the WMMA kernels (one occupancy for all: the same shape and LDS budget)
+    {   // gfx11 / gfx12 with this build's code: the WMMA kernels (one occupancy for all: the same shape and LDS budget)
         cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
         cudaDeviceProp prop;
         hipFuncAttributes fa{};
-        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || std::strncmp(prop.gcnArchName, "gfx11", 5) != 0 ||
-            hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(native_w11_kernel<T_IQ3_XXS, true>)) != hipSuccess) {
+        const bool props = cudaGetDeviceProperties(&prop, dev) == cudaSuccess;
+        d.w12 = props && strata::kernels::gfx_arch_is_gfx12_wmma(prop.gcnArchName);
+        // the arch lists of STRATA_NAT_W11 / STRATA_NAT_W12 (gfx_arch.hpp: never a prefix - another gfx11 / gfx12 part
+        // has the trapping body, which hipFuncGetAttributes and the occupancy query still accept).  And the body this
+        // build loaded for the device is the real one: the __builtin_trap() stub (a gfx11-generic / gfx12-generic or
+        // SPIR-V build on a listed card) declares no LDS, the real kernel at least its weight buffers.
+        if (!props || !(strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) || d.w12) ||
+            hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(native_w11_kernel<T_IQ3_XXS, true>)) != hipSuccess ||
+            fa.sharedSizeBytes < (size_t) 2 * NW_ROWS * WLD) {
             cudaGetLastError();
             return d;
         }
@@ -1040,7 +1120,15 @@ bool native_supported(int gu_type, int d_type) {
         const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
         return v != nullptr && v[0] == '0';
     }();
-    return !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;   // opt-in (=1)
+    // gfx12: fused::available() (the Q2_0 pack's expert_w11_kernel, not ported) stays false, so requested() does too; the
+    // same opt-in (STRATA_PF_FUSED=1) is read here.  Every other device: requested() as before.
+    static const bool env = [] {
+        const char* v = std::getenv("STRATA_PF_FUSED");
+        return v != nullptr && v[0] == '1';
+    }();
+    if (off || !env || !gu_covered(gu_type) || !d_covered(d_type)) return false;   // opt-in (=1): no device query without it
+    const DevInfo& d = dev_info();
+    return d.ok && (requested() || d.w12);
 }
 
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream) {
@@ -1073,8 +1161,14 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
                             g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS;
         const bool occ_d = g.d_type == T_Q2_0 || g.d_type == T_Q8_0 || g.d_type == T_IQ4_NL;
 #endif
-        const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / NW_ROWS), (int64_t) d.sms * (occ_gu ? 4 : wgp_blocks(d.occ)));
-        const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / NW_ROWS), (int64_t) d.sms * (occ_d ? 4 : wgp_blocks(d.occ)));
+        if (d.w12 && (reinterpret_cast<uintptr_t>(dm) & 15) != 0) {   // gfx12's down store: two float4 per lane
+            std::fprintf(stderr, "prefill fused experts (native): the down rows (%p) must be 16-byte aligned\n", (void*) dm);
+            std::exit(1);
+        }
+        const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / NW_ROWS),
+                                                           (int64_t) d.sms * (occ_gu ? occ_blocks(d.w12, g.gu_type, true) : wgp_blocks(d.occ)));
+        const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / NW_ROWS),
+                                                          (int64_t) d.sms * (occ_d ? occ_blocks(d.w12, g.d_type, false) : wgp_blocks(d.occ)));
         const uint8_t* xa8 = (const uint8_t*) xa;
         uint8_t* ha8 = (uint8_t*) ha;
 #define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, NW_LB><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)

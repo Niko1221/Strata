@@ -111,6 +111,47 @@ class Parser(unittest.TestCase):
         self.assertEqual(joined(p.feed("ats are nice</think>"), "reasoning"), "<tool_cats are nice")
 
 
+class QuotedThinkEnd(unittest.TestCase):
+    """#537: a `</think>` the model quotes while it thinks - right after a quote or backtick, with no line break after
+    it - is reasoning text; the end of the thinking is still a `</think>` with a line break after it."""
+
+    def test_a_quoted_tag_stays_reasoning(self):
+        for quote in ("in rcall, `</think>` could arrive inside the held body",
+                      'the mock engine returns "</think>\\n\\n2", no tool call',
+                      '```python\ntext = ("</think>\\n\\nI will use the tag now.")\n```',
+                      "split it on '</think>' first"):
+            text = "plan\n" + quote + "\ndone\n</think>\n\nanswer"
+            for width in (1, 7, 100_000):
+                with self.subTest(quote=quote[:24], width=width):
+                    evs = run(text, width)
+                    self.assertEqual(joined(evs, "reasoning"), "plan\n" + quote + "\ndone\n")
+                    self.assertEqual(joined(evs, "content"), "answer")
+
+    def test_a_call_quoted_after_it_is_not_run(self):
+        text = ('it returns "</think>\\n\\n2" here.\nThe call looks like this:\n' + CALL + " in the answer.\n"
+                "</think>\n\n" + CALL)
+        for width in (1, 7, 100_000):
+            with self.subTest(width=width):
+                evs = run(text, width)
+                self.assertEqual(len([e for e in evs if e.kind == "tool_call"]), 1)      # the answer's own call
+                self.assertIn(CALL + " in the answer.", joined(evs, "reasoning"))
+                self.assertEqual(joined(evs, "content"), "")
+
+    def test_the_end_after_a_quote_still_ends_the_thinking(self):
+        for thought in ('she said "yes"', "it is `x`", "it is 'x'"):
+            for width in (1, 100_000):
+                with self.subTest(thought=thought, width=width):
+                    evs = run(thought + "</think>\n\nanswer", width)
+                    self.assertEqual(joined(evs, "reasoning"), thought)
+                    self.assertEqual(joined(evs, "content"), "answer")
+
+    def test_an_output_that_ends_on_the_tag(self):
+        for width in (1, 100_000):
+            evs = run('say "</think>', width)
+            self.assertEqual(joined(evs, "reasoning"), 'say "')
+            self.assertEqual(joined(evs, "content"), "")
+
+
 class OverHttp(unittest.TestCase):
     def test_finish_reasons_and_block_order(self):
         helper = UnfinishedToolCall("test_parser")
