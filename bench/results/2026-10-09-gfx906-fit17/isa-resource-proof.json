@@ -1,0 +1,61 @@
+{
+  "public_commit": "ca3533157d066a13b128f3daa61f56411dcf3155",
+  "source_sha256": {
+    "base": "6432aa2d336496a0ebb3d2d3d14ce177caf67327eecb33bd61801497528d6aad",
+    "candidate": "5fc5d78c6155fa0987dee751a875ab714516c88209b0938db17699061cc7de1a"
+  },
+  "patch_sha256": "aeba2986cfd4086e79d2ef9532af405886a695d2144017ed46159105a6472b2a",
+  "public_device_images": {
+    "base": "12f4a7166679ba5384aa8e8063e0a7b91a86ddfe2dc0f77ad588529638dd58fe",
+    "fit17": "4663e26e6aa03cb6908dcee136ead3281bdf3c9aa08fc7bdf7a365e1f64f506e"
+  },
+  "normalized_instruction_hashes": {
+    "scalar17": "0ffac85ba8f73f04409c7b58c9000b45e97eaafd8d528be24a996f0f6a0b4ea6",
+    "wide66": "605b459b1b1405b3b40d3394c16a6f0ee47ef527c66253944fbd2681b5a958d5",
+    "old66": "19e65b3f9f7c0e3a3f023de0d0bba84c9ff6731e41041b7d0f26d990580d3965",
+    "counted33": "4979f7a47b1927ed95c8c5d4a543a9675c43cf4e2395fb95cdd8926629a894cd",
+    "counted66": "7b2493a2494e904050a3ef81a9d1ed73b11310e557d8d06d25554be830e57b19"
+  },
+  "resources": {
+    "scalar17": {
+      "sgpr": 104,
+      "vgpr": 64,
+      "scratch_bytes_per_lane": 56,
+      "sgpr_spills": 44,
+      "vgpr_spills": 25,
+      "lds_bytes_per_block": 32908,
+      "occupancy_waves_per_simd": 4
+    },
+    "wide66": {
+      "sgpr": 104,
+      "vgpr": 64,
+      "scratch_bytes_per_lane": 1048,
+      "sgpr_spills": 539,
+      "vgpr_spills": 468,
+      "lds_bytes_per_block": 32908,
+      "occupancy_waves_per_simd": 4
+    },
+    "old66": {
+      "sgpr": 104,
+      "vgpr": 64,
+      "scratch_bytes_per_lane": 1048,
+      "sgpr_spills": 527,
+      "vgpr_spills": 467,
+      "lds_bytes_per_block": 32908,
+      "occupancy_waves_per_simd": 4
+    }
+  },
+  "comparison_scope": "Direct existing gfx906 device image disassembly compared to qualified private production object image. Removed address/encoding comments, normalized whitespace, excluded padding after final s_endpgm; relative branch immediates and operands retained. Actual compiler saved assembly also independently compared. No recompilation for inspection.",
+  "direct_scalar_wide_control_counted_reference_instruction_equivalence": true,
+  "default_off_control_counted_reference_equal_public_base": true,
+  "all_selector_resource_abi_metadata_equal_private_production": true,
+  "wide_caveat": "Wide equals tested private wide, not original control: SGPR/VGPR spill counts +12/+1 versus old66. Guard/extra launch overhead still present.",
+  "binaries": {
+    "public-parity.base": "258f7b17610526d46d524da7b0ddfd8c6387434c80e94df1e47f6162c0ca7375",
+    "public-parity.fit17": "1be8497e073cbd3db822b22be34edd2da9dc1d06038f81488cebc63257f79fd5",
+    "capture.base": "c430d44a7714504548fc1558ecf3a2e9f2a0f3955f54d5add104523a9dfe5f4f",
+    "capture.fit17": "b68aa43252724b70fae56dcc4219ae53ba5b0bb2bca9dacc69edc0a8c2d9c807",
+    "transition.base": "f9f34e975336f51d1af7774e92ad8c0a7b08263e60a50d705fd7b11c3ed93604",
+    "transition.fit17": "b95da402d19b36613b251dce778e68a031a8f4f0cdb84d03995471a882a6242e"
+  }
+}
