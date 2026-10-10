@@ -9,7 +9,8 @@ PCIe link.
 On this machine: decode **+34% to +62%** on the same prompts, prompt throughput unchanged, recall unchanged
 (`tools/needle_bench.py` 6/6 on both versions, and the same answers on an own 128K needle). The larger part is
 the PCIe share — the new rule timed the CPU pool at 45–52 GB/s against the 13.1 GB/s link and moved `pcie_frac`
-from the start-up rule's **0.36 to 0.10, the floor of the 0.10–0.60 search range**.
+from the start-up rule's **0.36 to 0.10–0.15, at or on the floor of the 0.10–0.60 search range** (it re-measures
+up to three times per start and follows the CPU-pool timing; see the log lines below).
 
 Main limitation: one machine, one model, and the two new defaults changed together — this report does not
 separate the tail skip from the PCIe share. The long-context arms are single runs; the short arms are three.
@@ -129,6 +130,13 @@ strata serve: PCIe share: the CPU pool takes 40 us per missed expert (51.8 GB/s 
 strata serve: route tail skip: 151,008 missed experts skipped (158,991 entries) since the start
 ```
 
+The share is re-measured up to three times per start and follows the CPU-pool timing, so it ends at or on the
+floor rather than exactly on it: across the two engine starts of this session the log shows
+`0.36 -> 0.15` (45.4 GB/s), `0.15 -> 0.10` (51.8), then `0.36 -> 0.15` (47.0), `0.15 -> 0.10` (52.1) and
+`0.10 -> 0.15` (49.5) — the last adjustment of the measured run left it at **0.15**. Note that `/metrics`
+reports `engine.pcie_frac = 0.36` while these lines run: the metric keeps the start-up rule's value and does not
+follow the adaptive one.
+
 The expert cache numbers are identical in both versions (`expert cache auto: 8.17 GiB free, 600 MiB reserved
 (+123 MiB for the draft head) -> 3010 slots`, `expert cache 3903 slots, 7.46 GiB of VRAM`), so the decode
 difference is not a different number of resident experts.
@@ -149,8 +157,9 @@ difference is not a different number of resident experts.
 - **One machine, one model.** Volta on Linux in a VM is not a configuration the release notes cover, so the
   size of the gain should not be generalized beyond "a card that misses experts, with a CPU pool several
   times faster than its PCIe link".
-- **Question for the maintainers:** the share search stopped at its **0.10 floor** on this host (CPU pool
-  3.5–4× the link). Is that floor right, or would a lower one pay off on machines shaped like this one?
+- **Question for the maintainers:** the share search ends at its **floor** on this host (0.10–0.15 with the CPU
+  pool 3.5–4× the link). Is that floor right, or would a lower one pay off on machines shaped like this one?
+  Related: `/metrics` keeps reporting the start-up `pcie_frac` (0.36) and does not follow the adaptive value.
 
 ## Files
 

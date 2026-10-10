@@ -63,8 +63,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-10: Tesla V100-SXM2 16 GB (sm_70), EPYC 7532, 94 GiB RAM, Ubuntu 26.04 in a Proxmox guest](../bench/results/2026-10-10-community-v100-16gb-linux-0142/README.md):
   source builds of 0.1.41 (`fb58e0d`) and 0.1.42 (`61b3fb5`) for sm_70, Flash-Next IQ3_S, 1M YaRN, k8v4 KV; a same-day
   A/B of the two new NVIDIA defaults: decode **+34…+62%** (medians of three runs), prompt throughput unchanged,
-  `tools/needle_bench.py` 6/6 on both versions. The measured PCIe share moved `pcie_frac` from 0.36 to **0.10, the
-  floor of the search range**, on a host whose CPU pool measures 45–52 GB/s against a 13.1 GB/s link; the two
+  `tools/needle_bench.py` 6/6 on both versions. The measured PCIe share moved `pcie_frac` from 0.36 to **0.10–0.15,
+  at or on the floor of the search range** (it re-measures up to three times per start), on a host whose CPU pool
+  measures 45–52 GB/s against a 13.1 GB/s link; the two
   defaults were not separated, and the long-context arms are single runs.
 
 ## What to record
