@@ -14,6 +14,8 @@ main { flex: 1; min-height: 0; display: flex; }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
+.view--chat { flex-direction: row; }
+.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .chat { max-width: 860px; margin: 0 auto; padding: var(--st-s-8) var(--st-s-6) var(--st-s-6); display: flex;
         flex-direction: column; gap: var(--st-s-6); }
@@ -63,6 +65,35 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+
+/* the chat list: the conversations this browser keeps (app.js, "strata.chats") */
+.chat-sidebar { flex: none; width: 260px; display: flex; flex-direction: column; gap: var(--st-s-3);
+                padding: var(--st-s-4); background: var(--st-surface); border-right: 1px solid var(--st-line); }
+.sidebar-head { display: flex; align-items: center; gap: var(--st-s-2); }
+.sidebar-head .card-title { flex: 1; }
+#sidebar-toggle .st-icon { transform: rotate(90deg); transition: transform var(--st-dur) var(--st-ease); }
+.chat-sidebar[data-open="false"] { width: 60px; }
+.chat-sidebar[data-open="false"] .sidebar-head { flex-direction: column; }
+.chat-sidebar[data-open="false"] .sidebar-title, .chat-sidebar[data-open="false"] .sidebar-search,
+.chat-sidebar[data-open="false"] .sidebar-list, .chat-sidebar[data-open="false"] .sidebar-foot { display: none; }
+.sidebar-search { height: 36px; font-size: var(--st-fs-sm); }
+.sidebar-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.sidebar-group { margin: 0; padding: var(--st-s-3) 8px var(--st-s-1); font-size: var(--st-fs-xs);
+                 font-weight: var(--st-fw-bold); letter-spacing: .04em; text-transform: uppercase; color: var(--st-ink-muted); }
+.chat-item { display: flex; align-items: center; gap: 2px; border-radius: var(--st-r-md); }
+.chat-item.on { background: var(--st-surface-2); }
+.chat-item__title { flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer; text-align: left;
+                    padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item:hover .chat-item__title { color: var(--st-ink); }
+.chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
+.chat-item__actions { display: flex; gap: 2px; flex: none; opacity: 0; }          /* the buttons come up on hover or focus */
+.chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { opacity: 1; }
+.chat-item__actions .st-btn--icon { width: 30px; height: 30px; }
+.chat-item__actions .st-btn--icon .st-icon { width: 16px; height: 16px; }
+.chat-item__input { flex: 1; min-width: 0; height: 34px; font-size: var(--st-fs-sm); }
+.sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
+.sidebar-foot { margin: 0; }
 
 .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
 .st-composer { max-width: 860px; margin: 0 auto; }
@@ -169,6 +200,11 @@ main { flex: 1; min-height: 0; display: flex; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ---------------------------------------------------------------- narrow screens */
+@media (max-width: 760px) {
+  /* the list is an overlay here: the chat keeps the whole width when it is closed to its rail */
+  .view--chat { position: relative; }
+  .chat-sidebar[data-open="true"] { position: absolute; top: 0; left: 0; bottom: 0; z-index: 30; box-shadow: var(--st-sh-pop); }
+}
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .monitor-row { grid-template-columns: 1fr; }
