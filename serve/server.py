@@ -67,6 +67,7 @@ from serve.responses import ResponsesError, error_body as responses_error_body  
 from serve import gemini as gemini_api  # noqa: E402
 from serve.gemini import (GeminiError, contents_to_messages as gemini_to_messages,  # noqa: E402
                           error_body as gemini_error_body, gemini_chunks, gemini_collect,
+                          gemini_validated, response_format_of as gemini_response_format,
                           sampling_of as gemini_sampling, tool_choice_of_request as gemini_tool_choice)
 
 IM_END = "<|im_end|>"
@@ -5223,6 +5224,14 @@ def make_handler(svc: Service):
             if tool_choice_of(choice)[0] == "none":
                 tools = None
             force = forced_call(choice, tools)
+            try:
+                # Gemini CLI's background calls ask for JSON (responseMimeType/responseSchema); Strata's
+                # structured output is what answers them, as response_format does on the OpenAI route
+                messages, validator = prepare_format(gemini_response_format(req), messages,
+                                                     with_tools=bool(tools))
+            except ValueError as e:
+                raise GeminiError(f"generationConfig.responseMimeType/responseSchema: {e}",
+                                  param="generationConfig") from None
             max_new = int(req.get("max_tokens") or 0)          # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
@@ -5231,9 +5240,18 @@ def make_handler(svc: Service):
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431: hang up and the answer is cancelled
             chunks = gemini_chunks(svc, req, ids, thinking, tools, max_new, cancel, force=force)
+            if validator is not None:
+                chunks = gemini_validated(chunks, validator)   # the answer is held until it validates
             chunks = self._capture(chunks, "gemini")
             if action != "streamGenerateContent":
-                return self._json(200, gemini_collect(chunks))
+                try:
+                    return self._json(200, gemini_collect(chunks))
+                except StructuredOutputError as e:
+                    return self._json(502, gemini_error_body(str(e), 502, "INTERNAL"))
+                except EngineDied as e:
+                    return self._json(503, gemini_error_body(f"{e}; the next request restarts it", 503, "INTERNAL"))
+                except ValueError as e:                      # the engine's ERR line
+                    return self._json(500, gemini_error_body(str(e), 500, "INTERNAL"))
             self._sse()
             try:
                 for item in chunks:
@@ -5254,17 +5272,29 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 cancel.set()
                 chunks.close()
+            except EngineDied as e:                          # mid-stream: the error chunk gemini.py's docs promise
+                err = gemini_error_body(f"{e}; the next request restarts it", 503, "INTERNAL")
+                self._note(error=err["error"])
+                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\n")
+            except StructuredOutputError as e:
+                err = gemini_error_body(str(e), 502, "INTERNAL")
+                self._note(error=err["error"])
+                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\n")
+            except ValueError as e:                          # the engine's ERR after the stream started
+                err = gemini_error_body(str(e), 500, "INTERNAL")
+                self._note(error=err["error"])
+                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\n")
 
         def _gemini_count(self, req):
             """countTokens: the prompt this server would read for the same request, rendered and tokenized - the
-            model does not run, as /v1/messages/count_tokens does."""
+            model does not run, as /v1/messages/count_tokens does.  CountTokensResponse's own field is `totalTokens`
+            (a client reading anything else gets nothing)."""
             req = svc.with_shared(req, "openai")
             req = {**req, **gemini_sampling(req)}
             messages, tools, kw = gemini_to_messages(req)
             stop_strings(req)
             n = len(svc.encode_prompt(messages, tools, kw))
-            self._json(200, {"usageMetadata": {"promptTokenCount": n, "totalTokenCount": n},
-                             "modelVersion": svc.model_for(req)})
+            self._json(200, {"totalTokens": n, "modelVersion": svc.model_for(req)})
 
         def _anthropic(self, req):
             svc.load()

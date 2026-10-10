@@ -21,17 +21,21 @@ What the client needs, and what this does (checked against @google/genai 1.30.0'
     medium, high - the same words the other routes' reasoning_effort takes, and the budget wins when both come);
     `thinkingConfig.includeThoughts: false` hides the `thought` parts, the model still thinks and
     `thoughtsTokenCount` still counts them;
-  * `toolConfig.functionCallingConfig.mode` (AUTO / ANY / NONE) -> the same forced call the other routes force;
-  * streaming is `:streamGenerateContent?alt=sse`: every `data:` event is one WHOLE GenerateContentResponse, and the
-    SDK parses each one as JSON - it has no "[DONE]" sentinel, and it skips lines that do not start with `data: `,
-    so Strata's keep-alive comment stays and nothing else may be written;
+  * `toolConfig.functionCallingConfig.mode` (AUTO / ANY / NONE / VALIDATED, with `allowedFunctionNames`) ->
+    the same forced call the other routes force;
+  * `generationConfig.responseMimeType` / `responseSchema` / `responseJsonSchema` -> the response_format the
+    OpenAI and Responses routes take, so Gemini CLI's background calls (the next-speaker check, loop detection,
+    chat compression) get the JSON they parse rather than prose that fails quietly;
+  * streaming is `:streamGenerateContent?alt=sse`: every `data:` event is one WHOLE GenerateContentResponse, and
+    the SDK parses each one as JSON - it has no "[DONE]" sentinel, and it matches `data: ` at the START of its
+    buffer, so a keep-alive comment (which the OpenAI and Anthropic routes send) would stall it; the heartbeat
+    here is a real, empty response instead, with no parts for the client to append;
   * `usageMetadata` (promptTokenCount, candidatesTokenCount, thoughtsTokenCount) and `finishReason`
     (STOP / MAX_TOKENS), which is what Gemini CLI's context meter and its turn loop read.
 
 Left alone, as the other dialects leave what they cannot run: `safetySettings` (this model has no safety scores to
-filter), `cachedContent` (the conversation cache is Strata's own, keyed by the prompt), `responseSchema` /
-`responseMimeType` (structured output goes through response_format on the OpenAI and Responses routes),
-`logprobs`, `mediaResolution`, and the `thoughtSignature` a Gemini model signs its thoughts with to pair them with a
+filter), `cachedContent` (the conversation cache is Strata's own, keyed by the prompt), `logprobs`,
+`mediaResolution`, and the `thoughtSignature` a Gemini model signs its thoughts with to pair them with a
 call - Strata's reasoning has no signature, so its `thought` parts carry only their text.
 """
 from __future__ import annotations
@@ -41,6 +45,7 @@ import uuid
 
 from serve.frontend import (Event, _late_system_to_user, _object_list, _parts_of, _text_of,
                             budget_effort, effort_kwargs, tool_arguments)
+from serve.structured import validated_json
 
 # Gemini's words for the two things an answer can end on; a client that hangs up has no answer to end.
 FINISH = {"stop": "STOP", "length": "MAX_TOKENS", "cancel": "STOP"}
@@ -53,9 +58,13 @@ SAMPLING = {"temperature": "temperature", "topP": "top_p", "topK": "top_k", "see
 
 class GeminiError(ValueError):
     """A request error in Gemini's shape: {"error": {"code", "message", "status"}}.  The SDK reads `code` and throws
-    an ApiError when it is 400..599, which is also how an error that arrives mid-stream reaches its client."""
+    an ApiError when it is 400..599, which is also how an error that arrives mid-stream reaches its client.  `param`
+    names the field at fault; it goes into the message, never into `code`, which the server sends as the HTTP status
+    (a name there is a status the server cannot write, and the client then sees a dropped connection)."""
 
-    def __init__(self, message, code=400, kind="INVALID_ARGUMENT"):
+    def __init__(self, message, code=400, kind="INVALID_ARGUMENT", param=None):
+        if param:
+            message = f"{message} ({param})"
         super().__init__(message)
         self.code, self.kind = code, kind
 
@@ -98,17 +107,21 @@ def _part_of(part, param: str) -> dict:
     if isinstance(part, str):
         return {"type": "text", "text": part}
     if not isinstance(part, dict):
-        raise GeminiError(f"expected an object in {param}", param)
+        raise GeminiError("expected an object", param=param)
     src = part.get("inlineData") or part.get("inline_data")
     if src:
         if not isinstance(src, dict) or not src.get("data"):
             raise GeminiError("only inlineData (base64 with a mimeType) images are supported; this server keeps no "
-                              "files", param)
+                              "files", param=param)
         mime = src.get("mimeType") or src.get("mime_type") or "image/png"
+        if not mime.startswith("image/"):
+            # Gemini CLI sends a PDF or an audio file inline too; this server's encoder reads pictures, so the
+            # part is refused rather than sent along as a picture that is not one
+            raise GeminiError("only image/ inlineData is read: a PDF, audio or video file is not", param=param)
         return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{src['data']}"}}
     if part.get("fileData") or part.get("file_data"):
         raise GeminiError("only inlineData (base64) images are supported: uploaded files (fileData) are not kept "
-                          "by this server", param)
+                          "by this server", param=param)
     return part
 
 
@@ -131,22 +144,25 @@ def contents_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict
             if "functionCall" in part:
                 call = part["functionCall"]
                 if not isinstance(call, dict) or not isinstance(call.get("name"), str):
-                    raise GeminiError(f'contents[{i}].parts functionCall needs a "name"', f"contents[{i}].parts")
+                    raise GeminiError('functionCall needs a "name"', param=f"contents[{i}].parts")
                 calls.append({"function": {"name": call["name"], "arguments": tool_arguments(call.get("args"))}})
             elif "functionResponse" in part:
                 res = part["functionResponse"]
                 if not isinstance(res, dict):
-                    raise GeminiError("contents[].parts functionResponse needs an object", f"contents[{i}].parts")
+                    raise GeminiError("functionResponse needs an object", param=f"contents[{i}].parts")
                 # a tool's result is its own message, as the OpenAI path's tool messages are
                 results.append({"role": "tool", "content": _tool_result_of(res.get("response"))})
             elif part.get("thought") is True:
                 reasoning.append(part.get("text") or "")
             elif "text" in part:
                 if not isinstance(part["text"], str):
-                    raise GeminiError(f'contents[{i}].parts text needs a string', f"contents[{i}].parts")
+                    raise GeminiError("text needs a string", param=f"contents[{i}].parts")
                 text.append({"type": "text", "text": part["text"]})
             elif part.get("type") == "image_url":
                 images.append(part)
+        # a tool's result goes first, so it still follows the call it answers: a turn that carries the
+        # reader's text and a functionResponse in one `parts` list would otherwise put the text between them
+        messages.extend(results)
         if text or calls or reasoning or images:
             out = {"role": role, "content": _parts_of(images + text) if images
                    else "".join(t["text"] for t in text)}
@@ -155,15 +171,15 @@ def contents_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict
             if calls:
                 out["tool_calls"] = calls
             messages.append(out)
-        messages.extend(results)
     tools = []
     for tool in _object_list(req.get("tools"), "tools"):
         for d in _object_list(tool.get("functionDeclarations"), "tools[].functionDeclarations"):
             if not isinstance(d.get("name"), str) or not d["name"]:
-                raise GeminiError('tools[].functionDeclarations[] needs a "name"', "tools[].functionDeclarations")
+                raise GeminiError('functionDeclarations[] needs a "name"', param="tools[].functionDeclarations")
             schema = d.get("parametersJsonSchema") or d.get("parameters")
             if schema is not None and not isinstance(schema, dict):
-                raise GeminiError("a tool's parameters must be an object (its JSON schema)", "tools[].parameters")
+                raise GeminiError("a tool's parameters must be an object (its JSON schema)",
+                                  param="tools[].parameters")
             tools.append({"name": d["name"], "description": d.get("description", ""),
                           "parameters": lower_types(schema) if schema else {}})
     kwargs = {}
@@ -182,10 +198,11 @@ def contents_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict
             budget = int(budget)
         except (TypeError, ValueError):
             raise GeminiError("thinkingConfig.thinkingBudget: a whole number of tokens (-1: the model's own)") from None
-        if budget <= 0:
-            kwargs["enable_thinking"] = False       # 0: no thinking; -1: the model's own default
-        else:
+        if budget == 0:
+            kwargs["enable_thinking"] = False        # 0: no thinking
+        elif budget > 0:
             kwargs.update(budget_effort(budget))
+        # -1 is Gemini's dynamic thinking: the model decides, so the level stays as the settings left it
     # a client that spells the level out, or the shared Chat settings filled in (Service.with_shared, as for OpenAI)
     kwargs.update(effort_kwargs(req.get("reasoning_effort")))
     return _late_system_to_user(messages), tools or None, kwargs
@@ -221,27 +238,54 @@ def sampling_of(req: dict) -> dict:
     return out
 
 
+def response_format_of(req: dict):
+    """generationConfig.responseMimeType / responseSchema / responseJsonSchema -> the response_format the other
+    routes take.  Gemini CLI asks for JSON from its background calls (the next-speaker check, loop detection,
+    chat compression), so prose back to those is a feature that fails quietly; Strata's structured output
+    (serve/structured.py) is what answers them.  None when the request wants prose."""
+    config = req.get("generationConfig") if isinstance(req.get("generationConfig"), dict) else {}
+    mime = config.get("responseMimeType") or config.get("response_mime_type")
+    schema = (config.get("responseSchema") or config.get("responseJsonSchema")
+              or config.get("response_schema") or config.get("response_json_schema"))
+    if schema is not None and not isinstance(schema, dict):
+        raise GeminiError("generationConfig.responseSchema must be an object (its JSON schema)",
+                          param="generationConfig.responseSchema")
+    if mime not in (None, "", "text/plain", "application/json"):
+        raise GeminiError("only application/json responseMimeType is served",
+                          param="generationConfig.responseMimeType") from None
+    if schema is not None:
+        # the name is OpenAI's, Gemini has none; the schema's type names are lowercased as the tools' are
+        return {"type": "json_schema", "json_schema": {"name": "gemini", "schema": lower_types(schema)}}
+    if mime == "application/json":
+        return {"type": "json_object"}
+    return None
+
+
 def tool_choice_of_request(req: dict):
-    """toolConfig.functionCallingConfig -> the tool_choice the other routes honour (AUTO: the model decides)."""
+    """toolConfig.functionCallingConfig -> the tool_choice the other routes honour (AUTO: the model decides).
+
+    Gemini's names are `mode` (AUTO, ANY, NONE, VALIDATED) and `allowedFunctionNames` - the set the model must
+    choose from.  One name is the forced call the other routes take; ANY with no names (or several) is only
+    "a tool has to be called"."""
     config = req.get("toolConfig") or req.get("tool_config")
     calling = (config.get("functionCallingConfig") or config.get("function_calling_config")
                if isinstance(config, dict) else None)
     if not isinstance(calling, dict):
         return None
     mode = (calling.get("mode") or "AUTO").upper()
-    allowed = [n for n in (calling.get("allowedFunctionCalls") or []) if isinstance(n, str)]
+    allowed = [n for n in (calling.get("allowedFunctionNames") or calling.get("allowed_function_names")
+                           or []) if isinstance(n, str)]
     if mode == "NONE":
         return {"type": "none"}
-    if mode == "ANY":
-        return "any"
-    if mode == "VALID_VALUES_ONLY" and len(allowed) == 1:
-        return {"type": "tool", "name": allowed[0]}
+    if mode in ("ANY", "VALIDATED"):
+        return {"type": "tool", "name": allowed[0]} if len(allowed) == 1 else "any"
     return None
 
 
 # ------------------------------------------------------------------------------------------------ run -> Gemini
 def gemini_chunks(svc, req: dict, ids, thinking, tools, max_new, cancel, force=None):
-    """One whole GenerateContentResponse per event, as the SDK parses them; None is a heartbeat (an SSE comment).
+    """One whole GenerateContentResponse per event, as the SDK parses them; None is a heartbeat, which the
+    server writes as an empty response (a comment line would stall the SDK's reader).
     A call's arguments come out of the parser piece by piece (stream_tools), and Gemini has no partial form: a
     streamed call is held until its whole tool_call arrives, so the client sees one functionCall part per call.
     `thinkingConfig.includeThoughts: false` (Gemini 3's word) hides the thought parts - the model still thinks and
@@ -283,6 +327,37 @@ def gemini_chunks(svc, req: dict, ids, thinking, tools, max_new, cancel, force=N
             continue                             # no partial call exists: the whole one arrives on tool_call
         elif ev.kind == "tool_call":
             yield payload([{"functionCall": {"name": ev.call.name, "args": ev.call.arguments}}])
+
+
+def gemini_validated(chunks, validator):
+    """Structured output: the answer is held until it validates, so a client never receives prose (the OpenAI
+    route's structured_chunks holds its chunks the same way).  Nothing of the turn is sent before the answer
+    validates - the thoughts come out with it, then the event that ends the turn with its counts.  A bad answer
+    raises StructuredOutputError, which is how the other routes end such a turn."""
+    buffered = []
+    try:
+        for c in chunks:
+            if c is None:
+                yield None                     # the heartbeat: a long read keeps the connection alive
+            else:
+                buffered.append(c)
+        if not buffered:
+            return
+        text = "".join(p["text"] for c in buffered for p in c["candidates"][0]["content"]["parts"]
+                       if "text" in p and not p.get("thought"))
+        final = buffered[-1]
+        value = validated_json(text, validator,
+                               "stop" if final["candidates"][0].get("finishReason") == "STOP" else "length")
+        for c in buffered:
+            parts = c["candidates"][0]["content"]["parts"]
+            if parts and all(p.get("thought") for p in parts):
+                yield c                        # the thoughts carry no answer to validate
+        yield {"candidates": [{"content": {"parts": [{"text": value}], "role": "model"},
+                               "index": 0, "safetyRatings": []}],
+               "responseId": final["responseId"], "modelVersion": final["modelVersion"]}
+        yield final
+    finally:
+        chunks.close()
 
 
 def gemini_collect(chunks) -> dict:

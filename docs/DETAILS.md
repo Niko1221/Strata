@@ -1179,23 +1179,32 @@ gemini -m strata "say hello in five words"
   route ignores a name it does not know - `GET /v1beta/models` lists what is loaded, in Gemini's shape.
 - **Streaming** is `:streamGenerateContent?alt=sse`: every `data:` event is one whole `GenerateContentResponse`, which
   is what the SDK parses - there is no `[DONE]` sentinel, and a chunk that carries `error.code` 400..599 ends the
-  turn with an error. While the engine is quiet (reading a long prompt) the heartbeat is an empty
+  turn with an error. An engine that ends in the middle of a stream writes such a chunk (503) rather than leaving
+  the client with a dropped connection. While the engine is quiet (reading a long prompt) the heartbeat is an empty
   `{"candidates": []}` event, **not** an SSE comment: the SDK matches `/^\s*data: /` only at the start of its buffer,
   so a comment line leaves a leftover buffer and the client fails with "Incomplete JSON segment at the end".
   A streamed tool call arrives as one whole `functionCall` part (Gemini's format has no partial form for a call),
   and the model's reasoning arrives as parts marked `thought`.
-- **The thinking level** comes in both of Gemini's spellings: `thinkingConfig.thinkingBudget` (2.5's token count)
-  and `thinkingConfig.thinkingLevel` (3's word: minimal, low, medium or high - the same words the other routes'
-  `reasoning_effort` takes); the budget wins when a client sends both. `includeThoughts: false` hides the `thought`
-  parts while the model still thinks, and `thoughtsTokenCount` still counts them. A tool's schema type names are
-  lowercased (Gemini's own schemas spell them `STRING`, `OBJECT`, and the template's tool parser reads the JSON
-  Schema names).
+- **The thinking level** comes in both of Gemini's spellings: `thinkingConfig.thinkingBudget` (2.5's token count:
+  `0` turns thinking off, `-1` is dynamic thinking so the level stays as the shared settings have it, a number picks
+  a level) and `thinkingConfig.thinkingLevel` (3's word: minimal, low, medium or high - the same words the other
+  routes' `reasoning_effort` takes); the budget wins when a client sends both. `includeThoughts: false` hides the
+  `thought` parts while the model still thinks, and `thoughtsTokenCount` still counts them. A tool's schema type
+  names are lowercased (Gemini's own schemas spell them `STRING`, `OBJECT`, and the template's tool parser reads the
+  JSON Schema names).
+- **Forcing a call** is `toolConfig.functionCallingConfig`: `mode` `NONE` offers no tools, `ANY` or `VALIDATED` with
+  one `allowedFunctionNames` is the forced call the other routes force, `ANY` on its own only says a tool has to be
+  called. **Structured output** is `generationConfig.responseMimeType` `application/json` with `responseSchema`
+  (or `responseJsonSchema`) - the same `response_format` the OpenAI and Responses routes take, so Gemini CLI's
+  background calls (the next-speaker check, loop detection, chat compression) get the JSON they parse rather than
+  prose that fails quietly; the answer is only sent once it validates, and one that does not ends the turn with a
+  502. `:countTokens` answers with `totalTokens`, which is `CountTokensResponse`'s own field.
 - **Left alone**, as the other dialects leave what they cannot run: `safetySettings` (this model produces no safety
-  scores), `cachedContent` (the conversation cache is Strata's own, keyed by the prompt), `responseSchema` and
-  `responseMimeType` (structured output goes through `response_format` on the OpenAI and Responses routes),
-  `logprobs`, `mediaResolution`, and `thoughtSignature` (Strata's reasoning carries no signature). Uploaded images
-  (`fileData`) are refused - only `inlineData` (base64) pictures are read, as on the other routes.
-- **Checked** with the mock engine (`serve/test_gemini.py`, 23 tests: `python -m unittest serve.test_gemini -v`),
+  scores), `cachedContent` (the conversation cache is Strata's own, keyed by the prompt), `logprobs`,
+  `mediaResolution`, and `thoughtSignature` (Strata's reasoning carries no signature). A `fileData` part is refused,
+  and so is an `inlineData` part whose `mimeType` is not an image (a PDF or an audio file): only base64 pictures
+  reach this server's encoder.
+- **Checked** with the mock engine (`serve/test_gemini.py`, 30 tests: `python -m unittest serve.test_gemini -v`),
   against the shapes `@google/genai` 1.30.0 sends and reads, and against **Gemini CLI 0.63.0 itself** on the mock
   engine: `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8096` with a 262,144-token mock (its own system prompt is
   39,246 tokens, so a 32,768 mock rejects it before the first request), `--output-format json`. One request, 0 errors,

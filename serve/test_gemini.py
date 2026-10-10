@@ -22,8 +22,14 @@ from serve import gemini  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.gemini import (GeminiError, contents_to_messages, error_body as gemini_error_body,  # noqa: E402
                           gemini_chunks, gemini_collect, sampling_of, tool_choice_of_request)
-from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
+from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, serve  # noqa: E402
 from serve.server import IM_END  # noqa: E402
+
+try:
+    import jsonschema  # noqa: F401
+    HAVE_JSONSCHEMA = True
+except ImportError:                  # optional: json_schema answers are then only checked to be one object
+    HAVE_JSONSCHEMA = False
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ChatTemplate(ROOT / "serve/chat_template.jinja")
@@ -97,6 +103,36 @@ class GeminiParse(unittest.TestCase):
                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
         self.assertEqual(contents_to_messages(req)[2], {"enable_thinking": False})
 
+    def test_minus_one_lets_the_model_choose(self):
+        """-1 is Gemini's dynamic thinking: the model decides, so the level stays as the shared settings left it -
+        it is not the 0 above, which turns thinking off."""
+        req = {"contents": [{"parts": [{"text": "hi"}]}],
+               "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}}
+        self.assertEqual(contents_to_messages(req)[2], {})
+
+    def test_only_image_inline_data_is_read(self):
+        """Gemini CLI sends a PDF or an audio file inline too; this server's encoder reads pictures, so the
+        part is refused rather than sent along as a picture that is not one."""
+        req = {"contents": [{"role": "user", "parts": [
+            {"inlineData": {"mimeType": "application/pdf", "data": "JVBER"}}]}]}
+        with self.assertRaises(GeminiError) as bad:
+            contents_to_messages(req)
+        self.assertIn("only image/", str(bad.exception))
+        self.assertEqual(gemini_error_body(str(bad.exception))["error"]["code"], 400)
+
+    def test_a_tool_result_stays_next_to_the_call_it_answers(self):
+        """A user turn can carry the reader's text and a functionResponse in one parts list; the tool message
+        goes first, so the text does not land between the call and its result."""
+        req = {"contents": [{"role": "user", "parts": [{"text": "what is in a.txt?"}]},
+                            {"role": "model", "parts": [{"functionCall":
+                                                         {"name": "exec_command", "args": {"cmd": "cat a.txt"}}}]},
+                            {"role": "user", "parts": [{"functionResponse":
+                                                        {"name": "exec_command", "response": {"output": "before"}}},
+                                                       {"text": "and now?"}]}]}
+        messages = contents_to_messages(req)[0]
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "tool", "user"])
+        self.assertEqual(messages[2]["content"], "before")
+
     def test_gemini_3_spells_the_level_as_a_word(self):
         """thinkingConfig.thinkingLevel (Gemini 3) takes the same words the other routes' reasoning_effort
         takes; the 2.5 budget still wins when a client sends both."""
@@ -126,10 +162,16 @@ class GeminiParse(unittest.TestCase):
                                                            "type": {"type": "string"}}, "required": ["cmd"]})
 
     def test_tool_config_mode_forces_the_call(self):
-        for mode, want in (("ANY", "any"), ("NONE", {"type": "none"}),
-                           ("VALID_VALUES_ONLY", {"type": "tool", "name": "exec_command"}), ("AUTO", None)):
-            req = {"contents": [], "toolConfig": {"functionCallingConfig":
-                   {"mode": mode, "allowedFunctionCalls": ["exec_command"]}}}
+        """Gemini's own names: `allowedFunctionNames` (not "allowedFunctionCalls") and the modes AUTO, ANY,
+        NONE, VALIDATED.  One allowed name is the forced call the other routes take; ANY with no names (or
+        several) is only "a tool has to be called"."""
+        for cfg, want in (({"mode": "AUTO"}, None), ({"mode": "NONE"}, {"type": "none"}),
+                          ({"mode": "ANY"}, "any"),
+                          ({"mode": "ANY", "allowedFunctionNames": ["exec_command"]},
+                           {"type": "tool", "name": "exec_command"}),
+                          ({"mode": "VALIDATED", "allowedFunctionNames": ["exec_command"]},
+                           {"type": "tool", "name": "exec_command"})):
+            req = {"contents": [], "toolConfig": {"functionCallingConfig": cfg}}
             self.assertEqual(tool_choice_of_request(req), want)
 
     def test_a_body_that_is_not_a_generate_content_request_says_so(self):
@@ -146,10 +188,11 @@ class GeminiParse(unittest.TestCase):
 
 class Server(unittest.TestCase):
     script = ANSWER
+    engine_class = MockEngine
 
     def setUp(self):
         self.tok = ByteTokenizer()
-        self.engine = MockEngine(self.tok, self.script, max_context=16384)
+        self.engine = self.engine_class(self.tok, self.script, max_context=16384)
         self.svc = Service(self.engine, self.tok, TEMPLATE)
         self.httpd = serve(self.svc, port=0)
         self.port = self.httpd.server_address[1]
@@ -292,9 +335,8 @@ class OverHttp(Server):
         self.assertEqual(code, 200)
         self.assertNotIn("candidates", r)
         messages, tools, kw = contents_to_messages(body)
-        self.assertEqual(r["usageMetadata"],
-                         {"promptTokenCount": len(self.svc.encode_prompt(messages, tools, kw)),
-                          "totalTokenCount": len(self.svc.encode_prompt(messages, tools, kw))})
+        # CountTokensResponse's own field is totalTokens - a client reading anything else gets nothing
+        self.assertEqual(r["totalTokens"], len(self.svc.encode_prompt(messages, tools, kw)))
 
     def test_the_models_list(self):
         code, r = self.get("/v1beta/models")
@@ -303,13 +345,110 @@ class OverHttp(Server):
         self.assertIn("generateContent", r["models"][0]["supportedGenerationMethods"])
 
     def test_errors_use_the_gemini_format(self):
-        """The SDK reads error.code and throws an ApiError when it is 400..599."""
-        code, r = self.ask(body={"contents": "hi"})
-        self.assertEqual((code, r["error"]["code"]), (400, 400))
-        self.assertIn("contents", r["error"]["message"])
+        """The SDK reads error.code and throws an ApiError when it is 400..599.  A bad field has to reach the
+        client as that 400: the field's name is not an HTTP status, and a status the server cannot write leaves
+        the client with a dropped connection."""
+        for bad in ({"contents": "hi"},
+                    {"contents": [{"parts": [{"text": 5}]}]},
+                    {"contents": [{"role": "model", "parts": [{"functionCall": {"args": {}}}]}]},
+                    {"contents": [], "tools": [{"functionDeclarations": [{"description": "no name"}]}]},
+                    {"contents": [], "generationConfig":
+                         {"thinkingConfig": {"thinkingLevel": "everything"}}}):
+            code, r = self.ask(body=bad)
+            self.assertEqual((code, r["error"]["code"]), (400, 400))
         code, r = self.ask("/v1beta/models/mock:embedContents", {})
         self.assertEqual((code, r["error"]["code"]), (404, 404))
         self.assertIn("embedContents", r["error"]["message"])
+
+    def test_gemini_cli_asks_its_background_calls_for_json(self):
+        """Gemini CLI's next-speaker check, loop detection and chat compression send responseMimeType/responseSchema
+        (its schemas spell the type names in caps) and parse the answer as JSON - prose would fail quietly.
+        Strata's structured output answers them, and the answer is only sent once it validates."""
+        self.replay('Consider it.\n</think>\n\n{"next": "user"}')
+        fmt = {"responseMimeType": "application/json",
+               "responseSchema": {"type": "OBJECT", "properties": {"next": {"type": "STRING"}},
+                                  "required": ["next"]}}
+        code, r = self.ask(body={"contents": [{"parts": [{"text": "who speaks next?"}]}],
+                                 "generationConfig": fmt})
+        self.assertEqual(code, 200)
+        self.assertEqual([p for p in self.parts(r) if not p.get("thought")],
+                         [{"text": '{"next":"user"}'}])
+        code, events = self.ask("/v1beta/models/mock:streamGenerateContent?alt=sse",
+                                {"contents": [{"parts": [{"text": "who speaks next?"}]}],
+                                 "generationConfig": fmt})
+        self.assertEqual(code, 200)
+        self.assertEqual([p for e in events for p in self.parts(e) if not p.get("thought")],
+                         [{"text": '{"next":"user"}'}])
+        # the newer spelling, responseJsonSchema, answers the same way
+        code, r = self.ask(body={"contents": [{"parts": [{"text": "who speaks next?"}]}],
+                                 "generationConfig": {"responseMimeType": "application/json",
+                                                      "responseJsonSchema": {"type": "object",
+                                                                             "properties": {"next": {"type": "string"}},
+                                                                             "required": ["next"]}}})
+        self.assertEqual(code, 200)
+        self.assertEqual([p for p in self.parts(r) if not p.get("thought")],
+                         [{"text": '{"next":"user"}'}])
+
+    def test_prose_is_not_passed_off_as_json(self):
+        """A structured answer that does not validate ends the turn with an error, as the OpenAI route's does -
+        in the stream it arrives as an error chunk, since the headers are already sent."""
+        fmt = {"responseMimeType": "application/json"}
+        code, r = self.ask(body={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": fmt})
+        self.assertEqual((code, r["error"]["code"]), (502, 502))
+        self.assertIn("JSON", r["error"]["message"])
+        code, events = self.ask("/v1beta/models/mock:streamGenerateContent?alt=sse",
+                                {"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": fmt})
+        self.assertEqual(code, 200)
+        self.assertEqual(events[-1]["error"]["code"], 502)
+
+    def test_every_schema_spelling_reaches_response_format(self):
+        """responseJsonSchema is what @google/genai sends; it and the other spellings carry the schema, not only
+        "some JSON" - plain JSON mode would pass an answer that lacks a required key."""
+        schema = {"type": "object", "properties": {"next": {"type": "string"}}, "required": ["next"]}
+        for key in ("responseSchema", "responseJsonSchema", "response_schema", "response_json_schema"):
+            fmt = gemini.response_format_of({"generationConfig": {"responseMimeType": "application/json",
+                                                                  key: schema}})
+            self.assertEqual(fmt, {"type": "json_schema", "json_schema": {"name": "gemini", "schema": schema}}, key)
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, "jsonschema is not installed")
+    def test_response_json_schema_is_enforced_not_just_json(self):
+        """An answer that is JSON but breaks the responseJsonSchema is refused (only jsonschema can tell)."""
+        self.replay('Consider it.\n</think>\n\n{"other": 1}')
+        schema = {"type": "object", "properties": {"next": {"type": "string"}}, "required": ["next"]}
+        code, r = self.ask(body={"contents": [{"parts": [{"text": "who speaks next?"}]}],
+                                 "generationConfig": {"responseMimeType": "application/json",
+                                                      "responseJsonSchema": schema}})
+        self.assertEqual((code, r["error"]["code"]), (502, 502))
+
+
+class DyingEngine(MockEngine):
+    """The engine ends a few tokens into its answer (issue #27's out-of-memory killer)."""
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+            if i == 5:
+                raise EngineDied("the engine stopped unexpectedly (exit code -9)")
+            yield t
+
+
+class EngineFailure(Server):
+    script = ANSWER
+    engine_class = DyingEngine
+
+    def test_the_engine_ending_mid_stream_says_so(self):
+        """The stream has started, so no 400 can replace it: the turn ends with an error chunk the SDK reads
+        as an ApiError, as the OpenAI and Anthropic routes end their streams."""
+        code, events = self.ask("/v1beta/models/mock:streamGenerateContent?alt=sse",
+                                {"contents": [{"parts": [{"text": "hi"}]}]})
+        self.assertEqual(code, 200)
+        self.assertEqual(events[-1]["error"]["code"], 503)
+        self.assertIn("restarts it", events[-1]["error"]["message"])
+
+    def test_the_engine_ending_before_the_answer_says_so(self):
+        """The one collected answer: a 503 in Gemini's shape, not the OpenAI one the outer handler writes."""
+        code, r = self.ask(body={"contents": [{"parts": [{"text": "hi"}]}]})
+        self.assertEqual((code, r["error"]["code"]), (503, 503))
+        self.assertIn("restarts it", r["error"]["message"])
 
 
 class ToolRoundTrip(Server):
