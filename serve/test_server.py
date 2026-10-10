@@ -3865,12 +3865,61 @@ class AmdWindowsTelemetry(unittest.TestCase):
         self.assertEqual((adl_pick(strix, ADL_UTIL), adl_pick(strix, ADL_TEMP), adl_pick(strix, ADL_POWER)),
                          (12, 49, 84))
         self.assertEqual((adl_pick({8: 55, 29: 60}, ADL_TEMP), adl_pick({30: 40}, ADL_POWER)), (55, 40))
+        # an RX 7900 XTX reports board power (73) and neither 23 nor 30 (#1434's review); 73 wins where both exist
+        self.assertEqual(adl_pick({19: 79, 28: 51, 73: 287}, ADL_POWER), 287)
+        self.assertEqual(adl_pick({23: 84, 30: 2, 73: 120}, ADL_POWER), 120)
         self.assertIsNone(adl_pick({}, ADL_UTIL))
+
+    def test_close_gives_the_handles_back_once(self):
+        from serve import telemetry
+        calls = []
+
+        class Lib:
+            def ADL2_Main_Control_Destroy(self, ctx):
+                calls.append(("adl", ctx))
+
+        class Pdh:
+            def PdhCloseQuery(self, q):
+                calls.append(("pdh", q))
+
+        g = telemetry._AmdWindows.__new__(telemetry._AmdWindows)
+        g.adl = g._lib = Lib()
+        g.pdh, g.query, g.counter, g.ctx, g.adapter = Pdh(), "q", "c", "ctx", 0
+        self.assertTrue(g.ok())
+        g.close()
+        g.close()                                                          # again: nothing more to give back
+        self.assertEqual(calls, [("pdh", "q"), ("adl", "ctx")])
+        self.assertFalse(g.ok())
+        self.assertEqual(g.read(), {})
+        g.adl, g.adapter, g.ctx = Lib(), 0, "ctx2"                         # free_vram_mib closes its one-off reader
+        with mock.patch.object(telemetry, "gpu_reader", lambda i, amd: g), \
+                mock.patch.object(g, "read", lambda: {"mem_used": 1 << 30, "mem_total": 3 << 30}):
+            self.assertEqual(telemetry.free_vram_mib(0, amd=True), 2048)
+        self.assertEqual(calls[-1], ("adl", "ctx2"))
 
     def test_luid_instance(self):
         from serve.telemetry import luid_instance
         self.assertEqual(luid_instance(0, 0x179E6), "luid_0x00000000_0x000179e6_phys_0")
         self.assertEqual(luid_instance(-1, 0xFFFFFFFF), "luid_0xffffffff_0xffffffff_phys_0")
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_one_off_readers_leak_no_handles(self):
+        # #1434's review: 40 free_vram_mib calls grew the process's handles by 80 before readers were closed
+        from serve import telemetry
+        try:
+            import psutil
+        except ImportError:
+            self.skipTest("psutil is not installed")
+        g = telemetry._AmdWindows(0)
+        if not g.ok():
+            self.skipTest("no AMD card with ADL here")
+        g.close()
+        for _ in range(3):
+            telemetry.free_vram_mib(0, amd=True)
+        before = psutil.Process().num_handles()
+        for _ in range(40):
+            telemetry.free_vram_mib(0, amd=True)
+        self.assertLessEqual(psutil.Process().num_handles() - before, 4)
 
     @unittest.skipUnless(os.name == "nt", "Windows only")
     def test_no_card_breaks_nothing(self):

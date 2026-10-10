@@ -188,11 +188,12 @@ WINDOWS = os.name == "nt"
 
 # ADL's PMLog sensor ids (ADLSensorType in the ADL SDK's adl_defines.h), first supported one wins.  Checked on a
 # Radeon 8060S (Strix Halo, driver 32.0.31041.1004) against a prompt: activity 6 -> 85-96 %, the graphics temperature
-# 48 -> 53-81 C, ASIC power 45 -> 80-110 W (the whole APU; GFX power alone 4 -> 22-31 W).  ASIC power is the
-# counterpart of NVML's board power, so it is the one shown; an APU's CPU, GPU and memory share that package.
+# 48 -> 53-81 C, ASIC power 45 -> 80-110 W (the whole APU; GFX power alone 4 -> 22-31 W).  Power is the board's where
+# the card reports it (73: an RX 7900 XTX does, and has neither 23 nor 30 - #1434's review), else ASIC power, the
+# counterpart of NVML's board power on an APU, whose CPU, GPU and memory share that package (the 8060S has no 73).
 ADL_UTIL = (19,)                    # PMLOG_INFO_ACTIVITY_GFX
 ADL_TEMP = (28, 8, 27, 29)          # PMLOG_TEMPERATURE_GFX, _EDGE, _HOTSPOT, _SOC
-ADL_POWER = (23, 30)                # PMLOG_ASIC_POWER, PMLOG_GFX_POWER
+ADL_POWER = (73, 23, 30)            # PMLOG_BOARD_POWER, PMLOG_ASIC_POWER, PMLOG_GFX_POWER
 
 
 def adl_pick(sensors: dict, ids):
@@ -232,7 +233,7 @@ class _AmdWindows:
     _malloc = None                  # ADL allocates through this; kept alive with the class
 
     def __init__(self, index=0):
-        self.adl = self.ctx = self.adapter = None
+        self.adl = self.ctx = self.adapter = self._lib = None
         self.bus = self.label = self.total = None
         self.pdh = self.query = self.counter = None
         try:
@@ -244,9 +245,34 @@ class _AmdWindows:
                 self._open_counter()
             except (AttributeError, OSError, ValueError):
                 self.pdh = None
+        if not self.ok():
+            self.close()            # a reader that reads nothing holds nothing (an ADL context made before it failed)
+
+    def close(self):
+        """Give back the ADL context and the PDH query (both are OS handles: #1434's review saw +2 per reader that
+        was never closed).  Safe to call again; a closed reader reads nothing."""
+        q, self.query, self.counter = self.query, None, None
+        if q is not None and self.pdh is not None:
+            try:
+                self.pdh.PdhCloseQuery(q)
+            except OSError:
+                pass
+        ctx, self.ctx = self.ctx, None
+        if ctx is not None and self._lib is not None:
+            try:
+                self._lib.ADL2_Main_Control_Destroy(ctx)
+            except (AttributeError, OSError):
+                pass
+        self.adl = self.adapter = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - interpreter shutdown: the OS takes the handles back anyway
+            pass
 
     def _open_adl(self, index):
-        self.adl = ctypes.CDLL("atiadlxx.dll")
+        self.adl = self._lib = ctypes.CDLL("atiadlxx.dll")
         if _AmdWindows._malloc is None:
             crt_malloc = ctypes.CDLL("msvcrt").malloc
             crt_malloc.restype = ctypes.c_void_p
@@ -349,6 +375,8 @@ class _AmdWindows:
         return v.largeValue if v.CStatus in (0, 1) else None   # PDH_CSTATUS_VALID_DATA / _NEW_DATA
 
     def read(self):
+        if not self.ok():
+            return {}
         try:
             s = self._sensors()
             used = self._mem_used()
@@ -369,11 +397,16 @@ def gpu_reader(index=0, amd=False):
 
 
 def free_vram_mib(index=0, amd=False):
-    """Free VRAM of a card in MiB, or None when it cannot be read."""
+    """Free VRAM of a card in MiB, or None when it cannot be read.  A one-off reader: closed again here (#1434)."""
     g = gpu_reader(index, amd)
-    if not g.ok():
-        return None
-    r = g.read()
+    try:
+        if not g.ok():
+            return None
+        r = g.read()
+    finally:
+        close = getattr(g, "close", None)
+        if close is not None:
+            close()
     if r.get("mem_total") is None or r.get("mem_used") is None:
         return None
     return int((r["mem_total"] - r["mem_used"]) >> 20)
