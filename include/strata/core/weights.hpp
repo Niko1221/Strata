@@ -93,6 +93,10 @@ struct WeightRef {
     /// S23 experiment (STRATA_HC_Q8=1): a hyper-connection projection's Q8_0 bytes as the GGUF stores them, owned by
     /// NativeDense, for the verify window's read (every other path keeps the pack's BF16 `data`)
     const void* hc_q8 = nullptr;
+    /// Optional EXL3 dense linear (docs/EXL3.md): a device-side `strata::kernels::Exl3Mat` (trellis/suh/svh),
+    /// owned by the EXL3 loader.  Null for every pack/native tensor; when set, `gemv_quantized` runs
+    /// `exl3_gemv_f32` instead of the canonical/native paths.
+    const void* exl3 = nullptr;
     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
     bool resident = true;
@@ -135,8 +139,15 @@ public:
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
 
+    /// Build a table directly (the EXL3 loader), rather than from `<pack>/index.txt`.  `set` inserts or
+    /// replaces one role; `finish` records the report.  Kept separate from `load` so the pack path is
+    /// untouched and an EXL3 table is a first-class citizen with the same consumers.
+    void set(const std::string& name, const WeightRef& ref) { table_[name] = ref; }
+    void finish(const LoadReport& r) { report_ = r; }
+
 private:
     friend class NativeDense;
+    friend class Exl3Pack;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
 };

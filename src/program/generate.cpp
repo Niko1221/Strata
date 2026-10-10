@@ -82,6 +82,8 @@
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/artifact/exl3_pack.hpp"
+#include "strata/kernels/exl3_experts.hpp"
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -339,6 +341,8 @@ struct Options {
     /// from the manifest.  If Python agrees with the engine on the same `R`, the head is right and the layers
     /// are wrong; if it disagrees, the head is wrong.  Nothing else in the engine can be split that cheaply.
     std::string ple_gguf;              // the ORIGINAL second GGUF shard: the PLE table is not in the pack
+    std::string exl3_dir;              // an EXL3 model dir (docs/EXL3.md): weights come from safetensors, not a pack
+    std::string ple_exl3;              // the EXL3 n-gram table (ngram_embedding.safetensors)
     bool no_ple = false;              // explicit diagnostic ablation; never a normal inference default
     bool stream_token = false;        // R2.6 experiment: ordered work on the session stream
     bool check_logits = false;        // optional full-vocabulary finite scan
@@ -994,6 +998,22 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
         std::fwrite(ids, sizeof(int32_t), (size_t) k, t->routing);
         std::fwrite(weights, sizeof(float), (size_t) k, t->routing);
     }
+}
+
+/// The EXL3 expert pool: streams each layer's routed experts from the model's safetensors and runs them.
+struct Exl3Drive {
+    strata::kernels::Exl3ExpertStream* stream = nullptr;
+    int cur_layer = 0;
+};
+void drive_exl3_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,
+                     int64_t k, float* out) {
+    (void) weights;   // `moe_combine` applies the router weights on the device
+    Exl3Drive* t = (Exl3Drive*) user;
+    { const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) std::fprintf(stderr, "strata generate: prior cuda error before the EXL3 pool: %s\n", cudaGetErrorString(e)); }
+    if (t->stream == nullptr) { std::memset(out, 0, (size_t) n_embd * (size_t) k * sizeof(float)); return; }
+    const int layer = t->cur_layer++;
+    if (!t->stream->run(layer, x_f, ids, (int) k, out, nullptr))
+        std::fprintf(stderr, "strata generate: EXL3 expert stream failed at layer %d\n", layer);
 }
 
 /// Plan v0.3 P6: the pool for a verify window.
@@ -1753,6 +1773,8 @@ int main(int argc, char** argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
         else if (a == "--pack") o.pack = next("--pack");
+        else if (a == "--exl3") o.exl3_dir = next("--exl3");
+        else if (a == "--ple-exl3") o.ple_exl3 = next("--ple-exl3");
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
             std::string e;
@@ -2469,7 +2491,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --native-ple-postops requires PLE enabled\n");
         return 2;
     }
-    if (!o.no_ple && o.ple_gguf.empty()) {
+    if (!o.no_ple && o.ple_gguf.empty() && o.ple_exl3.empty()) {
         std::fprintf(stderr, "strata generate: --ple-gguf is required; --no-ple explicitly enables a diagnostic ablation\n");
         return 2;
     }
@@ -2626,7 +2648,7 @@ int main(int argc, char** argv) {
     // Plan v0.3 P6: where the experts live.  A native pack (tools/iq_pack.py: the IQ2_XS / IQ3_XXS files) keeps
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
-    {
+    if (o.exl3_dir.empty()) {
         const strata::core::ModelGeometry g0;
         if (!strata::kernels::cpu::expert_layout_load(o.pack, g0.n_layers, g0.n_expert, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -2690,7 +2712,7 @@ int main(int argc, char** argv) {
         }
     }
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
+    if (!native_pack && o.exl3_dir.empty()) strata::kernels::cpu::cpu_require_expert_support();   // EXL3 experts run on the GPU
     else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
@@ -2890,12 +2912,13 @@ int main(int argc, char** argv) {
                      (long long) split_at[0] - 1);
     }
     uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    if (o.exl3_dir.empty() && !strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
     void* arena = nullptr;
-    if (const cudaError_t ce = cudaMalloc(&arena, pool_bytes); ce != cudaSuccess) {
+    const cudaError_t ce = o.exl3_dir.empty() ? cudaMalloc(&arena, pool_bytes) : cudaSuccess;
+    if (ce != cudaSuccess) {
         // #486: the arena is the first large allocation and its size does not depend on the context, so what is
         // missing is held by something else: say how much was free
         cudaGetLastError();
@@ -2933,7 +2956,14 @@ int main(int argc, char** argv) {
         return s;
     };
     strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    std::unique_ptr<strata::core::Exl3Pack> exl3_pack;
+    if (!o.exl3_dir.empty()) {
+        exl3_pack = std::make_unique<strata::core::Exl3Pack>(o.exl3_dir);
+        if (!exl3_pack->build(wt, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+        std::fprintf(stderr, "strata generate: EXL3 %s: %zu roles, %.1f MiB EXL3 linears, %.1f MiB staged, in %.1f s\n",
+                     o.exl3_dir.c_str(), wt.all().size(), (double) exl3_pack->exl3_bytes() / (1 << 20),
+                     (double) exl3_pack->arena_bytes() / (1 << 20), load_s());
+    } else if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -3062,7 +3092,7 @@ int main(int argc, char** argv) {
     std::vector<float> ple_emb_host((size_t) strata::kernels::NG_N_EMBD);
     float* ple_emb_dev = nullptr;
     float* ple_scratch = nullptr;
-    if (!o.ple_gguf.empty()) {
+    if (!o.ple_gguf.empty() || !o.ple_exl3.empty()) {
         strata::kernels::PleIoOptions pio;
         pio.mode = o.ple_io == "mmap" || o.ple_io == "ram" ? strata::kernels::PleIo::Mmap : strata::kernels::PleIo::Direct;
         pio.lock = o.ple_io == "ram";
@@ -3081,7 +3111,9 @@ int main(int argc, char** argv) {
             pio.keepalive_window_s = kw != nullptr && *kw ? std::clamp(std::atof(kw), 1.0, 86400.0) : 60.0;
             if (pio.mode != strata::kernels::PleIo::Direct || !pio.io_thread) pio.keepalive_ms = 0;
         }
-        if (!ple_table.open(o.ple_gguf, err, pio)) {
+        const bool ple_ok = !o.ple_exl3.empty() ? ple_table.open_exl3(o.ple_exl3, err, pio)
+                                                : ple_table.open(o.ple_gguf, err, pio);
+        if (!ple_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -4511,6 +4543,7 @@ int main(int argc, char** argv) {
     }
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
+    if (o.exl3_dir.empty()) {
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
         // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
@@ -4632,6 +4665,7 @@ int main(int argc, char** argv) {
         }
 #endif
         srcp = &arena_src;
+    }
     }
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
                                         o.pool_affinity, o.pool_tasks);
@@ -5358,6 +5392,13 @@ int main(int argc, char** argv) {
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
+    Exl3Drive exl3_drive;
+    std::unique_ptr<strata::kernels::Exl3ExpertStream> exl3_stream;
+    if (!o.exl3_dir.empty()) {
+        exl3_stream = std::make_unique<strata::kernels::Exl3ExpertStream>(o.exl3_dir, (int) g.n_embd, nullptr);
+        exl3_drive.stream = exl3_stream.get();
+        std::fprintf(stderr, "strata generate: EXL3 expert stream ready (%.1f MiB device)\n", (double) exl3_stream->bytes() / (1 << 20));
+    }
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
     // promotion candidates (it would sit in both caches).  Asked live, from the helper's own cache (RemoteExperts::holds,
     // #854), so an expert the helper's tier swaps in or out later is followed - never a copy taken at load.
@@ -5515,12 +5556,12 @@ int main(int argc, char** argv) {
         }
         drive.routing = routing;
     }
-    strata::core::PoolFn pool_fn = o.no_pool ? nullptr : &drive_pool;
+    strata::core::PoolFn pool_fn = !o.exl3_dir.empty() ? &drive_exl3_pool : (o.no_pool ? nullptr : &drive_pool);
     // The hit hook rides the same switch as the pool: with no pool there is no `parts` staging to
     // write into, and a hit path with nowhere to write is a wrong token rather than an error.
     strata::core::HitFn hit_fn =
         (o.no_pool || o.expert_cache <= 0) ? nullptr : &strata::core::expert_hit_run;
-    void* pool_user = o.no_pool ? nullptr : (void*) &drive;
+    void* pool_user = !o.exl3_dir.empty() ? (void*) &exl3_drive : (o.no_pool ? nullptr : (void*) &drive);
     std::fprintf(stderr, "strata generate: %d expert-pool workers%s%s\n", pool.workers(),
                  pool.host_works() ? " + the host thread" : "",
                  o.no_pool ? " (UNUSED: --no-pool)" : "");
@@ -5539,6 +5580,7 @@ int main(int argc, char** argv) {
     // 0.514 ms of CPU work per layer.  A per-layer CPU expert pool cannot be hidden behind a strictly serial
     // residual chain; the CPU term is answered by Phase 3's VRAM expert cache, not by this pipeline.
 
+    if (!o.exl3_dir.empty()) { strata::kernels::exl3_gemv_reserve(8192, 262144); strata::kernels::exl3_shared_reserve((int) g.n_ff); }   // before capture
     // ---- the graphs
     strata::core::SessionGraphs gr;
     if (!o.no_capture && !native_pack) {   // plan v0.3 P6: a native pack runs verify windows only
@@ -12267,6 +12309,7 @@ int main(int argc, char** argv) {
         drive.d.layers = 0;
         drive.d.experts = 0;
         drive.d.failed = false;
+        exl3_drive.cur_layer = 0;
         err.clear();
         if (o.no_capture) {
             if (!strata::core::session_token(wt, g, pos, /*pos_base=*/0, ss, d_parts, main_cs,
