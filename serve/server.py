@@ -2809,7 +2809,11 @@ class Service:
         self.prompts = None
         if hasattr(tokenizer, "encode_marked") and hasattr(tokenizer, "max_special_len"):
             from strata_tokenizer import PromptEncoder
-            self.prompts = PromptEncoder(tokenizer)
+            # one kept prompt per conversation the engine's cache can hold (--conversation-cache-slots, which it
+            # reports as INFO conversation_cache_slots); the encoder's own default without that setting
+            slots = (getattr(engine, "info", None) or {}).get("conversation_cache_slots")
+            self.prompts = PromptEncoder(tokenizer, keep=slots) if isinstance(slots, int) and slots > 0 \
+                else PromptEncoder(tokenizer)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()

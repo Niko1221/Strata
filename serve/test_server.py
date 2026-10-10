@@ -1778,6 +1778,36 @@ class IncrementalPrompts(unittest.TestCase):
                 self.assertGreater(self.svc.prompts.last_reused, len(prompt) // 3)
             msgs.append({"role": "assistant", "content": b["choices"][0]["message"]["content"]})
 
+    def conversation(self, n):
+        """Messages of the n-th conversation: distinct from every other one from their first word on."""
+        return [{"role": "user", "content": f"conversation {n} says: " + f"topic {n} sentence {n} " * 20}]
+
+    def service(self, **info):
+        engine = RecordingPrompt(self.svc.tok, "The answer.", max_context=CTX)
+        engine.info = info
+        return Service(engine, self.svc.tok, self.svc.template)
+
+    def test_the_kept_prompts_follow_the_engines_conversation_slots(self):
+        svc = self.service(conversation_cache_slots=8)
+        texts = []
+        for n in range(8):
+            msgs = self.conversation(n)
+            svc.encode_prompt(msgs, None, {})
+            texts.append(svc.render_prompt(msgs, None, {}))
+        self.assertEqual(len(svc.prompts.entries), 8)
+        self.assertTrue(sorted(e[0] for e in svc.prompts.entries) == sorted(texts), "all eight kept")
+        msgs = self.conversation(8)
+        svc.encode_prompt(msgs, None, {})
+        kept = sorted(e[0] for e in svc.prompts.entries)
+        self.assertEqual(len(kept), 8)
+        self.assertTrue(kept == sorted(texts[1:] + [svc.render_prompt(msgs, None, {})]), "only the oldest went")
+
+    def test_without_a_slot_setting_four_prompts_are_kept(self):
+        svc = self.service()
+        for n in range(6):
+            svc.encode_prompt(self.conversation(n), None, {})
+        self.assertEqual(len(svc.prompts.entries), 4)
+
     def test_same_ids_as_a_full_encode_on_varied_conversations(self):
         import random
         sys.path.insert(0, str(ROOT / "tools"))
