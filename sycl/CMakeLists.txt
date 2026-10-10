@@ -224,14 +224,76 @@ target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
-  foreach(p IN ITEMS dequant_s2 s2_gemv iq shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
-                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa ple kv_q8 kv_stream kv_q4 cvec)
+  foreach(p IN ITEMS dequant_s2 s2_gemv shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
+                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
     add_executable(${p}_parity ${_src})
     target_include_directories(${p}_parity PRIVATE ${STRATA_ROOT}/src/kernels)   # the oracle .inc fixtures
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
     add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
   endforeach()
+
+  # iq_parity and ple_parity are not plain --selftest runs (the registrations the top-level CMakeLists.txt
+  # gives them, kept in step here): iq needs the fixtures tools/iq_fixture.py generates into the build tree -
+  # its first argument is a fixture directory, not a flag - and ple needs real artifacts (the PLE table's
+  # GGUF, a dense pack, the capture bins) resolved from the engine root.  Missing inputs stay a hard error.
+  strata_resolve(_src src/kernels/iq_parity.cpp)
+  add_executable(iq_parity ${_src})
+  target_include_directories(iq_parity PRIVATE ${STRATA_ROOT}/src/kernels)
+  target_link_libraries(iq_parity PRIVATE strata_kernels)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  set(_iq_python "")
+  set(_iq_candidates "")
+  if(IQ_FIXTURE_PYTHON)
+    list(APPEND _iq_candidates ${IQ_FIXTURE_PYTHON})
+  else()
+    if(Python3_Interpreter_FOUND)
+      list(APPEND _iq_candidates ${Python3_EXECUTABLE})
+    endif()
+    list(APPEND _iq_candidates "${STRATA_ROOT}/.venv/bin/python" "${STRATA_ROOT}/.venv/Scripts/python.exe"
+                               /usr/bin/python3 python3)
+  endif()
+  foreach(_cand IN LISTS _iq_candidates)
+    if(_cand STREQUAL "")
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "import numpy" OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE _iq_probe)
+    if(_iq_probe EQUAL 0)
+      set(_iq_python "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(NOT _iq_python STREQUAL "")
+    add_test(NAME iq_parity_fixtures
+             COMMAND ${_iq_python} ${STRATA_ROOT}/tools/iq_fixture.py --out ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    # exit 3: numpy or the vendored gguf-py is missing - a skip, not a failure
+    set_tests_properties(iq_parity_fixtures PROPERTIES FIXTURES_SETUP iq_fixture_data SKIP_RETURN_CODE 3)
+    add_test(NAME iq_parity COMMAND iq_parity ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    set_tests_properties(iq_parity PROPERTIES FIXTURES_REQUIRED iq_fixture_data SKIP_RETURN_CODE 3)
+  else()
+    message(STATUS "STRATA SYCL tests: no python3 with numpy was found - iq_parity and its fixtures are "
+                   "not registered")
+  endif()
+
+  strata_resolve(_src src/kernels/ple_parity.cpp)
+  add_executable(ple_parity ${_src})
+  target_include_directories(ple_parity PRIVATE ${STRATA_ROOT}/src/kernels)
+  target_link_libraries(ple_parity PRIVATE strata_kernels)
+  set(STRATA_PLE_FIXTURE_DIR "${STRATA_ROOT}/bench/micro" CACHE PATH
+      "Directory containing required ple_in.bin and ple_out.bin parity fixtures")
+  set(STRATA_PLE_GGUF "" CACHE FILEPATH
+      "GGUF holding the PLE table for ple_parity (empty: the binary's $STRATA_PLE_GGUF or its default)")
+  set(STRATA_PLE_PACK "" CACHE PATH
+      "dense pack ple_parity reads (empty: pack/full under the engine root)")
+  set(_ple_args --selftest --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin"
+                --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin")
+  if(STRATA_PLE_GGUF)
+    list(APPEND _ple_args --gguf ${STRATA_PLE_GGUF})
+  endif()
+  if(STRATA_PLE_PACK)
+    list(APPEND _ple_args --pack ${STRATA_PLE_PACK})
+  endif()
+  add_test(NAME ple_parity COMMAND ple_parity ${_ple_args} WORKING_DIRECTORY ${STRATA_ROOT})
   # 0.1.31: the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (no --selftest flag: it runs its checks by default), and the rewritten per-hit/grouped expert kernels vs the
   # previous ones, bitwise
