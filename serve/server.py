@@ -2162,11 +2162,40 @@ def layer_split_of(cfg: dict) -> bool:
     return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
 
 
+def user_args_of(cfg: dict) -> list[str]:
+    """The config's "user_args": engine options of the user's own, which setup never writes (it keeps the key on every
+    run, #629) and which win over setup's "args".  A list of strings; anything else is a config error."""
+    user = cfg.get("user_args")
+    if user is None:
+        return []
+    if not isinstance(user, list) or not all(isinstance(x, str) for x in user) or (user and not user[0].startswith("--")):
+        raise ValueError('"user_args" must be a list of engine options as strings, starting with an option '
+                         '(e.g. ["--no-prefill-borrow", "--kv-resident", "0"])')
+    return list(user)
+
+
+def merge_user_args(args: list[str], user: list[str]) -> list[str]:
+    """`args` with every option `user` names (and the values after it, up to the next "--" option) taken out, then
+    `user` appended: so "--kv-resident 0" in user_args replaces setup's "--kv-resident 32768", and an option setup does
+    not write is simply added."""
+    names = {x for x in user if x.startswith("--")}
+    out, i = [], 0
+    while i < len(args):
+        if args[i] in names:
+            i += 1
+            while i < len(args) and not args[i].startswith("--"):
+                i += 1
+            continue
+        out.append(args[i])
+        i += 1
+    return out + user
+
+
 def engine_args(cfg: dict) -> list[str]:
-    """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
-    config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
-    layer_split_value)."""
-    args = list(cfg["args"])
+    """The engine's arguments: the config's, with "user_args" over them (user_args_of), and with several GPUs the
+    layer split across them ("layer_split" in the config: "auto" by default, or the first layer of each later GPU's
+    share, e.g. "18" or "16,32"; see layer_split_value)."""
+    args = merge_user_args(list(cfg["args"]), user_args_of(cfg))
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
@@ -5802,6 +5831,10 @@ def main() -> int:
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
+    try:
+        user_args_of(cfg)                               # a bad "user_args" stops the start with the reason
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:
