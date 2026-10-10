@@ -1,0 +1,13 @@
+Test project $HOME/draft-independent-iq-20261010/build
+    Start 80: iq_avx2_parity
+1/4 Test #80: iq_avx2_parity ...................   Passed    0.64 sec
+    Start 81: iq_avx2_parity_iq3s_mt1
+2/4 Test #81: iq_avx2_parity_iq3s_mt1 ..........   Passed    0.65 sec
+    Start 82: iq_avx2_parity_no_iq512
+3/4 Test #82: iq_avx2_parity_no_iq512 ..........   Passed    0.66 sec
+    Start 83: iq_avx2_parity_ggml
+4/4 Test #83: iq_avx2_parity_ggml ..............   Passed    0.96 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   2.94 sec

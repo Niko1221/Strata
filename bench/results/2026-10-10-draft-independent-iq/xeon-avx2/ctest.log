@@ -1,0 +1,14 @@
+Internal ctest changing into directory: $HOME/draft-independent-iq-20261010/build
+Test project $HOME/draft-independent-iq-20261010/build
+    Start 75: iq_avx2_parity
+1/4 Test #75: iq_avx2_parity ...................   Passed    0.79 sec
+    Start 76: iq_avx2_parity_iq3s_mt1
+2/4 Test #76: iq_avx2_parity_iq3s_mt1 ..........   Passed    0.86 sec
+    Start 77: iq_avx2_parity_no_iq512
+3/4 Test #77: iq_avx2_parity_no_iq512 ..........   Passed    0.90 sec
+    Start 78: iq_avx2_parity_ggml
+4/4 Test #78: iq_avx2_parity_ggml ..............   Passed    1.40 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   3.97 sec

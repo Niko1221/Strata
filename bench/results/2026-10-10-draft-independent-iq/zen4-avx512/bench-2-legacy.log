@@ -1,0 +1,87 @@
+iq_avx2_parity: AMD Ryzen 5 7600X3D 6-Core Processor (avx2 1, avx512 1), CPU 2, core type 00h
+  STRATA_IQ256_GATHER -, STRATA_NO_AVXVNNI -, STRATA_IQ_MT_MIN 2, STRATA_IQ_PREFETCH -
+  variants this CPU runs: gather; this thread's: scalar
+
+iq2_xxs/iq4_nl: 75 experts of 1.68 MB (126 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.186 (0.185)    0.067 (0.067)    0.253 (0.251)
+    ggml           0.167 (0.167)    0.064 (0.064)    0.231 (0.231)
+    engine         0.167 (0.167)    0.066 (0.066)    0.233 (0.233)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.226 (0.225)    0.103 (0.103)    0.328 (0.328)
+    ggml           0.332 (0.332)    0.124 (0.123)    0.456 (0.455)
+    engine         0.233 (0.232)    0.102 (0.102)    0.335 (0.335)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.300 (0.300)    0.172 (0.172)    0.472 (0.472)
+    ggml           0.667 (0.667)    0.246 (0.246)    0.913 (0.913)
+    engine         0.287 (0.286)    0.172 (0.172)    0.459 (0.458)
+
+iq2_xs/iq4_nl: 71 experts of 1.78 MB (127 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.208 (0.208)    0.067 (0.067)    0.275 (0.274)
+    ggml           0.158 (0.158)    0.062 (0.062)    0.221 (0.221)
+    engine         0.159 (0.159)    0.065 (0.065)    0.224 (0.224)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.253 (0.253)    0.103 (0.103)    0.355 (0.355)
+    ggml           0.316 (0.316)    0.119 (0.119)    0.435 (0.435)
+    engine         0.337 (0.337)    0.103 (0.103)    0.439 (0.439)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.375 (0.375)    0.172 (0.172)    0.547 (0.547)
+    ggml           0.631 (0.631)    0.234 (0.234)    0.866 (0.866)
+    engine         0.415 (0.415)    0.172 (0.172)    0.587 (0.587)
+
+iq2_s/iq4_nl: 68 experts of 1.88 MB (128 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.199 (0.199)    0.067 (0.067)    0.266 (0.266)
+    ggml           0.181 (0.181)    0.064 (0.064)    0.245 (0.245)
+    engine         0.183 (0.182)    0.067 (0.067)    0.250 (0.249)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.236 (0.236)    0.103 (0.103)    0.338 (0.338)
+    ggml           0.359 (0.359)    0.124 (0.124)    0.483 (0.483)
+    engine         0.212 (0.212)    0.103 (0.103)    0.315 (0.315)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.344 (0.344)    0.172 (0.172)    0.516 (0.516)
+    ggml           0.720 (0.719)    0.246 (0.246)    0.966 (0.965)
+    engine         0.286 (0.285)    0.172 (0.172)    0.458 (0.457)
+
+iq3_xxs/iq4_nl: 61 experts of 2.08 MB (127 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.228 (0.228)    0.067 (0.067)    0.294 (0.294)
+    ggml           0.224 (0.223)    0.065 (0.065)    0.289 (0.289)
+    engine         0.223 (0.223)    0.068 (0.068)    0.291 (0.291)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.272 (0.271)    0.103 (0.103)    0.375 (0.374)
+    ggml           0.447 (0.447)    0.125 (0.125)    0.572 (0.572)
+    engine         0.277 (0.277)    0.103 (0.103)    0.380 (0.380)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.345 (0.345)    0.172 (0.172)    0.517 (0.516)
+    ggml           0.896 (0.896)    0.246 (0.246)    1.142 (1.142)
+    engine         0.333 (0.332)    0.172 (0.171)    0.505 (0.503)
+
+iq3_s/iq4_nl: 57 experts of 2.22 MB (127 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.263 (0.263)    0.067 (0.066)    0.330 (0.330)
+    ggml           0.271 (0.271)    0.062 (0.061)    0.333 (0.333)
+    engine         0.272 (0.271)    0.064 (0.064)    0.336 (0.336)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.287 (0.287)    0.103 (0.103)    0.390 (0.390)
+    ggml           0.544 (0.544)    0.118 (0.118)    0.663 (0.662)
+    engine         0.290 (0.289)    0.103 (0.103)    0.392 (0.392)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.363 (0.363)    0.172 (0.172)    0.535 (0.535)
+    ggml           1.086 (1.086)    0.234 (0.234)    1.320 (1.320)
+    engine         0.352 (0.347)    0.172 (0.172)    0.524 (0.519)
+
+iq4_xs/iq4_nl: 50 experts of 2.54 MB (127 MB), one thread
+  1 token ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.113 (0.113)    0.067 (0.067)    0.180 (0.180)
+    ggml           0.100 (0.100)    0.062 (0.062)    0.163 (0.162)
+    engine         0.100 (0.100)    0.065 (0.065)    0.165 (0.165)
+  2 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.181 (0.181)    0.103 (0.103)    0.284 (0.283)
+    ggml           0.200 (0.198)    0.121 (0.119)    0.321 (0.317)
+    engine         0.197 (0.196)    0.103 (0.103)    0.299 (0.299)
+  4 tokens ms per expert, median of 3 (min): gate/up, down, total
+    kernels        0.259 (0.259)    0.172 (0.172)    0.431 (0.430)
+    ggml           0.414 (0.413)    0.242 (0.240)    0.656 (0.653)
+    engine         0.404 (0.404)    0.172 (0.172)    0.576 (0.575)

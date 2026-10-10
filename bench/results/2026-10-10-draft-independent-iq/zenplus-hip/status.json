@@ -1,0 +1,1 @@
+{"state": "passed", "results": [{"label": "configure", "code": 0, "seconds": 4.613155126571655}, {"label": "build", "code": 0, "seconds": 155.47009682655334}, {"label": "cpu-parity", "code": 0, "seconds": 0.6287219524383545}, {"label": "gpu-parity", "code": 0, "seconds": 18.692439317703247}]}

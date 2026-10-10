@@ -93,15 +93,17 @@ VRAM. RTX 3090, the Coder at 198K context: 99 instead of 85 tokens/s output, the
 slower. It streams its KV cache like the other formats (`--kv-resident N`): on an RTX 2060 SUPER 8 GB at 128K with
 20,480 resident cells, +780 expert slots over resident K8V4, and it scores better than 4-bit KV on long documents.
 
-**Reproducible greedy output (0.1.30, opt-in, `STRATA_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
-expert for one token with ggml's dot product and for several tokens with Strata's multi-token kernels, which round
-slightly differently. How many tokens share an expert depends on the drafts in a verify window, so the same prompt
-at temperature 0 can end in a different (equally good) answer when the drafting, the cache state or a resumed
-conversation differ (issue #152). `STRATA_IQ_MT_MIN=1` (in the config's `env`) uses the multi-token kernels for
-every group: the answer then no longer depends on the drafting. Measured on a Ryzen 7600 (AVX-512): IQ3_S decode
--1..-3%, the other models the same; the default stays the fastest rule. On an Intel CPU of Alder Lake or later
-without AVX-512, where the AVX-2 kernel gathers the IQ3_S grid, `STRATA_IQ3S_MT1=1` (opt-in) gives IQ3_S the multi-token
-kernel for one token, which is the faster one there; it changes a lone token's rounding, so it is off by default. Through the server, two more things carry
+**Draft-independent CPU IQ arithmetic:** the CPU uses the same IQ kernel for a token alone and for a group of
+tokens. Previously, the default switched from ggml's dot product to Strata's multi-token kernel at two tokens.
+The two kernels round differently, so changing the drafts in a verify window could change greedy output even
+when the accepted prefix and rollback were correct (issue #152). The default now matches `STRATA_IQ_MT_MIN=1`;
+`STRATA_IQ3S_MT1` is redundant. This can change output relative to an older build. Setting `STRATA_IQ_MT_MIN=2`
+restores the old dispatch for comparisons, including its dependence on draft grouping. This correctness choice
+can cost throughput ([dispatch tests and timing](../bench/results/2026-10-10-draft-independent-iq/README.md)):
+the earlier Ryzen 7600 (AVX-512) IQ3_S measurement was -1..-3% decode. It does not make CPU
+and GPU arithmetic identical or replace correct speculative-state rollback.
+
+Through the server, two more things carry
 over from one request to the next (#410): the adaptive tier moves experts between RAM and VRAM (the GPU and the CPU
 round an expert differently), and the prompt cache resumes a repeated prompt and reads only its tail through the
 decode path. For byte-identical repeats add `--prompt-cache 0 --adapt-swaps 0 --pcie-frac 0` to the engine's args

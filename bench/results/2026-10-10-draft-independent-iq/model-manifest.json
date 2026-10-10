@@ -1,0 +1,252 @@
+{
+  "repeats": 2,
+  "max_new": 128,
+  "prompts": [
+    {
+      "name": "code",
+      "ids": [
+        248045,
+        846,
+        198,
+        7734,
+        264,
+        12654,
+        709,
+        421,
+        78161,
+        48142,
+        26126,
+        11,
+        10033,
+        424,
+        11,
+        321,
+        2873,
+        6813,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    }
+  ],
+  "arms": [
+    {
+      "name": "default",
+      "exe": "$HOME/draft-independent-iq-20261010/build/strata",
+      "cwd": "$HOME/draft-independent-iq-20261010/core",
+      "args": [
+        "--expert-profile",
+        "$HOME/src/strata-p4/data/expert-profile.bin",
+        "--expert-cache",
+        "auto",
+        "--prefill",
+        "1024",
+        "--kv",
+        "int8",
+        "--pool-workers",
+        "27",
+        "--adapt-every",
+        "0",
+        "--adapt-swaps",
+        "64",
+        "--pcie-frac",
+        "0",
+        "--vram-reserve-mib",
+        "1024",
+        "--mtp",
+        "$HOME/src/strata-p4/mtp/rt",
+        "--spec",
+        "4",
+        "--spec-min-p",
+        "0.5",
+        "--suffix-draft",
+        "0",
+        "--prompt-cache",
+        "0",
+        "--conversation-cache-mib",
+        "0",
+        "--stats",
+        "--pack",
+        "$HOME/CodiServer/pack",
+        "--native",
+        "$HOME/models/ISTA-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--max-context",
+        "8192",
+        "--ple-io",
+        "ram",
+        "--trim-stage-weights",
+        "--pipeline-windows",
+        "0",
+        "--shared-expert-arena",
+        "/dev/shm/strata-pr1656-iq3xxs-experts.bin",
+        "--kv-resident",
+        "8192",
+        "--rope-scaling",
+        "none",
+        "--rope-scale",
+        "1",
+        "--prompt-cache-root",
+        "512",
+        "--prompt-cache-every",
+        "16384",
+        "--ple-gguf",
+        "$HOME/models/ISTA-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+        "--mtp-max-t",
+        "4",
+        "--layer-split",
+        "19,37",
+        "--split-device",
+        "1,2"
+      ],
+      "env": {
+        "STRATA_ATTN_MERGE_V2": "1",
+        "STRATA_SHARED_ARENA_REUSE": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "STRATA_DECODE_TIMING": "1",
+        "STRATA_PIPELINE_LOG": "1",
+        "STRATA_PIPELINE_DEBUG": "1",
+        "STRATA_PREFILL_CPU_SHARE": "0"
+      },
+      "cases": [
+        {
+          "name": "floor-1",
+          "keys": {
+            "spec_min_p": 1
+          }
+        },
+        {
+          "name": "floor-0",
+          "keys": {
+            "spec_min_p": 0
+          },
+          "require": {
+            "drafts": 1
+          }
+        },
+        {
+          "name": "floor-95",
+          "keys": {
+            "spec_min_p": 0.95
+          },
+          "require": {
+            "drafts": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "explicit-mt1",
+      "exe": "$HOME/draft-independent-iq-20261010/build/strata",
+      "cwd": "$HOME/draft-independent-iq-20261010/core",
+      "args": [
+        "--expert-profile",
+        "$HOME/src/strata-p4/data/expert-profile.bin",
+        "--expert-cache",
+        "auto",
+        "--prefill",
+        "1024",
+        "--kv",
+        "int8",
+        "--pool-workers",
+        "27",
+        "--adapt-every",
+        "0",
+        "--adapt-swaps",
+        "64",
+        "--pcie-frac",
+        "0",
+        "--vram-reserve-mib",
+        "1024",
+        "--mtp",
+        "$HOME/src/strata-p4/mtp/rt",
+        "--spec",
+        "4",
+        "--spec-min-p",
+        "0.5",
+        "--suffix-draft",
+        "0",
+        "--prompt-cache",
+        "0",
+        "--conversation-cache-mib",
+        "0",
+        "--stats",
+        "--pack",
+        "$HOME/CodiServer/pack",
+        "--native",
+        "$HOME/models/ISTA-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--max-context",
+        "8192",
+        "--ple-io",
+        "ram",
+        "--trim-stage-weights",
+        "--pipeline-windows",
+        "0",
+        "--shared-expert-arena",
+        "/dev/shm/strata-pr1656-iq3xxs-experts.bin",
+        "--kv-resident",
+        "8192",
+        "--rope-scaling",
+        "none",
+        "--rope-scale",
+        "1",
+        "--prompt-cache-root",
+        "512",
+        "--prompt-cache-every",
+        "16384",
+        "--ple-gguf",
+        "$HOME/models/ISTA-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+        "--mtp-max-t",
+        "4",
+        "--layer-split",
+        "19,37",
+        "--split-device",
+        "1,2"
+      ],
+      "env": {
+        "STRATA_ATTN_MERGE_V2": "1",
+        "STRATA_SHARED_ARENA_REUSE": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "STRATA_DECODE_TIMING": "1",
+        "STRATA_PIPELINE_LOG": "1",
+        "STRATA_PIPELINE_DEBUG": "1",
+        "STRATA_PREFILL_CPU_SHARE": "0",
+        "STRATA_IQ_MT_MIN": "1"
+      },
+      "cases": [
+        {
+          "name": "explicit-floor-1",
+          "keys": {
+            "spec_min_p": 1
+          }
+        },
+        {
+          "name": "explicit-floor-0",
+          "keys": {
+            "spec_min_p": 0
+          },
+          "require": {
+            "drafts": 1
+          }
+        },
+        {
+          "name": "explicit-floor-95",
+          "keys": {
+            "spec_min_p": 0.95
+          },
+          "require": {
+            "drafts": 1
+          }
+        }
+      ]
+    }
+  ]
+}
