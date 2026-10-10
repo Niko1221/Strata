@@ -318,6 +318,41 @@ int main() {
         check(conversation_checkpoints_merge(std::move(none), back) && back.empty(), "no checkpoints: nothing to do");
     }
     {
+        // 2026-10-08 cross-conversation leak: the retained K/V of a restored conversation must never be reused to
+        // park ANOTHER conversation the main session later holds (a slot gave its conversation back)
+        auto kv = [](size_t n) {
+            std::vector<ConversationKv> v(2);
+            for (auto& l : v) l.k.resize(n, 1);
+            return v;
+        };
+        ConversationCache cache(1 << 20, 4);
+        const std::vector<int32_t> a = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        std::vector<std::vector<ConversationKv>> st;
+        st.push_back(kv(100));
+        cache.retain(kv(500), 16, std::move(st), a);
+        std::vector<int32_t> b(16, 99);
+        auto other = cache.take_reuse_for(b);
+        check(other.kv.empty() && other.stages.empty() && other.unchanged_tokens == 0,
+              "another conversation never gets the retained K/V");
+        check(cache.retained_bytes() == 0, "the retained K/V is dropped once refused");
+        cache.retain(kv(500), 16, {}, a);
+        check(cache.retained_tokens() == 16, "the retained extent is reported");
+        std::vector<int32_t> cont(a.begin(), a.begin() + 10);
+        cont.push_back(42);
+        cont.push_back(43);
+        auto partly = cache.take_reuse_for(cont);
+        check(partly.unchanged_tokens == 10, "a conversation that diverges reuses only the shared prefix");
+        std::vector<std::vector<ConversationKv>> st2;
+        st2.push_back(kv(100));
+        cache.retain(kv(500), 16, std::move(st2), a);
+        cache.limit_reuse(9);
+        auto same = cache.take_reuse_for(a);
+        check(same.unchanged_tokens == 9 && same.stages.size() == 1 && same.stages[0].unchanged_tokens == 9,
+              "the same conversation keeps the first rewrite's limit, on every stage");
+        cache.retain(kv(500), 16);
+        check(cache.take_reuse_for(a).kv.empty(), "retained K/V of unknown identity is never reused");
+    }
+    {
         // the later stages' retained K/V, kept with the first stage's and limited together
         auto kv = [](size_t n) {
             std::vector<ConversationKv> v(2);
