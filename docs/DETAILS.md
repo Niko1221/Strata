@@ -728,7 +728,10 @@ print(r.choices[0].message.content)
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
-  measured over its last 2,000 words and punctuation marks (counting passages over the last 30,000 words). If at
+  measured over its last 2,000 words and punctuation marks (counting passages over the last 30,000 words), and its
+  last 2,048 characters are checked for a period of at most 64 characters (#1753: a loop written as one long word,
+  such as a 24k-digit string cycling an 11-digit pattern, is a single word to the count and never repeats one
+  token); a periodic tail counts as fully repeated. If at
   least 25% belong to 12-word passages seen three times, `"stop"` ends the reply there as `"length"` and says so in
   the server window. `"recover"` stops and drains that generation, then goes on once from all its generated token
   ids with the template's low-effort sentence in place of the xhigh one in the first system message (a splice of
