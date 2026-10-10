@@ -368,7 +368,41 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
-def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+
+
+def tail_system_reminders(messages: list[dict]) -> list[dict]:
+    """Move every system-reminder block out of the conversation's earlier turns and onto its last user turn.
+    Clients inject such a block into a past turn (a mode change, an environment note) and drop it again on the
+    next turn: the tokens a slot holds for the conversation's next turn then stop matching at that point, the
+    restore fails and the whole conversation is read again (measured: 211990 tokens read from nothing, the cut
+    155306 tokens in, at the block).  opencode reports the same effect and has no fix: anomalyco/opencode#23595
+    ("system-reminder keeps moving, causing unnecessary prompt processing in llama.cpp"), #21518, and the
+    proposed PRs #27845 and #24343, both closed unmerged; Claude Code has it too (anthropics/claude-code#48734,
+    anthropics/claude-agent-sdk-typescript#269).  This is the same class of fix as pin_billing_stamp above, for
+    the same reason: what changes inside the history costs the whole conversation.  At the end of the prompt the
+    block is the newest thing the model sees, and every later turn keeps its shared prefix.  Opt-in: the config's
+    "system_reminders": "tail" (default "keep" renders the history exactly as the client sent it)."""
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    if last_user < 0 or not isinstance(messages[last_user].get("content"), str):
+        return messages
+    moved, tail = [], messages[last_user]["content"]
+    for i, m in enumerate(messages):
+        if i == last_user or not isinstance(m.get("content"), str):
+            continue
+        found = [b for b in REMINDER.findall(m["content"]) if b not in tail]
+        if not found:
+            continue
+        moved.extend(found)
+        m["content"] = REMINDER.sub("", m["content"]).strip()
+        tail = "\n".join([tail] + moved)
+    if not moved:
+        return messages
+    messages[last_user]["content"] = tail
+    return messages
+
+
+def openai_to_messages(req: dict, reminders_tail: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
     for m in _object_list(req.get("messages"), "messages"):
@@ -399,7 +433,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _late_system_to_user(messages), tools, kwargs
+    messages = _late_system_to_user(messages)
+    return (tail_system_reminders(messages) if reminders_tail else messages), tools, kwargs
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -431,7 +466,7 @@ def pin_billing_stamp(system: str) -> str:
     return "".join(s)
 
 
-def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
+def anthropic_to_messages(req: dict, think_unasked: bool = True, reminders_tail: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False
     renders it without thinking (#278, the config's "anthropic_thinking": "on_request")."""
@@ -493,7 +528,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _late_system_to_user(messages), tools, kwargs
+    messages = _late_system_to_user(messages)
+    return (tail_system_reminders(messages) if reminders_tail else messages), tools, kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output parser

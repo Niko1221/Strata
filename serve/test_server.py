@@ -4709,6 +4709,35 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
         self.assertEqual(ids[1][:len(first) - 8], first[:len(first) - 8])   # all but the generation header
 
 
+class SystemRemindersTail(unittest.TestCase):
+    """"system_reminders": "tail" moves a client's system-reminder block out of a past turn onto the last user
+    turn, so the tokens a slot holds for the conversation's next turn keep matching and the conversation is not
+    read again (opencode#23595: the block is dropped from the past turn on the next request, cutting the shared
+    prefix there - measured here at 155306 tokens in, 211990 read)."""
+
+    def user_contents(self, msgs, tail):
+        from serve.frontend import openai_to_messages
+        return [m["content"] for m in openai_to_messages({"messages": msgs}, tail)[0] if m["role"] == "user"]
+
+    def test_a_block_in_a_past_turn_moves_to_the_last_turn(self):
+        rem = "<system-reminder>\nYour operational mode has changed from plan to act.\n</system-reminder>"
+        msgs = [{"role": "user", "content": "door tiles " + rem},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "next step"}]
+        kept, last = self.user_contents(msgs, True)
+        self.assertEqual(kept, "door tiles")                      # the past turn is byte-stable again
+        self.assertTrue(last.endswith(rem))                       # the block is the newest thing in the prompt
+        self.assertEqual(self.user_contents(msgs, False)[0], "door tiles " + rem)   # off: as before
+
+    def test_a_block_already_in_the_last_turn_is_not_moved_twice(self):
+        rem = "<system-reminder>\nmode: act\n</system-reminder>"
+        msgs = [{"role": "user", "content": "a " + rem}, {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c " + rem}]
+        kept, last = self.user_contents(msgs, True)
+        self.assertEqual(kept, "a " + rem)                        # identical in a past turn: left where it is
+        self.assertEqual(last.count(rem), 1)
+
+
 class ToolOrder(unittest.TestCase):
     """`_tool_list` returns the tools sorted by name.  The template renders the tool list before the system
     prompt, so a client whose tools arrive in a varying order (MCP servers registering in any sequence) moves
