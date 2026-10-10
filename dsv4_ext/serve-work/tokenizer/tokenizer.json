@@ -1,0 +1,14 @@
+{
+ "model": "gpt2",
+ "pre": "joyai-llm",
+ "vocab_size": 129280,
+ "n_merges": 127741,
+ "special_ids": {
+  "tokenizer.ggml.bos_token_id": 0,
+  "tokenizer.ggml.eos_token_id": 1,
+  "tokenizer.ggml.padding_token_id": 2
+ },
+ "add_bos_token": false,
+ "pre_pattern": "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+ "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)"
+}

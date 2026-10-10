@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -1645,3 +1645,8 @@ if(STRATA_HIP_GFX906)
   add_executable(gfx906_qsa_query_swizzle_probe bench/gfx906_qsa_query_swizzle_probe.cpp)
   target_link_libraries(gfx906_qsa_query_swizzle_probe PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 endif()
+# ==============================================================================
+# Integration of DeepSeek v4 Flash Extension (Additive Module)
+# ==============================================================================
+# Poiché la cartella si trova dentro l'albero di Strata, la agganciamo qui.
+add_subdirectory(dsv4_ext)
