@@ -163,6 +163,7 @@ experts from `experts.bin` into RAM (page-locked when the driver allows, else lo
 nothing is read from the SSD, however little RAM the OS leaves for its file cache. Examples with setup's context: a
 32 GB PC with a 24 GB GPU runs Q2_0, IQ2_XS and the Coder this way (~16-18 GB of experts in RAM, the GPU holds the
 other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC stays mapped. The details:
+
 - The prompt path borrows room in the GPU's expert cache for its buffers and puts those experts back after the prompt;
   as far as the RAM allows, their experts are kept in RAM too (so a prompt reads nothing from the SSD either).
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
@@ -233,7 +234,7 @@ reads; `STRATA_IO_STATS=1` (or prefetch on) adds the page-cache hit / miss split
 Measured (interleaved A/B, 10 pairs, 200-token greedy medians, page cache dropped before each run, memory limit by cgroup):
 
 | box, lane | default (fill) | `STRATA_IO_PF_STAGE=1` |
-|---|---|---|
+| --- | --- | --- |
 | RTX 3060, 32 GB, IQ3_XXS | -3.4% | **+25.7%** |
 | RTX 3060, 16 GB, IQ3_XXS | -1.8% | -32.6% |
 | Radeon 780M iGPU, 16 GB, Q2_0 (adaptive tier off) | -0.7% (story +3.8%, code +4.1%) | -19% |
@@ -258,6 +259,7 @@ is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 G
 RTX 5070, against ~3 tokens/s before these changes.
 
 **Switches added in 0.1.40 (all off unless noted; none changes the default output):**
+
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
@@ -277,7 +279,6 @@ RTX 5070, against ~3 tokens/s before these changes.
   of your own instead of `<mtp>/draft_vocab.bin`).
 - Elsewhere: HIP `STRATA_DENSE_MMQ=1` and `STRATA_HIP_ADAPT_KERNEL_COPY=1` in [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration);
   `STRATA_KEEP_EMPTY_TURNS=1` and `STRATA_TOPK_STREAM=0` in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-
 
 **Read-ahead at start (Linux):** the weights, the native dense matrices, the GPU cache's fill from the profile, the
 resident RAM copy and the MTP draft files are asked for ahead of their reads (madvise / posix_fadvise WILLNEED in
@@ -336,11 +337,11 @@ card gains depends on its PCIe link (the experts stream over it), so they are st
 | GPU | Model | 1K | 4K | 32K | 64K | 128K | 262K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RTX 5060 Ti 16GB | Q2_0 | ~341 / ~80 | ~472 / ~87 | ~501 / ~81 | ~492 / ~72 | ~476 / ~62 | ~435 / ~53 |
-|  | IQ2_XS | ~291 / ~80 | ~406 / ~77 | ~434 / ~63 | ~426 / ~62 | ~413 / ~51 | ~383 / ~47 |
-|  | IQ3_XXS | ~249 / ~66 | ~359 / ~65 | ~381 / ~56 | ~374 / ~54 | ~363 / ~45 | - |
+| | IQ2_XS | ~291 / ~80 | ~406 / ~77 | ~434 / ~63 | ~426 / ~62 | ~413 / ~51 | ~383 / ~47 |
+| | IQ3_XXS | ~249 / ~66 | ~359 / ~65 | ~381 / ~56 | ~374 / ~54 | ~363 / ~45 | - |
 | RTX 3090 24GB | Q2_0 | ~355 / ~128 | ~491 / ~140 | ~521 / ~130 | ~512 / ~115 | ~495 / ~100 | ~453 / ~85 |
-|  | IQ2_XS | ~303 / ~131 | ~422 / ~128 | ~451 / ~103 | ~444 / ~102 | ~430 / ~85 | ~398 / ~78 |
-|  | IQ3_XXS | ~260 / ~106 | ~374 / ~103 | ~396 / ~89 | ~390 / ~85 | ~378 / ~71 | - |
+| | IQ2_XS | ~303 / ~131 | ~422 / ~128 | ~451 / ~103 | ~444 / ~102 | ~430 / ~85 | ~398 / ~78 |
+| | IQ3_XXS | ~260 / ~106 | ~374 / ~103 | ~396 / ~89 | ~390 / ~85 | ~378 / ~71 | - |
 
 More VRAM matters more than a faster GPU: every extra GB holds ~700 more experts, and every expert on the GPU is one the
 CPU does not have to compute. A 3090's 24 GB takes most of the CPU work away. (Since 0.1.14 the expert profile ranks
@@ -375,7 +376,7 @@ the shipped ranking mapped onto the kept experts through the release's `rco-allo
 reads hit the GPU on a 12 GB card). Images work; the experimental speed projection loads and runs on it (it was made
 for the full model).
 
-```
+```bat
 START-HERE.bat --setup --family coder
 ```
 
@@ -393,7 +394,7 @@ Our small check (8 reasoning questions, default thinking, IQ2_XS): both models g
 output tokens in 28 s, the original **2,682** in 46 s - most of the difference from one question the original
 thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
 
-```
+```bat
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
@@ -446,6 +447,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
+
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
@@ -458,7 +460,7 @@ app. It has three tabs:
 **Every time after that**, `START-HERE.bat` just starts the model (30-90 s to load 34-43 GB into RAM). Nothing is
 downloaded again. Closing the window stops the model.
 
-```
+```bat
 START-HERE.bat --setup                          install another model, or change context / images
 SETUP.bat                                       the same (double-click it)
 START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
@@ -472,6 +474,7 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
 
 **Tuning for your PC (`--calibrate`, engine 0.1.19).** Four engine settings depend on the PC more than on the model:
+
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU
   (`--pcie-frac`: a fast PCIe link and a slower CPU want more, a laptop's narrower link less);
 - how sure the draft layer must be to add another guess to a check (`--spec-min-p`);
@@ -503,8 +506,8 @@ For the server, add `"--pool-tasks", "192"` to the existing `args` list in its c
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
 throttles such contexts, and the model's ~40 GB expert load then crawls at **~0.05 GiB/s (13-14 minutes)**
-instead of **~1.4-1.5 GiB/s (~35 seconds)** - a 24x slower start. Measured on an RTX 5070 Ti + Ryzen 7 9800X3D
-+ NVMe, same binary, same args, same cache state:
+instead of **~1.4-1.5 GiB/s (~35 seconds)** - a 24x slower start. Measured on an RTX 5070 Ti + Ryzen 7 9800X3D +
+NVMe, same binary, same args, same cache state:
 
 | How the serve starts | Expert load |
 | --- | ---: |
@@ -525,7 +528,7 @@ slowly, the engine prints a hint under its `loaded ... GiB at ...` line naming t
 
 ### Chat in the terminal (optional)
 
-```
+```bat
 .venv\Scripts\python chat.py
 ```
 
@@ -645,7 +648,9 @@ per step, so the upper rows are noisy).
 
 ## Using it
 
-The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or edit the run script).
+The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or edit the run script). It listens with a
+queue of 256 waiting connections, not socketserver's own 5: a burst of 30-40 clients at once used to reset the first of
+them (measured on 4 x R9700); `STRATA_HTTP_BACKLOG=<n>` sets the number, at least 5.
 
 | API | Endpoint |
 | --- | --- |
@@ -1453,7 +1458,7 @@ encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
 
-```
+```text
 you> /image C:\Users\me\Pictures\receipt.jpg
 (picture attached: receipt.jpg - now type your question)
 you> What is the total on this receipt?
@@ -1540,7 +1545,7 @@ differently - and answer differently - from one run to the next (a resumed conve
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
 | machine | 512 tokens | 1,000 tokens | 2K / 4K / 16K |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | RTX 5070, Ryzen 5 7600, Q2_0 | 1,376 / 1,019 (-26%) | 1,788 / 1,392 (-22%) | unchanged |
 | RTX 3060, Core Ultra 7 265, IQ3_XXS | 1,620 / 1,159 (-28%) | 2,196 / 1,770 (-19%) | unchanged |
 | Tesla P100, Xeon E5-2690 v4, IQ3_XXS | 4,805 / 3,126 (-35%) | 6,821 / 5,085 (-25%) | unchanged |
@@ -1550,7 +1555,7 @@ Up to 3,072 tokens and with mapped experts, fresh prompts read after an 8K prewa
 expert here: none was page-locked):
 
 | machine | 512 tokens | 1,000 tokens | 2,000 tokens | 3,000 tokens |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | RTX 5070 Ti (PCIe 3.0 x8), Swift 1.5 IQ3_XXS (huihui-ai's build) | 3,322 / 1,706 (-49%) | 3,990 / 2,357 (-41%) | 5,413 / 3,354 (-38%) | 5,525 / 4,309 (-22%) |
 | RTX 3060 + RTX 5070 Ti (layers 0-11 / 12-47, both PCIe 3.0 x8), IQ3_S | 3,452 / 2,037 (-41%) | 4,506 / 2,680 (-41%) | 6,376 / 3,869 (-39%) | 6,733 / 5,138 (-24%) |
 
@@ -1711,6 +1716,65 @@ never changes a result.
 
 ---
 
+## Experimental: residency-biased routing (0.1.41, off by default)
+
+**This is an experiment, not a finished feature, and it changes the answers.** It is written down so it can be measured
+on cards the maintainers do not have; nothing here is compared to a release.
+
+- **`STRATA_ROUTE_RESIDENT=<margin>`: replace the tail ranks' non-resident experts with resident ones** when a resident
+  expert is that close to them. The margin counts router logits, and the switch is off unless it is above 0.
+- **`STRATA_ROUTE_RESIDENT_RANKS=lo-hi` (default `6-9`)**: which of the ten routed experts it may replace - the tail
+  ranks, so the router's own top of the list stays as it routed it.
+
+It runs after the router and before the expert plan reads the ids and the weights, on the native 512-expert top-10
+router only, and only where the cache's residency table is on the GPU. For each rank in that range whose expert the
+cache does not hold, it looks for the best resident expert that the token has not already picked; when that one's logit
+is within the margin of the replaced expert's, it takes its place, and the ten weights become the softmax of the
+selected logits - the router's own renormalisation. A token with no swap keeps the router's exact bits.
+
+The margin is the whole trade: at 0 the router answers alone, and a large margin routes whatever it can to what the card
+already holds, at the price of answers that are not the routing the model chose. When the engine stops it says what it
+did, once for the prompt windows (more than 8 tokens) and once for the decode windows (8 or fewer), in this shape:
+
+```text
+route-resident: margin=<margin> ranks=<lo>-<hi> windows T>8 (prompt reads): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+route-resident: margin=<margin> ranks=<lo>-<hi> windows T<=8 (decode): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+```
+
+`tail_nonres` counts the ranks in that range whose expert the cache lacked, `swaps` those it could replace, and
+`before` / `after` are the non-resident entries of the ten, summed over the window's tokens, before and after the
+swaps - the misses the cache would have taken.
+
+---
+
+## Research hooks: dump or replace the prompt's routing (off unless you set them)
+
+Four switches for reproducing one routing decision on a later run, so a wrong answer can be walked expert by expert.
+They act on the prompt (prefill) path only, are never on by default, and wait for the stream after each chunk, so a
+prompt run with them on is slower.
+
+- **`STRATA_DBG_FEAT=<file>`: write the routing of the prompt to a file.** One record per MoE layer and chunk: four
+  int32 (the layer, the first token's position within that layer, the token count, and 1 when the hidden state follows),
+  then the expert ids as uint16 and the weights as bf16, and for the layers below, the router's input: token count x
+  n_embd values in bf16.
+- **`STRATA_DBG_FEAT_LAYERS=3,4,15,16,27,28,39,40` (this is the default)**: which layers also write that hidden state.
+- **`STRATA_DBG_ROUTE_OVERRIDE=<file>`: route a layer's chunk from a file instead of from the router.** Records of three
+  int32 (layer, token position, count), then count x 10 int32 ids and count x 10 float32 weights; a record replaces its
+  chunk only while its count matches that chunk's token count. The file says how much it read
+  (`route override: N records`). This is what it is for - the answers follow the file, not the router. The two file
+  shapes differ on purpose: a `STRATA_DBG_FEAT` dump carries the extra header int32 and its ids and weights in 16 bits,
+  so a dump is not an override file as it stands.
+- **`STRATA_DBG_FORCE_SLOW_LAYER=1`: make layer 0 take the slow prompt path**, the way a layer the fused path does not
+  cover does. It is there to test that backstop; it is not a mode to run with.
+
+A related dump, for comparing two runs of the same prompt rather than reproducing one routing: `STRATA_DUMP_FIRST_LOGITS=<path>`
+in the engine's environment writes the first verify window's output logits - the prompt's last token run over the state
+the prompt path left, so the row shows what that path did, one float32 per vocabulary entry - to `<path>.0`, `<path>.1`,
+... in serve mode, one file per request; plain generate mode writes the window to `<path>` alone. So two prompt paths
+(a peer card's CPU share, a layer split) can be compared by KL. Off unless set.
+
+---
+
 ## Experimental speed projection (EXPERIMENTAL, off by default)
 
 **This is an experiment, not a finished feature.** It ships with Strata but stays off unless you turn it on.
@@ -1730,7 +1794,7 @@ so measure it on your own prompts; the Monitor marks every request ESP or stock.
 no), or pass `--experimental-speed-projection on` (`off`, or a path to another vector GGUF). Only for the original
 Qwen3.8-Flash-Next, not Swift 1.5. It writes these engine flags (llama.cpp's) into `strata-<model>.json`:
 
-```
+```text
 --control-vector-scaled <Strata>\data\experimental-speed-projection\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0
 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer
 ```
@@ -1774,8 +1838,11 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | Output much slower than the tables above, only with a large `--context`, and the start says a small `... MiB of VRAM free with everything loaded` | The expert cache does not fit the card at that context. With `--expert-cache auto` the engine shrinks it to fit; with a fixed number it does not check again after the slots are written, and on Windows the extra is put in system memory instead of failing, so only the speed shows it. Use `auto`, a smaller number, or raise `--vram-reserve-mib` (it is deducted before the cache is sized). See "The expert cache size is a budget" under Sharing the GPU. |
 | Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
 | `no progress for 60 s ... reading the prompt` on Linux, and the stall report says `threads waiting on the disk (state D): 16 ...` | The engine waits for the drive, not a deadlock: the n-gram table is read at random (`--ple-io direct`), which a rotational disk cannot keep up with (#605). The engine warns at start when the table is on one; `--ple-io ram` (Linux, needs RAM for the table) or the model on an SSD fixes it. Setup adds `--ple-io ram` itself on a rotational disk when the RAM holds the table (0.1.39). |
+| `no step finished for ... s, but the file tier is still being read (slow storage or low RAM)` | Engine 0.1.41 (issue #1407): this line says the watchdog did not end the engine - the OS is still reading the file tier (Linux: major page faults and bytes read from storage keep growing), so the step is slow, not stuck. It shows when a prompt layer's experts are re-read from the pack: low RAM, or `--mmap-experts` on slow storage. The engine then waits up to `STRATA_WATCHDOG_IO_S` in all (default 10 times the watchdog time: 600 s at the default 60; `0` turns the allowance off). Other systems have no file-tier reading, so the watchdog stops at the plain time. More RAM or an SSD makes the line go away; when the reads do stop, the request ends with the usual `no progress for ... s` error. |
 | `the engine said nothing for ... s during the request` or `... did not finish the request after it was stopped (STOP)` | Issue #481: the engine and the server lost step (the engine waits for its next command, the server for the request's end; GPU at 0 %, nothing in the log). The server ends the engine after 300 s without a line from it during a request (while a prompt is read: each chunk may take three times the previous one's time, the first one up to its tokens at 50 tok/s more), the request ends with an error and the next request starts the engine again. `"engine_silence_s": 600` in `strata-<model>.json` sets the time (0 = wait forever, as before). If you see it, please add the end of the engine log to #481. |
 | `the engine said nothing for ... s and used no CPU or disk in that time (frozen ...)` | Issue #1317: a quicker version of the check above for an engine that is not slow but stopped (a deadlock inside a CUDA call, a driver stall): after 90 s without a line, if the engine process has also used no CPU time and moved no disk bytes in that time, the server ends it and the next request starts it again. An engine that is silent but still working is never ended by this check, the server prints one note (`... but is still working; it is not ended`) and leaves it to `engine_silence_s`. `STRATA_ENGINE_STALL_S=180` sets the time, `0` turns the check off (it needs `psutil`, which setup installs). |
+| `the request body is larger than 256 MiB (STRATA_MAX_BODY_MIB raises the limit)` (413) | Since 0.1.41 the server answers an oversized body before reading it (a `Content-Length` of 10 TB used to be read until the client gave up), and the connection ends with the answer. 256 MiB is a million-token conversation with room to spare; `STRATA_MAX_BODY_MIB` sets another cap in MiB (unset, 0 or a non-number: 256). |
+| `the request is malformed (...)` (400) | A body that is JSON but of the wrong shape (`"messages": 5`, a content part that is a number): since 0.1.41 it gets a 400 naming the problem, with the traceback in the server window, instead of the connection being dropped without an answer. A bad or negative `Content-Length` is answered 400 (`invalid Content-Length`) before the body is read. The client's request is at fault: fix what it sends. |
 | `out of memory: cudaFuncSetAttribute` in the log (IQ3_XXS, long prompt) | Fixed in engine 0.1.15: CUDA loaded a kernel's code when it was first needed, and mid-prompt there was no VRAM left for it. Run `START-HERE.bat` (Windows) or `./setup.sh` (Linux) once to update. |
 | Anything else | The engine log is `strata-<model>.log` in this folder. |
 
@@ -1783,7 +1850,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 
 ## How it works
 
-<p align="center"><img src="paper/tiers.svg" width="760" alt="memory tiers"></p>
+![memory tiers](paper/tiers.svg)
 
 - **GPU (VRAM):** attention and DeltaNet mixers, the gated-residual weights, routers, shared experts, output head, the MTP
   draft layer, the KV cache (from 64K: only its most-read part, the rest streams from RAM), and an **expert cache** that fills the rest of VRAM with the most-used experts (it adapts to
@@ -1899,6 +1966,52 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+### OpenTelemetry traces of every request
+
+Off by default: with no endpoint set nothing here runs and the request path is byte-identical to the release
+build. Turn it on with `serve/server.py --trace-otlp URL`, `"trace_otlp"` in `strata-<model>.json`, or
+`$STRATA_TRACE_OTLP` (`--trace-otlp` beats the config, the config beats the environment). The value `default`
+(also `1`, `true`, `on`, `local`) is `http://localhost:4318/v1/traces`, where a Foundry Toolkit collector, Jaeger
+or Tempo listen; a bare host is completed to that path, and the run config checks the endpoint with the same rule
+the server applies at start, so a typo stops the start rather than tracing into nothing.
+
+One trace per `/v1` request, built from the seconds the Monitor already measures - nothing is timed twice and no
+clock is added to the generation loop:
+
+```text
+strata.request  POST /v1/chat/completions   the whole request, first byte to last
+  strata.queue    waiting for the model to be free
+  strata.load     starting the engine for it
+  strata.prefill  reading the prompt  (the engine's prompt_ms)
+  strata.decode   writing the answer  (the engine's predicted_ms)
+```
+
+Queue and load are the server's own `perf_counter`; prefill and decode come from the engine's DONE line, so they
+are the GPU's time, not the host's wall around it. A span whose number the server does not have (an engine that
+said nothing, a request that never reached the model) is left out rather than drawn as zero. The root span carries
+the method, HTTP status, model, input/output tokens, time-to-first-token and the queue/load/wallclock seconds;
+prefill and decode carry their token counts and tok/s. The first-token anchor of the two is clamped into the
+request's wall window: a cache-hot prompt can settle its first token outside the wall the record settled, and
+prefill ends at and decode starts from the clamped anchor, so a span is never drawn as a negative slice. The
+anchor's floor is the root span's own width floor: a request whose first token settles in the same rounded
+millisecond as its start keeps a prefill slice of that width (measured on a mock request settling in under
+0.5 ms) - the engine reported its `prompt_ms`, and the request is not drawn as decoding without prefills.
+
+W3C context is followed both ways: a `traceparent` header you send becomes the root span's parent, so Strata shows
+up inside your own trace, and every answer carries the `traceparent` of its own root span, which you put on the
+next request to line your spans up with ours. With no `traceparent` on the request the root span carries no parent,
+so a viewer draws it as a root rather than under itself.
+
+The export runs on its own thread and never blocks or fails a request: a collector that is down costs one line in
+the log and a counted drop. A stop (Ctrl+C) gives queued spans up to 2 s to leave before the process ends: it
+waits for the batch the export thread is posting too, and returns once a half-second of quiet says nothing more
+is coming - a record's spans enter the queue on the settling thread, a beat after the answer is written. OTLP/HTTP
+is written as JSON by
+hand, so tracing adds no package to the install. With
+tracing on and the Monitor off, the record behind the spans holds timings and token counts only - the prompt and
+the answer text are never recorded, so no conversation text reaches a collector. The module is `serve/tracing.py`,
+covered by `serve/test_tracing.py`.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 

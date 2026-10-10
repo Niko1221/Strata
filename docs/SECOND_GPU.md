@@ -146,6 +146,27 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
 - `--peer-prefill-rows N` (default -1): the share of each prompt chunk's rows
   the peer computes; -1 is half of chunk x top-k, 0 keeps prompt rows on the
   primary.
+- `STRATA_PEER_HOT=f` (default 0.45, `0` off): give the peer a share f of the
+  hot pairs, so both cards compute routed experts in every layer-window instead
+  of the primary taking nearly all of them (it did ~25 of ~30 alone). Of the
+  first `STRATA_PEER_HOT_AT` ranks, every pair with `floor((r+1)f) > floor(rf)`
+  moves to just past that point: the primary fills past them, so the peer -
+  which takes what the primary does not hold, in rank order - gets them first.
+  0.3 to 0.6 all measured better than 0. What it moved is said once at the
+  start, in the shape
+  `strata generate: STRATA_PEER_HOT <f>: <n> of the first <at> ranked pairs moved behind rank <fill> (the peer's)`.
+- `STRATA_PEER_HOT_AT=R` (default 8700, about the primary's own slot count):
+  how many of the top ranks that share is taken from.
+
+Both of those reorder `--expert-profile`'s ranking, so they need it, and they
+change which card holds which experts.
+
+Two switches exist to test the tier: `STRATA_PEER_DIRECT=0` sends the peer's
+rows back the old way (a device-to-host copy and a host memcpy in `finish`)
+instead of the scatter kernel that writes them straight into the primary's
+pinned rows; `STRATA_PEER_NO_P2P=1` makes the engine treat two cards that can
+read each other directly as a pair that cannot, which is how the no-P2P path is
+tested on a box that has the direct path.
 
 Through the server, list both cards in the config's `"gpu"` (e.g. `[0, 1]`, numbered as nvidia-smi numbers them)
 and add `--peer-device 1` to its `"args"`; the number is the card's position in that list (with `"gpu": [2, 0]`,
