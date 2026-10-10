@@ -1,9 +1,10 @@
 # Resident supervisor handoff: bounded Windows qualification
 
-These measurements use the v0.1.41-based C1 implementation at
-`efb21996fea649622cb84fdedd5765f425dbbe5f`. They are **not v0.1.42 performance
-results**. The later source integration and its validation must be reported
-separately. Raw local transcripts, credentials and private paths are excluded.
+The matched comparison below uses the v0.1.41-based C1 implementation at
+`efb21996fea649622cb84fdedd5765f425dbbe5f`. The separately labeled v0.1.42
+qualification uses `1cb95593f5dd10954ba4ade6c957589ef820267b`; it is not a
+matched release-speed comparison. Raw local transcripts, credentials and
+private paths are excluded.
 
 The objective is to reduce the time before an agent can continue after a tool
 finishes. If the requested tool resources are already available, `auto` can
@@ -122,6 +123,65 @@ this run. It used the same explicit zero additional return-VRAM allowance as
 the bounded component profile. It validates orchestration of a supplied correct
 fixture, not autonomous code creation or repair. It is one qualification, not a
 matched speed comparison against an earlier Hermes prompt or v0.1.42.
+
+## v0.1.42 integration and component qualification
+
+The updated source includes upstream v0.1.42 at `61b3fb5d`. Its native binary
+SHA-256 is `d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9`.
+The allowlisted [qualification record](v0142-qualification.json) contains exact
+source/server/harness hashes, per-arm settings, cleanup and test counts.
+
+The port preserves the new seven-field restart metadata, CPU affinity,
+queue/KeepAwake ownership and SAVE retry. A real lazy-engine regression test
+covers the runtime identity change. Adaptive replicas/helper GPUs and live
+memory with asynchronous expert swaps are rejected before allocation because
+this controller does not own those lifetimes. Default non-adaptive support is
+not removed.
+
+Final server validation ran 1,128 tests: 1,119 passed and nine expected skips,
+with no resource or unraisable warnings. The broker passed 54 tests. CUDA sm89
+passed 14 selected native tests and two bounded IQ3_S fused-reference pairs;
+the CPU-only build passed 19 selected tests. HIP/SYCL are unqualified. These
+counts overlap focused suites and are not additional independent trials.
+
+The two fresh component arms kept tail skipping disabled, PLE I/O explicitly
+`direct` and PCIe fraction 0.37. High reasoning, IQ3_S, configured 64K context,
+CPU vision and the supplied four-job C++ fixture stayed fixed.
+
+| v0.1.42 arm | Additional return VRAM | Tool admission | Compiler | Return request | Complete cycle |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Resident AUTO | Explicit 0 MiB | 0.437 s | 2.422 s | 4.719 s | 23.563 s |
+| AUTO with default return allowance | Default 256 MiB | 1.109 s | 2.422 s | 70.750 s | 98.672 s |
+
+Both answered `42` before and after the tool and passed all 2,096 checks.
+The first arm retained both model identities and reused 1,124 prompt tokens.
+The default arm retained them during compilation, then observed
+`resident_return_auto_unload`, confirmed both old processes had exited and
+completed guarded reload. Minimum sampled native free VRAM was 324/340 MiB,
+and available RAM was 9.179/9.400 GiB respectively. Cleanup had no survivors.
+
+This validates both lifecycle paths on the update. It does not establish a
+v0.1.42 decode/prefill gain, a safe zero allowance for arbitrary tasks, or a
+default end-to-end speedup. The conservative additional allowance is still
+256 MiB; the low latency profile is explicitly bounded to already-allocated
+buffers. Candidate04 was preparation-only and never executed.
+
+The first actual v0.1.42 Hermes run is **failed overall**, retained in
+[hermes-resident05-results.json](hermes-resident05-results.json). All 17
+resource-lifecycle checks and the worker's 2,096 compiler cases passed, but only
+10 of 12 final workflow gates passed. The supervisor received the complete,
+untruncated worker result and then redundantly read the worker log with an
+additional terminal command. It did not compile twice; it did violate the
+explicit one-command/no-supervisor-terminal test rule. No source or checker
+change relabels this attempt as successful.
+
+The agent interval was 230.957 seconds; sampled minima were 9.216 GiB RAM and
+322 MiB native VRAM. Vision before the workflow passed. The independent 104
+cases and post-agent function continuation **did not run**, because the harness
+stopped at the failed gate. Owned-process cleanup still passed. This is agent
+instruction-following variability, not evidence of a failed lease or a
+demonstrated engine regression; the cause of the redundant verification is not
+established.
 
 ## Limits
 
