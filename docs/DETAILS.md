@@ -257,6 +257,20 @@ GPU nor the RAM budget holds (only pages - the experts computed are the same; `S
 is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 GB PC: 7-8.5 tokens/s at N = 40 on an
 RTX 5070, against ~3 tokens/s before these changes.
 
+**Opt-in switches measured on a hybrid Intel CPU under Windows (Core i7-13700K, 8 P + 8 E cores, RTX 5090, 64 GB RAM,
+Windows 11, Swift 1.5 IQ3_XXS at 128K):**
+- `STRATA_VRAM_FREE=device` (Windows, NVIDIA): `--expert-cache auto` reads the free VRAM of the whole card through NVML.
+  Under WDDM CUDA's own figure counts this process only: with 6 GiB held by another process it still read 30,994 MiB
+  free where NVML read 24,348. With the image encoder loaded (1,547 MiB) the cache was therefore sized too large and
+  shrunk by guesses: six starts of one config (engine 0.1.40.3 and 0.1.41, the default 700 MiB reserve) ended with
+  9,002 to 14,454 slots and 93 MiB to 10 GiB free. With the switch and `--vram-reserve-mib 1500` (0.1.41 built from
+  source): one pass, 13,007 to 13,188 slots and 973 to 1,392 MiB free over seven starts. On 0.1.42 with this switch
+  built in, three interleaved starts each: the default sized 13,543 slots after two shrink steps and ended with 336,
+  602 and 602 MiB free; the switch with a 1,500 MiB reserve 13,102 to 13,130 slots after one step and 1,107 to 1,288
+  MiB free. A run that filled the card to
+  0 MiB free decoded 80-115 tok/s where the same text ran at 205-230 with 900 MiB or more free. Not measured: AMD
+  cards, Linux (the switch is compiled for Windows CUDA builds only).
+
 **Switches added in 0.1.40 (all off unless noted; none changes the default output):**
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert

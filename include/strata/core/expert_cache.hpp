@@ -75,7 +75,9 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// Free device memory for the expert cache.  On a unified memory system - one memory for the CPU and the GPU, such as
 /// the DGX Spark (GB10); CUDA reports it as cudaDevAttrIntegrated - cudaMemGetInfo counts only MemFree, not the page cache - which, with the experts read from the GGUF in place, is mostly those
 /// files' clean pages and gives way to a device allocation.  There the figure is MemAvailable less 6 GiB for the OS
-/// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
+/// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.  On Windows with an NVIDIA
+/// card STRATA_VRAM_FREE=device (opt-in) takes the smaller of that and NVML's figure for the whole card: under WDDM
+/// cudaMemGetInfo does not count what other processes hold.
 size_t device_free_bytes();
 
 class ExpertCache {
