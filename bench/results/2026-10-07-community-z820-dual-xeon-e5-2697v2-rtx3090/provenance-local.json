@@ -1,0 +1,118 @@
+{
+ "generated": "2026-10-07T02:57:09",
+ "files": [
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\models\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "exists": true,
+   "size": 54817524224,
+   "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3",
+   "seconds": 210.6,
+   "mb_per_s": 260.3
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\models\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "exists": true,
+   "size": 28800138432,
+   "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+   "seconds": 110.8,
+   "mb_per_s": 260.0
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\models\\vision\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+   "exists": true,
+   "size": 907543008,
+   "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+   "seconds": 3.9,
+   "mb_per_s": 235.7
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\mtp\\rt\\dense.bin",
+   "exists": true,
+   "size": 116099072,
+   "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+   "seconds": 0.5,
+   "mb_per_s": 239.2
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\mtp\\rt\\experts.bin",
+   "exists": true,
+   "size": 707788800,
+   "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f",
+   "seconds": 2.9,
+   "mb_per_s": 241.9
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\dense.bin",
+   "exists": true,
+   "size": 1538035200,
+   "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13",
+   "seconds": 6.4,
+   "mb_per_s": 239.7
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\index.txt",
+   "exists": true,
+   "size": 93685,
+   "sha256": "b2a014878c3b61d6a6f915e194055a5e68ede34f9465dd1cb13249d902f008ac",
+   "seconds": 0.0,
+   "mb_per_s": 11.3
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\native_experts.txt",
+   "exists": true,
+   "size": 3304,
+   "sha256": "d9ac2dfa3ee63c55c9c6a6db26f72da0cec0ee41733f007e5cbbbba71617aa5d",
+   "seconds": 0.0,
+   "mb_per_s": 0.4
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\conversions.json",
+   "exists": true,
+   "size": 322,
+   "sha256": "aef6eb1635ca3250a68c0bb3330a892248baf529aea2b23ddabd9e2e93bbbd0b",
+   "seconds": 0.0,
+   "mb_per_s": 0.0
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\tokenizer\\chat_template.jinja",
+   "exists": true,
+   "size": 9993,
+   "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+   "seconds": 0.0,
+   "mb_per_s": 1.2
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002-data\\packs\\iq3_s\\tokenizer\\tokenizer.json",
+   "exists": true,
+   "size": 554,
+   "sha256": "87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54",
+   "seconds": 0.0,
+   "mb_per_s": 0.0
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002\\build-ivy-cuda\\strata.exe",
+   "exists": true,
+   "size": 34475008,
+   "sha256": "aa9a58e80e013fa99be27328c23aac4ddcb04dce6f456b4969247b9aba2769bd",
+   "seconds": 0.2,
+   "mb_per_s": 223.5
+  },
+  {
+   "path": "G:\\Strata-IvyBridge-20261002\\build-ivy-cuda\\strata-vision.exe",
+   "exists": false
+  }
+ ],
+ "host": {
+  "cpu": "Intel(R) Xeon(R) CPU E5-2697 v2 @ 2.70GHz; Intel(R) Xeon(R) CPU E5-2697 v2 @ 2.70GHz",
+  "ram_gib": 255.93,
+  "os": "Microsoft Windows 11 专业工作站版 build 26200",
+  "gpu": "NVIDIA GeForce RTX 3090, 616.56, 24576 MiB, 3, 16, 280.00 W",
+  "cuda_runtime": "13.0.88 (build environment, sm_86)"
+ },
+ "engine": {
+  "version": "0.1.34",
+  "build_note": "source build with a local Ivy Bridge (AVX-only) compatibility port; predates upstream 0.1.39 STRATA_ISA_FLOOR=avx",
+  "cuda_arch": "sm_86"
+ },
+ "download_done_marker": "segmented-download complete"
+}

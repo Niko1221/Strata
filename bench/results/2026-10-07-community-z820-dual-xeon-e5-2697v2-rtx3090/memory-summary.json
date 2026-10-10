@@ -1,0 +1,13 @@
+{
+ "samples": 195,
+ "gpu_used_mib_max": 24061.0,
+ "gpu_util_pct_max": 100,
+ "gpu_temp_c_max": 81,
+ "gpu_power_w_max": 280.35,
+ "ram_used_gib_max": 81.3,
+ "sources": [
+  "2026-10-07_014838",
+  "2026-10-07_014911",
+  "2026-10-07_020446_supplement"
+ ]
+}
