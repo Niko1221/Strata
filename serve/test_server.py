@@ -4909,6 +4909,86 @@ class VisionCacheEviction(unittest.TestCase):
             self.assertFalse(first.exists())
 
 
+class OvershootEngine(ThinkingEngine):
+    """The real engine emits a verify window's tokens at once and finishes the window in flight after a STOP: the
+    tokens it emitted past the consumer's stop are read while draining to DONE (`after_stop`), and its session holds
+    them.  OVER of them here."""
+    OVER = 3
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.after_stop = []
+        self.prompts.append(list(ids))
+        done = self.tok.decode(ids).endswith("</think>\n\n")
+        text = self.ANSWER if done else self.THOUGHT + "</think>\n\n" + self.ANSWER
+        toks = (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]
+        i = -1
+        try:
+            for i, t in enumerate(toks):
+                if cancel.is_set():
+                    return
+                yield t
+        except GeneratorExit:
+            self.after_stop = toks[i + 1:i + 1 + self.OVER]
+            raise
+
+
+class TagAfterStopEngine(OvershootEngine):
+    """The tokens past the stop start a tag: they are not joined (the parser would treat it on its own)."""
+    THOUGHT = "a" * 20 + "<b> and more thinking about it."
+
+
+class ThinkingBudgetAfterStop(unittest.TestCase):
+    """The thinking budget's continuation keeps the tokens the engine emitted after the STOP, so it continues from
+    the engine's session instead of reading the whole thinking again."""
+    post, openai = ThinkingBudget.post, ThinkingBudget.openai
+
+    def tearDown(self):
+        if hasattr(self, "httpd"):
+            ThinkingBudget.tearDown(self)
+
+    def start(self, engine_cls):
+        self.tok = ByteTokenizer()
+        self.engine = engine_cls(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def test_tokens_emitted_after_the_stop_join_the_thinking(self):
+        from serve.server import REASONING_WRAP_UP
+        self.start(OvershootEngine)
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        kept = OvershootEngine.THOUGHT[:20 + OvershootEngine.OVER]
+        self.assertEqual(msg["reasoning_content"], kept + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        self.assertEqual(second, first + self.tok.encode(kept) + extra)   # holds all the engine emitted
+        self.assertEqual(b["usage"]["completion_tokens"], len(kept) + len(extra) + len(ThinkingEngine.ANSWER) + 1)
+
+    def test_a_tag_after_the_stop_is_left_out_as_before(self):
+        from serve.server import REASONING_WRAP_UP
+        self.start(TagAfterStopEngine)
+        code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertEqual(msg["reasoning_content"], "a" * 20 + REASONING_WRAP_UP.split("</think>")[0])
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+        self.assertEqual(second, first + self.tok.encode("a" * 20) + extra)
+
+    def test_after_stop_continues(self):
+        from serve.server import after_stop_continues
+        tok = ByteTokenizer()
+        end = tok.encode("<|im_end|>", parse_special=True)
+        self.assertTrue(after_stop_continues(tok, tok.encode(" two"), set(end)))
+        self.assertFalse(after_stop_continues(tok, [], set(end)))
+        self.assertFalse(after_stop_continues(tok, tok.encode(" a") + end, set(end)))   # the end of the turn
+        self.assertFalse(after_stop_continues(tok, tok.encode("</think>"), set(end)))  # a tag
+        self.assertFalse(after_stop_continues(tok, tok.encode("é")[:1], set(end)))     # a split character
+
+
 class BudgetOverRam(unittest.TestCase):
     """#1080: a RAM budget above what the PC has free is a warning at start, not silence and not a refusal."""
 

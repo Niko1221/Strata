@@ -149,6 +149,16 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 # and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
+
+
+def after_stop_continues(tok, ids: list[int], stop_ids) -> bool:
+    """Whether the tokens the engine emitted after the budget's STOP can join the thinking before the wrap-up: no
+    end of turn among them, no tag (a '<' may start </think> or a call, which the parser would treat on its own) and
+    no character split at their end (the budget stopped at a clean point, so their bytes stand alone)."""
+    if not ids or any(t in stop_ids for t in ids):
+        return False
+    text = tok.decode(ids)
+    return "<" not in text and "�" not in text
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
 # "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
 # low-effort instruction in place of the xhigh one.  Both off by default.
@@ -1567,6 +1577,10 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
+        # the tokens the engine still emitted after the consumer stopped early, read while draining to DONE: the
+        # engine's session holds every emitted token but the last, so a continuation that leaves them out (the
+        # thinking budget's wrap-up) cannot continue from it.  Not filled by the batch slots' path.
+        self.after_stop: list[int] = []
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
@@ -1678,6 +1692,11 @@ class StrataEngine:
                     if line.startswith("DONE"):
                         self._parse_done(line)
                         break
+                    if line.startswith("T "):                 # emitted before the STOP landed: the engine's session
+                        try:                                  # holds all but the last of them (see after_stop)
+                            self.after_stop.append(int(line[2:]))
+                        except ValueError:
+                            pass
                     if not self.can_stop:
                         heard = time.monotonic()
 
@@ -3901,6 +3920,23 @@ class Service:
                         if max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
+                            # The engine may have emitted a few tokens past the budget before the STOP reached it, and
+                            # its session holds them: they join the thinking before the wrap-up, so the next pass
+                            # continues from the session instead of reading all of the thinking again.  Only where
+                            # they are plain thinking (after_stop_continues); otherwise as before.
+                            after = list(getattr(self.engine, "after_stop", None) or [])
+                            if (after and len(after) < max_new - n - len(extra)
+                                    and after_stop_continues(self.tok, after, self.stop_ids)):
+                                for t in after:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    seg.append(t)
+                                    thought += 1
+                                    thinking_n += parser.state in ("reasoning", "rcall")
+                                    evs = cut(parser.feed(detok.push(t)))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        yield "event", ev
                             print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
                                   flush=True)
                         for t in extra:
