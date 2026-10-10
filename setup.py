@@ -813,6 +813,16 @@ def gpus():
     return found
 
 
+def gpu_free_gb(index: int):
+    """The VRAM free on NVIDIA GPU `index` right now (nvidia-smi's memory.free; the desktop and other programs
+    take theirs from it), or None when nvidia-smi cannot say."""
+    s = out(["nvidia-smi", f"--id={index}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+    try:
+        return float(s.strip().splitlines()[0]) / 1024.0
+    except (ValueError, IndexError):
+        return None
+
+
 def gpu_drives_display(g) -> bool:
     """#779: True when nvidia-smi says this card has a display attached (display_active Enabled): its desktop needs
     VRAM too, and a full expert cache beside it has crashed laptops."""
@@ -4855,7 +4865,9 @@ def main() -> int:
                          "wait). Each slot takes VRAM from the expert cache; setup says what it recommends")
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
-                         "experts fit on the GPU); auto: when the RAM has room for it")
+                         "experts fit on the GPU); auto: when the RAM has room for it (Qwen3.6-35B-A3B and its "
+                         "fine-tunes: setup asks, as writing slows down past 32K tokens - or, from 128K with under "
+                         "9 GB of VRAM free, says it is needed)")
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
@@ -5662,20 +5674,67 @@ def main() -> int:
     kv_ram_gb = kv_streaming_ram_gb(ctx, kv)      # the branches below are kv_streaming_wanted, with its messages
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
     stream_fits = ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1
+    # The 35B-A3B models (qwen35moe) attend to every cell, not to a window: past the 32K cells kept in VRAM, every
+    # token reads the rest of the KV cache from RAM over PCIe.  Measured with KAT-Coder i-quality-v2 (8-bit KV) on an
+    # RTX 4070 Ti 12 GB with no desktop, whole (11.6 GB free) and with 4 GB of it held (7.9 GB free, an 8 GB card):
+    #   - a 52.7K-token prompt at 64K context wrote 59.6 / 47.0 tokens/s with the KV cache in VRAM, 27.0 / 23.3 streamed;
+    #   - a 2K-token prompt was as fast or faster streamed (more expert slots: 3,076 vs 2,930 at 64K, 2,935 vs 1,905 at
+    #     256K on the whole card);
+    #   - with 7.9 GB free a 128K or 256K context fails at the first prompt unless streamed; with 10 GB free (the whole
+    #     card beside a 2.3 GB desktop) both run.
+    # So: from 128K up with under 9 GB free (the gap between those two measurements) streaming is required, and setup
+    # says so; otherwise it asks, and recommends keeping the KV cache in VRAM.  Free VRAM, not the card's size: a desktop
+    # on the card takes its share.
+    stream_choice, stream_how = a.kv_streaming, ""
+    if small_family(family) and ctx >= 65536 and not is_wsl():
+        free = gpu_free_gb(gpu["index"]) if gpu.get("vendor", "nvidia") == "nvidia" and "index" in gpu else None
+        card = f"the {gpu.get('vram_gb', 0.0):.0f} GB card" + (f" has {free:.1f} GB free now" if free is not None else "")
+        later = (f"  To change it later: \"--kv-resident\", \"32768\" in strata-{tag.lower()}.json's args, or run",
+                 "  setup again with --kv-streaming on|off.")
+        required = free is not None and free < 9.0 and ctx >= 131072
+        if required and a.kv_streaming == "off":
+            warn(f"--kv-streaming off: {card}, and a {ctx // 1024}K context of {fam['title']} needs KV streaming "
+                 "below about 9 GB free (measured with 7.9 GB free: the first prompt fails without it). Kept as you "
+                 "chose; a smaller --context or --kv-streaming on avoids it")
+        elif required:
+            say()
+            say(f"  KV streaming is needed here: {card}, and a {ctx // 1024}K context's KV cache does not fit")
+            say("  beside the experts (measured with 7.9 GB free: without streaming the first prompt fails). It keeps the")
+            say("  KV cache in RAM and 32K tokens of it in VRAM. Past 32K tokens of a conversation writing slows down")
+            say("  (measured at 52K tokens: about half the speed); a smaller context (--context 65536) avoids that.")
+            for line in later:
+                say(line)
+            stream_choice, stream_how = "on", "required"
+        elif a.kv_streaming == "auto" and stream_fits:
+            freed_gb = (ctx - 32768) * 10 * KV_CELL_BYTES.get(kv, 1056) / 1e9   # its 10 attention layers
+            say()
+            say(f"  KV streaming: keeps the {ctx // 1024}K context's KV cache in RAM and only 32K tokens of it in VRAM,")
+            say(f"  which frees ~{freed_gb:.1f} GB of VRAM for experts ({card}). Short conversations get a")
+            say(f"  little faster, but {fam['title']} reads all of its context for every token, so past 32K tokens")
+            say("  writing slows down (measured at 52K tokens: about half the speed). Recommended: no.")
+            for line in later:
+                say(line)
+            stream_choice = "on" if ask("Turn on KV streaming?", ["y", "n"], "n", a.yes) == "y" else "off"
+            stream_how = "asked"
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
         if a.kv_streaming == "on":
             warn("--kv-streaming on: WSL cannot stream the KV cache (its RAM copy must be pinned, and the driver pins "
                  "only about 1 GB there): off")
-    elif ctx >= 65536 and a.kv_streaming == "off":
-        ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
-    elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
+    elif ctx >= 65536 and stream_choice == "off":
+        ok("KV streaming off, as you chose" + ("" if stream_how == "asked" else " (--kv-streaming off)") +
+           ": the KV cache stays in VRAM")
+    elif ctx >= 65536 and (stream_fits or stream_choice == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
+        if small_family(family):
+            ok("  writing slows down past 32K tokens of context (that part of the KV cache is read from RAM)" +
+               ("; needed for this context with this much free VRAM" if stream_how == "required" else ""))
         if not stream_fits:
             warn(f"KV streaming needs ~{kv_ram_gb:.1f} GB of RAM beside the ~{MODELS[model]['ram_gb']} GB {model} "
-                 f"uses; this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
-                 "under load")
+                 f"uses; this PC has {ram:.0f}. " + ("On, as this context needs it (a smaller --context avoids it)"
+                 if stream_how == "required" else "Kept as you chose (--kv-streaming on)") +
+                 ": it may page or run out of RAM under load")
         if q4_split:                                   # #498: no budget to take it out of
             pass
         elif budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget

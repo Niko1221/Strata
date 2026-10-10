@@ -168,6 +168,7 @@ class Base(unittest.TestCase):
         (self.t / "data" / "mtp" / "rt").mkdir(parents=True)              # Flash-Next's draft layer (for --family qwen)
         (self.t / "data" / "mtp" / "rt" / "experts.bin").write_bytes(b"")
         self.downloads, self.runs, self.verified, self.asked = [], [], [], []
+        self.vram_free = None                                             # nvidia-smi's memory.free: unknown
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -212,6 +213,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),
             mock.patch.object(setup, "gpus", lambda: found),
+            mock.patch.object(setup, "gpu_free_gb", lambda i: self.vram_free),
             mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, False)),
@@ -467,6 +469,92 @@ class SmallCard(Base):
         code, out, cfg = self.main(["--family", "qwen", "--model", "IQ2_XS"], ram=RAM64, found=nvidia(vram=7.99))
         self.assertIn("it will be slow", out)
         self.assertNotIn("at this model's floor", out)
+
+
+class KvStreaming(Base):
+    """From a 64K context, a 35B-A3B model's KV streaming (it attends to every cell: writing slows down past 32K tokens
+    when streamed): from 128K with under 9 GB of VRAM free it is needed, and setup says so; otherwise setup asks and
+    recommends no; --kv-streaming on|off answers it.  Flash-Next streams as before, unasked."""
+    Q = "Turn on KV streaming?"
+
+    def run_ctx(self, ctx, vram, free, answers=None, extra=()):
+        self.vram_free = free
+        return self.main(["--family", "qwen36", "--model", "UD-IQ4_XS", "--context", str(ctx), *extra], ram=RAM64,
+                         found=nvidia(vram=vram), answers=answers)
+
+    def asked_q(self):
+        return [p for p in self.asked if self.Q in p]
+
+    def test_asked_recommends_no(self):
+        code, out, cfg = self.run_ctx(65536, 7.99, 7.9, answers={})        # Enter: the recommendation
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.asked_q(), [f"{self.Q} [n]: "])
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertIn("past 32K tokens", out)
+        self.assertIn("the 8 GB card has 7.9 GB free now", out)
+        self.assertIn("strata-qwen36-ud-iq4_xs.json's args, or run\n  setup again with --kv-streaming on|off.", out)
+        self.assertIn("KV streaming off, as you chose: the KV cache stays in VRAM", out)
+
+    def test_asked_yes(self):
+        code, out, cfg = self.run_ctx(131072, 11.99, 11.6, answers={self.Q: "y"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.asked_q(), [f"{self.Q} [n]: "])
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        self.assertIn("writing slows down past 32K tokens of context", out)
+
+    def test_yes_takes_the_recommendation(self):
+        code, out, cfg = self.run_ctx(65536, 11.99, 11.6)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv-resident", cfg["args"])
+
+    def test_needed_is_said_not_asked(self):
+        for ctx, vram, free in ((131072, 7.99, 7.9), (262144, 11.99, 8.5)):   # free VRAM decides, not the card's size
+            with self.subTest(ctx=ctx, free=free):
+                self.asked.clear()
+                code, out, cfg = self.run_ctx(ctx, vram, free, answers={})
+                self.assertEqual(code, 0, out)
+                self.assertFalse(self.asked_q())
+                self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+                self.assertIn("KV streaming is needed here", out)
+                self.assertIn(f"has {free:.1f} GB free now", out)
+                self.assertIn("--kv-streaming on|off", out)
+                self.assertIn("needed for this context with this much free VRAM", out)
+
+    def test_not_needed_with_room_or_at_64k(self):
+        for ctx, free in ((131072, 10.0), (65536, 6.0)):
+            with self.subTest(ctx=ctx, free=free):
+                self.asked.clear()
+                code, out, cfg = self.run_ctx(ctx, 11.99, free, answers={})
+                self.assertEqual(code, 0, out)
+                self.assertEqual(len(self.asked_q()), 1)
+                self.assertNotIn("is needed here", out)
+
+    def test_the_option_answers_it(self):
+        code, out, cfg = self.run_ctx(65536, 7.99, 7.9, answers={}, extra=("--kv-streaming", "on"))
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.asked_q())
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        code, out, cfg = self.run_ctx(131072, 7.99, 7.9, answers={}, extra=("--kv-streaming", "off"))
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.asked_q())
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertIn("the first prompt fails without it", out)
+
+    def test_flash_next_unasked(self):
+        self.vram_free = 7.9
+        code, out, cfg = self.main(["--family", "qwen", "--model", "IQ2_XS", "--context", "65536"], ram=RAM64,
+                                   found=nvidia(vram=11.9), answers={})
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.asked_q())
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        self.assertNotIn("writing slows down", out)
+
+
+class FreeVram(unittest.TestCase):
+    def test_parse(self):
+        for text, want in (("6144\n", 6.0), ("", None), ("[N/A]\n", None)):
+            with mock.patch.object(setup, "out", lambda cmd: text):
+                self.assertEqual(setup.gpu_free_gb(0), want)
 
 
 class Amd(Base):
