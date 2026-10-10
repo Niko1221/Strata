@@ -73,12 +73,13 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "monitor", "mcp", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "monitor", "mcp", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
+  if (tab === "mcp") { loadMcp(); loadMcpConfig(); }
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
@@ -417,12 +418,12 @@ const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-
                    failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
 function renderMcp() {
   const servers = mcpInfo.servers || [];
-  $("mcp-card").hidden = !servers.length;
+  $("mcp-card").hidden = false;
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
   $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
-                                               : "no server is connected yet (see the Monitor)";
+                                               : "no server is connected yet (see the MCP tab)";
   $("mcp-list").innerHTML = servers.map((s) => {
     const [cls, text] = MCP_STATE[s.status] || ["", s.status];
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
@@ -432,6 +433,186 @@ function renderMcp() {
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
   }).join("");
+}
+
+// MCP connection management. The backend supports both Streamable HTTP and stdio; writes use the same-origin JSON gate.
+let mcpConfigInfo = {servers: [], file: null}, mcpEditingName = null;
+
+function setMcpTransport(kind) {
+  kind = kind === "stdio" ? "stdio" : "http";
+  $("mcp-transport").value = kind;
+  document.querySelectorAll(".mcp-field-http").forEach((el) => el.hidden = kind !== "http");
+  document.querySelectorAll(".mcp-field-stdio").forEach((el) => el.hidden = kind !== "stdio");
+  if (!mcpEditingName) {
+    $("mcp-secret-note").textContent = kind === "stdio" ?
+      "stdio starts a local process with your user rights. Environment values are saved but never echoed back into this page." :
+      "Saved HTTP header values are never echoed back into this page.";
+  }
+}
+function resetMcpEditor() {
+  mcpEditingName = null;
+  $("mcp-name").disabled = false;
+  $("mcp-name").value = "";
+  $("mcp-url").value = "";
+  $("mcp-command").value = "";
+  $("mcp-args").value = "[]";
+  $("mcp-cwd").value = "";
+  $("mcp-env").value = "";
+  $("mcp-config-msg").textContent = "";
+  setMcpTransport("http");
+  $("mcp-name").focus();
+}
+function mcpTarget(s) {
+  if (s.transport === "stdio") {
+    const args = (s.args || []).map((x) => String(x));
+    return [s.command || "", ...args].filter(Boolean).join(" ");
+  }
+  return s.url || "";
+}
+function renderMcpConfigList() {
+  const servers = mcpConfigInfo.servers || [];
+  $("mcp-config-file").textContent = mcpConfigInfo.file || "";
+  $("mcp-configured-list").innerHTML = servers.length ? servers.map((s) => {
+    const secret = s.transport === "stdio" ? (s.has_env ? "env saved" : "") : (s.has_headers ? "headers saved" : "");
+    return '<div class="mcp-config-entry">' +
+      '<span class="mcp-config-entry__name">' + esc(s.name) + '<span class="st-badge mcp-config-entry__transport">' +
+        esc(s.transport || "http") + '</span></span>' +
+      '<span class="mcp-config-entry__target" title="' + esc(mcpTarget(s)) + '">' + esc(mcpTarget(s)) + '</span>' +
+      '<span class="mcp-config-entry__actions">' +
+        (secret ? '<span class="mcp-config-entry__lock" title="Secret values stay hidden in the browser">' + esc(secret) + '</span>' : '') +
+        '<button class="st-btn st-btn--secondary" type="button" data-mcp-edit="' + esc(s.name) + '">Edit</button>' +
+        '<button class="st-btn st-btn--secondary" type="button" data-mcp-remove="' + esc(s.name) + '">Remove</button>' +
+      '</span></div>';
+  }).join("") : '<span class="muted small">No MCP servers are configured yet.</span>';
+}
+async function loadMcpConfig() {
+  try {
+    const r = await fetch("mcp/config", {headers: headers()});
+    if (!r.ok) return;
+    mcpConfigInfo = await r.json();
+    renderMcpConfigList();
+  } catch (e) { /* an older server */ }
+}
+$("mcp-transport").addEventListener("change", () => setMcpTransport($("mcp-transport").value));
+$("mcp-new").onclick = resetMcpEditor;
+$("mcp-refresh").onclick = () => { loadMcp(); loadMcpConfig(); };
+$("mcp-save").onclick = async () => {
+  $("mcp-config-msg").textContent = "Saving…";
+  try {
+    const transport = $("mcp-transport").value === "stdio" ? "stdio" : "http";
+    const payload = {name: mcpEditingName || $("mcp-name").value.trim(), transport};
+    if (transport === "http") {
+      payload.url = $("mcp-url").value.trim();
+    } else {
+      payload.command = $("mcp-command").value.trim();
+      payload.cwd = $("mcp-cwd").value.trim();
+      const argsText = $("mcp-args").value.trim();
+      payload.args = argsText ? JSON.parse(argsText) : [];
+      if (!Array.isArray(payload.args)) throw new Error("Args must be a JSON array.");
+      const envText = $("mcp-env").value.trim();
+      if (envText) {
+        payload.env = JSON.parse(envText);
+        if (!payload.env || Array.isArray(payload.env) || typeof payload.env !== "object")
+          throw new Error("Environment must be a JSON object.");
+      }
+    }
+    const r = await fetch("mcp/config", {method: "POST", headers: headers(true), body: JSON.stringify(payload)});
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+    $("mcp-config-msg").textContent = "Saved · restart Strata to connect";
+    toast("success", "MCP server saved", "The configured-server list was updated. Restart Strata to connect changes.");
+    resetMcpEditor();
+    await loadMcpConfig();
+  } catch (e) {
+    $("mcp-config-msg").textContent = e.message;
+    toast("error", "MCP server not saved", e.message, 6000);
+  }
+};
+$("mcp-configured-list").addEventListener("click", async (e) => {
+  const edit = e.target.closest("[data-mcp-edit]");
+  if (edit) {
+    const server = (mcpConfigInfo.servers || []).find((s) => s.name === edit.dataset.mcpEdit);
+    if (!server) return;
+    mcpEditingName = server.name;
+    $("mcp-name").value = server.name;
+    $("mcp-name").disabled = true;
+    setMcpTransport(server.transport || "http");
+    $("mcp-url").value = server.url || "";
+    $("mcp-command").value = server.command || "";
+    $("mcp-args").value = JSON.stringify(server.args || [], null, 2);
+    $("mcp-cwd").value = server.cwd || "";
+    $("mcp-env").value = "";
+    if (server.transport === "stdio" && server.has_env) {
+      const keys = (server.env_keys || []).join(", ");
+      $("mcp-secret-note").textContent = "Saved environment values are hidden" + (keys ? " (" + keys + ")" : "") +
+        ". Leave Environment blank to preserve them only while command, args and working dir stay unchanged; enter {} to clear.";
+    } else if (server.transport !== "stdio" && server.has_headers) {
+      $("mcp-secret-note").textContent = "Saved HTTP header values are hidden and are preserved only while the URL stays unchanged.";
+    } else {
+      $("mcp-secret-note").textContent = server.transport === "stdio" ?
+        "stdio starts a local process with your user rights. Environment values are saved but never echoed back into this page." :
+        "Saved HTTP header values are never echoed back into this page.";
+    }
+    $("mcp-config-msg").textContent = "Editing " + server.name;
+    (server.transport === "stdio" ? $("mcp-command") : $("mcp-url")).focus();
+    return;
+  }
+  const remove = e.target.closest("[data-mcp-remove]");
+  if (!remove) return;
+  const name = remove.dataset.mcpRemove;
+  if (!window.confirm('Remove MCP server "' + name + '" from this run config?')) return;
+  $("mcp-config-msg").textContent = "Removing…";
+  try {
+    const r = await fetch("mcp/config/" + encodeURIComponent(name),
+      {method: "DELETE", headers: headers(true), body: "{}"});
+    const j = await r.json();
+    if (!r.ok) throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+    if (mcpEditingName === name) resetMcpEditor();
+    $("mcp-config-msg").textContent = "Removed · restart Strata to disconnect";
+    toast("success", "MCP server removed", "The other configured MCP servers were left unchanged.");
+    await loadMcpConfig();
+  } catch (err) {
+    $("mcp-config-msg").textContent = err.message;
+    toast("error", "MCP server not removed", err.message, 6000);
+  }
+});
+
+// Exact context usage for this OpenAI-shaped web history, including active MCP tool schemas.
+let contextTimer = null, contextRequest = 0;
+function contextBody() {
+  const history = apiMessages();
+  const text = $("input").value.trim();
+  if (text) history.push({role: "user", content: text});
+  return {model: health.model, messages: history, reasoning_effort: settings.thinking,
+          strata_mcp: settings.mcp !== false && mcpInfo.tools > 0};
+}
+function paintContext(used, total) {
+  used = Math.max(0, Number(used || 0));
+  total = Math.max(1, Number(total || health.max_context || 262144));
+  const pct = Math.min(100, used * 100 / total);
+  $("context-label").textContent = fmt(used) + " / " + fmt(total);
+  const arc = 235.6 * pct / 100;
+  $("context-gauge-fill").setAttribute("stroke-dasharray", arc.toFixed(1) + " 314.2");
+  $("context-gauge-fill").style.opacity = arc >= 3 ? "1" : "0";
+  $("context-pct").textContent = fmt(pct, 1) + "%";
+  $("context-meter").dataset.tone = pct >= 95 ? "danger" : pct >= 80 ? "warn" : "";
+  $("context-meter").title = fmt(used) + " of " + fmt(total) + " context tokens (" + fmt(pct, 1) + "%)";
+}
+async function updateContextCount() {
+  const seq = ++contextRequest;
+  try {
+    const r = await fetch("context-count", {method: "POST", headers: headers(true), body: JSON.stringify(contextBody())});
+    const j = await r.json();
+    if (seq !== contextRequest) return;
+    if (!r.ok) throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+    paintContext(j.input_tokens, j.max_context);
+  } catch (e) {
+    if (seq === contextRequest) paintContext(0, health.max_context || 262144);
+  }
+}
+function scheduleContextCount() {
+  clearTimeout(contextTimer);
+  contextTimer = setTimeout(updateContextCount, 350);
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
@@ -500,10 +681,65 @@ function inline(s) {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
+// Small dependency-free syntax highlighter for fenced code blocks. It tokenizes source text first and
+// only then emits escaped spans, so model output can never inject markup through highlighting.
+const CODE_KEYWORDS = {
+  python: new Set("and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield".split(" ")),
+  javascript: new Set("async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch throw try typeof var void while with yield".split(" ")),
+  typescript: new Set("abstract any as async await boolean break case catch class const constructor continue declare default delete do else enum export extends finally for from function get if implements import in infer instanceof interface keyof let module namespace never new null number object of private protected public readonly return set static string super switch symbol this throw true try type typeof undefined unknown var void while with yield".split(" ")),
+  shell: new Set("case do done elif else esac fi for function if in select then time until while".split(" ")),
+  sql: new Set("add all alter and any as asc begin between by case check column commit constraint create database default delete desc distinct drop else end exists foreign from full grant group having in index inner insert into is join key left like limit not null on or order outer primary references right rollback select set table then union unique update values view when where with".split(" ")),
+  c: new Set("auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while".split(" ")),
+  cpp: new Set("alignas alignof and asm auto bool break case catch char class const constexpr continue decltype default delete do double else enum explicit export extern false float for friend if inline int long mutable namespace new noexcept nullptr operator private protected public register reinterpret_cast return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile wchar_t while".split(" "))
+};
+const CODE_LITERALS = new Set(["true", "false", "null", "none", "undefined", "nan", "inf"]);
+function codeLanguage(lang) {
+  const l = String(lang || "").toLowerCase();
+  if (l === "py" || l === "python") return "python";
+  if (["js", "jsx", "javascript", "node"].includes(l)) return "javascript";
+  if (["ts", "tsx", "typescript"].includes(l)) return "typescript";
+  if (["sh", "bash", "zsh", "shell", "powershell", "ps1", "bat", "cmd"].includes(l)) return "shell";
+  if (l === "sql") return "sql";
+  if (l === "c" || l === "h") return "c";
+  if (["cpp", "c++", "cc", "cxx", "hpp"].includes(l)) return "cpp";
+  return l || "code";
+}
+function codeToken(kind, value) {
+  return "<span class=\"st-syntax-token st-syntax-" + kind + "\">" + esc(value) + "</span>";
+}
+function highlightCode(lang, source) {
+  const language = codeLanguage(lang), keywords = CODE_KEYWORDS[language] || new Set();
+  const pythonish = language === "python" || language === "shell";
+  const sql = language === "sql";
+  const pattern = pythonish
+    ? /#[^\n]*|"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b0[xX][0-9a-fA-F_]+\b|\b\d(?:[\d_]*)(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?\b|[A-Za-z_$][\w$]*|===|!==|==|!=|<=|>=|=>|->|:=|\*\*|&&|\|\||[()[\]{}.,;:]|[=<>!*+\-/%&|^?~@]|\s+|./g
+    : sql
+      ? /--[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:''|[^'])*'|\b\d+(?:\.\d+)?\b|[A-Za-z_$][\w$]*|<>|!=|<=|>=|:=|[()[\]{}.,;:]|[=<>!*+\-/%&|^?~@]|\s+|./gi
+      : /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b0[xX][0-9a-fA-F_]+\b|\b\d(?:[\d_]*)(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?\b|[A-Za-z_$][\w$]*|===|!==|==|!=|<=|>=|=>|->|::|\?\?|&&|\|\||\+\+|--|\*\*|[()[\]{}.,;:]|[=<>!*+\-/%&|^?~@]|\s+|./g;
+  const parts = String(source || "").match(pattern) || [];
+  return parts.map((token, index) => {
+    if (/^(#|\/\/|\/\*|--)/.test(token)) return codeToken("comment", token);
+    if (/^(?:"|'|""")/.test(token)) return codeToken("string", token);
+    if (/^(?:0[xX][0-9a-fA-F_]|\d)/.test(token)) return codeToken("number", token);
+    if (/^[A-Za-z_$][\w$]*$/.test(token)) {
+      const lower = token.toLowerCase();
+      if (keywords.has(sql ? lower : token)) return codeToken("keyword", token);
+      if (CODE_LITERALS.has(lower)) return codeToken("literal", token);
+      const next = parts.slice(index + 1).find((p) => !/^\s+$/.test(p));
+      if (next === "(") return codeToken("function", token);
+      return esc(token);
+    }
+    if (/^[()[\]{}.,;:]$/.test(token)) return codeToken("separator", token);
+    if (/^\s+$/.test(token)) return token;
+    if (/^[=<>!*+\-/%&|^?~@:.]+$/.test(token)) return codeToken("operator", token);
+    return esc(token);
+  }).join("");
+}
+
 function codeBlock(lang, code) {
   return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
     `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
+    `<pre><code>${highlightCode(lang, code)}</code></pre></div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -562,12 +798,240 @@ let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
+let currentConversation = null, conversationList = [], conversationSaveTimer = null;
+
+function conversationTitle() {
+  const u = messages.find((m) => m.role === "user" && String(m.text || "").trim());
+  return u ? String(u.text).replace(/\s+/g, " ").trim().slice(0, 72) : "New conversation";
+}
+function renderConversationList() {
+  const list = $("conversation-list");
+  if (!conversationList.length) {
+    list.innerHTML = '<span class="muted small">No conversations yet.</span>';
+    return;
+  }
+  list.innerHTML = conversationList.map((c) =>
+    '<div class="conversation-item" data-conv="' + esc(c.id) + '" tabindex="0" aria-current="' +
+    String(!!currentConversation && currentConversation.id === c.id) + '">' +
+    '<span class="conversation-item__title">' + esc(c.title || "New conversation") + '</span>' +
+    '<span class="conversation-item__meta-row">' +
+      '<span class="conversation-item__meta">' + fmt(c.message_count || 0) + ' messages · ' +
+        esc(new Date((c.updated_at || 0) * 1000).toLocaleString()) + '</span>' +
+      '<button type="button" class="conversation-item__delete" data-conv-delete="' + esc(c.id) +
+        '" title="Delete conversation" aria-label="Delete conversation: ' + esc(c.title || "New conversation") + '">' +
+        icon("trash", "st-icon st-icon--sm") + '</button>' +
+    '</span></div>'
+  ).join("");
+}
+
+let pendingConversationDelete = null;
+function openConversationDeleteModal(id) {
+  const c = conversationList.find((x) => x.id === id);
+  if (!c) return;
+  pendingConversationDelete = id;
+  $("conversation-delete-name").textContent = c.title || "this conversation";
+  $("conversation-delete-modal").hidden = false;
+  requestAnimationFrame(() => $("conversation-delete-cancel").focus());
+}
+function closeConversationDeleteModal() {
+  pendingConversationDelete = null;
+  $("conversation-delete-modal").hidden = true;
+}
+async function confirmConversationDelete() {
+  const id = pendingConversationDelete;
+  if (!id) return;
+  const wasActive = !!currentConversation && currentConversation.id === id;
+  if (wasActive && busy) {
+    toast("warn", "Still writing", "Stop the answer before deleting this conversation.");
+    return;
+  }
+  if (wasActive && conversationSaveTimer) {
+    clearTimeout(conversationSaveTimer);
+    conversationSaveTimer = null;
+  }
+  const r = await fetch("conversations/" + encodeURIComponent(id), {method: "DELETE", headers: headers(true)});
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+  }
+  if (wasActive) {
+    currentConversation = null;
+    messages = [];
+    attachments = [];
+    store.set("chat", []);
+    renderAttachments();
+    renderChat();
+  }
+  await refreshConversations();
+  if (wasActive) {
+    if (conversationList.length) await loadConversation(conversationList[0].id);
+    else await persistConversation(true);
+    scheduleContextCount();
+  }
+  closeConversationDeleteModal();
+  toast("success", "Conversation deleted", "The saved conversation JSON was removed from disk.");
+}
+
+async function refreshConversations() {
+  const r = await fetch("conversations", {headers: headers()});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  conversationList = (await r.json()).conversations || [];
+  renderConversationList();
+}
+async function persistConversation(immediate = false) {
+  if (!currentConversation && !immediate) return;
+  if (conversationSaveTimer) { clearTimeout(conversationSaveTimer); conversationSaveTimer = null; }
+  const body = {id: currentConversation && currentConversation.id, title: conversationTitle(), messages};
+  const r = await fetch("conversations", {method: "POST", headers: headers(true), body: JSON.stringify(body)});
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j.error && j.error.message) || ("HTTP " + r.status));
+  }
+  currentConversation = await r.json();
+  await refreshConversations();
+  return currentConversation;
+}
+function scheduleConversationSave() {
+  if (!currentConversation) return;
+  clearTimeout(conversationSaveTimer);
+  conversationSaveTimer = setTimeout(() => persistConversation(true).catch((e) =>
+    toast("error", "Conversation not saved", e.message, 5000)), 450);
+}
+async function loadConversation(id) {
+  if (busy) { toast("warn", "Still writing", "Stop the answer before switching conversations."); return; }
+  if (currentConversation) await persistConversation(true).catch(() => {});
+  const r = await fetch("conversations/" + encodeURIComponent(id), {headers: headers()});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const c = await r.json();
+  currentConversation = c;
+  messages = Array.isArray(c.messages) ? c.messages : [];
+  store.set("chat", messages);
+  renderChat();
+  await refreshConversations();
+  scheduleContextCount();
+}
+async function createConversation() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (currentConversation) await persistConversation(true).catch(() => {});
+  messages = [];
+  attachments = [];
+  renderAttachments();
+  renderChat();
+  currentConversation = null;
+  try {
+    await persistConversation(true);
+    toast("success", "New conversation", "The previous chat is still saved in the conversation list.");
+  } catch (e) {
+    toast("error", "Conversation not created", e.message, 5000);
+  }
+  scheduleContextCount();
+}
+async function initConversations() {
+  try {
+    await refreshConversations();
+    if (conversationList.length) await loadConversation(conversationList[0].id);
+    else await persistConversation(true);    // migrates the old browser-only chat, or creates a blank first chat
+  } catch (e) {
+    renderConversationList();
+    toast("warn", "Conversation storage unavailable", "Using this browser's local fallback for now.");
+  }
+}
 
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
                                            files: (m.files || []).map((f) => ({name: f.name}))})));
 }
+const browserSaveChat = saveChat;
+saveChat = function() {
+  browserSaveChat();
+  scheduleConversationSave();
+  scheduleContextCount();
+};
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+
+function updateMessageScroller(el) {
+  const bubble = el && el.querySelector(".st-bubble");
+  const bar = el && el.querySelector(".message-xscroll");
+  const thumb = bar && bar.querySelector(".message-xscroll__thumb");
+  if (!bubble || !bar || !thumb) return;
+  const maxScroll = Math.max(0, bubble.scrollWidth - bubble.clientWidth);
+  // The bar starts hidden, so bar.clientWidth is necessarily 0 until we unhide it. Measure the message instead.
+  // Using bar.clientWidth in the hidden-state gate made the control impossible to reveal.
+  const availableTrackW = el.clientWidth;
+  if (maxScroll <= 1 || availableTrackW <= 0) {
+    bar.hidden = true;
+    bubble.scrollLeft = 0;
+    return;
+  }
+  bar.hidden = false;
+  const trackW = bar.clientWidth || availableTrackW;
+  const thumbW = Math.max(36, Math.round(trackW * bubble.clientWidth / bubble.scrollWidth));
+  const maxThumb = Math.max(0, trackW - thumbW);
+  const left = maxScroll ? Math.round(maxThumb * bubble.scrollLeft / maxScroll) : 0;
+  thumb.style.width = thumbW + "px";
+  thumb.style.transform = "translateX(" + left + "px)";
+  bar.setAttribute("aria-valuemax", String(Math.round(maxScroll)));
+  bar.setAttribute("aria-valuenow", String(Math.round(bubble.scrollLeft)));
+}
+function attachMessageScroller(el) {
+  const bubble = el.querySelector(".st-bubble");
+  const meta = el.querySelector(".st-msg__meta");
+  if (!bubble || !meta || el.querySelector(".message-xscroll")) return;
+  const bar = document.createElement("div");
+  bar.className = "message-xscroll";
+  bar.hidden = true;
+  bar.tabIndex = 0;
+  bar.setAttribute("role", "scrollbar");
+  bar.setAttribute("aria-label", "Scroll this message horizontally");
+  bar.setAttribute("aria-orientation", "horizontal");
+  bar.innerHTML = '<div class="message-xscroll__thumb"></div>';
+  el.insertBefore(bar, meta);
+  const thumb = bar.firstElementChild;
+
+  bubble.addEventListener("scroll", () => updateMessageScroller(el), {passive: true});
+  bar.addEventListener("keydown", (e) => {
+    const step = Math.max(48, bubble.clientWidth * 0.15);
+    if (e.key === "ArrowLeft") bubble.scrollLeft -= step;
+    else if (e.key === "ArrowRight") bubble.scrollLeft += step;
+    else if (e.key === "Home") bubble.scrollLeft = 0;
+    else if (e.key === "End") bubble.scrollLeft = bubble.scrollWidth;
+    else return;
+    e.preventDefault();
+  });
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const rect = bar.getBoundingClientRect();
+    const maxScroll = Math.max(0, bubble.scrollWidth - bubble.clientWidth);
+    if (!maxScroll || rect.width <= 0) return;
+    const thumbRect = thumb.getBoundingClientRect();
+    const grabOffset = e.target === thumb ? e.clientX - thumbRect.left : thumbRect.width / 2;
+    const setFromPointer = (x) => {
+      const thumbW = thumb.getBoundingClientRect().width;
+      const maxThumb = Math.max(1, rect.width - thumbW);
+      const left = Math.max(0, Math.min(maxThumb, x - rect.left - grabOffset));
+      bubble.scrollLeft = maxScroll * left / maxThumb;
+    };
+    setFromPointer(e.clientX);
+    bar.setPointerCapture(e.pointerId);
+    const move = (ev) => setFromPointer(ev.clientX);
+    const done = (ev) => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", done);
+      bar.removeEventListener("pointercancel", done);
+      if (bar.hasPointerCapture(ev.pointerId)) bar.releasePointerCapture(ev.pointerId);
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", done);
+    bar.addEventListener("pointercancel", done);
+    e.preventDefault();
+  });
+  requestAnimationFrame(() => updateMessageScroller(el));
+}
+function refreshMessageScrollers() {
+  document.querySelectorAll(".chat-main .st-msg").forEach((el) => updateMessageScroller(el));
+}
+window.addEventListener("resize", () => requestAnimationFrame(refreshMessageScrollers));
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -610,6 +1074,7 @@ function msgEl(m, i) {
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
+  attachMessageScroller(el);
   return el;
 }
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
@@ -686,6 +1151,7 @@ function updateAssistant(el, m, streaming) {
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  requestAnimationFrame(() => updateMessageScroller(el));
 }
 function renderChat() {
   const chat = $("chat");
@@ -874,17 +1340,59 @@ $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", autosize);
+$("input").addEventListener("input", () => { autosize(); scheduleContextCount(); });
 
-$("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+$("new-btn").onclick = createConversation;
+$("conv-new-btn").onclick = createConversation;
+$("conversation-list").addEventListener("click", (e) => {
+  const del = e.target.closest("[data-conv-delete]");
+  if (del) {
+    e.stopPropagation();
+    openConversationDeleteModal(del.dataset.convDelete);
+    return;
+  }
+  const card = e.target.closest("[data-conv]");
+  if (card && (!currentConversation || card.dataset.conv !== currentConversation.id)) {
+    loadConversation(card.dataset.conv).catch((err) => toast("error", "Conversation not loaded", err.message, 5000));
+  }
+});
+$("conversation-list").addEventListener("keydown", (e) => {
+  if (e.target.closest("[data-conv-delete]")) return;
+  const card = e.target.closest("[data-conv]");
+  if (!card || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  if (!currentConversation || card.dataset.conv !== currentConversation.id) {
+    loadConversation(card.dataset.conv).catch((err) => toast("error", "Conversation not loaded", err.message, 5000));
+  }
+});
+$("conversation-delete-cancel").onclick = closeConversationDeleteModal;
+$("conversation-delete-confirm").onclick = () => {
+  confirmConversationDelete().catch((err) => toast("error", "Conversation not deleted", err.message, 5000));
 };
+$("conversation-delete-modal").addEventListener("click", (e) => {
+  if (e.target === $("conversation-delete-modal")) closeConversationDeleteModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("conversation-delete-modal").hidden) closeConversationDeleteModal();
+});
+
+let conversationsCollapsed = !!store.get("conversations-collapsed", false);
+function applyConversationDock() {
+  const layout = document.querySelector(".chat-layout");
+  const button = $("conv-toggle-btn");
+  layout.classList.toggle("conversations-collapsed", conversationsCollapsed);
+  button.textContent = conversationsCollapsed ? ">" : "<";
+  button.title = conversationsCollapsed ? "Expand conversations" : "Collapse conversations";
+  button.setAttribute("aria-label", button.title);
+  button.setAttribute("aria-expanded", String(!conversationsCollapsed));
+}
+$("conv-toggle-btn").onclick = () => {
+  conversationsCollapsed = !conversationsCollapsed;
+  store.set("conversations-collapsed", conversationsCollapsed);
+  applyConversationDock();
+};
+applyConversationDock();
+
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
@@ -1055,6 +1563,7 @@ $("s-apply").onclick = async () => {
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
   const share = $("s-share").getAttribute("aria-checked") === "true";
+  scheduleContextCount();
   openDrawer(false);
   if (share || sharedOn) {
     try {
@@ -1078,6 +1587,15 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadHealth().then(async () => {
+  paintContext(0, health.max_context || 262144);
+  await Promise.all([loadMcp(), initConversations(), loadMcpConfig()]);
+  scheduleContextCount();
+  if (startQuestion) {
+    $("input").value = startQuestion;
+    scheduleContextCount();
+    send();
+  }
+});
 showTab(location.hash.slice(1) || "chat");
 poll();

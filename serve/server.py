@@ -58,6 +58,8 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.local_ui import (delete_conversation, get_conversation, list_conversations, mcp_config_view, remove_mcp_server,  # noqa: E402
+                            save_conversation, upsert_mcp_server)
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
@@ -4791,6 +4793,27 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._config_get()
                 return
+            if path == "/conversations":
+                if self._authorized():
+                    self._json(200, {"conversations": list_conversations()})
+                return
+            if path.startswith("/conversations/"):
+                if not self._authorized():
+                    return
+                try:
+                    self._json(200, get_conversation(path[len("/conversations/"):]))
+                except FileNotFoundError:
+                    self._json(404, {"error": {"message": "conversation not found"}})
+                except ValueError as e:
+                    self._json(400, {"error": {"message": str(e)}})
+                return
+            if path == "/mcp/config":
+                if not self._authorized():
+                    return
+                cfg = runconfig.load(svc.config_path) if getattr(svc, "config_path", None) else {}
+                self._json(200, {"servers": mcp_config_view(cfg),
+                                 "file": os.path.basename(svc.config_path) if getattr(svc, "config_path", None) else None})
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -4863,6 +4886,42 @@ def make_handler(svc: Service):
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
+        def do_DELETE(self):
+            if not self._authorized():
+                return
+            path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/mcp/config/"):
+                if not self._own_page("MCP server settings can be changed"):
+                    return
+                if not getattr(svc, "config_path", None):
+                    self._json(400, {"error": {"message": "this server was not started with a run config"}})
+                    return
+                try:
+                    name = path[len("/mcp/config/"):]
+                    cfg = runconfig.load(svc.config_path)
+                    if not remove_mcp_server(cfg, name):
+                        self._json(404, {"error": {"message": "MCP server not found"}})
+                        return
+                    backup = runconfig.save(svc.config_path, cfg)
+                    self._json(200, {"name": name, "deleted": True,
+                                     "file": os.path.basename(svc.config_path),
+                                     "backup": os.path.basename(backup) if backup else None,
+                                     "restart_required": True})
+                except (OSError, ValueError) as e:
+                    self._json(400, {"error": {"message": str(e)}})
+                return
+            if not path.startswith("/conversations/"):
+                self._json(404, {"error": {"message": "not found"}})
+                return
+            if not self._own_page("conversations can be deleted"):
+                return
+            try:
+                self._json(200, delete_conversation(path[len("/conversations/"):]))
+            except FileNotFoundError:
+                self._json(404, {"error": {"message": "conversation not found"}})
+            except ValueError as e:
+                self._json(400, {"error": {"message": str(e)}})
+
         def do_POST(self):
             try:
                 self._post()
@@ -4908,6 +4967,48 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/conversations":
+                    if not self._own_page("conversations can be saved"):
+                        return
+                    try:
+                        self._json(200, save_conversation(req))
+                    except ValueError as e:
+                        self._json(400, {"error": {"message": str(e)}})
+                    return
+                if path == "/mcp/config":
+                    if not self._own_page("MCP server settings can be saved"):
+                        return
+                    if not getattr(svc, "config_path", None):
+                        self._json(400, {"error": {"message": "this server was not started with a run config"}})
+                        return
+                    try:
+                        cfg = runconfig.load(svc.config_path)
+                        name, entry = upsert_mcp_server(cfg, req)
+                        backup = runconfig.save(svc.config_path, cfg)
+                        self._json(200, {"name": name,
+                                         "transport": "http" if entry.get("url") else "stdio",
+                                         "file": os.path.basename(svc.config_path),
+                                         "backup": os.path.basename(backup) if backup else None,
+                                         "restart_required": True})
+                    except (OSError, ValueError) as e:
+                        self._json(400, {"error": {"message": str(e)}})
+                    return
+                if path == "/context-count":
+                    if not self._own_page("context can be counted"):
+                        return
+                    try:
+                        counted = svc.with_shared(req, "openai")
+                        messages, tools, kw = openai_to_messages(counted)
+                        self._no_local_images(messages)
+                        if counted.get("strata_mcp") is True and svc.mcp is not None:
+                            svc.mcp.wait(2)
+                            own = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+                            tools = (tools or []) + svc.mcp.template_tools(exclude=own) or None
+                        self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw)),
+                                         "max_context": svc.reported_ctx()})
+                    except (ValueError, TypeError) as e:
+                        self._json(400, {"error": {"message": str(e)}})
+                    return
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))

@@ -188,3 +188,447 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+
+/* ---------------------------------------------------------------- local UI: conversations, MCP and exact context */
+.chat-layout { flex: 1; min-height: 0; display: flex; position: relative; }
+.chat-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.conversation-panel { flex: 0 0 248px; align-self: stretch; min-height: 0; margin: var(--st-s-5) 0 var(--st-s-5) var(--st-s-5);
+                      padding: var(--st-s-3); display: flex; flex-direction: column; gap: var(--st-s-3);
+                      box-shadow: var(--st-sh-card); }
+.conversation-panel__head { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-2); }
+.conversation-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.conversation-item { width: 100%; border: 0; background: transparent; color: var(--st-ink-soft); text-align: left;
+                     cursor: pointer; border-radius: var(--st-r-md); padding: 9px 10px; display: flex; flex-direction: column;
+                     gap: 3px; font: inherit; }
+.conversation-item:hover { background: var(--st-surface-2); }
+.conversation-item[aria-current="true"] { background: var(--st-accent-tint); color: var(--st-ink); }
+.conversation-item__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-sm);
+                            font-weight: var(--st-fw-medium); }
+.conversation-item__meta { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+
+.context-meter { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 10px; border: 1px solid var(--st-line-soft);
+                 border-radius: var(--st-r-pill); color: var(--st-ink-muted); font-size: var(--st-fs-xs);
+                 font-variant-numeric: tabular-nums; white-space: nowrap; }
+.context-meter__dial { position: relative; width: 48px; height: 42px; flex: none; display: grid; place-items: center; }
+.context-meter__svg { width: 46px; height: 46px; overflow: visible; }
+.context-meter__dial .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease), stroke 200ms var(--st-ease); }
+.context-meter__pct { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; color: var(--st-ink);
+                       font-size: 10.5px; font-weight: var(--st-fw-black); line-height: 1; font-variant-numeric: tabular-nums;
+                       letter-spacing: -0.15px; text-shadow: 0 1px 1px var(--st-surface); }
+.context-meter[data-tone="warn"] .context-meter__dial .st-gauge__fill { stroke: var(--st-warn); }
+.context-meter[data-tone="danger"] .context-meter__dial .st-gauge__fill { stroke: var(--st-danger); }
+.context-meter[data-tone="warn"] { color: var(--st-warn-text); border-color: color-mix(in srgb, var(--st-warn) 35%, var(--st-line)); }
+.context-meter[data-tone="danger"] { color: var(--st-danger-text); border-color: color-mix(in srgb, var(--st-danger) 45%, var(--st-line)); }
+
+.view--mcp { overflow-y: auto; }
+.mcp-view { max-width: 980px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column; gap: var(--st-s-5); }
+.mcp-manage { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.mcp-manage p { margin: 0; }
+.mcp-config-grid { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: var(--st-s-3); align-items: center; }
+.mcp-config-grid .st-input { width: 100%; }
+.mcp-configured-list { display: flex; flex-direction: column; gap: var(--st-s-2); }
+.mcp-config-entry { display: grid; grid-template-columns: minmax(120px, .55fr) minmax(220px, 1.45fr) auto;
+                    align-items: center; gap: var(--st-s-3); padding: 9px 10px; border: 1px solid var(--st-line-soft);
+                    border-radius: var(--st-r-md); background: var(--st-surface-2); }
+.mcp-config-entry__name { font-weight: var(--st-fw-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-config-entry__target { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); color: var(--st-ink-muted);
+                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-config-entry__transport { margin-left: 7px; vertical-align: middle; }
+.mcp-json { min-height: 74px; resize: vertical; font-family: var(--st-font-mono); font-size: var(--st-fs-xs); line-height: 1.45; }
+.mcp-env-note { min-height: 1.3em; }
+.mcp-config-entry__actions { display: flex; align-items: center; gap: var(--st-s-2); }
+.mcp-config-entry__lock { color: var(--st-ink-muted); font-size: var(--st-fs-xs); }
+.mcp-editor { display: flex; flex-direction: column; gap: var(--st-s-3); padding-top: var(--st-s-3);
+              border-top: 1px solid var(--st-line-soft); }
+
+/* Syntax highlighting for fenced code blocks. */
+.st-code code .st-syntax-token { color: inherit; }
+.st-code code .st-syntax-comment { color: #6a9955; font-style: italic; }
+.st-code code .st-syntax-keyword { color: #c586c0; font-weight: 600; }
+.st-code code .st-syntax-string { color: #ce9178; }
+.st-code code .st-syntax-number { color: #b5cea8; }
+.st-code code .st-syntax-function { color: #dcdcaa; }
+.st-code code .st-syntax-class, .st-code code .st-syntax-type { color: #4ec9b0; }
+.st-code code .st-syntax-property { color: #9cdcfe; }
+.st-code code .st-syntax-literal { color: #569cd6; }
+.st-code code .st-syntax-operator, .st-code code .st-syntax-separator { color: #d4d4d4; }
+[data-theme="light"] .st-code code .st-syntax-comment { color: #008000; }
+[data-theme="light"] .st-code code .st-syntax-keyword { color: #af00db; }
+[data-theme="light"] .st-code code .st-syntax-string { color: #a31515; }
+[data-theme="light"] .st-code code .st-syntax-number { color: #098658; }
+[data-theme="light"] .st-code code .st-syntax-function { color: #795e26; }
+[data-theme="light"] .st-code code .st-syntax-class, [data-theme="light"] .st-code code .st-syntax-type { color: #267f99; }
+[data-theme="light"] .st-code code .st-syntax-property { color: #001080; }
+[data-theme="light"] .st-code code .st-syntax-literal { color: #0000ff; }
+[data-theme="light"] .st-code code .st-syntax-operator, [data-theme="light"] .st-code code .st-syntax-separator { color: #222; }
+
+@media (max-width: 1050px) {
+  .conversation-panel { flex-basis: 210px; margin-left: var(--st-s-3); }
+}
+@media (max-width: 760px) {
+  .conversation-panel { display: none; }
+  .context-meter { padding: 0 6px; }
+  #context-label { display: none; }
+  .mcp-config-grid { grid-template-columns: 1fr; gap: 4px; }
+  .mcp-config-entry { grid-template-columns: 1fr; gap: 4px; }
+  .mcp-config-entry__actions { justify-content: flex-start; }
+}
+
+
+/* ---------------------------------------------------------------- local UI v2: docked conversations + wide chat + centered context */
+.chat-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.chat-main,
+.chat-main .chat-scroll,
+.chat-main .chat,
+.chat-main .st-msg,
+.chat-main .st-bubble {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.chat-main .chat,
+.chat-main .st-composer {
+  width: 80%;
+  max-width: none;
+}
+.chat-main .st-msg {
+  width: 100%;
+  max-width: 100%;
+}
+.chat-main .st-bubble {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior-x: contain;
+}
+.st-bubble table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+}
+.st-bubble .st-code,
+.st-bubble .tool-call,
+.st-bubble .tool-call__pre {
+  max-width: 100%;
+}
+.st-bubble .st-code pre {
+  overflow-x: auto;
+}
+
+/* True left-edge dock. The collapsed rail is intentionally very thin and both arrows stay inside it. */
+.conversation-panel {
+  position: relative;
+  flex: 0 0 300px;
+  width: 300px;
+  align-self: stretch;
+  min-height: 0;
+  margin: 0;
+  padding: var(--st-s-4);
+  border: 0;
+  border-right: 1px solid var(--st-line);
+  border-radius: 0;
+  background: var(--st-surface);
+  box-shadow: none;
+  transition: flex-basis 180ms var(--st-ease), width 180ms var(--st-ease), padding 180ms var(--st-ease);
+}
+.conversation-toggle {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  width: 12px;
+  height: 54px;
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--st-line);
+  border-right: 0;
+  border-radius: var(--st-r-sm) 0 0 var(--st-r-sm);
+  background: var(--st-surface-2);
+  color: var(--st-ink-soft);
+  font: 700 10px/1 var(--st-font);
+  cursor: pointer;
+  box-shadow: none;
+}
+.conversation-toggle:hover {
+  background: var(--st-surface-3);
+  color: var(--st-ink);
+}
+.chat-layout.conversations-collapsed .conversation-panel {
+  flex-basis: 12px;
+  width: 12px;
+  padding: 0;
+}
+.chat-layout.conversations-collapsed .conversation-panel__head,
+.chat-layout.conversations-collapsed .conversation-list {
+  display: none;
+}
+.chat-layout.conversations-collapsed .conversation-toggle {
+  right: 0;
+  width: 12px;
+  height: 54px;
+  border-left: 0;
+  border-right: 1px solid var(--st-line);
+  border-radius: 0 var(--st-r-sm) var(--st-r-sm) 0;
+  box-shadow: none;
+}
+
+/* Center the context group in the composer toolbar, without a pill/container border. */
+.st-composer__bar {
+  position: relative;
+  min-height: 56px;
+}
+.context-meter {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  gap: 10px;
+  height: 54px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--st-ink-muted);
+  box-shadow: none;
+}
+.context-meter__dial {
+  width: 60px;
+  height: 54px;
+}
+.context-meter__svg {
+  width: 58px;
+  height: 58px;
+}
+.context-meter__pct {
+  font-size: 11.5px;
+  letter-spacing: -0.1px;
+}
+.context-meter[data-tone="warn"],
+.context-meter[data-tone="danger"] {
+  border-color: transparent;
+}
+
+@media (max-width: 1050px) {
+  .conversation-panel {
+    flex-basis: 260px;
+    width: 260px;
+    margin: 0;
+  }
+  .chat-main .chat,
+  .chat-main .st-composer {
+    width: 88%;
+  }
+}
+@media (max-width: 820px) {
+  .chat-main .chat,
+  .chat-main .st-composer {
+    width: calc(100% - 24px);
+  }
+  .chat-main .chat {
+    min-width: 0;
+  }
+  .context-meter {
+    position: static;
+    transform: none;
+    margin-left: auto;
+  }
+  #context-label {
+    display: none;
+  }
+}
+
+/* Stable per-message scrollbar: native overlay scrollbars auto-hide on Windows, so use a persistent in-card control. */
+.chat-main .st-bubble {
+  scrollbar-width: none;
+}
+.chat-main .st-bubble::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.message-xscroll {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 12px;
+  margin: 5px 0 3px;
+  border-radius: var(--st-r-pill);
+  background: var(--st-surface-2);
+  box-shadow: inset 0 0 0 1px var(--st-line-soft);
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.message-xscroll[hidden] {
+  display: none;
+}
+.message-xscroll__thumb {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  height: 8px;
+  min-width: 36px;
+  border-radius: var(--st-r-pill);
+  background: var(--st-ink-muted);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--st-ink) 12%, transparent);
+  transition: background 120ms var(--st-ease);
+}
+.message-xscroll:hover .message-xscroll__thumb,
+.message-xscroll:focus-visible .message-xscroll__thumb {
+  background: var(--st-ink-soft);
+}
+.message-xscroll:focus-visible {
+  outline: 2px solid var(--st-accent);
+  outline-offset: 2px;
+}
+/* Wide code scrolls the message card itself, not a nested code viewport. */
+.st-bubble .st-code pre {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  overflow-x: visible;
+}
+
+/* Final chat containment: oversized message content may grow inside a bubble, never the page/flex layout. */
+.view--chat,
+.chat-layout,
+.chat-main,
+.chat-scroll,
+.composer-wrap {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+.chat-layout { width: 100%; }
+.chat-main {
+  flex: 1 1 0;
+  width: 0;
+}
+.chat-main .st-msg,
+.chat-main .st-bubble {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-main .st-bubble {
+  width: 100%;
+  /* Do not use paint containment here: it clips descendant overflow out of the bubble scroll area. */
+}
+/* Code/table width contributes to the bubble's scrollWidth, while the bubble remains the only horizontal viewport. */
+.chat-main .st-bubble .st-code {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  overflow: visible;
+}
+.chat-main .st-bubble .st-code pre {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  overflow: visible;
+  white-space: pre;
+}
+.chat-main .st-bubble table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+}
+
+/* Conversation-card metadata + hover-only destructive action. */
+.conversation-item {
+  position: relative;
+}
+.conversation-item__meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.conversation-item__meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-item__delete {
+  flex: none;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  color: var(--st-danger-text);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity var(--st-dur), background var(--st-dur);
+}
+.conversation-item__delete .st-icon {
+  width: 15px;
+  height: 15px;
+}
+.conversation-item:hover .conversation-item__delete,
+.conversation-item:focus-within .conversation-item__delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+.conversation-item__delete:hover,
+.conversation-item__delete:focus-visible {
+  background: var(--st-danger-tint);
+  opacity: 1;
+}
+
+/* Centered confirmation modal, matching Strata card/button tokens. */
+.conversation-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: var(--st-s-6);
+  background: color-mix(in srgb, #000 52%, transparent);
+  backdrop-filter: blur(2px);
+}
+.conversation-modal[hidden] { display: none; }
+.conversation-modal__card {
+  width: min(440px, calc(100vw - 32px));
+  padding: var(--st-s-5);
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-lg);
+  background: var(--st-surface);
+  box-shadow: var(--st-sh-pop);
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-s-4);
+}
+.conversation-modal__title {
+  margin: 0;
+  font-size: var(--st-fs-lg);
+  font-weight: var(--st-fw-black);
+  color: var(--st-ink);
+}
+.conversation-modal__body {
+  margin: 0;
+  color: var(--st-ink-soft);
+  overflow-wrap: anywhere;
+}
+.conversation-modal__name {
+  font-weight: var(--st-fw-bold);
+  color: var(--st-ink);
+}
+.conversation-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--st-s-2);
+}
