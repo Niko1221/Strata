@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
+#include "strata/core/vram_floor.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -1749,6 +1750,7 @@ void Verifier::refresh_ar() {
 bool Verifier::capture(int T, std::string& err) {
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
         if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
@@ -1838,6 +1840,12 @@ bool Verifier::capture(int T, std::string& err) {
     const cudaError_t us = cudaStreamSynchronize(cs_);
     std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
                  cudaGetErrorString(ue), cudaGetErrorString(us));
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(exec_t);
+        exec_t = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     return true;
 }
 
@@ -1912,6 +1920,11 @@ bool Verifier::capture_commit(std::string& err) {
         return false;
     }
     cudaGraphDestroy(graph);
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(commit_exec_);
+        commit_exec_ = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -2421,6 +2434,7 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
 bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err) {
     cudaGraphExec_t& ex = exec_bm_[bkey(rows, S, hbase)];
     if (ex != nullptr) return true;
+    if (!vram_floor_allow("before verify capture", err)) return false;
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin batch capture failed";
         return false;
@@ -2447,6 +2461,12 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     std::string list;
     for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
     std::fprintf(stderr, "strata verify: captured the batch window over slots %s\n", list.c_str());
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        cudaGraphExecDestroy(ex);
+        ex = nullptr;
+        return false;
+    }
+    vram_floor_log_once("after first capture");
     return true;
 }
 
@@ -2592,6 +2612,11 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
                              "layouts, %zu kept (a larger --vram-reserve-mib keeps more)\n", freed, exec_bm_.size());
     if (ie != cudaSuccess) {
         err = std::string(what) + cudaGetErrorString(ie);
+        return false;
+    }
+    if (!vram_floor_allow("after cudaGraphInstantiate", err)) {
+        if (ex) cudaGraphExecDestroy(ex);
+        ex = nullptr;
         return false;
     }
     return true;

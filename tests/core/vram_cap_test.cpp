@@ -95,6 +95,20 @@ int main() {
                     check((long double) (GiB + room + late) <= (long double) total * frac,
                           "fixed + cache + later <= fraction of total, not fraction of free");
             }
+    check(cap::gdn_chunk_scratch_bytes(32, true, true) == 17039360ull, "qwen3.6 chunked-GDN scratch is 17039360 B");
+    check(cap::gdn_chunk_scratch_bytes(32, true, false) == 0, "chunked GDN off books nothing");
+    check(cap::gdn_chunk_scratch_bytes(48, false, true) == 25559040ull, "48-head chunked-GDN scratch");
+    check(cap::gdn_chunk_scratch_bytes(32, false, true) == 0, "32 heads without silu has no chunked kernel");
+    check(cap::mtp_prefill_record_bytes(128, 16, true) == 128ull * (1u + 4u + 16u) * 4u, "MTP prefill records");
+    check(cap::mtp_prefill_record_bytes(8192, 16, false) == 0, "MTP off books no prefill records");
+    check(cap::mtp_prefill_record_bytes(0, 16, true) == 0, "no prefill chunk books no records");
+    check(cap::verify_window_graph_estimate_bytes(0) == 0, "no verify window books no graph estimate");
+    check(cap::verify_window_graph_estimate_bytes(4) == 30ull * MiB * 9u, "graph estimate is 30 MiB times 2*T+1");
+    const uint64_t feat = 17039360ull + 128ull * 21u * 4u + 30ull * MiB * 9u;
+    const uint64_t room_without = cap::cache_room(8 * GiB, 2048, 700 * MiB);
+    const uint64_t room_with = cap::cache_room(8 * GiB, 2048, 700 * MiB + feat);
+    check(room_with + feat == room_without, "feature bytes shrink cache room and leave the floor intact");
+    check(cap::floor_mib(10 * GiB, 0.8) == 2048, "floor at 0.8 on 10 GiB stays 2048 MiB");
     std::printf("vram_cap_test: %d CPU checks passed (no GPU calls)\n", checks);
     return 0;
 }

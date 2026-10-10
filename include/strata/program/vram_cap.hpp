@@ -68,6 +68,46 @@ inline uint64_t cache_room(uint64_t free_bytes, int64_t reserve_mib, uint64_t la
     return free_bytes - reserve - late_bytes;
 }
 
+// Chunked-GDN scratch, allocated on first use (src/prefill/kernels.cu gdn_chunk_scratch).
+// Super-block 2048, chunk 32: (2048/32) * value_heads * (2*32*32 + 32) floats.
+// Qwen3.6 (32 value heads, silu) is 17,039,360 bytes. Flash-Next (48, sigmoid) is 25,559,040.
+// Other geometries have no chunked kernel, so they book nothing.
+constexpr uint64_t gdn_chunk_scratch_bytes(int64_t value_heads, bool silu_gate, bool chunked) {
+    if (!chunked) return 0;
+    const bool qwen36 = value_heads == 32 && silu_gate;
+    const bool flash = value_heads == 48 && !silu_gate;
+    if (!qwen36 && !flash) return 0;
+    constexpr uint64_t kChunk = 32, kSuper = 2048;
+    return (kSuper / kChunk) * (uint64_t) value_heads * (2 * kChunk * kChunk + kChunk) * 4u;
+}
+
+// MTP prefill device records, grown to the chunk (src/core/mtp.cpp pf_dev_).
+// Worst case: prefill_chunk * (1 + 4 + n_head) * sizeof(int32). bind_bytes does not include this.
+constexpr uint64_t mtp_prefill_record_bytes(int64_t prefill_chunk, int64_t n_head, bool mtp) {
+    if (!mtp || prefill_chunk <= 0 || n_head < 0) return 0;
+    return (uint64_t) prefill_chunk * (uint64_t) (1 + 4 + n_head) * 4u;
+}
+
+// cudaGraphInstantiate does not report a size. This is an explicit estimate, not a measurement:
+// 30 MiB is the high end of the 20-30 MiB verify-window graphs noted for an L40S, booked for every
+// T in 1..max_t, for both residency graphs, plus the commit graph.
+inline constexpr uint64_t kVerifyGraphEstimateBytes = 30ull << 20;
+
+constexpr uint64_t verify_window_graph_estimate_bytes(int max_t) {
+    if (max_t <= 0) return 0;
+    return kVerifyGraphEstimateBytes * ((uint64_t) max_t * 2u + 1u);
+}
+
+static_assert(gdn_chunk_scratch_bytes(32, true, true) == 17039360ull, "qwen3.6 chunked-GDN scratch");
+static_assert(gdn_chunk_scratch_bytes(48, false, true) == 25559040ull, "flash-next chunked-GDN scratch");
+static_assert(gdn_chunk_scratch_bytes(32, true, false) == 0, "chunked GDN off books nothing");
+static_assert(gdn_chunk_scratch_bytes(32, false, true) == 0, "32 heads without silu has no chunked kernel");
+static_assert(mtp_prefill_record_bytes(8192, 16, false) == 0, "MTP off books no prefill records");
+static_assert(mtp_prefill_record_bytes(0, 16, true) == 0, "no prefill chunk books no records");
+static_assert(mtp_prefill_record_bytes(128, 16, true) == 128ull * 21u * 4u, "MTP record formula");
+static_assert(verify_window_graph_estimate_bytes(0) == 0, "no verify window");
+static_assert(verify_window_graph_estimate_bytes(4) == 30ull * 1048576u * 9u, "estimate is 30 MiB times 2*T+1");
+
 // A post-touch reading is an acceptance check only, NOT input to another sizing attempt.
 // late_bytes excludes the pre-touch haircut: it compensates telemetry bias, not a later allocation.
 inline bool post_touch_fits(uint64_t free_bytes, int64_t reserve_mib, uint64_t late_bytes) {

@@ -4,6 +4,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/vram_floor.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -1114,6 +1115,7 @@ cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, con
                          kChunkScanSmem<HV>);
         }
     }
+    strata::core::vram_floor_log_once("after first chunked-GDN launch");
     return cudaSuccess;   // launch errors surface at the caller's check; an error above means nothing ran
 }
 #endif

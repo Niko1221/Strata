@@ -60,6 +60,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/vram_cap.hpp"
+#include "strata/core/vram_floor.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
@@ -1971,6 +1972,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const bool vram_capped = o.vram_frac < 1.0;
+    if (vram_capped) strata::core::vram_floor_arm(o.vram_frac);   // disarmed when the cap is off: no device calls
     const bool vram_quality = strata::program::vram_cap::quality_active(o.vram_cap_mode);
     if (vram_capped && (o.vram_reserve_mib < 0 || o.vram_reserve_later_mib < -1 || o.peer_reserve_mib < 0)) {
         std::fprintf(stderr, "strata generate: VRAM reserves must be nonnegative with --vram-frac\n");
@@ -4492,6 +4494,32 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: quality PCIe staging: %lld blobs (+%lld MiB booked before cache sizing)\n",
                      (long long) strata::core::Verifier::pcie_staging_capacity(verify_t, ss.k, true),
                      (long long) ((quality_staging_extra + (1 << 20) - 1) >> 20));
+    // Late allocations the pre-touch reading cannot see. Booked only while the cap is on and the feature
+    // is on; zero otherwise, so an uncapped reserve is unchanged. The verify-window term is an estimate.
+    const bool cap_gdn_chunked = [] {
+        const char* v = std::getenv("STRATA_GDN_CHUNKED");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
+    const int64_t cap_gdn_scratch = vram_capped
+        ? (int64_t) strata::program::vram_cap::gdn_chunk_scratch_bytes(g.ssm_v_heads, g.gdn_gate_silu, cap_gdn_chunked) : 0;
+    const int64_t cap_mtp_records = vram_capped
+        ? (int64_t) strata::program::vram_cap::mtp_prefill_record_bytes(o.prefill_chunk, g.n_head, !o.mtp.empty()) : 0;
+    const int cap_graph_t = (vram_capped && native_pack && o.spec > 0)
+        ? (batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch)) : 0;
+    const int64_t cap_graph_est =
+        (int64_t) strata::program::vram_cap::verify_window_graph_estimate_bytes(cap_graph_t);
+    const int64_t cap_feature_bytes = cap_gdn_scratch + cap_mtp_records + cap_graph_est;
+    if (vram_capped && cap_feature_bytes > 0) {
+        std::fprintf(stderr, "strata generate: cap books late allocations before cache sizing, from the frozen pre-touch reading:");
+        if (cap_gdn_scratch > 0)
+            std::fprintf(stderr, " chunked-GDN scratch %lld B;", (long long) cap_gdn_scratch);
+        if (cap_mtp_records > 0)
+            std::fprintf(stderr, " MTP prefill records %lld B;", (long long) cap_mtp_records);
+        if (cap_graph_est > 0)
+            std::fprintf(stderr, " verify-window graphs %lld B (explicit estimate, 30 MiB x (2*%d + 1 commit); not measured);",
+                         (long long) cap_graph_est, cap_graph_t);
+        std::fprintf(stderr, "\n");
+    }
     int64_t cap_cache_extra = 0;   // everything still to be allocated beside the cap's free-VRAM floor
     if (!check_vram_cap("before the expert caches")) return 1;
     // Freeze one pre-touch reading for all primary-cache sizing (uniform, native and per-layer). The cap's
@@ -4543,8 +4571,8 @@ int main(int argc, char** argv) {
         // failed on every card, "verify: the device arena does not fit").  0 for Flash-Next.
         const int64_t dense_attn = (int64_t) strata::core::Verifier::dense_attention_bytes(
             g, ss, batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch));
-        if (vram_capped) cap_cache_extra = (prefill_mib << 20) + mtp_bind + dense_attn + cap_late_bytes + quality_staging_extra;
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn + cap_late_bytes + quality_staging_extra;
+        if (vram_capped) cap_cache_extra = (prefill_mib << 20) + mtp_bind + dense_attn + cap_late_bytes + quality_staging_extra + cap_feature_bytes;
+        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn + cap_late_bytes + quality_staging_extra + cap_feature_bytes;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -4615,7 +4643,7 @@ int main(int argc, char** argv) {
             // what is short, and what makes room: the numbers a small card picks from
             const int64_t at_reserve = o.vram_reserve_given || vram_capped ? o.vram_reserve_mib
                                                                            : std::min(o.vram_reserve_mib, kSmallReserveMib);
-            const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn + min_slots * blob + cap_late_bytes + quality_staging_extra;
+            const int64_t need_b = (((int64_t) at_reserve + prefill_mib) << 20) + mtp_bind + pipe_first + dense_attn + min_slots * blob + cap_late_bytes + quality_staging_extra + cap_feature_bytes;
             const int64_t short_mib = std::max<int64_t>(1, (need_b - (int64_t) free_b + (1 << 20) - 1) >> 20);
             const int64_t session_mib =
                 (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) >> 20);
@@ -4647,7 +4675,7 @@ int main(int argc, char** argv) {
         if (vram_capped) {
             int64_t bind = (!o.mtp.empty() && native_head.loaded()) ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
             for (const auto& d : slot_mtp) bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
-            cap_cache_extra = (prefill_mib << 20) + bind + cap_late_bytes + quality_staging_extra +
+            cap_cache_extra = (prefill_mib << 20) + bind + cap_late_bytes + quality_staging_extra + cap_feature_bytes +
                 (int64_t) strata::core::Verifier::dense_attention_bytes(g, ss, batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch));
         }
         const int64_t reserve = vram_capped ? ((int64_t) o.vram_reserve_mib << 20) + cap_cache_extra + pipe_first
@@ -7664,6 +7692,7 @@ int main(int argc, char** argv) {
                     stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
             }
+            strata::core::vram_floor_log_once("after first checkpoint");
             return true;
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
@@ -8490,6 +8519,7 @@ int main(int argc, char** argv) {
                 }).detach();
         }
         if (!check_vram_cap("before READY")) return 1;
+        strata::core::vram_floor_log_once("READY");
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -8797,6 +8827,10 @@ int main(int argc, char** argv) {
                 bt_miss0 = drive.d.multi_misses; bt_hits0 = drive.d.cache_hits; bt_pcie0 = drive.d.pcie_experts;
             }
             const Clock::time_point w0 = Clock::now();
+            if (!check_vram_cap("before verify window")) {
+                std::printf("ERR free VRAM is under the floor (before verify window); cap not relaxed\n");
+                return false;
+            }
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
@@ -9899,7 +9933,13 @@ int main(int argc, char** argv) {
             // tokens [a, b) through the windows: commit all of them, then give the draft layer their residuals
             auto read_windows = [&](int64_t a, int64_t b, std::string& e) -> bool {
                 // (STRATA_LOGPOS reads every window's logits: the serial loop)
-                if (pipe && pl_pw >= 1 && std::getenv("STRATA_LOGPOS") == nullptr) return read_windows_pl(a, b, e);
+                if (pipe && pl_pw >= 1 && std::getenv("STRATA_LOGPOS") == nullptr) {
+                    if (!check_vram_cap("before verify window")) {
+                        e = "free VRAM is under the floor (before verify window); cap not relaxed";
+                        return false;
+                    }
+                    return read_windows_pl(a, b, e);
+                }
                 strata::core::progress_at("reading the prompt (verify windows), from token", a);   // #217: not "batched"
                 // every token is committed and the picks are discarded: no head sampling (see set_head_sampling)
                 struct NoHeadSampling {
@@ -9918,6 +9958,10 @@ int main(int argc, char** argv) {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
+                    if (!check_vram_cap("before verify window")) {
+                        e = "free VRAM is under the floor (before verify window); cap not relaxed";
+                        return false;
+                    }
                     if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
@@ -10253,6 +10297,7 @@ int main(int argc, char** argv) {
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
             std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
+            bool checked_first_chunk = false;
             if (pin_at >= 0) {
                 cuts.push_back(pin_at);
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
@@ -10269,6 +10314,14 @@ int main(int argc, char** argv) {
                 if (!win && !lend(to - at, err)) {
                     std::printf("ERR lending the prompt path its slots failed: %s\n", err.c_str());
                     return 1;
+                }
+                if (!win && !checked_first_chunk) {
+                    checked_first_chunk = true;
+                    if (!check_vram_cap("before the first prompt chunk")) {
+                        std::printf("ERR free VRAM is under the floor (before the first prompt chunk); cap not relaxed\n");
+                        std::fflush(stdout);
+                        return 1;
+                    }
                 }
                 const auto tsp = Clock::now();
                 const bool sp_ok = win ? read_windows(at, to, err) : read_part(at, to, err);
@@ -11063,6 +11116,11 @@ int main(int argc, char** argv) {
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 if (use_mtp && mtp.prob() && !from_sfx && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+                if (!check_vram_cap("before verify window")) {
+                    std::printf("ERR free VRAM is under the floor (before verify window); cap not relaxed\n");
+                    std::fflush(stdout);
+                    return 1;
+                }
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;

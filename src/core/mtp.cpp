@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/vram_floor.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/on_device.hpp"
@@ -1266,9 +1267,19 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
         return false;
     }
     cudaGraphDestroy(graph);
+    if (!strata::core::vram_floor_allow("after cudaGraphInstantiate", err)) {
+        if (exec) cudaGraphExecDestroy(exec);
+        exec = nullptr;
+        return false;
+    }
     // an explicit upload: the first launch's implicit one blocked behind a device-side spin (verify.cpp)
     cudaGraphUpload(exec, cs);
     cudaStreamSynchronize(cs);
+    if (!strata::core::vram_floor_allow("after cudaGraphInstantiate", err)) {
+        if (exec) cudaGraphExecDestroy(exec);
+        exec = nullptr;
+        return false;
+    }
     return true;
 }
 }  // namespace
