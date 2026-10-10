@@ -959,6 +959,61 @@ on this card for this model is the dequant kernels (at ~200 GB/s against a 600 G
 prompt attention (14%); the multi-column int8 DPAS decode kernels of llama.cpp PR 29864 target K-quant and Q8_0 weights, not
 the IQ-quant experts, and were not ported.
 
+## A cache that fills the card costs 36x on the prompt (Windows, OpenCL)
+
+The IQ3_S rows above are the Linux VM (xe driver, Level Zero), where the same mirror design reads a 4K
+prompt at 980-1,002 tok/s. On Windows with the OpenCL backend the same model is a different story, and
+the reason is not the mirror.
+
+**What is measured.** Arc Pro B70, 32 GB, Windows, OpenCL, eager, driver 32.0.101.8976, Flash-Next
+IQ3_XXS, `--prefill 4096`, greedy, 64-token prompt, `STRATA_PREFILL_TIMING=1`. The same 3,668 gate/up
+and 3,668 down GEMM calls at every cache size - only the cache size and the memory left over change:
+
+| expert cache | VRAM of experts | prefill | per expert GEMM pair |
+|---|---|---|---|
+| 17,687 slots (`auto` before) | 28.82 GiB | 426 s | 111 ms |
+| 15,382 slots | 24.95 GiB | 472 s | 122 ms |
+| 14,704 slots | 23.87 GiB | 9.7 s | 2.32 ms |
+| 10,698 slots | 17.36 GiB | 10.3 s | 2.39 ms |
+
+A cliff, not a slope: every size up to 14,704 slots is stable at ~10 s, every size from 15,382 up takes
+minutes. With `STRATA_PREFILL_SYNC=1` (the host waits at every phase mark, so the numbers are what the GPU
+ran) the whole prefill is 36x slower with the same work, and it is spread across most kernels rather
+than the expert path: `gdn` 55x, the QSA projections 42x, the GDN output projection 53x, the two expert
+GEMMs 39x.
+
+**It is not the mirror.** 35% of the same pack mirrored in pinned host memory over PCIe costs nothing
+(2.05 ms per expert against 2.01 with every expert resident), and the slow arm streams *fewer* experts
+than the fast one. Nor the prompt length (the cost is fixed per expert call, not per token), subnormals
+(there are none in either pack's dequantized weights or activations), or `--kv-resident` (7,589 ms against
+7,587 ms). The kernel calls and their shapes are identical in every arm, and the cut and uncut sizing give
+identical greedy output tokens - eight tokens, `271 71093 271 550 18381 198 12 1510`, from a scrambled
+48-token prompt. `sycl/probe/vram_pressure.cpp` times the engine's own `Gemm::f16` at these shapes with
+the card empty and again after allocating and touching 28 GiB of it: 1.00x both, so a full card does not
+slow the GEMM either.
+
+**Why nothing stops it.** The engine sizes the cache, then reads the free VRAM again and shrinks the cache
+while it is short of `--vram-reserve-mib` ("only N MiB free once the slots are written"). That check cannot
+fire on this backend: `STRATA_DEVICE_FREE_MIB` makes `dpct`'s `get_memory_info` return a setup-time
+constant - `(32 - 1.0) * 1024` = 31,744 MiB here - before the allocation and after it alike, and the Linux
+DRM correction does not run on Windows. A printed check gives:
+
+```
+expert cache auto: 31.00 GiB free, 2048 MiB reserved -> 13283 slots
+post-write free 31.00 GiB, want 2048 MiB, cache 17687 slots (28.82 GiB)
+```
+
+So on Windows/OpenCL the only thing that constrains the cache size is the arithmetic at sizing time,
+which is what `STRATA_EXPERT_CACHE_HEADROOM`'s default of a sixth is for (#1549). On CUDA `cudaMemGetInfo`
+is live, the check works, and a 1/6 headroom changes nothing - measured on an RTX 5070 Ti (16 GB, Windows,
+WDDM), Coder IQ1_M, three alternating rounds: 2,022 tok/s prompt and 64.5 decode at headroom 0 against
+2,064 and 66.6 at 1/6, both arms' caches settling within 0.3 GiB of each other after the check.
+
+**Not measured:** what the GPU is doing with the last 2 GiB. The 20-55x slowdown across ordinary kernels
+with a flat 28 GiB allocation costing 1.00x points at contention between VRAM traffic and the concurrent
+PCIe mirror reads, but that is a candidate, not a result. Full findings and the A/B protocol are in
+[docs/EXPERT_CACHE_HEADROOM.md](EXPERT_CACHE_HEADROOM.md) and #1549.
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |
