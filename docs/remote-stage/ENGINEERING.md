@@ -30,8 +30,9 @@ the head and the drafter on the worker would have saved that return trip and mov
 ### The protocol
 
 One TCP connection per main process. Every message is a 40-byte header (`magic` "STRM", `type`, three int64 fields
-`a b c`, payload `bytes`) and a payload. Protocol version 5 (4 before images: the Positions message and the hello's
-`vision`; 3 before the hello carried the tail-skip rank).
+`a b c`, payload `bytes`) and a payload. Protocol version 6 (3 before the hello carried the tail-skip rank, 4 before
+images, which added the Positions message and the hello's `vision`, 5 before the conversation checkpoints, which
+added `CkptSave` / `CkptRestore`, a keep list on `Reset` and the hello's `ckpt_max`: [CHECKPOINTS.md](CHECKPOINTS.md)).
 
 | message | header fields | payload | reply |
 |---|---|---|---|
@@ -39,8 +40,10 @@ One TCP connection per main process. Every message is a 40-byte header (`magic` 
 | Run (a verify window) | a = T, b = first position | int32 tokens[T], fp32 rows[T x 12,804] | RunOk: a = the worker's time (us), rows[T x 12,804] |
 | Commit | a = accepted count | none | none (an error comes back on the next reply) |
 | Prefill (a prompt chunk) | a = T, b = first position, c = flags (bit 0: the prompt is one chunk) and `skip` << 8 | int64 tokens[T], fp32 rows[T x 10,240] | PrefillOk: a = the worker's time (us), rows[(T - skip) x 10,240] |
-| Reset (a fresh prompt) | | none | ResetOk |
-| Positions (`--vision`: the next request's) | a = cells; b = 1: plain positions (no table) | int32 (t, h, w)[cells] | none (an error comes back on the next reply, a Reset's included) |
+| Reset (a fresh prompt) | | int64 keep[] (empty: none) | ResetOk |
+| Positions (`--vision`: the next request's) | a = cells; b = 1: plain positions (no table) | int32 (t, h, w)[cells] | none (an error comes back on the next reply, a Reset's and a CkptRestore's included) |
+| CkptSave | a = id, b = position | int64 keep[] | CkptSaveOk: a = 1 stored, 0 not |
+| CkptRestore | a = id, b = position | int64 keep[] | CkptRestoreOk |
 | Error | | the message | |
 
 **The hello** carries what both sides must agree on, and each side checks the other's: the protocol, `n_embd`, `hc`,
@@ -110,10 +113,11 @@ log of its last run that listened as `stage-worker-PORT.prev.log` (a restart tha
 overwrites only the current log); a refused `/start` leaves its port's worker and supervision as they were.
 
 The engine's stall watchdog (issue #29, `STRATA_WATCHDOG_S`) watches
-each message a worker serves (a window, a prompt chunk, a commit, a reset, a position table) and is idle between
-them, so a worker stuck on its GPU ends with its stall report instead of holding every later main process at the
-hello. A relay's waits for its next worker (a connect, its taking a prompt chunk, a window's or a reset's reply) get an allowance of
-`STRATA_REMOTE_TIMEOUT_S` + 150 s instead: the link's timeouts end them, and a stuck next worker ends alone, with its
+each message a worker serves (a window, a prompt chunk, a commit, a reset, a position table, a checkpoint save or
+restore) and is idle between them, so a worker stuck on its GPU ends with its stall report instead of holding every
+later main process at the hello. A relay's waits for its next worker (a connect, its taking a prompt chunk, a window's,
+a reset's or a checkpoint's reply) get an allowance of `STRATA_REMOTE_TIMEOUT_S` + 150 s instead: the link's timeouts
+end them, and a stuck next worker ends alone, with its
 own report. `STRATA_REMOTE_STALL_AT=N` (a test hook) blocks the worker's Nth window. Checked on CUDA (the 3080 + 2080 Ti
 pair, `STRATA_REMOTE_STALL_AT=60 STRATA_WATCHDOG_S=20` on the worker): the worker wrote its stall report 20 s into the
 blocked window and exited; the request in flight failed 25-26 s after it was sent (`remote stage: the peer closed the
@@ -757,7 +761,9 @@ it; the wait for the token only on Windows, where the recv it prevents is not wo
 - **Reconnecting** in the middle of a request (a link lost between requests is made again at the next request's
   start; one lost mid-request ends the main engine, and the server starts it again). Faults run on GPUs: two PCs,
   Linux on both ([The recovery's open points](#the-recoverys-open-points-2026-10-13)); a relay's next worker, a
-  network partition and a Windows PC on either side were not; conversation checkpoints across stages.
+  network partition and a Windows PC on either side were not; conversation checkpoints across stages
+  ([CHECKPOINTS.md](CHECKPOINTS.md): built, opt-in with `--prompt-cache N`, checked on two GPUs; a relay is not
+  run).
 - **A ring topology** for three or more PCs.
 - **A bf16 hand-off** (half the traffic); its effect on the answers would need measuring.
 - **Windows as the main PC** (only workers were run on Windows), and the clock behaviour of an in-process split on
