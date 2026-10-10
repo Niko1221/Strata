@@ -440,6 +440,21 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
   (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **Unsloth UD-Q4_K_XL on an RX 6900 XT** (16 GB, Ryzen 9 5950X, 128 GB DDR4, PCIe 4.0 x16, Arch Linux, ROCm 7.2.4,
+  engine 0.1.42, `--resident-budget-gib 71 --kv int8 --kv-resident 32768 --max-context 131072`, `STRATA_HIP_PROMPT_F16=1
+  STRATA_SH_STREAM=1 STRATA_ROUTE_TAIL_SKIP=7`; 2026-10-10, one run per cell, greedy, `STRATA_PREFILL_TIMING=1`): setup's
+  HIP build had no MMQ kernels for its Q4_K / Q5_K / Q5_1 experts (`STRATA_MMQ_KQUANTS` was passed for CUDA only), so the
+  prompt path dequantized every expert to FP16 and multiplied it with hipBLAS - 65-77% of the prompt's GPU time (dequant
+  + the two GEMMs), at about 5 TFLOPS on the gate/up product of an 8K chunk. Setup now passes `-DSTRATA_MMQ_KQUANTS=ON`
+  for HIP as well, and ggml's RDNA2 MMQ tiles take those formats: fresh prompts read at 1,036 instead of 633 tok/s (7.8K
+  tokens) and 1,104 instead of 677 (15.8K); a 250-token follow-up chunk took 1.8 s of GPU time instead of 2.8 s, and an
+  887-token prompt 3.5 s instead of 4.6 s. Hidden code words at 8K and 16K were found. The follow-up chunks of an agent's
+  turn (a few hundred tokens) are then bound by the experts streamed over PCIe (`wait copy` 53-57% of the chunk).
+  Decode is unchanged by this (58-68 ms per verify window here): its window is the CPU pool's rows (12-21 ms, DRAM-bound
+  at about 30 GB/s of expert bytes) plus the GPU's own work (19-36 ms), in series; a per-request `pcie_frac` sweep
+  (0.55 / 0.35 / 0.2 / 0.1, 3 interleaved rounds of 250 tokens) gave 57.2 / 56.2 / 54.2 / 53.3 ms per window, so the
+  smallest share was about 7% faster per window on this box - the 0.1.42 CUDA rule would pick 0.35 here, which the
+  measurement does not separate from the default.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the
