@@ -1991,14 +1991,19 @@ Queue and load are the server's own `perf_counter`; prefill and decode come from
 are the GPU's time, not the host's wall around it. A span whose number the server does not have (an engine that
 said nothing, a request that never reached the model) is left out rather than drawn as zero. The root span carries
 the method, HTTP status, model, input/output tokens, time-to-first-token and the queue/load/wallclock seconds;
-prefill and decode carry their token counts and tok/s.
+prefill and decode carry their token counts and tok/s. The first-token anchor of the two is clamped into the
+request's wall window: a cache-hot prompt can settle its first token outside the wall the record settled, and
+prefill ends at and decode starts from the clamped anchor, so a span is never drawn as a negative slice.
 
 W3C context is followed both ways: a `traceparent` header you send becomes the root span's parent, so Strata shows
 up inside your own trace, and every answer carries the `traceparent` of its own root span, which you put on the
-next request to line your spans up with ours.
+next request to line your spans up with ours. With no `traceparent` on the request the root span carries no parent,
+so a viewer draws it as a root rather than under itself.
 
 The export runs on its own thread and never blocks or fails a request: a collector that is down costs one line in
-the log and a counted drop. OTLP/HTTP is written as JSON by hand, so tracing adds no package to the install. With
+the log and a counted drop. A stop (Ctrl+C) gives queued spans up to 2 s to leave before the process ends (it waits
+for the batch the export thread is posting too), so the last trace is not cut off. OTLP/HTTP is written as JSON by
+hand, so tracing adds no package to the install. With
 tracing on and the Monitor off, the record behind the spans holds timings and token counts only - the prompt and
 the answer text are never recorded, so no conversation text reaches a collector. The module is `serve/tracing.py`,
 covered by `serve/test_tracing.py`.
