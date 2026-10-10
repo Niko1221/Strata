@@ -346,6 +346,19 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     1-3% slower with it). `STRATA_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
     matrix-core block scorer; it selects slightly differently (254 of 256 queries the same) and gained +1.5% on 16K
     prompts at a 262K context on the R9700.
+  - `STRATA_PF_FUSED=1` (opt-in, gfx1200 / gfx1201, the native IQ packs, #1277): the prompt's experts run on int8
+    matrix-core kernels (`v_wmma_i32_16x16x16_iu8`: the gfx11 kernels with gfx12's lane layout) instead of MMQ. Earlier
+    engines ignored the flag on RDNA4 (MMQ stayed, no banner); now the engine prints `strata: prompt experts on the fused
+    int8 kernels (STRATA_PF_FUSED=1, #136)` once, at the first prompt. It is not an arch default: it rounds differently
+    from MMQ, and those defaults hold only bit-identical switches. `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set
+    (for an A/B). R9700 (gfx1201, ROCm 7.14, Coder IQ1_M pack), prompt time as the server reports it, alternating
+    starts per arm: 4K 1,612 -> 1,353 ms (+19.1%), 16K 5,579 -> 5,147 ms (+8.4%), 32K 11,890 -> 10,962 ms (+8.5%); a
+    second run of 3 starts per arm gave +12% to +16% at 4K (it depends on the start) and +8.3% at 16K; the
+    kernels alone are 1.48x / 1.20x / 1.14x MMQ's at 4K / 16K / 32K. Quality: first-token KL against the FP16 prompt path
+    at 4K (48 prompts) is 1.10x MMQ's, which that sample cannot tell apart from MMQ's; top-1 agreed on 48 of 48 (every
+    prompt's top token was the same one, so that check says little); 4 of 4 long-context retrieval checks passed.
+    0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
+    gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
@@ -441,6 +454,10 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
   Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`
   and point `STRATA_HIPBLASLT_TUNING` at the table yourself.
+- **gfx1152** (Radeon 860M / 840M, Ryzen AI 300 "Krackan", #1625): in CMake's unvalidated list like gfx1150, so
+  `-DCMAKE_HIP_ARCHITECTURES=gfx1152` builds with a warning. It runs the portable kernels (the matrix-core guards name
+  gfx1150 and gfx1151 only), no card has reported on it, and setup does not install for it (an integrated Radeon other
+  than Strix Halo is named and not supported). A report from a real 860M is welcome.
 - **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
@@ -451,6 +468,8 @@ gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 ba
 (`include/strata/platform/hip_compat/`), with a CUDA warp mapped to a logical half of the 64-lane wavefront
 (32-wide shuffles, a ballot of its own half). The hot kernels have wave64 layouts of their own (below). Setup does
 not build it yet: build by hand, and run `serve/server.py` with a config as on any other card.
+
+**Community-tested, opt-in (0.1.42).** The gfx906 build is maintained with its users: we have no gfx906 card, so what is here was measured by community members on their MI50s (the attention switches `STRATA_GFX906_ATTN_QUERY_SWIZZLE=1` and `STRATA_GFX906_ATTN_REDUCE12=1`, PRs #1661 and #1718 by 0FL01, are off by default and compiled only into this build) and the engine here is checked to compile for gfx906, nothing more. Nothing in it changes the builds for other cards. A wave32 card seen by this build is refused at start with a message (#1728). Please report how it runs on your card.
 
 **ROCm.** AMD's current ROCm releases no longer ship gfx906 libraries. The build and the measurements below used
 HIP 7.14 from the community image [`mixa3607/rocm-gfx906:7.14-complete`](https://hub.docker.com/r/mixa3607/rocm-gfx906)

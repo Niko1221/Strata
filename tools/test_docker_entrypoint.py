@@ -95,6 +95,23 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("by-model", out)
         self.assertIn(f"Config: {self.data}/config/strata-iq3_s.json", out)
 
+    def warning_for(self, flags):
+        info = self.tmp / "cpuinfo"
+        info.write_text(f"processor\t: 0\nflags\t\t: {flags}\n")
+        (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["x"]}\n')
+        env = dict(os.environ, STRATA_DATA=str(self.data), MODEL="IQ3_S", REINSTALL="0", STRATA_CPUINFO=str(info))
+        r = subprocess.run([SH, str(self.script)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)     # a warning, never a stop (#1584)
+        return r.stderr
+
+    def test_a_cpu_without_avx2_is_warned_not_stopped(self):
+        err = self.warning_for("fpu sse4_2 avx aes")
+        self.assertIn("no AVX2", err)
+        self.assertIn("docker build", err)
+
+    def test_a_cpu_with_avx2_gets_no_warning(self):
+        self.assertEqual(self.warning_for("fpu sse4_2 avx avx2 fma"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-# Strata on two or three GPUs (layer split)
+# Strata on two or more GPUs (layer split)
 
 One model can run across several NVIDIA cards in one PC. The layers are split into contiguous ranges, one per GPU:
 the first card runs layers 0 to K-1, the next card runs K onward, and so on; the last card also runs the output head
@@ -65,7 +65,7 @@ number per card after the first, not a count of layers per card. With 4 cards an
 (or `[24, 36, 42]`) puts layers 0-23 on the first card, 24-35 on the second, 36-41 on the third and 42-47 on the last.
 The server checks it before the start and says what is wrong (0.1.39, #644).
 
-**Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Equal cards keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
+**Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Cards whose scores are within 5% of each other (two of the same model) keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
 
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
@@ -100,6 +100,28 @@ The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
 
+**The draft layer's prompt K/V in batches on a split (opt-in, `STRATA_SPLIT_MTP_BATCH=1`).** With `--mtp` the draft
+layer sits on the last card, and each prompt chunk ends by filling that layer's K/V for the chunk's rows. On one card the
+prompt path does it in batches (`Prefill::draft_kv`, a few large matrix products per chunk); on a split the drafter's own
+pass always did it, one graph launch and four device copies per group of 8 rows (1,024 groups per 8,192-token chunk).
+With the variable set, the last card's prompt path batches it as it does on one card. Restart-only; default off, so the
+default start is unchanged. It needs a `--native` pack (the GGUF-form token table) and a paged or ring (`--kv-resident`)
+draft K/V (`STRATA_MTP_BATCH_RING=0` sends a ring back to the old pass); otherwise it says why once and keeps the old pass:
+`strata serve: draft layer prompt K/V batched on CUDA<d> ...` or `strata serve: STRATA_SPLIT_MTP_BATCH=1 declined, the
+drafter's own pass runs: <reason>`. The draft layer's K/V come out of Q8_1 x Q8_0 MMQ instead of its own mmvq, so the
+drafts, and how many are accepted, can move; the target's tokens are decided by the verify window.
+`tools/split_mtp_batch_parity.py` compares the greedy texts of the two arms. Measured on one machine (2x RTX 3080 20 GB
+at 220 W, Xeon E5-2696 v4, UD-Q4_K_XL, `--layer-split 23`, `--batch-mtp`, two slots, `--prefill auto:16384`), two full
+restarts per arm in the order off, on, off, on, the same binary in every arm: pooled medians of the prompt read were 1,996
+tok/s without and 2,129 with at 25K tokens (+6.7%), 2,448 and 2,553 at 51K (+4.3%), 2,846 and 2,940 at 104K (+3.3%); all 8
+on/off ratios of medians are above 1 (1.03 to 1.08), and the two off restarts differ by at most 2% at 25K and 0.3% at the
+other sizes. The host's "after each chunk" time per request fell from 0.9-1.3 s to 0.1-0.25 s (one restart per arm). Greedy
+output (`--adapt-every 0 --suffix-draft 0`, five prompts of 256 tokens and one 25.5K-token prompt) was identical in 6 of 6
+prompts in all five comparisons, the two runs inside one process (A/A) included, and the drafts accepted were 826 of 1,210
+in every run, so no difference in acceptance was visible. Decode is not shown to be unchanged: the medians with the variable
+set were about 3% lower (pooled solo 82.6 -> 80.2 tok/s, two streams 93.2 -> 90.8), and the same configuration restarted
+twice moved up to 4.7%, so two restarts per arm can neither confirm nor exclude it; the change touches only the prompt path.
+
 **Each card loads only its own layers' dense weights** (0.1.39, PR #639) with explicit split points (`--layer-split
 27`, not `auto`): every card used to keep a full copy (~3.4 GB for the Coder) though its stage reads only its own
 layers, and the VRAM it frees goes to that card's expert cache (2x MI50 16 GB, Coder: 8,819 -> 10,626 experts in
@@ -113,7 +135,8 @@ leaves out the ones every card's cache holds, not only the first card's, and whe
 the hottest by the expert profile over all the layers. An adaptive swap copies the evicted expert back into RAM from
 the card that owns its layer. Before, `--resident-experts` with a split ran as `--mmap-experts`, and setup recommended
 one card in the low-RAM mode; with an engine that has it (`RESIDENT_SPLIT_ENGINE` in setup.py), setup keeps the cards
-together and the experts no card holds in RAM. Swift 1.5 IQ3_XXS at
+together and the experts no card holds in RAM. The same copy, sized by a RAM budget (`--resident-budget-gib`, the
+Unsloth UD-Q4_K_XL and UD-IQ4_XS configs), is kept on a split as well ([UNSLOTH_Q4.md](UNSLOTH_Q4.md)). Swift 1.5 IQ3_XXS at
 160K (q4_0 KV, `--prefill 4096`, `--spec 4` with the stock draft layer), RTX 4060 Ti (layers 0-19) + RTX 5080 (20-47),
 i9-14900KF, 32 GB of RAM, Windows 11, four greedy prompts at a time, decode tok/s:
 
@@ -126,6 +149,29 @@ i9-14900KF, 32 GB of RAM, Windows 11, four greedy prompts at a time, decode tok/
 The split with `--mmap-experts` catches up once the OS file cache holds the experts, on a PC with nothing else
 running; the resident copy is there from the first request and stays locked when other programs need the RAM. With
 `--pcie-frac 0 --adapt-every 0` the split's greedy output is the same with either mode.
+
+**The prompt path's loan on a split and its streamed ring (`STRATA_SPLIT_RING`).** Under a split the prompt path borrows
+the tail slots of each card's expert cache for its buffers (they are given back after the prompt), and the resident RAM
+copy keeps those experts too, so a borrowed expert is not read back from the model file during a prompt. How many slots
+are borrowed depends on the prompt path's streamed ring: a split uses 96 ring slots when at least 75% of the (layer,
+expert) pairs sit in some card's cache, and `STRATA_SPLIT_RING=N` sets N slots (`0` goes back to the pinned-share rule).
+The ring used to be chosen after the RAM copy's regions were sized, so the regions were sized for a different ring than
+the prompt path then used: with `STRATA_SPLIT_RING=384` it borrowed 5,396 slots and the copy kept 4,662, and the
+other 734 were read from the model file in every chunk. The ring is now chosen first (`Prefill::set_ring_override`
+says it must be set before the buffers are counted). The start-up line `strata serve: lend sizing: the prompt path
+borrows N slots (ring R slots at chunk C), K of them keep their experts in RAM too` shows both numbers, and a
+`WARNING` follows when K is below N. Without a split, or without `--resident-experts`, nothing changes. With a split
+the order of the two steps changed for every ring choice, the 96-slot rule included: its regions used to be sized for
+the larger default ring, so there the copy probably kept more slots than were borrowed (not measured). The 5,396 /
+4,662 figures were measured on the test machine (2x RTX 3080 20 GB at 220 W, Xeon E5-2696 v4, UD-Q4_K_XL,
+`--layer-split 23`, resident RAM mode, `--prefill auto:16384`, 2 slots), one restart per arm, with `STRATA_SPLIT_RING=384`
+and `STRATA_PREFILL_RING` unset. Before the change a 104K-token prompt made 413 blob reads and read 10.3 GB of experts
+from the model file per request; after it, 0, with all 5,396 borrowed slots kept in RAM, for 2.15 GiB more pinned RAM
+(13.61 -> 15.76 GiB). 25K and 51K prompts read nothing from the file in either case. With the override unset and
+`STRATA_PREFILL_RING=384` the lend lines are identical before and after (5,396 / 5,396, 15.76 GiB). No speed gain is
+shown: the medians of three 104K reads were 2,803 tok/s before and 2,907 after, but the spread before is 2,540-2,897
+(its first read faulted 4.2 GB in from NVMe) and there is no A/A restart. Here the page cache absorbed the 10 GB per
+request; with less spare page cache it would be disk traffic. Not measured: both ring variables unset.
 
 **A separate VRAM reserve for the later cards:** `--vram-reserve-later-mib N` (default: `--vram-reserve-mib`'s value).
 The card that drives the monitors needs more headroom than one that drives none; with the display on the last card,
@@ -210,7 +256,10 @@ copied from earlier context (`--suffix-draft`) are guessed past as well, which i
 most. `--pipeline-windows 1` overlaps only the short prompt reads that go through the verify windows
 (`--short-read`).
 
-Two cards, exactly two stages, `--serve`. In the config:
+Two or more cards, `--serve`. With three or more stages every stage but the last is a front stage: the guessed
+window follows the verified one through them one card behind (each front stage keeps its own pair of recurrent-state
+copies and puts its state back on a wrong guess), and only the last stage waits for the verdict. `--pipeline-windows 1`
+and the asynchronous tier stay two-stage. In the config:
 
 ```
 "args": [ ..., "--pipeline-windows", "2" ],
@@ -218,7 +267,8 @@ Two cards, exactly two stages, `--serve`. In the config:
 ```
 
 - **Cost**: a second verify window on each card, 160 MiB more kept out of each card's expert cache, plus two copies
-  of the first card's recurrent state (about 3 MiB per GDN layer it runs) on the first card with `2`.
+  of the first card's recurrent state (about 3 MiB per GDN layer it runs) on the first card with `2` (on every front
+  card with three or more stages; only the first card's room is kept out of its cache, the others allocate theirs after).
 - **Same text**: the last card only ever runs windows that are verified, and every window row computes what it
   would in any other window, so the tokens are the serial loop's. With `STRATA_IQ_MT_MIN=1 --pcie-frac 0
   --adapt-every 0` the greedy output is identical bit for bit to the serial loop's with the same expert caches. The pipeline keeps
@@ -226,8 +276,8 @@ Two cards, exactly two stages, `--serve`. In the config:
   rounds them differently, and a near-tie can flip (a serial run given the same caches through `--vram-reserve-mib`
   matches it exactly).
 - **Off, with one line in the log saying why**, with `--batch` slots, `--peer-device`, the helper caches
-  (`--expert-cache-device1..3`, which `--remote-expert-opt` builds on), a split into three or more stages or onto one GPU
-  (`--split-device 0`), or no draft layer. A request with repetition penalties (`penalty_last_n`) or coupled
+  (`--expert-cache-device1..3`, which `--remote-expert-opt` builds on), a split onto one GPU (`--split-device 0`), or no
+  draft layer; on three or more stages also `--pipeline-windows 1` and `--adapt-async 1`. A request with repetition penalties (`penalty_last_n`) or coupled
   draft sampling decodes serially.
 - **With the resident RAM mode's asynchronous swaps** (`--adapt-async 1`, [DETAILS.md](DETAILS.md)) a round's steps
   advance between the verified windows. Each card's copies are queued by the decode loop itself while that card has
@@ -239,8 +289,16 @@ Two cards, exactly two stages, `--serve`. In the config:
   63.0 -> 71.1, Italian prose 41.6 -> 46.3, a copy-heavy edit (a 5 KB file back with a rename) 90.5 -> 117.9; mean
   72.4 -> 84.0 (+16%). It pays when the windows are GPU-bound: with the experts read through the OS file cache
   (`--mmap-experts` on that 32 GB PC) the file reads dominate and it measured no faster.
+- **Measured on four stages** (Flash-Next GSQ-RCO IQ3_S, 262K context, int8 KV, layer split 12,24,36 on 4x RX 7900 XT,
+  every expert in VRAM; greedy, reasoning off, 256 tokens, repository-text prompts): decode 59.4 -> 67.6 tok/s at 4K
+  (median of 3) and 51.8 -> 65.6 at 32K. A guessed window that holds costs ~15 ms against ~43 ms for a fresh one; about
+  a third of the guesses held. The greedy text was identical to the serial loop's on all four prompts (`STRATA_IQ_MT_MIN=1
+  --pcie-frac 0 --adapt-every 0`), and with every guess forced wrong (`STRATA_PIPELINE_FORCE_MISS=1`).
+- **HIP**: the draft layer's per-row `gr_read` used the last stage's session scratch (`ss.block.gr`), which that stage's
+  verifier also uses; a chain launched at a verdict and the next window's last stage then ran on the card at once and
+  the window's head read a clobbered mix (wrong tokens after a guess that held). The draft layer now has its own scratch.
 
-The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE and the like) are read only with
+The `STRATA_PIPELINE_*` tuning and test variables (THETA, FORCE_MISS, SWITCH, LOG, TRACE, SPEC_DEPTH and the like) are read only with
 `STRATA_PIPELINE_DEBUG=1`. `--pipeline-windows` and `--adapt-async 1` combine: the engine turns the asynchronous tier
 off beside `--pipeline-windows 2` only when `STRATA_PIPELINE_ADAPT_ASYNC=0` is set. What switches either one off is
 printed once at start ("is off: ..."). `--remote-expert-opt` does something only with a helper cache

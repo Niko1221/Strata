@@ -10,6 +10,7 @@ import contextlib
 import io
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -104,6 +105,32 @@ class CMakeOption(unittest.TestCase):
         self.assertIn('option(STRATA_ENABLE_SYCL "EXPERIMENTAL', src)
         self.assertRegex(src, r'option\(STRATA_ENABLE_SYCL "[^"]*" OFF\)')
         self.assertIn("add_subdirectory(sycl)", src)
+
+
+class SyclVersion(unittest.TestCase):
+    def setUp(self):
+        from sycl import setup_intel
+        self.mod = setup_intel
+
+    def test_version_matches_the_source_and_satisfies_native_models(self):
+        version = self.mod.sycl_version()
+        self.assertNotEqual(version, "0")
+        self.assertEqual(version, setup.source_version())
+        numbers = tuple(int(x) for x in version.split("."))
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL"):
+            with self.subTest(model=model):
+                self.assertGreaterEqual(numbers, setup.MODELS[model].get("engine", setup.UNSLOTH_ENGINE))
+
+    def test_version_follows_a_source_hotfix_with_a_variable_sycl_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CMakeLists.txt").write_text("project(strata VERSION 0.1.41.2 LANGUAGES CXX)\n", encoding="utf-8")
+            (root / "sycl").mkdir()
+            (root / "sycl" / "CMakeLists.txt").write_text(
+                "set(STRATA_SYCL_VERSION 0.1.40.2)\n"
+                "project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)\n", encoding="utf-8")
+            with mock.patch.object(self.mod, "ROOT", root), mock.patch.object(setup, "ROOT", root):
+                self.assertEqual(self.mod.sycl_version(), "0.1.41.2")
 
 
 class IntelIds(unittest.TestCase):

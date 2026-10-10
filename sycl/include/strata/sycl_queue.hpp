@@ -116,6 +116,48 @@ inline const std::string& intel_gpu_driver() {
 }
 }  // namespace strata
 
+namespace strata {
+// Which Intel GPU generation a SYCL device is, from the device itself (so it also works on Windows / OpenCL, where
+// intel_gpu_driver() has no sysfs to read): the architecture enum when the runtime knows it, else the marketing name
+// ("Intel(R) Arc(TM) Pro B70", "... A750 ..."). Battlemage = Arc B-series / Pro B-series (B570 B580 B50 B60 B65 B70).
+enum class IntelGpuGen { Unknown, Alchemist, Battlemage };
+inline IntelGpuGen intel_gpu_gen(const sycl::device& d) {
+    if (!d.is_gpu()) return IntelGpuGen::Unknown;
+    try {
+        {
+            namespace exp = sycl::ext::oneapi::experimental;
+            const auto a = d.get_info<exp::info::device::architecture>();
+            if (a == exp::architecture::intel_gpu_bmg_g21 || a == exp::architecture::intel_gpu_bmg_g31)
+                return IntelGpuGen::Battlemage;
+            if (a == exp::architecture::intel_gpu_acm_g10 || a == exp::architecture::intel_gpu_acm_g11 ||
+                a == exp::architecture::intel_gpu_acm_g12)
+                return IntelGpuGen::Alchemist;
+        }
+    } catch (...) {
+    }
+    std::string n;
+    try { n = d.get_info<sycl::info::device::name>(); } catch (...) { return IntelGpuGen::Unknown; }
+    if (n.find("Intel") == std::string::npos) return IntelGpuGen::Unknown;
+    // "Intel(R) Graphics [0xe223]": drivers that print the PCI id instead of a marketing name (the B70 on Linux)
+    if (const size_t b = n.find("[0x"); b != std::string::npos) {
+        const unsigned long id = std::strtoul(n.c_str() + b + 1, nullptr, 16);
+        if (id >= 0xE200 && id <= 0xE2FF) return IntelGpuGen::Battlemage;                 // BMG-G21 / G31
+        if ((id >= 0x5690 && id <= 0x56BF) || id == 0x56C0 || id == 0x56C1) return IntelGpuGen::Alchemist;   // DG2
+    }
+    if (n.find("Battlemage") != std::string::npos) return IntelGpuGen::Battlemage;
+    if (n.find("Alchemist") != std::string::npos) return IntelGpuGen::Alchemist;
+    // "Arc(TM) Pro B70", "Arc(TM) B580", "Arc(TM) A750": a letter and 2-3 digits, as a whole word
+    for (size_t i = 0; i + 2 < n.size(); ++i) {
+        if ((i > 0 && n[i - 1] != ' ') || (n[i] != 'A' && n[i] != 'B')) continue;
+        size_t j = i + 1;
+        while (j < n.size() && n[j] >= '0' && n[j] <= '9') ++j;
+        if (j - i - 1 < 2 || j - i - 1 > 3 || (j < n.size() && n[j] != ' ' && n[j] != '(')) continue;
+        return n[i] == 'B' ? IntelGpuGen::Battlemage : IntelGpuGen::Alchemist;
+    }
+    return IntelGpuGen::Unknown;
+}
+}  // namespace strata
+
 #include <cstdint>
 namespace strata {
 // Does every page of a big device allocation keep its own bytes?  On an Arc Pro B70 (xe) a 22 GiB expert-cache arena came
@@ -170,13 +212,56 @@ inline bool arena_alias_guard_enabled() {
 }  // namespace strata
 
 #include <vector>
+#include <map>
+#include <mutex>
 namespace strata {
+// Every big device allocation (base -> size), so device_offset_end can find the allocation that holds an address.  The
+// CPU expert pool's handshake and oneMKL's GEMM both care where, within its allocation, an operand lies.
+inline std::map<const void*, size_t>& device_alloc_map() {
+    static std::map<const void*, size_t> m;
+    return m;
+}
+inline std::mutex& device_alloc_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline void device_alloc_register(const void* p, size_t bytes) {
+    if (p == nullptr || bytes == 0) return;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    device_alloc_map()[p] = bytes;
+}
+// Drop a base when its allocation is freed, so a later allocation that reuses the address is not mis-attributed by
+// device_offset_end.
+inline void device_alloc_unregister(const void* p) {
+    if (p == nullptr) return;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    device_alloc_map().erase(p);
+}
+// How far into its device allocation the byte range [p, p + bytes) ends; 0 when p is not in one we know.  oneMKL's GEMM
+// reads the last, partial tile of an operand from the wrong place when it lies more than 4 GiB in (Arc A770, oneMKL
+// 2026.1), so the GEMM stages any operand this reports > 4 GiB for.  An operand in an allocation we did not register
+// (small cudaMalloc'd buffers) is reported 0: those can never reach 4 GiB.
+inline size_t device_offset_end(const void* p, size_t bytes) {
+    if (p == nullptr) return 0;
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    auto& m = device_alloc_map();
+    auto it = m.upper_bound(p);
+    if (it == m.begin()) return 0;
+    --it;
+    const uint8_t* base = (const uint8_t*) it->first;
+    const uint8_t* end = (const uint8_t*) p + bytes;
+    if (end > base + it->second) return 0;
+    return (size_t) (end - base);
+}
 // sycl::malloc_device for a big allocation, checked for aliased pages (arena_alias_check) and, when it has some, allocated
 // again behind a growing spacer that moves it.  Small allocations and STRATA_ARENA_ALIAS_CHECK=0 go straight to
 // sycl::malloc_device.  The memory comes back uninitialised, as from sycl::malloc_device.
 inline void* malloc_device_guarded(size_t bytes, sycl::queue& q, const char* what = "device buffer") {
     void* p = sycl::malloc_device(bytes, q);
-    if (p == nullptr || bytes < ((size_t) 32 << 20) || !arena_alias_guard_enabled()) return p;
+    if (p == nullptr || bytes < ((size_t) 32 << 20) || !arena_alias_guard_enabled()) {
+        device_alloc_register(p, bytes);
+        return p;
+    }
     std::vector<void*> spacers;
     bool clean = false;
     for (int attempt = 0; attempt < 8 && p != nullptr; ++attempt) {
@@ -199,6 +284,7 @@ inline void* malloc_device_guarded(size_t bytes, sycl::queue& q, const char* wha
     for (void* sp : spacers) if (sp != nullptr) sycl::free(sp, q);
     if (p != nullptr && !clean)
         std::fprintf(stderr, "strata: WARNING: the %s still has aliased pages after 8 tries (STRATA_ARENA_ALIAS_CHECK=0 skips the check)\n", what);
+    device_alloc_register(p, bytes);
     return p;
 }
 }  // namespace strata

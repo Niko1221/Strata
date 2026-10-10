@@ -484,6 +484,54 @@ int main(int argc, char** argv) {
     int bad = 0;
     const int NV = 512, NT = 4;
 
+    // Request bias affects every target row, including greedy; omission leaves logits and the default pick intact.
+    // Compare against an independently pre-biased input through each ctest sampler implementation.
+    {
+        std::vector<float> l(NV * NT), bias(NV, 0.0f), adjusted;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) l[t * NV + v] = float(v % 17) / 4;
+        l[0] = 50;
+        bias[0] = -std::numeric_limits<float>::infinity();
+        bias[7] = 20;
+        bias[16] = -9;
+        adjusted = l;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) adjusted[t * NV + v] += bias[v];
+        float* db = nullptr;
+        check(cudaMalloc(&db, NV * sizeof(float)), "bias malloc");
+        check(cudaMemcpy(db, bias.data(), NV * sizeof(float), cudaMemcpyHostToDevice), "bias upload");
+        std::vector<int> hist(NT * 4, 7);
+        DeviceRows raw(l, NT, hist, 4), expected(adjusted, NT, hist, 4);
+        for (bool greedy : {true, false}) for (bool penalty : {false, true}) {
+            strata::kernels::SamplerParams p;
+            p.greedy = greedy; p.temperature = greedy ? 0 : 0.8f; p.seed = 71; p.top_k = 16;
+            if (penalty) { p.penalty_last_n = 4; p.penalty_freq = 3; p.penalty_repeat = 1.1f; }
+            const auto want = expected.sample(p, nullptr);
+            p.logit_bias = db;
+            const auto got = raw.sample(p, nullptr);
+            if (got != want || std::find(got.begin(), got.end(), 0) != got.end()) ++bad;
+            p.logit_bias = nullptr;
+            DeviceRows plain(l, NT, hist, 4);
+            if (raw.sample(p, nullptr) != plain.sample(p, nullptr)) ++bad;
+        }
+        std::vector<float> unchanged(l.size());
+        check(cudaMemcpy(unchanged.data(), raw.l, l.size() * sizeof(float), cudaMemcpyDeviceToHost), "raw logits");
+        if (unchanged != l) ++bad;
+        // The reporter's vocabulary scale, with only one permitted token: masked entries cannot win top-k tails.
+        const int vocab = 248320;
+        std::vector<float> large(vocab, 100), bans(vocab, -std::numeric_limits<float>::infinity());
+        bans[109266] = 0; large[109266] = -50;
+        cudaFree(db);
+        check(cudaMalloc(&db, vocab * sizeof(float)), "large bias malloc");
+        check(cudaMemcpy(db, bans.data(), bans.size() * sizeof(float), cudaMemcpyHostToDevice), "large bias upload");
+        DeviceRows many(large, 1, {}, 0);
+        for (bool greedy : {true, false}) {
+            strata::kernels::SamplerParams p; p.greedy = greedy; p.logit_bias = db;
+            if (many.sample(p, nullptr) != std::vector<int>{109266}) ++bad;
+        }
+        cudaFree(db);
+    }
+
     // ---- fixture 1: plain greedy.  top_k = 0 (disabled), top_p = 1 (disabled), T = 1 -> argmax.
     {
         strata::kernels::SamplerParams p; p.top_k = 0; p.top_p = 1.0f; p.temperature = 1.0f; p.greedy = true;

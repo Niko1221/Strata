@@ -19,12 +19,61 @@ asked, with a note when it is more than setup would recommend.
 "parallel": 2
 ```
 
-On one GPU with MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
-server's environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch
-behaviour described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so
-check the engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer
-split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
-throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
+With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the server's
+environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch behaviour
+described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so check the
+engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer split with
+`--batch-groups` above 1 or with helper-GPU expert caches or `--remote-expert-opt`, a layer split with two stages on one
+GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total throughput with 2 to 4
+clients on one GPU (a RX R9700 run too).
+
+**With a layer split** (e.g. `"layer_split": "24"` on two GPUs, `"parallel": 2`, `--spec 4 --mtp ...`) it works the
+same way, with the slot drafters on the **last stage's GPU** (where the solo drafter and the head are): each slot gets a
+drafter that shares the solo drafter's weights and owns only its K/V ring and buffers (the engine logs `--batch-mtp: N
+slot drafters on CUDAk (X MiB ... each)` at start; the K/V ring of each also keeps a pinned-RAM copy, as the solo
+drafter's does). A window carries two rows per active slot (its token and its proposal) through every stage, so at most
+four slots are in one window; more slots (`--batch` up to what fits) rotate through. The windows run through the stages
+one after the other (`--batch-groups 1`): on 0.1.41 a layer split with `--batch` 2 or more pipelines the slots in groups
+by default, and the pipelined path does not run the slots' MTP drafts, so with `--batch-mtp` and no `--batch-groups` the
+engine runs one group and says so; `--batch-groups G` (G above 1) or `--batch-groups auto` given on the command line
+keeps the pipeline and turns `--batch-mtp` off. Only a layer split of two stages on two GPUs has been run.
+
+Measured on a layer split of 2x RTX 3080 20 GB (220 W cap) with a Xeon E5-2696 v4, UD-Q4_K_XL, `"layer_split": "23"`,
+`"parallel": 2`, `--spec 4`: two concurrent greedy decodes of 300 tokens, the two streams' tok/s added, median of
+the measurements (10 rounds of two streams after each restart of the engine, 20 measurements per restart). The
+engine was 0.1.41 with the rest of our production stack on it (the shared KV pool, and the adaptive expert tier
+running in batch windows in the first two arms; the pipelined path of the third never adapts in windows), so this is
+`--batch-mtp` on top of that, not this change alone on main.
+
+| arm | aggregate tok/s | restarts, measurements | per window |
+| --- | --- | --- | --- |
+| `--batch-mtp`, one group | **89.2** | 3, 60 | 3.3 rows, 34.6 ms, 66-67% of the proposals accepted |
+| no `--batch-mtp`, one serial group | 77.3 | 2, 40 | 2.0 rows, 23.7 ms |
+| no `--batch-mtp`, `--batch-groups` unset (the 0.1.41 default: two pipelined groups of one slot) | 77.7 | 1, 20 | one row per group step |
+
+That is +15.4% for `--batch-mtp` against serial windows without it (95% bootstrap interval of the ratio of medians
++12.5% to +17.9%) and +14.8% against the pipelined default; the two arms without it tie. One stream alone decodes the
+same with and without it (81.7 and 82.0 tok/s), and the two slot drafters cost 35 to 110 expert-cache slots on the
+last GPU (50 MiB of private state each).
+
+The pipelined default is better in one place: a new prompt of about 48k tokens arriving while one stream decodes was
+read at 2508 tok/s with pipelined groups and 1217 tok/s in serial windows, and the decoding stream finished sooner
+(25.0 against 18.0 tok/s over its whole run); `--batch-mtp` does not change that. So it pays where concurrent decodes
+dominate; with long reads arriving beside decodes the pipelined groups can be the better choice. Not measured: more
+than two stages (the report on #1253 found no gain at four stages), more than two slots, sampled decoding, an
+upstream-main binary (the pipelined arm is our build, started with the flags 0.1.41 resolves to).
+
+Our measurement of `--batch-mtp` on a layer split with 2x R9700 and all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM.
+
+Earlier, on engine 0.1.40.3 with this change and the same two cards, two concurrent streams: UD-Q4_K_XL 39.9 to 43.5
+tok/s without and 44.5 to 51.3 with `--batch-mtp` (2 runs per arm), and a small Coder IQ1_M test model with all
+experts in VRAM 84.0 without and 101.2 with it, the greedy text of both streams identical.
+
+Text: with the same expert cache on both arms (the slot drafters take VRAM, so the cache differs unless the
+reserve is adjusted) and `--pcie-frac 0`, `--adapt-every 0`, the greedy text with `--batch-mtp` was equal to the text
+without it for 5 short prompts in all 6 comparisons (one restart per arm). That is text equality, not a bit-exactness
+proof, and a 25k-token prompt read while the other stream decodes was not repeatable between two identical streams
+of the same arm.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -37,7 +86,7 @@ With a layer split, the engine options go into the config's `args`:
 | --- | --- |
 | `"parallel": N` / `--batch N` / `--slots N` (2..8 normally) | up to N conversations have batch slots; more requests wait for a free slot. Each slot gets its own state (a session carved like the stage's own: GDN recurrence, QSA K/V and indexer, PLE history) on every GPU of the split. With grouped MTP, more than 8 slots can rotate through eight-row windows if memory permits. |
 | `--batch-groups G` | with a layer split (default: auto, below): the N slots in G groups that flow through the GPUs as a pipeline (GPU k runs one group while GPU k+1 runs another). G must divide N. 1 = all slots in one window, GPU after GPU. |
-| `--batch-groups auto` | the default on a layer split since 0.1.41 (give no `--batch-groups`): the engine pipelines one group per GPU stage (the most that divide the slots; 8 slots on 4 GPUs = 4 groups of 2) and says so (`INFO batch_groups=G`). `--batch-groups 1` turns it off (all slots in one window, GPU after GPU). Measured, 8 clients, total tok/s against one group: 4 x R9700 166 against 86, 2 GPUs 109 against 78, 3 GPUs 110 against 78. |
+| `--batch-groups auto` | the default on a layer split since 0.1.41 (give no `--batch-groups`): the engine pipelines one group per GPU stage (the most that divide the slots; 8 slots on 4 GPUs = 4 groups of 2) and says so (`INFO batch_groups=G`). `--batch-groups 1` turns it off (all slots in one window, GPU after GPU). Measured, 8 clients, total tok/s against one group: 4 x R9700 166 against 86, 2 GPUs 109 against 78, 3 GPUs 110 against 78. With `--batch-mtp` or `--adapt-async 1` and no `--batch-groups` the default is one group (the slots' MTP drafts and the adaptive tier between batch windows do not run in pipelined groups) and the log says so; `--batch-groups G` or `--batch-groups auto` given with `--batch-mtp` pipelines the groups and turns `--batch-mtp` off, and given with `--adapt-async 1` pipelines the groups and turns `--adapt-async` off (the pipelined path does not adapt). |
 | `--trim-stage-weights` | with an **explicit** `--layer-split` (e.g. `12,24,36`, not `auto`): every GPU loads only the dense weights of its own layers instead of the whole model's (the same as `STRATA_STAGE_TRIM=1`, PR #639). The VRAM this frees goes to the expert cache. Useful without `--batch` too. |
 
 The engine never refuses a count it cannot run: it says so in its log and runs what it can - at most 8 slots by
@@ -92,6 +141,44 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
+## The VRAM expert tier keeps adapting in batch windows
+
+Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the
+most-routed experts that are not in VRAM into the cache in place of the least-routed resident ones, the same rule the
+solo path uses (`--adapt-swaps` and `--adapt-decay` apply too; on a layer split every GPU's cache adapts). It runs when the
+tier is not the whole model and both `--adapt-every` and `--adapt-swaps` are above 0. By default the round runs beside the
+window's commit and drafts and has landed before the next window starts. It stands still while a long prompt is read
+between decoding windows (the prompt may hold a loan of cache slots). The `strata batch:` log line shows the rounds and swaps, each stage's
+GPU-reach wait and pool time, and how many routed entries the VRAM tier, the PCIe share and the CPU served per window.
+Swaps move experts between the GPU and the CPU, which round differently, so greedy outputs can differ from run to run;
+`--adapt-every 1000000` keeps the tier fixed (as in the exactness settings below). The pipelined `--batch-groups` path
+does not adapt.
+
+With `--adapt-async 1` (needs the resident RAM mode) the round does not hold a window up: each batch window moves the
+round on one step (table changes and uploads on the main thread, the copies on a helper thread and the cards' refill
+streams), as on the solo path. A request that arrives finishes the round in flight before it starts, and a prompt read
+between decoding windows does not move it. `--adapt-min-gain F` (default 1.5) raises the bar a swap must clear (the
+routing count of the expert coming in against the one going out), so fewer experts move per round; both tiers use it.
+The log line's `adapt wait` is the time the main thread spent on the tier per window (the blocking tier: waiting for
+its round).
+
+Measured with the same setup as the `--batch-mtp` numbers above (2x RTX 3080 20 GB, UD-Q4_K_XL, `"layer_split": "23"`,
+`"parallel": 2`, `--batch-mtp`, engine 0.1.41 with our production stack; two concurrent greedy decodes, the streams'
+tok/s added, median of 20 measurements per restart):
+
+| tier | aggregate tok/s | restarts | per window | routed entries served from VRAM |
+| --- | --- | --- | --- | --- |
+| `--adapt-async 1 --adapt-every 2` | **89.2** | 3 | 34.6 ms, adapt wait 0.2 ms | 92.1% |
+| blocking, `--adapt-every 2` | 74.7 | 1 | 41.4 ms, adapt wait 8.4 ms | 92.3% |
+| none, the cache frozen from a profile the tier had learned on the same prompts | 69.5 | 1 | 43.6 ms | 77.2% |
+| none, `--adapt-every 0` | 45.2 | 2 | 66-68 ms | 52.7% |
+
+The switch changes the tier in the solo path as well (there is no switch for batch windows alone), so the table
+compares the tier as a whole, not "batch windows only": the solo decode speed moves the same way (81.7, 66.3, 69.0 and
+43.1 tok/s). The prompts are the benchmark's own, eight topics that repeat, which the tier learns quickly, so on a
+more varied workload the gain may be smaller (not measured). Upstream main runs no tier in batch windows, and this
+was not measured against an upstream binary.
+
 ## Exactness
 
 A batch row's arithmetic is the single-token window's, so with greedy decoding **every conversation of a batch
@@ -124,7 +211,9 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- Grouped MTP currently uses one proposal per slot and requires one GPU; it does not support a layer split.
+- `--batch-mtp` uses one proposal per slot. With a layer split it needs each stage on its own GPU, does not combine
+  with `--batch-groups` above 1 (pipelined slot groups run no drafts, #1413) and has not been run with helper expert
+  caches.
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.

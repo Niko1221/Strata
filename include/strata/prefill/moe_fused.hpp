@@ -31,7 +31,9 @@ bool built();
 bool available();
 /// available(), unless STRATA_PF_FUSED=0 (read once): the Q2_0 pack's fused experts, on by default since 0.1.36.
 bool enabled();
-/// STRATA_PF_FUSED=1 given explicitly, and available(): the native IQ packs' fused kernels (opt-in).
+/// STRATA_PF_FUSED=1 given explicitly, and available(): the native IQ packs' fused kernels (opt-in).  On gfx12 (RDNA4)
+/// only the native kernels exist: available() / enabled() / requested() stay false there and
+/// native_supported() (moe_fused_iq.hpp) reads the same opt-in itself.
 bool requested();
 
 /// Bytes of `rows` activation rows of `cols` values (a multiple of 64) in the kernels' int8 form: per 64 values 64
