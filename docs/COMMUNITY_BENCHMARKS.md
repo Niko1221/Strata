@@ -60,6 +60,11 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-10: AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 9 5950X, 128 GB RAM, Arch Linux](../bench/results/2026-10-10-community-rx-6900xt-tail-skip-hip/README.md):
+  Strata 0.1.42 (`61b3fb5`) HIP source build, ROCm 7.2.4, Unsloth UD-Q4_K_XL at 131K with `STRATA_HIP_PROMPT_F16=1`;
+  `STRATA_ROUTE_TAIL_SKIP=7` (the CUDA default, not applied on HIP) set by hand against unset, 5 alternating starts
+  per arm: decode **x1.24** (median of 15 pairs, faster in 14), story 28.3 → 31.8, code 31.9 → 39.6, 7.9K-token
+  document 28.2 → 35.2 tok/s; needles 10/10 in both arms. No KL or task check.
 
 ## What to record
 
