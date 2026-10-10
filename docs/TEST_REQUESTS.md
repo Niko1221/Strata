@@ -14,6 +14,7 @@ This list is edited by the maintainers. An item stays until a report answers it.
 | Three or four NVIDIA GPUs | No multi-GPU NVIDIA rig of that size here | #880 |
 | Pascal (sm_61: Tesla P40, P100, GTX 10 series) | Older cards run on the fp32 path and can behave differently from newer ones | #875, #876 |
 | A Linux host with 32 GB of RAM or less | The expert file tier and the resident mode depend on how much of the model fits in RAM | #1194 |
+| The expert cache's VRAM headroom, on one NVIDIA card and one AMD card | `--expert-cache auto` fills the card and the prompt path then reads tens of times slower; measured on an Intel card only, and it may be a Windows effect ([EXPERT_CACHE_HEADROOM.md](EXPERT_CACHE_HEADROOM.md)) | #1549 |
 | A long soak (an hour or more of back-to-back requests) on a split or resident setup | Shows crashes, drift and heat that a short run does not | #848 |
 
 To add a request, open a pull request that adds a row, or tell the maintainers in an issue.
