@@ -160,14 +160,40 @@ arms. Almost all of the shared figure is the pinned host memory the engine maps 
 GiB expert arena and 3.09 GiB of K/V), so it hides any spill of a few hundred MiB. It is the same in
 both arms.
 
-By the table above, CUDA's default stays 0. The SYCL tree has the same post-write check
-(`sycl/src/program/generate.cpp`), and the B70 hit the cliff anyway, so the question there is why the
-check did not see the spill. The free figure the port reads may not show memory that WDDM has paged
-out. Not measured.
+By the table above, CUDA's default stays 0.
+
+**Why the B70 hits the cliff and this card does not: the OpenCL backend has no free-VRAM query.** The SYCL
+tree has the same post-write check (`sycl/src/program/generate.cpp`, "only N MiB free once the slots are
+written"), and it cannot fire - `dpct`'s `get_memory_info` is a port addition whose comment says the free
+query needs `ext_intel_free_memory` (Level Zero sysman), which the OpenCL backend does not have, and
+`STRATA_DEVICE_FREE_MIB` makes it return a setup-time constant instead:
+
+```cpp
+if (const char* e = std::getenv("STRATA_DEVICE_FREE_MIB")) {
+    try { free_memory = (size_t)(std::stoll(e) * 1048576ll); return; } catch (...) {}
+}
+```
+
+`setup_intel.py` writes that value once from the registry, `(vram_gb - 1.0) * 1024` - 31,744 MiB on a
+32 GB card. A printed check on the B70 gives the same figure before the allocation and after it:
+`post-write free 31.00 GiB, want 2048 MiB, cache 17687 slots (28.82 GiB)`. So on Windows/OpenCL the
+check compares a constant to a threshold, nothing protects the run, and the sizing arithmetic is the only
+constraint - which is what the headroom is for. On CUDA `cudaMemGetInfo` is live, the check works, and
+the headroom is a no-op, exactly as the table above shows.
+
+**And the expert GEMMs are not the slow part either.** `sycl/probe/vram_pressure.cpp` times the engine's
+own `Gemm::f16` at the prompt path's shapes with the card empty and again after allocating and touching
+28 GiB of it: 1,467 us and 1,467 us for gate/up, 380 and 382 for down. A full card does not slow this
+kernel. So the 111 ms per expert pair the slow arm charged to the GEMM phases was mostly not GEMM work,
+and under `STRATA_PREFILL_SYNC=1` the slowdown is spread across most kernels rather than the expert
+path: `gdn` 55x, the QSA projections 42x, the GDN output projection 53x, the two expert GEMMs 39x, the
+whole prefill 36x. What the GPU is doing with the last 2 GiB is still unexplained; the candidate is
+contention between VRAM traffic and the concurrent PCIe mirror reads, which is not measured.
 
 ## Not tested
 
 Any NVIDIA card other than the RTX 5070 Ti; any card where the post-write check does not run (an
 explicit `--expert-cache N`). Linux. Whether the cliff moves with `--prefill`, the KV reservation, or
-the pack. Any model other than IQ3_XXS on the B70. Decode on the B70 with the cache cut. The HIP
-sources carry the change but were not compiled.
+the pack. Any model other than IQ3_XXS on the B70. Decode on the B70 with the cache cut. What the GPU is
+actually doing with the last 2 GiB of VRAM when the cliff is hit. The HIP sources carry the change but
+were not compiled.
