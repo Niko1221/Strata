@@ -183,6 +183,34 @@ instruction-following variability, not evidence of a failed lease or a
 demonstrated engine regression; the cause of the redundant verification is not
 established.
 
+One unchanged-protocol repeat is retained in
+[hermes-resident05-r2-results.json](hermes-resident05-r2-results.json). It also
+failed overall: 17/17 lifecycle and 10/12 final workflow checks passed. The
+supervisor tried an unavailable search tool, then read the worker log despite
+having complete feedback. The worker compiled only once and passed 2,096 cases.
+The later independent and function-continuation stages again did not run.
+There was no third repeat. These are two lifecycle successes and zero strict
+workflow successes on .42, not reliable autonomous acceptance.
+
+The repeat agent interval was 265.892 seconds; sampled minima were 9.423 GiB
+RAM and 322 MiB native VRAM, with clean owned-process teardown. A separate
+mocked HTTP/sampler test ran for 0.585 seconds during the repeat (about 1.55
+seconds command wall); this timing is not presented as uncontended. In both
+attempts, `verify_on_stop` was configured but did not inject a verification
+nudge: there were no changed-code paths or synthetic follow-up messages.
+Standing verification guidance was present, but its causal role is unproven.
+
+The first remote CI run passed Windows Python and both native CPU jobs, but
+Ubuntu exposed a race in the inherited sampler test: it counted every server's
+thread while unrelated samplers could finish stopping. The test-only correction
+in `e2529d11` verifies its own bound sampler and closes the server in `finally`.
+The original failure is preserved in
+[run 38073230611](https://github.com/midhatn/Strata/actions/runs/38073230611);
+the corrected source is checked by
+[run 38073750104](https://github.com/midhatn/Strata/actions/runs/38073750104).
+This is a test-ownership fix, not a performance improvement or an imported
+research technique. The measured runtime and native hashes above are unchanged.
+
 ## Limits
 
 - The component sections are direct API tests. The separately labeled Hermes
