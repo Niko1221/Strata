@@ -211,6 +211,15 @@ class Tokenizer:
     PIECE_CACHE_MAX = 200_000    # pre-tokenizer pieces remembered (an agent resends its whole history every turn)
 
     def _encode_plain(self, text: str) -> list[int]:
+        # A chat sends every earlier message again each turn, and the text between two special tokens is encoded on
+        # its own, so a long piece (one message) is encoded once and its ids reused: the same ids, and no pre-tokenizer
+        # pass over the whole conversation each turn (a 190K-token one cost ~1.1 s on a 2.5 GHz Xeon before any cache).
+        long = len(text) >= 1024
+        if long:
+            texts = self.__dict__.setdefault("_text_ids", {})
+            hit = texts.get(text)
+            if hit is not None:
+                return list(hit)
         out: list[int] = []
         # A piece's ids depend on the piece alone, so repeated pieces (most of a resent conversation) are looked up
         # instead of merged again.  The ids are the ones _bpe gives: this only skips the work.
@@ -228,6 +237,10 @@ class Tokenizer:
                 if len(cache) < self.PIECE_CACHE_MAX:
                     cache[piece] = got
             out.extend(got)
+        if long:
+            if len(texts) >= 256:
+                texts.clear()
+            texts[text] = list(out)
         return out
 
     def _encode_matching(self, text: str, pat, plain=()) -> list[int]:
