@@ -58,6 +58,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.tracing import Tracing, endpoint_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
@@ -2768,6 +2769,9 @@ class Service:
         self.api_monitor = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
+        # opt-in (serve/tracing.py): OpenTelemetry spans per /v1 request, exported over OTLP; None = off, and then
+        # the request path is byte-identical to the build without it
+        self.tracing = None
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
@@ -3175,21 +3179,27 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
-    def begin_request(self, path, req):
-        """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
-        if not self.api_monitor:
+    def begin_request(self, path, req, headers=None):
+        """#332: a monitor record for this request, or None when neither the monitor nor tracing is on (nothing is
+        kept then).  With tracing on and the monitor off the record holds timings and token counts only - never the
+        prompt or the answer - so a trace cannot carry conversation text to a collector.  A traceparent header from
+        the client becomes the parent of this request's span (serve/tracing.py)."""
+        if not self.api_monitor and self.tracing is None:
             return None
-        raw = json.dumps(req, ensure_ascii=False, indent=2)
         record = {"id": uuid.uuid4().hex[:12], "path": path, "model": req.get("model") or self.model,
                   "started_at": time.time(), "state": "queued", "stream": bool(req.get("stream")),
                   "response_format": (req.get("response_format") or {}).get("type")
                   if isinstance(req.get("response_format"), dict) else None,
-                  "input": raw[:262144], "input_truncated": len(raw) > 262144,
-                  "output": "", "reasoning": "", "output_truncated": False, "reasoning_truncated": False,
+                  "output_truncated": False, "reasoning_truncated": False,
                   "queue_s": 0.0, "load_s": 0.0, "first_token_s": None,
                   "_clock": time.perf_counter()}
-        with self.status_lock:
-            self.api_requests.append(record)
+        if self.tracing is not None:
+            self.tracing.begin(record, headers or {})
+        if self.api_monitor:
+            raw = json.dumps(req, ensure_ascii=False, indent=2)
+            record.update(input=raw[:262144], input_truncated=len(raw) > 262144, output="", reasoning="")
+            with self.status_lock:
+                self.api_requests.append(record)      # /api/requests reads this; a trace-only record is not kept there
         self.request_trace.record = record
         return record
 
@@ -4480,7 +4490,11 @@ def make_handler(svc: Service):
 
         def send_response(self, code, message=None):
             self.answer_started = True                 # a malformed-request answer can only replace one not yet begun
-            super().send_response(code, message)
+            super().send_response(code, message)       # the status line first, then this request's span header
+            # tracing on: the answer carries this request's span, so the caller can line its own spans up with ours
+            ctx = self.record.get("_trace") if self.record is not None else None
+            if ctx is not None:
+                self.send_header("traceparent", ctx.traceparent())
 
         def _chunked(self) -> bool:
             """#893: a body sent as Transfer-Encoding: chunked (a relay or proxy that does not buffer it).  By RFC 9112
@@ -4692,8 +4706,9 @@ def make_handler(svc: Service):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
-                    raw = json.dumps(obj, ensure_ascii=False, indent=2)
-                    self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
+                    if "output" in self.record:      # the monitor keeps the answer; a trace-only record does not
+                        raw = json.dumps(obj, ensure_ascii=False, indent=2)
+                        self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
                     for key in ("error", "usage", "timings"):
                         if key in obj:
                             self.record[key] = obj[key]
@@ -4948,7 +4963,7 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
-                    self.record = svc.begin_request(path, req)
+                    self.record = svc.begin_request(path, req, self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -5010,6 +5025,8 @@ def make_handler(svc: Service):
                         record["wallclock_s"] = round(time.perf_counter() - record["_clock"], 3)
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
+                    if svc.tracing is not None:
+                        svc.tracing.finish(record)      # the spans go out on the exporter's thread, never this one
                     svc.request_trace.record = None
 
         def _props(self):
@@ -5181,6 +5198,7 @@ def make_handler(svc: Service):
             return self._captured(items, api)
 
         def _captured(self, items, api):
+            keep_text = "output" in self.record      # tracing without the monitor: counts and timings only, no text
             try:
                 for item in items:
                     if item is not None:
@@ -5199,11 +5217,12 @@ def make_handler(svc: Service):
                             content, reasoning = delta.get("text", ""), delta.get("thinking", "")
                             usage, timings = event.get("usage"), None
                         with svc.status_lock:
-                            for name, value in (("output", content), ("reasoning", reasoning)):
-                                if value:
-                                    combined = self.record[name] + value
-                                    self.record[name] = combined[:262144]
-                                    self.record[name + "_truncated"] |= len(combined) > 262144
+                            if keep_text:
+                                for name, value in (("output", content), ("reasoning", reasoning)):
+                                    if value:
+                                        combined = self.record[name] + value
+                                        self.record[name] = combined[:262144]
+                                        self.record[name + "_truncated"] |= len(combined) > 262144
                             if usage:
                                 self.record["usage"] = usage
                             if timings:
@@ -6058,6 +6077,10 @@ def main() -> int:
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
+    ap.add_argument("--trace-otlp", default=None, metavar="URL",
+                    help="send an OpenTelemetry trace of every /v1 request to this OTLP endpoint (\"default\" = "
+                         "http://localhost:4318/v1/traces, where Foundry Toolkit's collector, Jaeger and Tempo "
+                         "listen; also \"trace_otlp\" in the config or $STRATA_TRACE_OTLP; off by default)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     lift_reasoning_effort_arg(cfg)
@@ -6203,6 +6226,15 @@ def main() -> int:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
               flush=True)
+    try:
+        trace_endpoint = endpoint_from_config(cfg, a.trace_otlp)
+    except ValueError as e:
+        raise SystemExit(f"[strata] {e}")
+    if trace_endpoint:
+        svc.tracing = Tracing(trace_endpoint, model=svc.model,
+                              version=str((getattr(engine, "info", {}) or {}).get("version") or ""))
+        print(f"[strata] tracing on: every /v1 request is exported as an OpenTelemetry trace to {trace_endpoint} "
+              "(token counts and timings only - no prompts or answers leave this PC)", flush=True)
     if svc.cors_origins:
         print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
               + ("" if svc.api_key or "*" not in svc.cors_origins else
@@ -6313,8 +6345,8 @@ def main() -> int:
             time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
-        closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None]
+        closers = [httpd.shutdown, getattr(svc.tracing, "close", None), getattr(engine, "close", None),
+                   vision.shutdown if vision else None, hub.close if hub is not None else None]
         for close in filter(None, closers):
             try:
                 close()

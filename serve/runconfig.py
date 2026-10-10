@@ -33,6 +33,8 @@ EDITABLE = [
     ("lazy_load", "bool", "Start without loading the model; the first request loads it (text only)"),
     ("engine_silence_s", "num>=0", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)"),
     ("api_monitor", "bool", "Keep the last 100 requests' prompts and answers in memory for /api-monitor"),
+    ("trace_otlp", "str", "Send OpenTelemetry traces of every /v1 request to this OTLP endpoint"
+     " (\"default\" = http://localhost:4318/v1/traces; off by default, and off until the next start changes it)"),
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
@@ -102,6 +104,15 @@ def check(key: str, v, cfg: dict):
         if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() and len(x) <= 128 for x in v):
             raise ValueError(f"{key}: expected a list of model names, not {v!r}")
         return v or None
+    if k == "str":
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"{key}: expected an OTLP endpoint like http://localhost:4318/v1/traces, not {v!r}")
+        from serve.tracing import endpoint_of          # the same check the server applies at start
+        try:
+            endpoint_of(v)
+        except ValueError as e:
+            raise ValueError(str(e))
+        return v
     if k == "int>=0":
         return _number(key, v, whole=True)
     if k == "num>=0":

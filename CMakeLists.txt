@@ -1241,6 +1241,13 @@ if(STRATA_NATIVE_EXPERTS)
     add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   else()
     include(FetchContent)
+    # CMake 3.30 deprecated FetchContent_Populate(<name>) (policy CMP0169); CMake 4.4 warns every configure.
+    # The populate-then-add_subdirectory form here is deliberate: ggml is pulled in from the checkout's ggml/
+    # subdirectory into ${CMAKE_BINARY_DIR}/ggml, the same binary dir the STRATA_GGML_DIR branch uses.
+    # Pin the old behavior for this call, guarded so CMake < 3.30 (no such policy) still configures.
+    if(POLICY CMP0169)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
     FetchContent_Declare(strata_llamacpp
       GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
       GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
