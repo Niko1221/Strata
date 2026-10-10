@@ -777,8 +777,11 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, token_aware: bool = False):
         self.state = "reasoning" if thinking else "content"
+        # Decoded ordinary tokens can spell </think> too. A token-aware caller reports the model's actual
+        # end marker through end_thinking(); text-only callers keep the historical tag parser.
+        self.token_aware = token_aware
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
@@ -801,6 +804,11 @@ class OutputParser:
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
+
+    def reopen_reasoning(self) -> None:
+        """#1814: the tag the parser took as the end of the thinking was ordinary text the model wrote, not the marker.
+        Go back to reasoning, so what the model writes next is reasoning again (Service.run does this and continues)."""
+        self.state, self.lead = "reasoning", False
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
@@ -1051,6 +1059,23 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def end_thinking(self) -> list[Event]:
+        """Consume the model's end-of-thinking token, independently of its decoded text.
+
+        A genuine marker can close mid-line, including inside an unfinished quotation. Outside reasoning its
+        spelling is ordinary output. No text sentinel is used, so literal/private-use characters cannot collide.
+        """
+        out = self.feed("")
+        if self.state not in ("reasoning", "rcall"):
+            return out + self.feed(THINK_END)
+        out += self._release(self.state == "reasoning" and not self.buf)
+        if self.buf:
+            out.append(Event("reasoning", self._track(self.buf)))
+            self.buf = ""
+        self.state, self.lead = "content", True
+        self.fence, self.line, self.ticks = "", "", 0
+        return out
+
     def feed(self, delta: str) -> list[Event]:
         self.buf += delta
         out: list[Event] = []
@@ -1059,7 +1084,7 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = call_end(body), -1 if self.token_aware else body.find(THINK_END)
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
@@ -1099,14 +1124,14 @@ class OutputParser:
                         return out
                     if self.buf.startswith(CALL_START):
                         self.state = "rcall"
-                    elif self.buf.startswith(THINK_END):
+                    elif not self.token_aware and self.buf.startswith(THINK_END):
                         out += self._release(True)
-                    elif CALL_START.startswith(self.buf) or THINK_END.startswith(self.buf):
+                    elif CALL_START.startswith(self.buf) or (not self.token_aware and THINK_END.startswith(self.buf)):
                         return out
                     else:
                         out += self._release(False)
                     continue
-                i = self.buf.find(THINK_END)
+                i = -1 if self.token_aware else self.buf.find(THINK_END)
                 tool = self.buf.find(CALL_START) if self.schemas else -1
                 if tool >= 0 and (i < 0 or tool < i):
                     if tool:
@@ -1119,7 +1144,8 @@ class OutputParser:
                         self.buf = self.buf[tool + len(CALL_START):]
                     continue
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END, CALL_START) if self.schemas else (THINK_END,))
+                    tags = (() if self.token_aware else (THINK_END,)) + ((CALL_START,) if self.schemas else ())
+                    keep = self._hold(self.buf, tags)
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]

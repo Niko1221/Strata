@@ -140,6 +140,11 @@ def strata(m: dict, out: list, lab: str):
            round((totals.get("prompt_ms") or 0) / 1000, 3))
     metric("totals_decode_seconds_total", "counter", "Time spent generating (totals.decode_ms).",
            round((totals.get("decode_ms") or 0) / 1000, 3))
+    # #1814: replies that ended inside the thinking with no answer at all (empty replies), whether or not
+    # "literal_think_guard" continued them.
+    metric("totals_ended_inside_thinking_total", "counter",
+           "Replies that ended inside the thinking with no answer (totals.ended_inside_thinking).",
+           _num(totals.get("ended_inside_thinking")))
     last = reqs[0] if reqs else {}
     metric("last_hit_rate", "gauge", "The last request's expert cache hit rate (requests[0].hit_rate).",
            last.get("hit_rate"))
