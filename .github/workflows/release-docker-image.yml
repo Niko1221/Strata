@@ -1,0 +1,70 @@
+name: Release Docker Image
+
+# Builds and pushes the CUDA image on a version tag (docs/INSTALL.md, Docker).
+# amd64 only: the engine needs x86-64 AVX2, and an emulated arm64 CUDA compile
+# could not run on an arm64 GPU host anyway.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:          # rebuild this checkout's version; does not move :latest
+
+concurrency:
+  group: release-docker
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: write         # the built-in token pushes to GHCR: no secret to set
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version and image name
+        id: meta
+        run: |
+          set -euo pipefail
+          cmake=$(sed -n 's/^project(strata VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            version="$cmake"                      # a manual run must not move :latest
+          else
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$cmake" ]; then
+              echo "tag $GITHUB_REF_NAME does not match CMakeLists.txt ($cmake)" >&2
+              exit 1
+            fi
+          fi
+          # GHCR needs a lowercase image name; the repository's own name is not.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "image=$image"
+            echo "tags<<TAGS"
+            echo "$image:$version"
+            echo "$image:$version-cuda13"
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+              echo "$image:latest"
+            fi
+            echo TAGS
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $image:$version"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: PORTABLE=1
+          tags: ${{ steps.meta.outputs.tags }}
