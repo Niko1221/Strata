@@ -1,0 +1,21 @@
+{
+  "name": "Tool selection and recovery priority",
+  "description": "User-directed post-hoc interpretation; not the official benchmark score.",
+  "weights_percent": {
+    "A": 25,
+    "B": 10,
+    "C": 5,
+    "D": 0,
+    "E": 25,
+    "F": 0,
+    "G": 0,
+    "H": 0,
+    "I": 20,
+    "J": 5,
+    "K": 0,
+    "L": 0,
+    "M": 10,
+    "N": 0,
+    "O": 0
+  }
+}

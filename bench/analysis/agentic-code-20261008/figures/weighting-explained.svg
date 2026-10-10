@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1152pt" height="864pt" viewBox="0 0 1152 864" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 864
+L 1152 864
+L 1152 0
+L 0 0
+z
+" style="fill: #f4f7fb"/>
+  </g>
+  <g id="patch_2">
+   <path d="M 51.84 260.928
+L 552.96 260.928
+Q 566.784 260.928 566.784 250.56
+L 566.784 125.28
+Q 566.784 114.912 552.96 114.912
+L 51.84 114.912
+Q 38.016 114.912 38.016 125.28
+L 38.016 250.56
+Q 38.016 260.928 51.84 260.928
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_3">
+   <path d="M 604.8 260.928
+L 1105.92 260.928
+Q 1119.744 260.928 1119.744 250.56
+L 1119.744 125.28
+Q 1119.744 114.912 1105.92 114.912
+L 604.8 114.912
+Q 590.976 114.912 590.976 125.28
+L 590.976 250.56
+Q 590.976 260.928 604.8 260.928
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_4">
+   <path d="M 51.84 416.448
+L 552.96 416.448
+Q 566.784 416.448 566.784 406.08
+L 566.784 280.8
+Q 566.784 270.432 552.96 270.432
+L 51.84 270.432
+Q 38.016 270.432 38.016 280.8
+L 38.016 406.08
+Q 38.016 416.448 51.84 416.448
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_5">
+   <path d="M 604.8 416.448
+L 1105.92 416.448
+Q 1119.744 416.448 1119.744 406.08
+L 1119.744 280.8
+Q 1119.744 270.432 1105.92 270.432
+L 604.8 270.432
+Q 590.976 270.432 590.976 280.8
+L 590.976 406.08
+Q 590.976 416.448 604.8 416.448
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_6">
+   <path d="M 51.84 571.968
+L 552.96 571.968
+Q 566.784 571.968 566.784 561.6
+L 566.784 436.32
+Q 566.784 425.952 552.96 425.952
+L 51.84 425.952
+Q 38.016 425.952 38.016 436.32
+L 38.016 561.6
+Q 38.016 571.968 51.84 571.968
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_7">
+   <path d="M 604.8 571.968
+L 1105.92 571.968
+Q 1119.744 571.968 1119.744 561.6
+L 1119.744 436.32
+Q 1119.744 425.952 1105.92 425.952
+L 604.8 425.952
+Q 590.976 425.952 590.976 436.32
+L 590.976 561.6
+Q 590.976 571.968 604.8 571.968
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_8">
+   <path d="M 51.84 727.488
+L 552.96 727.488
+Q 566.784 727.488 566.784 717.12
+L 566.784 591.84
+Q 566.784 581.472 552.96 581.472
+L 51.84 581.472
+Q 38.016 581.472 38.016 591.84
+L 38.016 717.12
+Q 38.016 727.488 51.84 727.488
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_9">
+   <path d="M 604.8 727.488
+L 1105.92 727.488
+Q 1119.744 727.488 1119.744 717.12
+L 1119.744 591.84
+Q 1119.744 581.472 1105.92 581.472
+L 604.8 581.472
+Q 590.976 581.472 590.976 591.84
+L 590.976 717.12
+Q 590.976 727.488 604.8 727.488
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="text_1">
+   <text style="font-weight: 700; font-size: 27px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="51.84" y="43.2" transform="rotate(-0 51.84 43.2)">What matters in this scoring profile</text>
+  </g>
+  <g id="text_2">
+   <text style="font-size: 14px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="51.84" y="76.032" transform="rotate(-0 51.84 76.032)">50% for tool selection + error recovery  /  5% for multi-step chains</text>
+  </g>
+  <g id="text_3">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #176a85" x="72.576" y="161.568" transform="rotate(-0 72.576 161.568)">25%  Tool selection</text>
+  </g>
+  <g id="text_4">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="196.992" transform="rotate(-0 72.576 196.992)">Choose the operation that fits the request.</text>
+  </g>
+  <g id="text_5">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="224.64" transform="rotate(-0 72.576 224.64)">Example: get_weather instead of web_search.</text>
+  </g>
+  <g id="text_6">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #17a39b" x="625.536" y="161.568" transform="rotate(-0 625.536 161.568)">25%  Error recovery</text>
+  </g>
+  <g id="text_7">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="196.992" transform="rotate(-0 625.536 196.992)">Handle errors without fabricating a result.</text>
+  </g>
+  <g id="text_8">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="224.64" transform="rotate(-0 625.536 224.64)">Example: surface a failed stock-price lookup.</text>
+  </g>
+  <g id="text_9">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #7865ba" x="72.576" y="317.088" transform="rotate(-0 72.576 317.088)">20%  Context &amp; state</text>
+  </g>
+  <g id="text_10">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="352.512" transform="rotate(-0 72.576 352.512)">Retain corrections and prior tool results.</text>
+  </g>
+  <g id="text_11">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="380.16" transform="rotate(-0 72.576 380.16)">Example: keep the revised meeting time.</text>
+  </g>
+  <g id="text_12">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #e4ad3a" x="625.536" y="317.088" transform="rotate(-0 625.536 317.088)">10%  Arguments</text>
+  </g>
+  <g id="text_13">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="352.512" transform="rotate(-0 625.536 352.512)">Pass the intended arguments accurately.</text>
+  </g>
+  <g id="text_14">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="380.16" transform="rotate(-0 625.536 380.16)">Example: use the requested temperature units.</text>
+  </g>
+  <g id="text_15">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #dc795a" x="72.576" y="472.608" transform="rotate(-0 72.576 472.608)">10%  Planning</text>
+  </g>
+  <g id="text_16">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="508.032" transform="rotate(-0 72.576 508.032)">Break a goal into useful operations.</text>
+  </g>
+  <g id="text_17">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="535.68" transform="rotate(-0 72.576 535.68)">Example: resolve contacts, create event, notify.</text>
+  </g>
+  <g id="text_18">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="472.608" transform="rotate(-0 625.536 472.608)">5%  Multi-step chains</text>
+  </g>
+  <g id="text_19">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="508.032" transform="rotate(-0 625.536 508.032)">Respect dependencies, with a smaller weight.</text>
+  </g>
+  <g id="text_20">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="535.68" transform="rotate(-0 625.536 535.68)">Example: read a found file before emailing it.</text>
+  </g>
+  <g id="text_21">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="628.128" transform="rotate(-0 72.576 628.128)">5%  Code patterns</text>
+  </g>
+  <g id="text_22">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="663.552" transform="rotate(-0 72.576 663.552)">Basic code-oriented tool behavior.</text>
+  </g>
+  <g id="text_23">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="691.2" transform="rotate(-0 72.576 691.2)">Example: read the source before proposing a fix.</text>
+  </g>
+  <g id="text_24">
+   <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="628.128" transform="rotate(-0 625.536 628.128)">0%  Safety &amp; structured output</text>
+  </g>
+  <g id="text_25">
+   <text style="font-size: 10.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="663.552" transform="rotate(-0 625.536 663.552)">Also zero: restraint, localization, structured reasoning,</text>
+  </g>
+  <g id="text_26">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="691.2" transform="rotate(-0 625.536 691.2)">instruction following, toolset scale and composition.</text>
+  </g>
+  <g id="text_27">
+   <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="51.84" y="764.64" transform="rotate(-0 51.84 764.64)">Score = sum of weight x (earned category points / available category points)</text>
+  </g>
+  <g id="text_28">
+   <text style="font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="51.84" y="794.016" transform="rotate(-0 51.84 794.016)">Exact fractions are used before rounding. One lost point in selection or recovery changes the score by 25/6 = 4.17.</text>
+  </g>
+  <g id="text_29">
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="51.84" y="837.216" transform="rotate(-0 51.84 837.216)">Tool-Eval-Bench by SeraphimSerapis  |  github.com/SeraphimSerapis/tool-eval-bench</text>
+  </g>
+  <g id="text_30">
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="51.84" y="814.752" transform="rotate(-0 51.84 814.752)">Examples paraphrase test expectations. Six selection/recovery scenarios supply half the score: small samples matter.</text>
+  </g>
+ </g>
+</svg>

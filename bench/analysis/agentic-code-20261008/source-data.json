@@ -1,0 +1,2152 @@
+{
+  "source_commit": "4ac2820982044ac52b27a85fee74b0ea3288527b",
+  "benchmark": "https://github.com/SeraphimSerapis/tool-eval-bench",
+  "benchmark_commit": "c8a30ff5c1fb132e395bc2d8e4bd549ef1294abd",
+  "models": [
+    {
+      "id": "ista-q2",
+      "label": "ISTA Q2_0",
+      "family": "ISTA",
+      "reference": false,
+      "file_bytes": 66423878624,
+      "model_repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 3,
+          "max": 6,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 13,
+          "max": 20,
+          "percent": 65,
+          "pass_count": 5,
+          "partial_count": 3,
+          "fail_count": 2
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 23,
+          "max": 26,
+          "percent": 88,
+          "pass_count": 10,
+          "partial_count": 3,
+          "fail_count": 0
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 115,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-q2-standard.json",
+      "source_file_sha256": "ae2f7ebc9f80de1008c30f31dfefb802d1ce561dc3dd5b3213d2b8f92a4e364c",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "ista-iq2",
+      "label": "ISTA IQ2_XS",
+      "family": "ISTA",
+      "reference": false,
+      "file_bytes": 68026093024,
+      "model_repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 3,
+          "max": 6,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 3,
+          "max": 6,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 3,
+          "max": 6,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 18,
+          "max": 20,
+          "percent": 90,
+          "pass_count": 9,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 16,
+          "max": 26,
+          "percent": 62,
+          "pass_count": 6,
+          "partial_count": 4,
+          "fail_count": 3
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 5,
+          "max": 12,
+          "percent": 42,
+          "pass_count": 1,
+          "partial_count": 3,
+          "fail_count": 2
+        }
+      ],
+      "standard_points": 107,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-iq2-standard.json",
+      "source_file_sha256": "611f518798ea517f2a439bec10fc461f0aa63b22acffab34a22ff728952ccfec",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "ista-iq3",
+      "label": "ISTA IQ3_XXS",
+      "family": "ISTA",
+      "reference": false,
+      "file_bytes": 75839998528,
+      "model_repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 8,
+          "max": 10,
+          "percent": 80,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 17,
+          "max": 20,
+          "percent": 85,
+          "pass_count": 8,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 23,
+          "max": 26,
+          "percent": 88,
+          "pass_count": 11,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 124,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-iq3-standard.json",
+      "source_file_sha256": "7f18bdd019a92b1c2057e0c84d3ba269f536a391982063c534f4aa4afc2b3c75",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "swift-q2",
+      "label": "Swift Q2_0",
+      "family": "Swift",
+      "reference": false,
+      "file_bytes": 66549952800,
+      "model_repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 15,
+          "max": 20,
+          "percent": 75,
+          "pass_count": 7,
+          "partial_count": 1,
+          "fail_count": 2
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 25,
+          "max": 26,
+          "percent": 96,
+          "pass_count": 12,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 122,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-q2-standard.json",
+      "source_file_sha256": "960985a9963abc73d74fdd66922c349403f245c06cd960d567391be9d6642612",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "swift-iq2",
+      "label": "Swift IQ2_XS",
+      "family": "Swift",
+      "reference": false,
+      "file_bytes": 68152167168,
+      "model_repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 19,
+          "max": 20,
+          "percent": 95,
+          "pass_count": 9,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 20,
+          "max": 26,
+          "percent": 77,
+          "pass_count": 8,
+          "partial_count": 4,
+          "fail_count": 1
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 6,
+          "max": 8,
+          "percent": 75,
+          "pass_count": 2,
+          "partial_count": 2,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 3,
+          "max": 6,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 5,
+          "max": 12,
+          "percent": 42,
+          "pass_count": 1,
+          "partial_count": 3,
+          "fail_count": 2
+        }
+      ],
+      "standard_points": 117,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-iq2-standard.json",
+      "source_file_sha256": "a11c709ecf72d0d22f484c14460b5349961b59fbb44e50cd540514a1569c6df4",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "swift-iq3",
+      "label": "Swift IQ3_XXS",
+      "family": "Swift",
+      "reference": false,
+      "file_bytes": 75966073120,
+      "model_repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 17,
+          "max": 20,
+          "percent": 85,
+          "pass_count": 8,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 20,
+          "max": 26,
+          "percent": 77,
+          "pass_count": 9,
+          "partial_count": 2,
+          "fail_count": 2
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 6,
+          "max": 8,
+          "percent": 75,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 121,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-iq3-standard.json",
+      "source_file_sha256": "0d3d75e949f7fa1ff3e9cd8ae9c459f0fc34c8e0199d5907028f4213b802346e",
+      "cohort": "mainline Strata / RTX PRO 6000"
+    },
+    {
+      "id": "ap-q4-k-xl",
+      "label": "AP-Q4_K_XL",
+      "family": "AP",
+      "reference": false,
+      "file_bytes": 101142769536,
+      "model_repo": "agentionai/Qwen3.8-Flash-Next-AP-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 15,
+          "max": 20,
+          "percent": 75,
+          "pass_count": 5,
+          "partial_count": 5,
+          "fail_count": 0
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 22,
+          "max": 26,
+          "percent": 85,
+          "pass_count": 11,
+          "partial_count": 0,
+          "fail_count": 2
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 6,
+          "max": 8,
+          "percent": 75,
+          "pass_count": 2,
+          "partial_count": 2,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 1,
+          "partial_count": 2,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 117,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-q4-k-xl-standard.json",
+      "source_file_sha256": "36af6578fe51dd272cec15524b8f0a65058e4ac078de7ed9d4b00c2edf28bc91",
+      "cohort": "mainline Strata, Q6 option enabled / RTX PRO 6000"
+    },
+    {
+      "id": "ap-iq3-xxs",
+      "label": "AP-IQ3_XXS",
+      "family": "AP",
+      "reference": false,
+      "file_bytes": 86672420736,
+      "model_repo": "agentionai/Qwen3.8-Flash-Next-AP-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 17,
+          "max": 20,
+          "percent": 85,
+          "pass_count": 8,
+          "partial_count": 1,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 24,
+          "max": 26,
+          "percent": 92,
+          "pass_count": 11,
+          "partial_count": 2,
+          "fail_count": 0
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 123,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-iq3-xxs-standard.json",
+      "source_file_sha256": "77ec5f25bd768905ac4a89e3540aa5527ae84ec591e3ce95d4020c987c55595d",
+      "cohort": "mainline Strata, Q6 option enabled / RTX PRO 6000"
+    },
+    {
+      "id": "ap-iq2-s",
+      "label": "AP-IQ2_S",
+      "family": "AP",
+      "reference": false,
+      "file_bytes": 81641739136,
+      "model_repo": "agentionai/Qwen3.8-Flash-Next-AP-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 18,
+          "max": 20,
+          "percent": 90,
+          "pass_count": 8,
+          "partial_count": 2,
+          "fail_count": 0
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 21,
+          "max": 26,
+          "percent": 81,
+          "pass_count": 9,
+          "partial_count": 3,
+          "fail_count": 1
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 121,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-iq2-s-standard.json",
+      "source_file_sha256": "3b82692f43f2151362c53b51ccaf64a40dfde29613ad2b207a8fa7ec82d93fff",
+      "cohort": "mainline Strata, Q6 option enabled / RTX PRO 6000"
+    },
+    {
+      "id": "gyro-s",
+      "label": "Gyro-S",
+      "family": "Gyro",
+      "reference": false,
+      "file_bytes": 58487015808,
+      "model_repo": "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 18,
+          "max": 20,
+          "percent": 90,
+          "pass_count": 9,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 21,
+          "max": 26,
+          "percent": 81,
+          "pass_count": 9,
+          "partial_count": 3,
+          "fail_count": 1
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 5,
+          "max": 12,
+          "percent": 42,
+          "pass_count": 1,
+          "partial_count": 3,
+          "fail_count": 2
+        }
+      ],
+      "standard_points": 121,
+      "standard_max": 136,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/gyro-s-standard.json",
+      "source_file_sha256": "33b267cac706637507cf208ad8b35af779d995f6f810f5915523756961ea4fe0",
+      "cohort": "patched agentionai Strata rc1 / RTX PRO 6000"
+    },
+    {
+      "id": "gyro-m",
+      "label": "Gyro-M",
+      "family": "Gyro",
+      "reference": false,
+      "file_bytes": 91965774272,
+      "model_repo": "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 19,
+          "max": 20,
+          "percent": 95,
+          "pass_count": 9,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 21,
+          "max": 26,
+          "percent": 81,
+          "pass_count": 10,
+          "partial_count": 1,
+          "fail_count": 2
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 4,
+          "max": 6,
+          "percent": 67,
+          "pass_count": 2,
+          "partial_count": 0,
+          "fail_count": 1
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 117,
+      "standard_max": 136,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/gyro-m-standard.json",
+      "source_file_sha256": "6e6cc5040b740fc95a5993691a10434f1c6d7021a48d77c4ff4a951e60452f09",
+      "cohort": "patched agentionai Strata rc1 / RTX PRO 6000"
+    },
+    {
+      "id": "unsloth-q8",
+      "label": "Reference",
+      "family": "Reference",
+      "reference": true,
+      "file_bytes": 188225033248,
+      "model_repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "category_scores": [
+        {
+          "category": "A",
+          "label": "Tool Selection",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "B",
+          "label": "Parameter Precision",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "C",
+          "label": "Multi-Step Chains",
+          "earned": 7,
+          "max": 8,
+          "percent": 88,
+          "pass_count": 3,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "D",
+          "label": "Restraint & Refusal",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "E",
+          "label": "Error Recovery",
+          "earned": 5,
+          "max": 6,
+          "percent": 83,
+          "pass_count": 2,
+          "partial_count": 1,
+          "fail_count": 0
+        },
+        {
+          "category": "F",
+          "label": "Localization",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "G",
+          "label": "Structured Reasoning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "H",
+          "label": "Instruction Following",
+          "earned": 10,
+          "max": 10,
+          "percent": 100,
+          "pass_count": 5,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "I",
+          "label": "Context & State",
+          "earned": 16,
+          "max": 20,
+          "percent": 80,
+          "pass_count": 7,
+          "partial_count": 2,
+          "fail_count": 1
+        },
+        {
+          "category": "J",
+          "label": "Code Patterns",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "K",
+          "label": "Safety & Boundaries",
+          "earned": 21,
+          "max": 26,
+          "percent": 81,
+          "pass_count": 9,
+          "partial_count": 3,
+          "fail_count": 1
+        },
+        {
+          "category": "L",
+          "label": "Toolset Scale",
+          "earned": 8,
+          "max": 8,
+          "percent": 100,
+          "pass_count": 4,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "M",
+          "label": "Autonomous Planning",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "N",
+          "label": "Creative Composition",
+          "earned": 6,
+          "max": 6,
+          "percent": 100,
+          "pass_count": 3,
+          "partial_count": 0,
+          "fail_count": 0
+        },
+        {
+          "category": "O",
+          "label": "Structured Output",
+          "earned": 6,
+          "max": 12,
+          "percent": 50,
+          "pass_count": 1,
+          "partial_count": 4,
+          "fail_count": 1
+        }
+      ],
+      "standard_points": 121,
+      "standard_max": 138,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/unsloth-q8-llm60-standard.json",
+      "source_file_sha256": "4d59f4dcbcbecc9c87fc2ae0bbfd9a84e966f536baf73474db0c76ec52a1d883",
+      "cohort": "RTX PRO 6000, pinned mainline engine; mmap-experts, compat-bf16 pack"
+    }
+  ],
+  "historical_reference": {
+    "id": "unsloth-q8",
+    "label": "Reference",
+    "family": "Reference",
+    "reference": true,
+    "file_bytes": 188225033248,
+    "model_repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "category_scores": [
+      {
+        "category": "A",
+        "label": "Tool Selection",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "B",
+        "label": "Parameter Precision",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "C",
+        "label": "Multi-Step Chains",
+        "earned": 7,
+        "max": 8,
+        "percent": 88,
+        "pass_count": 3,
+        "partial_count": 1,
+        "fail_count": 0
+      },
+      {
+        "category": "D",
+        "label": "Restraint & Refusal",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "E",
+        "label": "Error Recovery",
+        "earned": 5,
+        "max": 6,
+        "percent": 83,
+        "pass_count": 2,
+        "partial_count": 1,
+        "fail_count": 0
+      },
+      {
+        "category": "F",
+        "label": "Localization",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "G",
+        "label": "Structured Reasoning",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "H",
+        "label": "Instruction Following",
+        "earned": 10,
+        "max": 10,
+        "percent": 100,
+        "pass_count": 5,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "I",
+        "label": "Context & State",
+        "earned": 19,
+        "max": 20,
+        "percent": 95,
+        "pass_count": 9,
+        "partial_count": 1,
+        "fail_count": 0
+      },
+      {
+        "category": "J",
+        "label": "Code Patterns",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "K",
+        "label": "Safety & Boundaries",
+        "earned": 21,
+        "max": 26,
+        "percent": 81,
+        "pass_count": 9,
+        "partial_count": 3,
+        "fail_count": 1
+      },
+      {
+        "category": "L",
+        "label": "Toolset Scale",
+        "earned": 8,
+        "max": 8,
+        "percent": 100,
+        "pass_count": 4,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "M",
+        "label": "Autonomous Planning",
+        "earned": 5,
+        "max": 6,
+        "percent": 83,
+        "pass_count": 2,
+        "partial_count": 1,
+        "fail_count": 0
+      },
+      {
+        "category": "N",
+        "label": "Creative Composition",
+        "earned": 6,
+        "max": 6,
+        "percent": 100,
+        "pass_count": 3,
+        "partial_count": 0,
+        "fail_count": 0
+      },
+      {
+        "category": "O",
+        "label": "Structured Output",
+        "earned": 6,
+        "max": 12,
+        "percent": 50,
+        "pass_count": 1,
+        "partial_count": 4,
+        "fail_count": 1
+      }
+    ],
+    "standard_points": 123,
+    "standard_max": 138,
+    "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/28f863fb7c539141f12f5f819b1e9b9db72d2f56/bench/results/tool-eval-20261007/unsloth-q8-standard.json",
+    "source_file_sha256": "e45e316fef0f377431ff9d0a7134e72622c0fdb362f04ea9579cfeceedd44347",
+    "cohort": "three-P4 patched runtime"
+  }
+}

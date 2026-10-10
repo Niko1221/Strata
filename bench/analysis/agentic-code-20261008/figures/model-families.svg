@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1152pt" height="864pt" viewBox="0 0 1152 864" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 864
+L 1152 864
+L 1152 0
+L 0 0
+z
+" style="fill: #f4f7fb"/>
+  </g>
+  <g id="patch_2">
+   <path d="M 51.84 386.208
+L 552.96 386.208
+Q 566.784 386.208 566.784 375.84
+L 566.784 159.84
+Q 566.784 149.472 552.96 149.472
+L 51.84 149.472
+Q 38.016 149.472 38.016 159.84
+L 38.016 375.84
+Q 38.016 386.208 51.84 386.208
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_3">
+   <path d="M 604.8 386.208
+L 1105.92 386.208
+Q 1119.744 386.208 1119.744 375.84
+L 1119.744 159.84
+Q 1119.744 149.472 1105.92 149.472
+L 604.8 149.472
+Q 590.976 149.472 590.976 159.84
+L 590.976 375.84
+Q 590.976 386.208 604.8 386.208
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_4">
+   <path d="M 51.84 636.768
+L 552.96 636.768
+Q 566.784 636.768 566.784 626.4
+L 566.784 410.4
+Q 566.784 400.032 552.96 400.032
+L 51.84 400.032
+Q 38.016 400.032 38.016 410.4
+L 38.016 626.4
+Q 38.016 636.768 51.84 636.768
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_5">
+   <path d="M 604.8 636.768
+L 1105.92 636.768
+Q 1119.744 636.768 1119.744 626.4
+L 1119.744 410.4
+Q 1119.744 400.032 1105.92 400.032
+L 604.8 400.032
+Q 590.976 400.032 590.976 410.4
+L 590.976 626.4
+Q 590.976 636.768 604.8 636.768
+z
+" style="fill: #ffffff; stroke: #e1e8ef; stroke-linejoin: miter"/>
+  </g>
+  <g id="patch_6">
+   <path d="M 51.84 770.688
+L 1105.92 770.688
+Q 1119.744 770.688 1119.744 760.32
+L 1119.744 669.6
+Q 1119.744 659.232 1105.92 659.232
+L 51.84 659.232
+Q 38.016 659.232 38.016 669.6
+L 38.016 760.32
+Q 38.016 770.688 51.84 770.688
+z
+" style="fill: #e5ecf3"/>
+  </g>
+  <g id="text_1">
+   <text style="font-weight: 700; font-size: 26px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="51.84" y="43.2" transform="rotate(-0 51.84 43.2)">What do ISTA, Swift, AP and Gyro mean?</text>
+  </g>
+  <g id="text_2">
+   <text style="font-size: 14px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="51.84" y="78.624" transform="rotate(-0 51.84 78.624)">Different transformations of the same Qwen3.8-Flash-Next model lineage</text>
+  </g>
+  <g id="text_3">
+   <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #176a85" x="72.576" y="204.768" transform="rotate(-0 72.576 204.768)">ISTA | GSQ + RCO</text>
+  </g>
+  <g id="text_4">
+   <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="238.464" transform="rotate(-0 72.576 238.464)">Quantization of the base model</text>
+  </g>
+  <g id="text_5">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="279.072" transform="rotate(-0 72.576 279.072)">DASLab at the Institute of Science and Technology Austria.</text>
+  </g>
+  <g id="text_6">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="309.312" transform="rotate(-0 72.576 309.312)">GSQ refines low-bit weights; RCO assigns precision by tensor.</text>
+  </g>
+  <g id="text_7">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="339.552" transform="rotate(-0 72.576 339.552)">Tested: Q2_0, IQ2_XS and IQ3_XXS.</text>
+  </g>
+  <g id="text_8">
+   <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #7865ba" x="625.536" y="204.768" transform="rotate(-0 625.536 204.768)">Swift 1.5 | UkisAI</text>
+  </g>
+  <g id="text_9">
+   <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="238.464" transform="rotate(-0 625.536 238.464)">Post-trained model + quantization</text>
+  </g>
+  <g id="text_10">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="279.072" transform="rotate(-0 625.536 279.072)">A derivative targeting more efficient reasoning and agent tasks.</text>
+  </g>
+  <g id="text_11">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="309.312" transform="rotate(-0 625.536 309.312)">These releases use Swift-specific GSQ refinement and ISTA allocations.</text>
+  </g>
+  <g id="text_12">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="339.552" transform="rotate(-0 625.536 339.552)">Our thinking-off tests do not measure its claimed reasoning savings.</text>
+  </g>
+  <g id="text_13">
+   <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #17a39b" x="72.576" y="455.328" transform="rotate(-0 72.576 455.328)">AP | Agention Precision</text>
+  </g>
+  <g id="text_14">
+   <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="489.024" transform="rotate(-0 72.576 489.024)">Mixed precision, standard quant types</text>
+  </g>
+  <g id="text_15">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="529.632" transform="rotate(-0 72.576 529.632)">AgentionAI chooses precision separately for tensor groups.</text>
+  </g>
+  <g id="text_16">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="559.872" transform="rotate(-0 72.576 559.872)">This is a quantization recipe, not evidence of new post-training.</text>
+  </g>
+  <g id="text_17">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="72.576" y="590.112" transform="rotate(-0 72.576 590.112)">Tested in Strata with its existing Q6 build option enabled.</text>
+  </g>
+  <g id="text_18">
+   <text style="font-weight: 700; font-size: 20px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #dc795a" x="625.536" y="455.328" transform="rotate(-0 625.536 455.328)">Gyro | Agention Precision Rotor</text>
+  </g>
+  <g id="text_19">
+   <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="625.536" y="489.024" transform="rotate(-0 625.536 489.024)">Custom encoding of rotated expert weights</text>
+  </g>
+  <g id="text_20">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="529.632" transform="rotate(-0 625.536 529.632)">AgentionAI stores routed experts in a rotated basis with rotor coding.</text>
+  </g>
+  <g id="text_21">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="559.872" transform="rotate(-0 625.536 559.872)">TQ1_0 / TQ2_0 are Hub size labels, not stock-format compatibility.</text>
+  </g>
+  <g id="text_22">
+   <text style="font-size: 9.4px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="625.536" y="590.112" transform="rotate(-0 625.536 590.112)">Our runs use the compatible agentionai Strata rc1 + recorded patch.</text>
+  </g>
+  <g id="text_23">
+   <text style="font-weight: 700; font-size: 15px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="705.024" transform="rotate(-0 72.576 705.024)">REFERENCE</text>
+  </g>
+  <g id="text_24">
+   <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="72.576" y="733.536" transform="rotate(-0 72.576 733.536)">Q8 retested on the same RTX PRO 6000 + mainline; mmap loading and compatibility pack. Not ground truth.</text>
+  </g>
+  <g id="text_25">
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #183149" x="51.84" y="837.216" transform="rotate(-0 51.84 837.216)">Tool-Eval-Bench by SeraphimSerapis  |  github.com/SeraphimSerapis/tool-eval-bench</text>
+  </g>
+  <g id="text_26">
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #607386" x="51.84" y="814.752" transform="rotate(-0 51.84 814.752)">Family definitions: publisher model cards, linked in the report. Claims about training or compression are not new measurements.</text>
+  </g>
+ </g>
+</svg>

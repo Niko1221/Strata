@@ -1,0 +1,261 @@
+{
+  "weights": {
+    "A": 25,
+    "B": 10,
+    "C": 5,
+    "D": 0,
+    "E": 25,
+    "F": 0,
+    "G": 0,
+    "H": 0,
+    "I": 20,
+    "J": 5,
+    "K": 0,
+    "L": 0,
+    "M": 10,
+    "N": 0,
+    "O": 0
+  },
+  "ranked_variants": [
+    {
+      "id": "ista-iq3",
+      "label": "ISTA IQ3_XXS",
+      "family": "ISTA",
+      "reference": false,
+      "score": 97.0,
+      "exact_score": "97",
+      "contributions": {
+        "A": 25.0,
+        "E": 25.0,
+        "I": 17.0,
+        "B": 10.0,
+        "M": 10.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 75.839998528,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-iq3-standard.json"
+    },
+    {
+      "id": "swift-iq3",
+      "label": "Swift IQ3_XXS",
+      "family": "Swift",
+      "reference": false,
+      "score": 97.0,
+      "exact_score": "97",
+      "contributions": {
+        "A": 25.0,
+        "E": 25.0,
+        "I": 17.0,
+        "B": 10.0,
+        "M": 10.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 75.96607312,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-iq3-standard.json"
+    },
+    {
+      "id": "gyro-s",
+      "label": "Gyro-S",
+      "family": "Gyro",
+      "reference": false,
+      "score": 96.33333333333333,
+      "exact_score": "289/3",
+      "contributions": {
+        "A": 25.0,
+        "E": 25.0,
+        "I": 18.0,
+        "B": 10.0,
+        "M": 8.333333333333334,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 58.487015808,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/gyro-s-standard.json"
+    },
+    {
+      "id": "swift-q2",
+      "label": "Swift Q2_0",
+      "family": "Swift",
+      "reference": false,
+      "score": 95.0,
+      "exact_score": "95",
+      "contributions": {
+        "A": 25.0,
+        "E": 25.0,
+        "I": 15.0,
+        "B": 10.0,
+        "M": 10.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 66.5499528,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-q2-standard.json"
+    },
+    {
+      "id": "ap-iq2-s",
+      "label": "AP-IQ2_S",
+      "family": "AP",
+      "reference": false,
+      "score": 92.16666666666667,
+      "exact_score": "553/6",
+      "contributions": {
+        "A": 25.0,
+        "E": 20.833333333333332,
+        "I": 18.0,
+        "B": 10.0,
+        "M": 8.333333333333334,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 81.641739136,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-iq2-s-standard.json"
+    },
+    {
+      "id": "gyro-m",
+      "label": "Gyro-M",
+      "family": "Gyro",
+      "reference": false,
+      "score": 91.5,
+      "exact_score": "183/2",
+      "contributions": {
+        "A": 25.0,
+        "E": 20.833333333333332,
+        "I": 19.0,
+        "B": 10.0,
+        "M": 6.666666666666667,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 91.965774272,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/gyro-m-standard.json"
+    },
+    {
+      "id": "swift-iq2",
+      "label": "Swift IQ2_XS",
+      "family": "Swift",
+      "reference": false,
+      "score": 90.66666666666667,
+      "exact_score": "272/3",
+      "contributions": {
+        "A": 25.0,
+        "E": 25.0,
+        "I": 19.0,
+        "B": 6.666666666666667,
+        "M": 5.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 68.152167168,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/swift-iq2-standard.json"
+    },
+    {
+      "id": "ap-q4-k-xl",
+      "label": "AP-Q4_K_XL",
+      "family": "AP",
+      "reference": false,
+      "score": 87.5,
+      "exact_score": "175/2",
+      "contributions": {
+        "A": 25.0,
+        "E": 20.833333333333332,
+        "I": 15.0,
+        "B": 10.0,
+        "M": 6.666666666666667,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 101.142769536,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-q4-k-xl-standard.json"
+    },
+    {
+      "id": "ap-iq3-xxs",
+      "label": "AP-IQ3_XXS",
+      "family": "AP",
+      "reference": false,
+      "score": 86.375,
+      "exact_score": "691/8",
+      "contributions": {
+        "A": 16.666666666666668,
+        "E": 25.0,
+        "I": 17.0,
+        "B": 10.0,
+        "M": 8.333333333333334,
+        "C": 4.375,
+        "J": 5.0
+      },
+      "file_gb": 86.672420736,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ap-iq3-xxs-standard.json"
+    },
+    {
+      "id": "ista-q2",
+      "label": "ISTA Q2_0",
+      "family": "ISTA",
+      "reference": false,
+      "score": 85.5,
+      "exact_score": "171/2",
+      "contributions": {
+        "A": 25.0,
+        "E": 20.833333333333332,
+        "I": 13.0,
+        "B": 6.666666666666667,
+        "M": 10.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 66.423878624,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-q2-standard.json"
+    },
+    {
+      "id": "ista-iq2",
+      "label": "ISTA IQ2_XS",
+      "family": "ISTA",
+      "reference": false,
+      "score": 80.5,
+      "exact_score": "161/2",
+      "contributions": {
+        "A": 12.5,
+        "E": 25.0,
+        "I": 18.0,
+        "B": 5.0,
+        "M": 10.0,
+        "C": 5.0,
+        "J": 5.0
+      },
+      "file_gb": 68.026093024,
+      "selected_points_available": 58,
+      "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/ista-iq2-standard.json"
+    }
+  ],
+  "reference": {
+    "id": "unsloth-q8",
+    "label": "Reference",
+    "family": "Reference",
+    "reference": true,
+    "score": 91.20833333333333,
+    "exact_score": "2189/24",
+    "contributions": {
+      "A": 25.0,
+      "E": 20.833333333333332,
+      "I": 16.0,
+      "B": 10.0,
+      "M": 10.0,
+      "C": 4.375,
+      "J": 5.0
+    },
+    "file_gb": 188.225033248,
+    "selected_points_available": 58,
+    "source_url": "https://github.com/CC-David-CC/Strata-a5500/blob/4ac2820982044ac52b27a85fee74b0ea3288527b/bench/results/tool-eval-20261007/unsloth-q8-llm60-standard.json"
+  }
+}
