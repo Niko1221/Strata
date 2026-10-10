@@ -62,6 +62,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 
+- [2026-10-10: RTX 5070 Ti 16 GB, Ryzen, 64 GB RAM (Windows + WSL)](../bench/results/2026-10-10-community-quant-study-rtx5070ti/README.md):
+  a 9-file, 3-lab quant battery (ISTA-DASLab GSQ-RCO, UkisAI Swift-1.5, AgentionAI Gyro-S TQ1_0) on one rig with the engine pinned to v0.1.40.3 (digest `34CDE150B21148E6`); 18 arms (file × effort), ~1,900 runs across HumanEval+ 164, tool-eval-bench (92 scenarios × 5 runs per arm), five-bugs debugging, GSM8K/MMLU/IFEval, needle @260K and llama-benchy at 0/32/128K. Findings: coding ceiling 95.7–96.3 shared across files (cost, not ceiling); decode speed splits by file size class, not quant name; thinking effort changes the ranking and can trip agent safety traps. Includes a PDF report, raw JSONs and a reproducible rebuild pipeline. Gyro-S tool-eval excluded with a finding: the rc1 serve drops tool-calling (repro in the README).
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or

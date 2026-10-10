@@ -1,0 +1,20 @@
+{
+ "trials-gyro-s-low": 50.8,
+ "trials-gyro-s-xhigh": 102.0,
+ "trials-swift-iq3_s-low": 57.6,
+ "trials-swift-iq3_s-xhigh": 81.2,
+ "trials-iq3_s-low": 58.3,
+ "trials-iq3_s-xhigh": 84.6,
+ "trials-q2_0-low": 40.2,
+ "trials-q2_0-xhigh": 52.2,
+ "trials-swift-iq3_xxs-low": 48.4,
+ "trials-swift-iq3_xxs-xhigh": 66.4,
+ "trials-swift-iq2_xs-low": 42.4,
+ "trials-swift-iq2_xs-xhigh": 53.1,
+ "trials-base-iq3_xxs-low": 54.1,
+ "trials-base-iq3_xxs-xhigh": 69.7,
+ "campaign11-ista-iq2_xs-trials-low": 44.7,
+ "campaign11-ista-iq2_xs-trials-xhigh": 54.1,
+ "campaign11-swift-q2_0-trials-low": 40.4,
+ "campaign11-swift-q2_0-trials-xhigh": 76.2
+}

@@ -1,0 +1,81 @@
+{
+  "version": "0.4.0",
+  "timestamp": "2026-10-09 10:47:47Z",
+  "latency_mode": "generation",
+  "latency_ms": 250.55990434096503,
+  "model": "gyro-s-strata",
+  "prefix_caching_enabled": false,
+  "max_concurrency": 1,
+  "benchmarks": [
+    {
+      "concurrency": 1,
+      "context_size": 0,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": {
+        "mean": 4446.910733007826,
+        "std": 268.2636134240226,
+        "values": [
+          4237.5839370070025,
+          4277.558130037505,
+          4825.59013197897
+        ]
+      },
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 32768,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": {
+        "mean": 17103.853583006032,
+        "std": 1850.3666514520098,
+        "values": [
+          19699.724021018483,
+          15519.775709020905,
+          16092.061018978711
+        ]
+      },
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 131072,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": null,
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    }
+  ]
+}

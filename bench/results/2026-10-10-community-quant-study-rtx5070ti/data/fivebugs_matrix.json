@@ -1,0 +1,4406 @@
+{
+ "api": {
+  "per_task": {
+   "t1": [],
+   "t2": [],
+   "t3": [],
+   "t4": [],
+   "t5": []
+  },
+  "vis": "0/0",
+  "hid": "0/0"
+ },
+ "bonsai2": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "d24af771",
+     "detail": "ImportError: cannot import name 'ROUND_HALF_AWAY_FROM_ZERO' from 'decimal' (/usr/lib/python3.13/decimal.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "d24af771",
+     "detail": "ImportError: cannot import name 'ROUND_HALF_AWAY_FROM_ZERO' from 'decimal' (/usr/lib/python3.13/decimal.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b516f47a",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8bda8114",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f90e7a57",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ec761998",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "d2395975",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ff722fcd",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "23/25",
+  "hid": "18/25"
+ },
+ "bs5-gpu5": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpfgcxxj20/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "47d192c4",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "0b0fbafa",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9ac7c596",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "74dd5f1a",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9bbdcd9f",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "bs5-gpu5-v2": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "fdaf3505",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "6d624e60",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "34c61be7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "fcecd41a",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "830d99c5",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "c594df9c",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f96eba0b",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ },
+ "campaign11-ista-iq2_xs": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpv4nvcloi/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "14bb147b",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ff7069b0",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "201bc8b3",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9bbdcd9f",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "e6d5cbf0",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "campaign11-swift-q2_0": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpv8dvvpmt/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25d517f",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "63b6b699",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b2512dcf",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "90394f4c",
+     "detail": "ValueError: day is out of range for month"
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "14b0d4ef",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "23/25",
+  "hid": "18/25"
+ },
+ "flash": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpgfoeujd8/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmp7p1rrm38/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpouc1om3w/solution.py)"
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpcw0a67x2/solution.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "4976f319",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "5079c08e",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "eaa4b5d7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "429c1b90",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b3dc3854",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "21/25",
+  "hid": "16/25"
+ },
+ "gsq": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b31397b0",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "dff8f234",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a57f9cd0",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "34c61be7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "82e0667b",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "2443a79c",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ },
+ "gsq-iq3s": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "d24af771",
+     "detail": "ImportError: cannot import name 'ROUND_HALF_AWAY_FROM_ZERO' from 'decimal' (/usr/lib/python3.13/decimal.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "85ccc49b",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "2af9d9f9",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "e05fc634",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "dff8f234",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "5015a730",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a0420c37",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "rebase-base-iq3_xxs": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmprnldhcyk/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmp0vcftglc/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpt0hid76v/solution.py)"
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpenoxp8qz/solution.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "eb94ad79",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "202a725a",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25ef528",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "258ccc2e",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "402e5efe",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "21/25",
+  "hid": "16/25"
+ },
+ "rebase-gyro-s": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpgfafrydd/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpjktwnpp6/solution.py)"
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpy6sdvyy4/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpj8yqypqz/solution.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a5553926",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "55835c05",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f0486d5e",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "798133bb",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "3b9ea918",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "21/25",
+  "hid": "16/25"
+ },
+ "rebase-iq3_s": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "6d624e60",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "c646feaa",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpfngoyyoz/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "cdf414d4",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9a9b5687",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "830d99c5",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b7915ca9",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f70db910",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "rebase-q2_0": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpviqb5v38/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "e20c2171",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "14b0d4ef",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b7915ca9",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "63b6b699",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8b0da4d5",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "rebase-swift-iq2_xs": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "7ba36e04",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "859aae27",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "eadd0ef6",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "3e952239",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "cb738028",
+     "detail": "AssertionError: n=0"
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "20f0ebc7",
+     "detail": "AssertionError: n=0"
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b430d818",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "23/25",
+  "hid": "18/25"
+ },
+ "rebase-swift-iq3_s": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "e455c933",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "6d624e60",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "429c1b90",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b143ced8",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "3e952239",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a5c540e0",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ae18927d",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ },
+ "rebase-swift-iq3_xxs": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "459afcfb",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ddb9de69",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ffeccd99",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "cc1860cf",
+     "detail": "AssertionError: n=0"
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "459afcfb",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "signal": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "e8c2141b",
+     "detail": "ImportError: cannot import name 'ROUND_HALF_AWAY_FROM_ZERO' from 'decimal' (/usr/lib/python3.13/decimal.py)"
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "d24af771",
+     "detail": "ImportError: cannot import name 'ROUND_HALF_AWAY_FROM_ZERO' from 'decimal' (/usr/lib/python3.13/decimal.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "2c1a4694",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25ef528",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "74c79a48",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "378cf265",
+     "detail": "ValueError: day is out of range for month"
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f96eba0b",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "22/25",
+  "hid": "17/25"
+ },
+ "api/ds41": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpaqfxqx2n/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "55bed2b3",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ff722fcd",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ff722fcd",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "e317daaf",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "62309f8b",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "19/25"
+ },
+ "api/glm53": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9bbdcd9f",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "cb5d5a86",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "3a62d2e1",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "470d16ed",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "5177ee80",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ },
+ "api/grok46": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": true,
+     "fp": "e4bcfc41",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8eaf81d7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "4fb1b85c",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8eaf81d7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8eaf81d7",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8eaf81d7",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "24/25",
+  "hid": "20/25"
+ },
+ "api/km3": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "7dad68d5",
+     "detail": "AssertionError: 0.01"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "7dad68d5",
+     "detail": "AssertionError: 0.01"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25ef528",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "4dfee15c",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "13221654",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25ef528",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "bd4bebed",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "23/25",
+  "hid": "18/25"
+ },
+ "api/luna": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": false,
+     "hid": false,
+     "fp": "7dad68d5",
+     "detail": "AssertionError: 0.01"
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "7dad68d5",
+     "detail": "AssertionError: 0.01"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8b2599a4",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f80917b3",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "d2f50927",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a9a7336a",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8b2599a4",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "23/25",
+  "hid": "18/25"
+ },
+ "api/moa": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a793c1b8",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "df467292",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "661bb83f",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "b25ef528",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "494312eb",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ },
+ "api/spark13": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "a3eaa197",
+     "detail": ""
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "f756b196",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "5d3dcbe5",
+     "detail": ""
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "0f262310",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ae18927d",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ff722fcd",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "25/25",
+  "hid": "20/25"
+ }
+}

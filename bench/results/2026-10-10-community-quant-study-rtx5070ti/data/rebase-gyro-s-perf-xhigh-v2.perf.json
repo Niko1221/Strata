@@ -1,0 +1,89 @@
+{
+  "version": "0.4.0",
+  "timestamp": "2026-10-09 19:57:54Z",
+  "latency_mode": "generation",
+  "latency_ms": 342.779279667108,
+  "model": "gyro-s-strata",
+  "prefix_caching_enabled": false,
+  "max_concurrency": 1,
+  "benchmarks": [
+    {
+      "concurrency": 1,
+      "context_size": 0,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": {
+        "mean": 5169.663118664175,
+        "std": 116.07953076906743,
+        "values": [
+          5098.19707198767,
+          5077.407317003235,
+          5333.384967001621
+        ]
+      },
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 32768,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": {
+        "mean": 19841.314878334135,
+        "std": 2169.988957032154,
+        "values": [
+          22699.952887021936,
+          19378.649722028058,
+          17445.342025952414
+        ]
+      },
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    },
+    {
+      "concurrency": 1,
+      "context_size": 122880,
+      "prompt_size": 2048,
+      "response_size": 256,
+      "is_context_prefill_phase": false,
+      "pp_throughput": null,
+      "pp_req_throughput": null,
+      "tg_throughput": null,
+      "tg_req_throughput": null,
+      "peak_throughput": null,
+      "peak_req_throughput": null,
+      "ttfr": {
+        "mean": 52458.00841498809,
+        "std": 2278.464688752291,
+        "values": [
+          50621.61978700897,
+          51083.20041495608,
+          55669.20504299924
+        ]
+      },
+      "est_ppt": null,
+      "e2e_ttft": null,
+      "throughput_over_time": null,
+      "requests_throughput_over_time": null
+    }
+  ]
+}
