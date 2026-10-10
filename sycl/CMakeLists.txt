@@ -365,6 +365,11 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(gr_bench PRIVATE strata_kernels)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
+  # #1549: is the plain-SYCL fallback expert GEMM slower when the card is full?  The B70's prompt path
+  # costs 2.3 ms per expert GEMM at a 23.83 GiB cache and 54-122 ms at 28.82 GiB, with the same calls.
+  #   vram_pressure [calls=800] [fill_gib=28]
+  add_executable(vram_pressure ${CMAKE_CURRENT_SOURCE_DIR}/probe/vram_pressure.cpp)
+  target_link_libraries(vram_pressure PRIVATE strata_prefill strata_core strata_kernels)
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)
