@@ -1,0 +1,49 @@
+# Optional, needs the Prometheus Operator and docs/monitoring/servicemonitor.yaml (job="strata"): not in
+# kustomization.yaml. kubectl apply -n monitoring -f docs/kubernetes/alerts.yaml (the labels must match your
+# Prometheus's ruleSelector). Thresholds come from three to seven days of a 4-GPU server's history.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: strata
+  labels:
+    release: kube-prometheus-stack   # whatever your Prometheus selects rules by
+spec:
+  groups:
+    - name: strata
+      rules:
+        # Decode: 8-30 ms per token at the median on that server (one to eight streams at once), 38 ms at worst.
+        - alert: StrataSlowDecode
+          expr: |
+            histogram_quantile(0.5, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket{job="strata"}[10m]))) > 0.05
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "Strata decodes slowly: {{ $value | humanizeDuration }} per token at the median"
+            description: "Check that the config you meant is the one running (the entrypoint prints a Config: line), the PCIe link width of every card, and whether the expert cache is still filling after a restart."
+        # Requests waiting the whole time for 10 minutes: every slot busy, or the engine no longer answers.
+        - alert: StrataRequestsQueued
+          expr: min_over_time(vllm:num_requests_waiting{job="strata"}[10m]) > 0
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $value }} request(s) have been waiting for 10 minutes"
+            description: "See strata:live_slots by state and the pod's log."
+        # First token p95 over 30 minutes: under 17 s on that server, even with 45K-token prompts.
+        - alert: StrataFirstTokenVerySlow
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{job="strata"}[30m]))) > 60
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "Strata's first token p95 is {{ $value | humanizeDuration }}"
+            description: "Something is stuck: check strata:live_state and the node's kernel log."
+        # Only with "parallel" / --batch N: fewer slots than the config asks for means another config started.
+        # Set 8 to your N, or delete this rule.
+        - alert: StrataBatchSlotsMissing
+          expr: |
+            (max by (pod) (up{job="strata"}) == 1) unless on (pod) (sum by (pod) (strata:live_slots{job="strata"}) >= 8)
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.pod }} runs without its batch slots"
+            description: "The server started a config without --batch (see the entrypoint's Config: line, CONFIG and MODEL): throughput under load drops several times."

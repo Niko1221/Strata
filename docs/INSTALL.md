@@ -136,6 +136,9 @@ The same idea, in a container (NVIDIA cards).
    Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
    `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
 
+Kubernetes: the same image and env vars as a Deployment, with the volume, the probes, IPC_LOCK and the monitoring
+hooks set up, in [kubernetes/](kubernetes/README.md).
+
 ## Older CPUs (experimental)
 
 Strata's ready-made engine needs AVX2 (Intel Haswell 2013, AMD Zen 2017 or newer). Since 0.1.39 an older CPU - AVX
