@@ -26,6 +26,7 @@ import collections
 import base64
 import hashlib
 import hmac
+import ipaddress
 import codecs
 import ctypes
 import json
@@ -61,6 +62,12 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.memory_policy import MemoryPolicy  # noqa: E402
+from serve.resource_presets import ResourcePresets, WorkloadSampler, clean_config as clean_resource_config  # noqa: E402
+from serve.coadaptive import CoAdaptive  # noqa: E402
+from serve.request_parking import RequestParking, ResumeAdmission  # noqa: E402
+from serve.resource_lease import ToolLeases, LeaseError  # noqa: E402
+from serve.routing_costs import runtime_key  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -342,6 +349,80 @@ class GpuBusy(RuntimeError):
     model server) is using it, so the engine is not started into the little that is left."""
 
 
+class IdleParking(RequestParking):
+    """Separate opt-in idle relief: no active tokens and no disk journal."""
+    def __init__(self, config=None):
+        config = dict(config) if isinstance(config, dict) else {} if config is None else config
+        if not isinstance(config, dict) or "directory" in config:
+            raise ValueError("idle_parking needs an object and does not use a journal directory")
+        enabled = config.pop("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("idle_parking.enabled must be boolean")
+        for key, default, low, high in (
+                ("pressure_ram_available_gib", 3, 1, 128),
+                ("pressure_commit_available_gib", 3, 1, 128),
+                ("pressure_vram_free_mib", 250, 250, 65536)):
+            value = config.pop(key, default)
+            if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                    or not math.isfinite(value) or not low <= value <= high):
+                raise ValueError("invalid idle_parking setting: " + key)
+            setattr(self, key, value)
+        try:
+            super().__init__({**config, "enabled": False})
+        except RuntimeError as exc:
+            raise ValueError("invalid idle_parking configuration: " + str(exc)) from exc
+        self.enabled = enabled
+
+    def admission(self, footprint):
+        # Giving our own memory back must not by itself count as recovery.
+        # The restarted footprint must still leave the triggering reserve free.
+        return ResumeAdmission(footprint,
+            ram_headroom_gib=max(self.min_ram_headroom_gib, self.pressure_ram_available_gib,
+                                self.pressure_commit_available_gib),
+            vram_headroom_mib=max(self.min_vram_headroom_mib, self.pressure_vram_free_mib),
+            recovery_seconds=self.recovery_seconds, retry_seconds=self.retry_seconds,
+            max_age=self.max_sample_age_seconds)
+
+    def pressure(self, snapshot, now):
+        number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+        stamp, free_gpu = snapshot.get("sampled_at"), snapshot.get("native_free_mib")
+        values = [snapshot.get("ram_total"), snapshot.get("ram_used"), free_gpu]
+        commit = snapshot.get("ram_commit_available")
+        valid = (number(stamp) and 0 <= now - stamp <= self.max_sample_age_seconds
+                 and all(number(v) for v in values)
+                 and 0 <= snapshot["ram_used"] <= snapshot["ram_total"] and snapshot["ram_total"] > 0
+                 and free_gpu >= 0
+                 and (not (os.name == "nt" or snapshot.get("ram_commit_required"))
+                      or number(commit) and commit >= 0))
+        reason = None
+        if valid:
+            if snapshot["ram_total"] - snapshot["ram_used"] < self.pressure_ram_available_gib * 2**30:
+                reason = "ram_floor"
+            elif number(commit) and commit < self.pressure_commit_available_gib * 2**30:
+                reason = "ram_floor"
+            elif free_gpu < self.pressure_vram_free_mib:
+                reason = "vram_floor"
+        decision = {"action": "wait", "reason": reason} if reason else {}
+        return self.should_park(decision, stamp if valid else now), reason
+
+
+class RequestParkCancelled(Exception):
+    """The owner withdrew a suspended request; this is never an engine-error retry."""
+
+
+class RequestParkCapacity(RuntimeError):
+    """A verified pre-READY capacity failure, after partial processes were ended."""
+
+
+class RequestParkControl:
+    """One segment's internal STOP; independent from the client's cancellation event."""
+    def __init__(self, proc):
+        self.proc = proc
+        self.requested = threading.Event()
+        self.stop_sent = False
+        self.acknowledged = False
+
+
 ENGINE_REQUEST = re.compile(
     # "+ 12288 of 98179 read": a request cancelled while its prompt was read (#471)
     r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+(?: of \d+)? read in (?P<read>[\d.]+) ms "
@@ -589,6 +670,8 @@ class StrataEngine:
     (`temperature=F top_p=F top_k=N seed=N`, the engine's own spelling).  An absent temperature keeps the
     engine's default, which is greedy; `temperature=0` means the same thing, so it is not forwarded.
     """
+    # A replica proxy forwarding its first engine's attributes does not own one restart configuration.
+    memory_policy_single_owner = True
     silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
     silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
     gpu_busy = None                      # #1317: () -> bool, "the GPU is working" (the telemetry's reading); a GPU at work is not frozen
@@ -614,13 +697,15 @@ class StrataEngine:
             tl.last = value
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
-                 env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None):
+                 env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, *, startup_cancel=None):
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
+        self.pipe_lock = threading.Lock()  # GEN, STOP, QUIT and MEMORY share one line-oriented pipe
+        self.memory_acks = queue.Queue()
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
@@ -632,6 +717,8 @@ class StrataEngine:
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
         self.last_err = None
+        if startup_cancel is not None and startup_cancel.is_set():
+            raise RequestParkCancelled()
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -670,13 +757,18 @@ class StrataEngine:
         threading.Thread(target=self._ready_pump, args=(self.proc, ready_q), daemon=True).start()
         ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
         timed_out = False
+        withdrawn = False
         while True:
+            if startup_cancel is not None and startup_cancel.is_set():
+                withdrawn = True
+                break
             left = None if ready_deadline is None else ready_deadline - time.monotonic()
             if left is not None and left <= 0:
                 timed_out = True
                 break
             try:
-                line = ready_q.get(timeout=left)
+                line = ready_q.get(timeout=min(left, .5) if left is not None and startup_cancel is not None
+                                   else .5 if startup_cancel is not None else left)
             except queue.Empty:
                 continue
             if line is None:
@@ -692,7 +784,7 @@ class StrataEngine:
                 break
         loading.set()
         if self.max_context <= 0:
-            if timed_out:                               # still loading, or hung: end it, so the turn is not held for good
+            if timed_out or withdrawn:                  # cancellation also owns and ends this startup process
                 try:
                     self.proc.kill()
                 except OSError:
@@ -705,6 +797,10 @@ class StrataEngine:
                     self.log.close()
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            if withdrawn:
+                if self.proc.poll() is None:
+                    raise EngineStuck("the cancelled model startup has not exited")
+                raise RequestParkCancelled()
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
             # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
@@ -717,6 +813,9 @@ class StrataEngine:
         if self.info.get("engine"):
             self.info["version"] = str(self.info["engine"])
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
+        if "--live-memory" in args and not self.live_memory_capable():
+            self.close()
+            raise ValueError("live memory needs an engine advertising live_memory=1 memory_protocol=1")
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
@@ -768,7 +867,9 @@ class StrataEngine:
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
-        self.wlock = threading.Lock()                   # stdin writes from several request threads
+        self.wlock = self.pipe_lock                     # all protocol writers share the same pipe owner
+        self.native_capacity = None                    # never carry allocator readings across a restart
+        self.background_state = None
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
 
@@ -776,6 +877,7 @@ class StrataEngine:
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
         line = None
+        acks = self.memory_acks
         for line in proc.stdout:
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
@@ -789,6 +891,19 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("CAPACITY "):
+                if self.proc is proc:
+                    self.native_capacity = self._capacity_reading(line, proc, time.time())
+                continue
+            if line.startswith("MEMORY "):
+                ack = self._memory_ack(line)
+                if ack is not None:
+                    acks.put((proc, ack))
+                continue
+            if line.startswith("BACKGROUND ") and self.proc is proc:
+                state = self._background_reading(line)
+                if state is not None:
+                    self.background_state = {**state, "sampled_at": time.time()}
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -803,6 +918,108 @@ class StrataEngine:
         lines.put(None)
         for q in slot_q:
             q.put(None)
+
+    def live_memory_capable(self):
+        return self.info.get("live_memory") == 1 and self.info.get("memory_protocol") == 1
+
+    @staticmethod
+    def _capacity_reading(line, proc, now):
+        try:
+            parts = [part.split("=", 1) for part in line.split()[1:]]
+            data = dict(parts)
+            required = {"free_mib", "total_mib", "resident_mib", "cache_mib"}
+            budget = {"budget_free_mib", "budget_mib", "usage_mib"}
+            control = {"memory_pending_id", "memory_reserve_mib", "memory_last_terminal_id"}
+            if (len(data) != len(parts) or not required <= set(data)
+                    or set(data) - required not in (set(), budget, control, budget | control)):
+                return None
+            data = {k: int(v) for k, v in data.items()}
+            if (not 0 <= data["free_mib"] <= data["total_mib"] or data["total_mib"] <= 0
+                    or any(not 0 <= value <= 2**53 for value in data.values())
+                    or budget <= data.keys() and data["budget_free_mib"] > data["budget_mib"]):
+                return None
+            return {**data, "proc": proc, "sampled_at": now}
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _memory_ack(line):
+        """Malformed control output never enters the token stream or changes an allocation."""
+        fields = line.split()
+        if (len(fields) < 3 or fields[0] != "MEMORY" or len(fields[1]) > 16
+                or not fields[1].isascii() or not fields[1].isdigit()):
+            return None
+        request_id = int(fields[1])
+        if not 0 < request_id <= 2**53:
+            return None
+        ack = {"id": request_id}
+        for field in fields[2:]:
+            key, sep, value = field.partition("=")
+            if not sep or key in ack:
+                return None
+            ack[key] = value
+        if ack.get("status") not in ("applied", "progress", "error"):
+            return None
+        for key in ("resident_mib", "expert_cache_mib", "expert_slots", "vram_free_mib", "vram_reserve_mib"):
+            value = ack.get(key, "")
+            if key == "vram_free_mib" and value == "-1":
+                ack[key] = -1  # native telemetry error: retain the committed cache sizes
+                continue
+            if len(value) > 16 or not value.isascii() or not value.isdigit() or int(value) > 2**53:
+                return None
+            ack[key] = int(value)
+        return ack
+
+    def _write(self, command, proc=None, close=False):
+        # __new__ fixtures from older protocol tests predate the pipe lock.
+        if not hasattr(self, "pipe_lock"):
+            self.pipe_lock = threading.Lock()
+        with self.pipe_lock:
+            target = self.proc if proc is None else proc
+            if target is None or target is not self.proc:
+                raise OSError("the engine pipe changed")
+            target.stdin.write(command + "\n")
+            target.stdin.flush()
+            if close:
+                target.stdin.close()
+
+    def request_memory(self, request_id, resident_mib, reserve_mib, proc, *, hold=False):
+        if not self.live_memory_capable():
+            raise ValueError("the loaded engine does not support live memory")
+        if hold and self.info.get("memory_hold") != 1:
+            raise ValueError("the loaded engine does not support held residency")
+        self._write(f"MEMORY {request_id} {resident_mib} {reserve_mib}" + (" hold" if hold else ""), proc=proc)
+
+    def request_background(self, lease_ms, delay_ms, waiting, proc):
+        """Cooperative, expiring control: no STOP or process suspension."""
+        if self.info.get("background_control") != 1:
+            raise ValueError("the loaded engine does not support background control")
+        if (type(lease_ms) is not int or type(delay_ms) is not int or type(waiting) is not bool
+                or not 0 <= lease_ms <= 5000 or not 0 <= delay_ms <= 100
+                or lease_ms == 0 and (delay_ms != 0 or waiting)):
+            raise ValueError("invalid background control lease")
+        self._write(f"BACKGROUND {lease_ms} {delay_ms} {int(waiting)}", proc=proc)
+
+    @staticmethod
+    def _background_reading(line):
+        try:
+            parts = [part.split("=", 1) for part in line.split()[1:]]
+            values = dict(parts)
+            if len(values) != len(parts) or set(values) - {"status", "lease_remaining_ms"}:
+                return None
+            state = values.get("status")
+            if state not in ("accepted", "rejected", "waiting", "running"):
+                return None
+            if state == "waiting":
+                remaining = values.get("lease_remaining_ms", "")
+                if not remaining.isascii() or not remaining.isdigit() or not 0 <= int(remaining) <= 5000:
+                    return None
+                values["lease_remaining_ms"] = int(remaining)
+            elif "lease_remaining_ms" in values:
+                return None
+            return values
+        except (ValueError, TypeError):
+            return None
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -870,12 +1087,16 @@ class StrataEngine:
             if not done:
                 out.put(None)
 
-    def restart(self, tries: int = 3):
+    def restart(self, tries: int = 3, startup_cancel=None):
         """Start the engine again (the same command) after it died; the new process has its own line queue.
         close() ends and waits for the old process first (EngineStuck when it cannot be ended).  A start that still
         exits before READY - a dead engine's VRAM can take a while to come back, notably on ROCm - is retried
         (PR #637)."""
         info = dict(self.info)
+        # Capabilities belong to the new process, never to a previous binary.
+        info.pop("live_memory", None)
+        info.pop("memory_protocol", None)
+        info.pop("memory_hold", None)
         self.starting = True                     # prepare() answers 503 "starting" meanwhile (#344)
         try:
             self.close()
@@ -885,7 +1106,10 @@ class StrataEngine:
                 # (0)".  __init__ clears `ended` itself once READY (before its pump thread can set it again).
                 self.ended = True
                 try:
-                    self.__init__(*self.spawn)
+                    if startup_cancel is None:
+                        self.__init__(*self.spawn)
+                    else:
+                        self.__init__(*self.spawn, startup_cancel=startup_cancel)
                     break
                 except RuntimeError:
                     try:
@@ -927,8 +1151,7 @@ class StrataEngine:
         with the engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        self.proc.stdin.write("VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}") + "\n")
-        self.proc.stdin.flush()
+        self._write("VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}"))
         deadline = time.time() + timeout
         while True:
             try:
@@ -1025,10 +1248,8 @@ class StrataEngine:
     def _send(self, text: str):
         btrace("send>", text[:60])
         try:
-            with self.wlock:
-                self.proc.stdin.write(text + "\n")
-                self.proc.stdin.flush()
-        except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
+            self._write(text)
+        except (OSError, AttributeError):                # pipe gone, including a concurrent restart's close()
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
     def _control(self, cancel, on_token, stop_when=None):
@@ -1560,7 +1781,7 @@ class StrataEngine:
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, park=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
@@ -1568,16 +1789,19 @@ class StrataEngine:
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
         if getattr(self, "batch", 0):
+            if park is not None:
+                raise ValueError("request parking is single-request only")
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
+        if park is not None and (park.proc is not self.proc or not self.can_stop or embeddings):
+            raise ValueError("request parking requires the current stoppable text engine")
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
         try:
-            self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
-            self.proc.stdin.flush()
+            self._write(f"{head} {','.join(str(int(t)) for t in ids)}")
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
@@ -1587,10 +1811,19 @@ class StrataEngine:
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
         heard, read_to = time.monotonic(), 0
         beat = heard
+        stop_deadline, delivered = None, 0
         stall_s = ENGINE_STALL_S or 0.0
         stall_state: dict = {}
         try:
             while True:
+                if park is not None and park.requested.is_set() and not park.stop_sent and not cancel.is_set():
+                    self._write("STOP", proc=park.proc)
+                    park.stop_sent = True
+                    # Intentional wait heartbeats must not extend STOP acknowledgement forever.
+                    stop_deadline = time.monotonic() + max(30.0, allow or 300.0)
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    done = True
+                    raise self._silent("the engine did not acknowledge pressure STOP")
                 wait = 10.0
                 if allow > 0:
                     wait = min(wait, allow - (time.monotonic() - heard))
@@ -1626,6 +1859,7 @@ class StrataEngine:
                     allow = silence
                     if cancel.is_set():
                         return
+                    delivered += 1
                     yield int(line[2:])
                 elif line.startswith("PP "):
                     f = line.split()
@@ -1645,9 +1879,19 @@ class StrataEngine:
                         read_to = self.reused = int(line.split()[1])
                     except (IndexError, ValueError):
                         pass
+                elif line.startswith("BACKGROUND ") and self._background_reading(line) is not None:
+                    # Intentional pressure waits are liveness, not generated text.
+                    # Keep the existing cancellation path and HTTP heartbeat alive.
+                    if cancel.is_set():
+                        return
+                    yield None
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
+                    if park is not None and park.stop_sent:
+                        if self.last["generated"] != delivered or self.last["finish"] not in ("cancel", "stop", "length"):
+                            raise EngineDied("pressure STOP did not acknowledge the exact streamed token prefix")
+                        park.acknowledged = self.last["finish"] == "cancel"
                     return
                 elif line.startswith("ERR"):
                     done = True
@@ -1656,8 +1900,7 @@ class StrataEngine:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
                     try:
-                        self.proc.stdin.write("STOP\n")
-                        self.proc.stdin.flush()
+                        self._write("STOP")
                     except OSError:
                         pass
                 # #481: never an untimed wait here - it holds the request FIFO, and an engine that lost step never
@@ -1748,8 +1991,7 @@ class StrataEngine:
         if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
-            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
-            self.proc.stdin.flush()
+            self._write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}")
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         silence = float(self.silence_s or 0)
@@ -1787,6 +2029,9 @@ class StrataEngine:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             f = line.split()
             head = f[0] if f else ""
+            if head == "BACKGROUND" and self._background_reading(line) is not None:
+                heard = time.monotonic()
+                continue
             if head == "SESSION":                          # a large file moving: progress, and a heartbeat
                 try:
                     if len(f) != 3:
@@ -1840,9 +2085,7 @@ class StrataEngine:
         try:
             if self.proc.poll() is None:
                 try:
-                    self.proc.stdin.write("QUIT\n")
-                    self.proc.stdin.flush()
-                    self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
+                    self._write("QUIT", close=True)  # the detached reader must see EOF before shutdown
                     self.proc.wait(timeout=20)
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
@@ -1963,16 +2206,10 @@ class Vision:
         try:
             line = self._readline(VISION_READY_S, "the vision encoder did not start")
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
-            self.proc, self.stopped = None, True
+            self.close()  # Retain the handle and raise if the child cannot be verified dead.
             raise RuntimeError(str(e)) from None
         if not line.startswith("READY"):
-            proc, self.proc = self.proc, None
-            self.stopped = True
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            self.close()
             raise RuntimeError(vision_start_error(line, self.spawn[1]))
         self.stopped = False
 
@@ -2008,13 +2245,7 @@ class Vision:
 
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
-        if self.proc is not None:
-            try:
-                self.proc.kill()
-            except OSError:
-                pass
-        self.proc = None
-        self.stopped = True
+        self.close()  # Never allocate a replacement while the old process survives.
         self._start()
 
     @staticmethod
@@ -2144,7 +2375,7 @@ class Vision:
             return self.cache[key]
 
     def close(self):
-        proc, self.proc = self.proc, None
+        proc = self.proc
         if proc is None:
             self.stopped = True
             return
@@ -2161,6 +2392,16 @@ class Vision:
                 proc.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if proc.poll() is None:
+            raise EngineStuck("the vision encoder is still releasing memory; its process is retained")
+        try:
+            # PR #1862: do not leave a failed buffered QUIT to flush again at GC.
+            # Unlike an unconditional close, this follows verified process death.
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+        self.proc = None
         self.stopped = True
 
     def shutdown(self):
@@ -2269,11 +2510,68 @@ def layer_split_of(cfg: dict) -> bool:
     return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
 
 
+_ADAPTIVE_OTHER_GPU_ARGS = ("--devices", "--peer-device", "--layer-split", "--expert-cache-remote",
+                            "--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3",
+                            "--remote-expert-opt")
+
+
+def adaptive_ownership_enabled(cfg: dict) -> bool:
+    """Configuration-only check, before any native or vision process is constructed."""
+    for key in ("memory_policy", "resource_presets", "coadaptive"):
+        block = cfg.get(key)
+        if isinstance(block, dict) and block.get("enabled") is True:
+            return True
+    coadaptive = cfg.get("coadaptive")
+    if isinstance(coadaptive, dict) and any(isinstance(coadaptive.get(key), dict)
+            and coadaptive[key].get("enabled") is True for key in ("request_parking", "idle_parking", "tool_leases")):
+        return True
+    return "--live-memory" in cfg.get("args", [])
+
+
+def validate_adaptive_startup(cfg: dict, groups=None) -> None:
+    """Reject unsupported ownership before a replica or helper can allocate memory."""
+    if not adaptive_ownership_enabled(cfg):
+        return
+    if groups is None:
+        from serve.replicas import gpu_groups
+        groups = gpu_groups(cfg)
+    if groups:
+        raise ValueError("adaptive memory and tool leases currently require one engine; replicas are not supported")
+    if len(gpu_list(cfg)) > 1 or any(flag in cfg.get("args", []) for flag in _ADAPTIVE_OTHER_GPU_ARGS):
+        raise ValueError("adaptive memory currently supports one GPU without peer or helper expert caches")
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
+    validate_adaptive_startup(cfg)
     args = list(cfg["args"])
+    policy = cfg.get("memory_policy")
+    if isinstance(policy, dict) and policy.get("enabled") is True and policy.get("mode", "reload") == "live":
+        if cfg.get("backend") not in (None, "cuda") or len(gpu_list(cfg)) > 1:
+            raise ValueError("live memory currently requires CUDA and one GPU")
+        if any(flag in args for flag in ("--devices", "--peer-device", "--layer-split")):
+            raise ValueError("live memory currently supports one GPU")
+        if "--live-memory" not in args:
+            args.append("--live-memory")
+    if "--live-memory" in args:
+        # The asynchronous tier can still own cache/host copies at a live resize.
+        # Mirror the native opt-in guard before the vision process allocates, too.
+        async_adapt = 0
+        for i, flag in enumerate(args):
+            if flag == "--adapt-async":
+                if i + 1 == len(args):
+                    raise ValueError("--adapt-async needs a value; live memory requires --adapt-async 0")
+                value = re.match(r"\s*([+-]?\d+)", str(args[i + 1]))
+                async_adapt = int(value.group(1)) if value else 0
+        if async_adapt:
+            raise ValueError("live memory requires --adapt-async 0; asynchronous expert swaps can still own resize buffers")
+        # Mirror the native lifetime guard; inherited environment also reaches the engine.
+        slots = str(cfg.get("env", {}).get("STRATA_FS_SLOTS", os.environ.get("STRATA_FS_SLOTS", "0")))
+        prefix = re.match(r"\s*([+-]?\d+)", slots)
+        if prefix and int(prefix.group(1)) > 0:
+            raise ValueError("live memory requires STRATA_FS_SLOTS=0; ForesightSwap cannot resize its host arena")
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
@@ -2299,6 +2597,12 @@ def engine_args(cfg: dict) -> list[str]:
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
+    if isinstance(policy, dict) and policy.get("enabled") is True:
+        if "--vram-elastic" in args:
+            raise ValueError("memory policy and elastic VRAM cannot both own cache capacity")
+        if policy.get("mode", "reload") == "live" and any(
+                flag in args for flag in ("--batch", "--slots", "--batch-groups")):
+            raise ValueError("live memory currently requires one request at a time")
     return learned_profile_args(cfg, args)
 
 
@@ -2421,7 +2725,8 @@ def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topolog
     cards = []
     for n in nodes:
         try:
-            props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+            with open(os.path.join(root, str(n), "properties")) as properties:
+                props = dict(line.split() for line in properties if len(line.split()) == 2)
             simd, clk = int(props.get("simd_count", 0)), int(props.get("max_engine_clk_fcompute", 0))
         except (OSError, ValueError):
             continue
@@ -2784,6 +3089,40 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
+        self.memory_policy = None                     # opt-in; this server is the sole capacity owner
+        self.memory_lock = threading.RLock()
+        self.memory_pending = None
+        self.memory_last_reason = None
+        self.memory_loading = False
+        self.memory_live_pending = None
+        self.memory_request_id = 0
+        self.memory_retry_at = 0
+        self.memory_error = None
+        self.memory_limitation = None
+        self.memory_floor_ack = None
+        self.background_control = {"action": "run", "reason": "disabled", "delay_ms": 0}
+        self.background_sent = None
+        self.memory_pressure_failure = None
+        self.resource_presets = ResourcePresets()
+        self.coadaptive = CoAdaptive()
+        self.request_parking = RequestParking()
+        self.parking_active = None                       # owned by the single Service.run holding FIFO
+        self.parking_status = {"enabled": False, "state": "disabled"}
+        self.idle_parking = IdleParking()
+        self.idle_parking_status = {"enabled": False, "state": "disabled"}
+        self.idle_parked = None
+        self.tool_leases = ToolLeases()
+        self.tool_resident = None                       # one lease's drained native identity and ceiling
+        self.tool_resume = None                         # additional working space, not a second reload footprint
+        self.tool_resuming = False
+        self.preparing_requests = 0
+        self.request_owner = threading.local()
+        self.shutdown_event = threading.Event()
+        self.lifecycle_lock = threading.RLock()
+        self.request_cancels = set()
+        self.resource_limits = None
+        self.resource_generation = 0
+        self.resource_sampler = None
         self.min_free_vram_mib = 0
         self.before_load = None
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
@@ -2829,6 +3168,8 @@ class Service:
         waiting = True
         try:
             with self.fifo:
+                if self.tool_leases.blocked():
+                    return error(503, "a supervisor tool lease blocks session mutation")
                 with self.status_lock:
                     self.status["queued"] -= 1
                 waiting = False
@@ -2931,8 +3272,21 @@ class Service:
             return None
 
     def ensure_loaded(self):
+        """Synchronous callers still pass the guarded idle admission."""
+        for _ in self._admit_loaded(self.shutdown_event):
+            pass
+
+    def _ensure_loaded_base(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
+        try:
+            self._apply_memory_plan()
+            self._ensure_loaded_native()
+        finally:
+            with self.memory_lock:
+                self.memory_loading = False
+
+    def _ensure_loaded_native(self):
         if self.loaded() and not self._vision_down():
             return
         if self.before_load:
@@ -2973,6 +3327,15 @@ class Service:
             if vision_started:
                 self.vision.unload()
             raise
+        if self.memory_policy is not None:
+            with self.memory_lock:
+                if self.memory_policy.mode == "live":
+                    self._record_live_load(self.memory_pending["reason"] if self.memory_pending else "loaded_budget")
+                elif self.memory_pending is not None:
+                    self.memory_policy.applied(self.memory_pending, time.time())
+                if self.memory_pending is not None:
+                    self.memory_last_reason = self.memory_pending["reason"]
+                self.memory_pending = None
         print("[strata] the engine is running again", flush=True)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
@@ -2987,6 +3350,8 @@ class Service:
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
         engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
         An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        if self.tool_leases.blocked():
+            raise ModelBusy("a supervisor tool lease owns model admission")
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
@@ -2998,19 +3363,561 @@ class Service:
             self.fifo.release()
             raise ModelBusy("a request is still running; try again when it has finished")
         try:
-            if not self.loaded():
+            # A lease may have arrived while FIFO/ctl was held elsewhere. Order
+            # this mutation with acquire's memory lock, including deferred state.
+            with self.memory_lock if self.tool_leases.enabled else contextlib.nullcontext():
+                if self.tool_leases.blocked():
+                    raise ModelBusy("a supervisor tool lease owns model admission")
+                if not self.loaded():
+                    self.vram_reserve = reserve_mib
+                    return {"status": "not loaded", "reserve_mib": reserve_mib,
+                            "note": "applied when the model loads"}
+                out = self.engine.vram(reserve_mib)
                 self.vram_reserve = reserve_mib
-                return {"status": "not loaded", "reserve_mib": reserve_mib,
-                        "note": "applied when the model loads"}
-            out = self.engine.vram(reserve_mib)
-            self.vram_reserve = reserve_mib
-            print(f"[strata] VRAM: {out.get('vram_free_mib')} MiB free, expert cache {out.get('expert_cache_mib')} of "
-                  f"{out.get('expert_cache_full_mib')} MiB ({out.get('expert_slots')} experts)", flush=True)
-            return {"status": "ok", **out}
+                print(f"[strata] VRAM: {out.get('vram_free_mib')} MiB free, expert cache {out.get('expert_cache_mib')} of "
+                      f"{out.get('expert_cache_full_mib')} MiB ({out.get('expert_slots')} experts)", flush=True)
+                return {"status": "ok", **out}
         finally:
             if ctl is not None:
                 ctl.release()
             self.fifo.release()
+
+    def configure_memory(self, config):
+        """Reuse native allocation at load boundaries; never change model/context/precision or active work."""
+        if config is not None and not isinstance(config, dict):
+            raise ValueError("memory_policy must be a JSON object")
+        if not config or config.get("enabled") is not True:
+            return
+        spawn = getattr(self.engine, "spawn", None)
+        if not getattr(type(self.engine), "memory_policy_single_owner", False) or not spawn or len(spawn) < 5:
+            raise ValueError("memory_policy needs the Strata engine")
+        args = spawn[1]
+        if "--resident-budget-gib" not in args or "--vram-reserve-mib" not in args:
+            raise ValueError("memory_policy needs explicit resident-budget-gib and vram-reserve-mib caps")
+        if any(flag in args for flag in _ADAPTIVE_OTHER_GPU_ARGS):
+            raise ValueError("memory_policy currently supports one GPU")
+        if "--vram-elastic" in args:
+            raise ValueError("memory policy and elastic VRAM cannot both own cache capacity")
+        if config.get("mode", "reload") == "live" and (
+                any(flag in args for flag in ("--batch", "--slots", "--batch-groups"))
+                or getattr(self.engine, "batch", 0) or self.engine.info.get("batch_slots", 0)):
+            raise ValueError("live memory currently requires one request at a time")
+        self.memory_policy = MemoryPolicy(config,
+            resident_cap_gib=float(args[args.index("--resident-budget-gib") + 1]),
+            vram_reserve_mib=int(args[args.index("--vram-reserve-mib") + 1]))
+        if self.memory_policy.mode == "live":
+            if "--live-memory" not in args:
+                raise ValueError("live memory requires --live-memory before engine startup")
+            if self.loaded():
+                self._record_live_load("initial_budget")
+            return
+        if self.loaded():
+            self.memory_policy.applied({"resident_budget_gib": self.memory_policy.cap,
+                                       "vram_reserve_mib": self.memory_policy.reserve_floor,
+                                       "reason": "initial_budget"}, time.time())
+
+    def _record_live_load(self, reason):
+        if not self.engine.live_memory_capable():
+            raise ValueError("live memory needs an engine advertising live_memory=1 memory_protocol=1")
+        info = self.engine.info
+        self.parking_start_cache_mib = info.get("expert_cache_mib")
+        arena = info.get("arena_mib")
+        if not isinstance(arena, int) or isinstance(arena, bool) or arena < 0:
+            raise ValueError("live memory engine did not report its actual arena_mib")
+        args = self.engine.spawn[1]
+        reserve = info.get("vram_reserve_mib", int(args[args.index("--vram-reserve-mib") + 1]))
+        self.memory_policy.live_actual(arena, reserve, time.time(), reason, completed=True, loaded=True)
+        self.memory_live_pending = None
+        self.memory_retry_at = 0
+        self.memory_error = None
+        self.memory_limitation = None
+        self.memory_floor_ack = None
+
+    def configure_resources(self, config):
+        """Startup configuration or validated live selection; never reinitialize allocation state."""
+        config = clean_resource_config(config)
+        if config["enabled"] and self.coadaptive.enabled:
+            raise ValueError("coadaptive and resource presets cannot both own targets")
+        if config["enabled"] and (self.memory_policy is None or self.memory_policy.mode != "live"):
+            raise ValueError("resource presets require enabled live memory policy")
+        with self.memory_lock:
+            self.resource_presets.configure(config)
+            self._retarget_resources()
+            self._sync_resource_sampler()
+
+    def configure_coadaptive(self, config):
+        config = dict(config) if isinstance(config, dict) else config
+        leases = ToolLeases(config.pop("tool_leases", None) if isinstance(config, dict) else None)
+        parking = RequestParking(config.pop("request_parking", None) if isinstance(config, dict) else None)
+        idle = IdleParking(config.pop("idle_parking", None) if isinstance(config, dict) else None)
+        args = getattr(self.engine, "spawn", (None, [], None, None, None))[1]
+        fraction = float(args[args.index("--pcie-frac") + 1]) if "--pcie-frac" in args else .5
+        policy = self.memory_policy
+        controller = CoAdaptive(config, ram_headroom_gib=policy.headroom if policy else 4,
+                                vram_reserve_mib=policy.reserve_floor if policy else 256, pcie_frac=fraction)
+        if controller.enabled and (policy is None or policy.mode != "live" or self.resource_presets.enabled
+                                   or "--pcie-frac" not in args):
+            raise ValueError("coadaptive needs live memory, explicit --pcie-frac, and resource presets disabled")
+        if parking.enabled and (not controller.active or not isinstance(self.engine, StrataEngine)
+                                or getattr(self.engine, "batch", 0) or not self.engine.can_stop
+                                or self.engine.info.get("background_control") != 1):
+            raise ValueError("request parking needs live coadaptive mode and a single stoppable background engine")
+        if idle.enabled and (not controller.active or not isinstance(self.engine, StrataEngine)
+                             or getattr(self.engine, "batch", 0) or not self.engine.can_stop
+                             or self.engine.info.get("background_control") != 1 or self.before_load
+                             or not self.loaded() or self._vision_down()):
+            raise ValueError("idle parking needs live coadaptive mode, a single stoppable background engine "
+                             "already loaded, and no before_load hook")
+        if leases.enabled and not idle.enabled:
+            raise ValueError("tool leases require enabled live idle parking")
+        if controller.enabled and controller.routing.profile is not None:
+            try:
+                controller.runtime_key = runtime_key(self.engine)
+            except (OSError, ValueError):
+                controller.runtime_key = None  # unknown identity cannot authorize a routing change
+        with self.memory_lock:
+            if self.tool_leases.blocked():
+                raise ValueError("cannot reconfigure coadaptive while a tool lease is active")
+            if self.idle_parked is not None:
+                raise ValueError("cannot reconfigure coadaptive while idle reload admission is pending")
+            self.coadaptive = controller
+            self.request_parking = parking
+            self.parking_status = {"enabled": parking.enabled, "state": "ready" if parking.enabled else "disabled"}
+            self.idle_parking = idle
+            self.tool_leases = leases
+            self.idle_parking_status = {"enabled": idle.enabled, "state": "ready" if idle.enabled else "disabled"}
+            if policy is not None:
+                policy.reclaim_gpu_headroom = controller.active
+            self._retarget_resources()
+            self._sync_resource_sampler()
+
+    def _retarget_resources(self):
+        limits = self.coadaptive.limits() if self.coadaptive.active else self.resource_presets.limits()
+        demand = self.tool_leases.demand() if self.tool_leases.enabled else None
+        if demand and not demand["terminal"] and demand["mode"] != "unload":
+            base = limits or (self.memory_policy.configured_headroom,
+                              self.memory_policy.configured_reserve_floor)
+            limits = (max(base[0], demand["ram_target_gib"]),
+                      max(base[1], math.ceil(demand["vram_target_mib"])))
+        if self.tool_resume and (not demand or demand["terminal"] and not self.tool_leases.blocked()):
+            base = limits or (self.memory_policy.configured_headroom,
+                              self.memory_policy.configured_reserve_floor)
+            limits = (max(base[0], self.tool_resume["ram_gib"]),
+                      max(base[1], self.tool_resume["gpu_mib"]))
+        if limits != self.resource_limits:
+            self.memory_policy.update_resource_limits(*(limits if limits is not None else (None, None)))
+            self.resource_limits = limits
+            self.resource_generation += 1
+
+    def _resource_exclusions(self):
+        pid = getattr(getattr(self.engine, "proc", None), "pid", None)
+        return (os.getpid(), pid) if isinstance(pid, int) else (os.getpid(),)
+
+    def _sync_resource_sampler(self):
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        if self.coadaptive.enabled or self.resource_presets.enabled and self.resource_presets.selection == "auto":
+            if self.resource_sampler is None:
+                self.resource_sampler = WorkloadSampler(getattr(telemetry, "ps", None))
+            telemetry.workload_sampler = lambda now: self.resource_sampler.sample(now, self._resource_exclusions())
+        else:
+            telemetry.workload_sampler = None
+            self.resource_sampler = None
+
+    def resource_status(self):
+        with self.memory_lock:
+            status = self.resource_presets.status()
+            targets = status.get("targets") or {}
+            return {**status, **targets,
+                    "available": bool(self.config_path and self.memory_policy and self.memory_policy.mode == "live"),
+                    "memory": self.memory_status()}
+
+    def set_resources(self, config):
+        """Persist only the preset block before changing the live desired targets."""
+        if not isinstance(config, dict) or set(config) != {"enabled", "selection"}:
+            raise ValueError("send only enabled and selection for resource presets")
+        config = clean_resource_config(config)
+        if config["enabled"] and (self.memory_policy is None or self.memory_policy.mode != "live"):
+            raise ValueError("resource presets require enabled live memory policy")
+        if not self.config_path:
+            raise OSError("configure a run config file to save resource presets")
+        with self.config_lock:
+            cfg = runconfig.load(self.config_path)
+            if cfg.get("resource_presets") != config:
+                runconfig.save(self.config_path, {**cfg, "resource_presets": config}, preserve_backup=True)
+            self.configure_resources(config)
+        return self.resource_status()
+
+    def _invalidate_live_memory(self):
+        self.memory_floor_ack = None
+        self.memory_live_pending = None
+        self.memory_pending = None
+        self.memory_policy.current = None
+        self.memory_policy.reconcile_after_load = False
+        self.memory_policy.pressure_recovery_ceiling_gib = None
+        self.memory_policy.gpu_baseline = None
+        self.memory_policy._reset_windows()
+        self.memory_last_reason = "engine_unavailable"
+        self.memory_limitation = None
+        self.background_sent = None
+        self.background_control = {"action": "run", "reason": "engine_unavailable", "delay_ms": 0}
+        self.memory_pressure_failure = None
+
+    def _drain_memory_acks(self, now):
+        """Observation handles ACKs; the stdout pump never takes service locks."""
+        while True:
+            try:
+                proc, ack = self.engine.memory_acks.get_nowait()
+            except queue.Empty:
+                break
+            pending = self.memory_live_pending
+            if (pending is None or proc is not pending["proc"] or proc is not self.engine.proc
+                    or ack["id"] != pending["id"]):
+                continue
+            if ack["resident_mib"] > self.memory_policy.cap * 1024:
+                continue
+            status = ack["status"]
+            pending["progress_at"] = now
+            reason = pending["plan"]["reason"] if status == "applied" else "native_" + status
+            self.memory_policy.live_actual(ack["resident_mib"], ack["vram_reserve_mib"],
+                                           now, reason, completed=status == "applied")
+            if ack["expert_cache_mib"] < self.engine.info.get("expert_cache_mib", 0):
+                # A previous growth ceiling no longer describes a cache that
+                # subsequently shrank, including partially completed error paths.
+                self.memory_policy.gpu_capacity_ceiling = False
+            self.engine.info.update(arena_mib=ack["resident_mib"],
+                                    expert_cache_mib=ack["expert_cache_mib"],
+                                    expert_slots=ack["expert_slots"], vram_free_mib=ack["vram_free_mib"],
+                                    vram_reserve_mib=ack["vram_reserve_mib"])
+            self.memory_last_reason = reason
+            if status != "progress":
+                self.memory_live_pending = None
+                if self.tool_resume:
+                    self.tool_resume["after"] = now
+            if status == "error":
+                self.memory_error = ack.get("error", "native_error")
+                if self.memory_error in ("prefill_cache_floor", "reserve_unreachable"):
+                    # A fixed GPU minimum is not a transient allocation failure.
+                    # Suppress the same impossible target, but let a lower target
+                    # recover after its normal stability dwell rather than ten minutes.
+                    self.memory_floor_ack = ack
+                    self.memory_limitation = self.memory_error
+                    self.memory_retry_at = 0
+                else:
+                    self.memory_retry_at = now + self.memory_policy.cooldown
+                    target = (int(pending["plan"]["resident_budget_gib"] * 1024),
+                              pending["plan"]["vram_reserve_mib"])
+                    prior = getattr(self, "memory_pressure_failure", None)
+                    attempts = prior["attempts"] + 1 if prior and prior["target"] == target else 1
+                    self.memory_pressure_failure = {"target": target, "attempts": attempts,
+                                                    "retry_at": now + min(30, 2 ** min(5, attempts))}
+            elif status == "applied":
+                self.memory_pressure_failure = None
+                self.memory_error = None
+                self.memory_limitation = ack.get("error") if ack.get("error") not in (None, "none", "") else None
+                self.memory_floor_ack = (ack if self.memory_limitation in
+                                         ("prefill_cache_floor", "reserve_unreachable") else None)
+                if pending.get("resource_generation", 0) == self.resource_generation:
+                    self.memory_policy.complete_live_plan(pending["plan"], pending["resident_before_gib"],
+                                                          self.memory_limitation)
+
+    def memory_snapshot(self, fresh=False):
+        telemetry = getattr(self, "telemetry", None)
+        snapshot = (telemetry.capacity() if fresh else telemetry.snapshot().get("now", {})) if telemetry else {}
+        snapshot = dict(snapshot)
+        native = getattr(self.engine, "native_capacity", None)
+        if self.loaded() and getattr(self.engine, "live_memory_capable", lambda: False)():
+            # Never grow from a stale, wrong-process, failed or missing allocator reading.
+            valid = (native is not None and native["proc"] is self.engine.proc
+                     and 0 <= time.time() - native["sampled_at"] <= 5)
+            snapshot["native_capacity_required"] = True
+            headroom = (min(native["free_mib"], native.get("budget_free_mib", native["free_mib"]))
+                        if valid else None)
+            snapshot["native_free_mib"] = headroom
+            snapshot["native_cuda_free_mib"] = native["free_mib"] if valid else None
+            snapshot["native_budget_free_mib"] = native.get("budget_free_mib") if valid else None
+            snapshot["native_sampled_at"] = native["sampled_at"] if valid else None
+            if valid:
+                total = native["total_mib"] * 2**20
+                snapshot["gpu_mem_total"] = total
+                snapshot["gpu_mem_used"] = total - headroom * 2**20
+        return snapshot
+
+    def _reconcile_memory_control(self, now):
+        """Recover a lost terminal ACK only from fresh, authoritative idle control state.
+
+        A delayed-but-still-active native command is never guessed complete. No
+        duplicate mutation is sent merely because a timer expired.
+        """
+        pending = self.memory_live_pending
+        if pending is None or "sent_at" not in pending:
+            return
+        last = pending.get("progress_at", pending["sent_at"])
+        if now - last < 30:
+            return
+        native = getattr(self.engine, "native_capacity", None)
+        if (native is None or native.get("proc") is not self.engine.proc
+                or native.get("sampled_at", 0) <= last
+                or not 0 <= now - native.get("sampled_at", 0) <= 5
+                or "memory_pending_id" not in native or "memory_reserve_mib" not in native
+                or native.get("memory_last_terminal_id") != pending["id"]):
+            self.memory_last_reason = "control_feedback_missing"
+            return
+        if native["memory_pending_id"] != 0:
+            self.memory_last_reason = "native_resize_delayed"
+            return
+        self.memory_policy.live_actual(native["resident_mib"], native["memory_reserve_mib"], now,
+                                       "control_reconciled", completed=False)
+        self.engine.info.update(arena_mib=native["resident_mib"], expert_cache_mib=native["cache_mib"],
+                                vram_free_mib=native["free_mib"], vram_reserve_mib=native["memory_reserve_mib"])
+        self.memory_live_pending = None
+        if self.tool_resume:
+            self.tool_resume["after"] = now
+        self.memory_floor_ack = None
+        self.memory_last_reason = "control_reconciled"
+        self.memory_error = "terminal_ack_missing"
+
+    def _observe_background(self, snapshot, now):
+        """Renew a short native lease even while a MEMORY operation is pending.
+
+        The native process services memory and cancellation while parked. A lost
+        server expires the lease; it cannot leave an orphaned permanent pause.
+        """
+        if not self.coadaptive.active:
+            decision = {"action": "run", "reason": "disabled"}
+            fairness = {"delay_ms": 0, "reason": "disabled"}
+        else:
+            decision = self.memory_policy.safety_decision(
+                snapshot, now, getattr(self.engine, "info", {}), self.memory_limitation)
+            fairness = self.coadaptive.fairness_decision(snapshot, now)
+        waiting = decision["action"] == "wait"
+        delay = fairness["delay_ms"]
+        capable = self.engine.info.get("background_control") == 1
+        self.background_control = {**decision, "delay_ms": delay,
+                                   "fairness_reason": fairness["reason"], "supported": capable}
+        active = self.parking_active
+        if self.request_parking.enabled and active is not None:
+            # Duplicate/stale samples cannot earn a pressure dwell. Unknown telemetry only waits.
+            stamp = snapshot.get("sampled_at")
+            valid = (isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+                     and 0 <= now - stamp <= self.request_parking.max_sample_age_seconds)
+            park = self.request_parking.should_park(decision if valid else {}, stamp if valid else now)
+            control = active.get("control")
+            if (park and active.get("footprint") is not None and control is not None
+                    and control.proc is self.engine.proc and not active["cancel"].is_set()):
+                control.requested.set()
+                self.parking_status.update(state="stop_requested", reason=decision["reason"])
+            elif control is not None and not control.stop_sent and decision["action"] != "wait":
+                control.requested.clear()
+        if not capable:
+            return
+        proc = self.engine.proc
+        last = getattr(self, "background_sent", None)
+        command = (delay, waiting)
+        if (last is not None and last[0] is proc and last[1] == command
+                and 0 <= now - last[2] < 2):
+            return
+        # Do not send a stream of no-op controls to an unchanged normal engine.
+        if not waiting and delay == 0 and (last is None or last[0] is not proc or last[1] == command):
+            return
+        try:
+            self.engine.request_background(5000 if waiting or delay else 0, delay, waiting, proc)
+            self.background_sent = (proc, command, now)
+        except (OSError, ValueError) as exc:
+            self.background_control["control_error"] = str(exc)
+
+    def observe_memory(self):
+        if self.memory_policy is None:
+            return
+        with self.memory_lock:
+            if self.memory_loading:
+                return
+            with self.status_lock:
+                if (self.preparing_requests and not self.tool_resuming
+                        and not self.status.get("busy") and not self.status.get("queued")):
+                    return  # no independent resize across guarded vision preparation
+            snapshot, now = self.memory_snapshot(), time.time()
+            with self.status_lock:
+                engine_idle = not self.status.get("busy") and not self.status.get("queued")
+            if self.coadaptive.observe(snapshot, now, engine_idle=engine_idle):
+                self._retarget_resources()
+            if self.resource_presets.observe(snapshot, now):
+                self._retarget_resources()
+            live = self.memory_policy.mode == "live"
+            plan = None
+            if live:
+                if not self.loaded():
+                    self._invalidate_live_memory()
+                    return
+                if (self.memory_live_pending is not None
+                        and self.memory_live_pending["proc"] is not self.engine.proc):
+                    self._invalidate_live_memory()
+                    return
+                self._drain_memory_acks(now)
+                self._reconcile_memory_control(now)
+                self._reconcile_tool_control(now)
+                self._observe_background(snapshot, now)
+                lease = self.tool_leases.demand() if self.tool_leases.enabled else None
+                if lease and lease["terminal"] and not self.tool_leases.blocked():
+                    lease = None
+                if lease and lease["mode"] != "unload" and (self.tool_resident is None
+                        or lease["terminal"] or self.tool_resident.get("lease_id") != lease["lease_id"]
+                        or self.memory_policy.lease_ceiling() is None):
+                    # Acquire is atomic against this sender. Existing native work may finish;
+                    # no new growth or resize races the post-drain ceiling capture.
+                    return
+                if lease and lease["mode"] == "unload":
+                    return
+                if self.memory_live_pending is not None:
+                    if lease and self.tool_leases.blocked():
+                        return  # one owner/control identity until ACK or verified teardown
+                    if self.engine.info.get("memory_supersede") != 1:
+                        return
+                    candidate = self.memory_policy.observe(snapshot, True, self.engine.info, now)
+                    old = self.memory_live_pending["plan"]
+                    if candidate is None or candidate["reason"] != "sustained_pressure":
+                        return
+                    candidate = dict(candidate)
+                    candidate["vram_reserve_mib"] = max(candidate["vram_reserve_mib"], old["vram_reserve_mib"])
+                    new_ram = int(candidate["resident_budget_gib"] * 1024)
+                    if (new_ram > min(int(old["resident_budget_gib"] * 1024), self.engine.info.get("arena_mib", 0))
+                            or new_ram == int(old["resident_budget_gib"] * 1024)
+                            and candidate["vram_reserve_mib"] == old["vram_reserve_mib"]):
+                        return
+                    plan = candidate  # only a stricter release can supersede native work
+            with self.status_lock:
+                idle = not self.status.get("busy") and not self.status.get("queued")
+            if idle and self.loaded():
+                self.memory_policy.record_loaded(snapshot, now)
+            if plan is None:
+                plan = self.memory_policy.observe(snapshot, self.loaded(), getattr(self.engine, "info", {}), now)
+            if live:
+                if plan is None:
+                    return
+                floor = getattr(self, "memory_floor_ack", None)
+                if (floor is not None and plan["vram_reserve_mib"] >= floor["vram_reserve_mib"]
+                        and abs(plan["resident_budget_gib"] * 1024 - floor["resident_mib"]) < 64
+                        and snapshot.get("native_free_mib") is not None
+                        and abs(snapshot["native_free_mib"] - floor["vram_free_mib"]) < 128):
+                    self.memory_last_reason = "native_gpu_floor"
+                    return  # unchanged non-evictable floor: do not repeatedly stall inference
+                # A failed allocation delays growth, not relief for other apps.
+                # The policy requires sustained pressure and forbids either
+                # cache from growing in a pressure plan.
+                if now < self.memory_retry_at and plan["reason"] != "sustained_pressure":
+                    return
+                failure = getattr(self, "memory_pressure_failure", None)
+                target = (int(plan["resident_budget_gib"] * 1024), plan["vram_reserve_mib"])
+                if (failure and failure["target"] == target and now < failure["retry_at"]):
+                    self.memory_last_reason = "pressure_retry_backoff"
+                    return
+                if self.memory_request_id >= 2**53:
+                    self.memory_error = "request_id_exhausted"
+                    return
+                self.memory_request_id += 1
+                self.memory_limitation = None
+                pending = {"id": self.memory_request_id, "proc": self.engine.proc, "plan": plan,
+                           "resident_before_gib": self.memory_policy.current["resident_budget_gib"],
+                           "resource_generation": self.resource_generation, "sent_at": now, "progress_at": now}
+                previous_pending = self.memory_live_pending
+                self.memory_live_pending = pending
+                held = bool(lease and self.tool_resident and not lease["terminal"])
+                if held:
+                    if not self.tool_leases.begin_operation(lease["lease_id"], "relieve", pending["id"], id(pending["proc"])):
+                        self.memory_live_pending = previous_pending
+                        return
+                    self.tool_resident["operation"] = (pending["id"], id(pending["proc"]))
+                    self.tool_resident["action_at"] = now
+                try:
+                    args = (pending["id"], int(plan["resident_budget_gib"] * 1024),
+                            plan["vram_reserve_mib"], pending["proc"])
+                    if held:
+                        self.engine.request_memory(*args, hold=True)
+                    else:
+                        self.engine.request_memory(*args)
+                except (OSError, ValueError) as e:
+                    # A write can fail after the command reached native stdin.
+                    # Held operations remain owned until ACK/reconciliation or
+                    # verified teardown, never inferred cancelled by an exception.
+                    if not held:
+                        self.memory_live_pending = previous_pending
+                    self.memory_error = str(e)
+                    self.memory_last_reason = "command_failed"
+                    self.memory_retry_at = now + self.memory_policy.cooldown
+                    # Pressure may bypass the growth retry deadline; a failed
+                    # write must earn a new stability window before retrying.
+                    self.memory_policy._reset_windows()
+                return
+            self.memory_pending = plan
+
+    def _apply_memory_plan(self):
+        """Caller holds the FIFO. A pending budget takes effect just before a request, never while idle polling."""
+        if self.memory_policy is None:
+            return
+        with self.memory_lock:
+            loaded = self.loaded()
+            if self.memory_policy.mode == "live":
+                if loaded:
+                    return
+                self._invalidate_live_memory()
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued"):
+                    return
+            plan = self.memory_pending if loaded else self.memory_policy.plan_for_load(
+                self.memory_snapshot(fresh=True), time.time())
+            if plan is None:
+                return
+            self.memory_loading = True
+            if loaded:
+                print(f"[strata] memory replan at request boundary: {plan['reason']}", flush=True)
+                self.engine.unload()
+            spawn = list(self.engine.spawn)
+            args = list(spawn[1])
+            args[args.index("--resident-budget-gib") + 1] = str(plan["resident_budget_gib"])
+            args[args.index("--vram-reserve-mib") + 1] = str(plan["vram_reserve_mib"])
+            spawn[1] = args
+            self.engine.spawn = tuple(spawn)  # retain .42's lazy/CPU-assignment restart metadata
+            self.memory_pending = plan
+
+    def memory_status(self):
+        if self.memory_policy is None:
+            return {"enabled": False}
+        with self.memory_lock:
+            current = self.loaded()
+            return {**self.memory_policy.status(), "enabled": True,
+                    "native_capacity": {k: v for k, v in ((getattr(self.engine, "native_capacity", None) or {})
+                                                        if current else {}).items()
+                                        if k != "proc"},
+                    "coadaptive": self.coadaptive.status(time.time()),
+                    "background_control": self.background_control,
+                    "request_parking": dict(self.parking_status),
+                    "idle_parking": dict(self.idle_parking_status),
+                    "tool_lease": self.tool_leases.public(),
+                    "preparing_requests": self.preparing_requests,
+                    "background_native": getattr(self.engine, "background_state", None) if current else None,
+                    "pressure_retry": getattr(self, "memory_pressure_failure", None),
+                    "pending": self.memory_pending is not None or self.memory_live_pending is not None,
+                    "request_id": self.memory_live_pending["id"] if self.memory_live_pending else None,
+                    "last_reason": self.memory_last_reason, "error": self.memory_error,
+                    "limitation": self.memory_limitation,
+                    "retry_at": self.memory_retry_at or None,
+                    "application": "live" if self.memory_policy.mode == "live" else "next request boundary",
+                    "idle_unload_s": self.idle_unload_s}
+
+    def start_memory_policy(self):
+        if self.memory_policy is None:
+            return
+        def loop():
+            while not self.shutdown_event.is_set():
+                try:
+                    self.observe_tool_lease()
+                    self.observe_memory()
+                    self.observe_idle_pressure()
+                except (ValueError, TypeError, KeyError) as e:
+                    print(f"[strata] memory telemetry unavailable: {e}", flush=True)
+                self.shutdown_event.wait(2)
+        threading.Thread(target=loop, daemon=True).start()
 
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
@@ -3019,11 +3926,608 @@ class Service:
         print(f"[strata] {e}. {note} The next request starts the engine again."
               f"{' Its log: ' + log if log else ''}", flush=True)
 
+    @contextlib.contextmanager
+    def preparation_reservation(self):
+        """Prevent idle/timed/user unload across load, download, encode and GEN.
+
+        Reservations do not own the native pipe. FIFO remains the single owner
+        of every lifecycle operation, image encode and generation.
+        """
+        cancel = getattr(self.request_owner, "cancel", self.shutdown_event)
+        heartbeat = getattr(self.request_owner, "preparation_heartbeat", lambda: None)
+        with contextlib.closing(self._reserve_preparation(cancel)) as admission:
+            for _ in admission:
+                heartbeat()
+        try:
+            yield
+        finally:
+            self._release_preparation()
+
+    def _reserve_preparation(self, cancel):
+        """Order a new request against lease acquisition without holding FIFO.
+
+        Existing nested owners may finish. The status lock orders the first
+        reservation with acquire, so a new request cannot jump a pending lease.
+        """
+        depth = getattr(self.request_owner, "depth", 0)
+        beat = 0.0
+        while True:
+            with self.status_lock:
+                if self.tool_leases.enabled and (cancel.is_set() or self.shutdown_event.is_set()):
+                    raise RequestParkCancelled()
+                lease = self.tool_leases.demand() if self.tool_leases.enabled else None
+                if lease and lease["terminal"] and (lease.get("operation") or {}).get("action") == "unload":
+                    raise EngineStuck("a supervisor memory release has not confirmed process death")
+                if depth or not self.tool_leases.blocked():
+                    self.request_owner.depth = depth + 1
+                    if not depth:
+                        self.preparing_requests += 1
+                    return
+            if cancel.is_set() or self.shutdown_event.is_set():
+                raise RequestParkCancelled()
+            if time.monotonic() - beat >= 10:
+                beat = time.monotonic()
+                yield "ping", None
+            cancel.wait(.25)
+
+    def _release_preparation(self):
+        self.request_owner.depth -= 1
+        if not self.request_owner.depth:
+            with self.status_lock:
+                self.preparing_requests -= 1
+
+    def resource_lease_action(self, req):
+        """Already authenticated supervisor request; never starts lifecycle work."""
+        if not self.tool_leases.enabled:
+            raise LeaseError("tool leases are disabled", 404)
+        if not isinstance(req, dict):
+            raise LeaseError("send a JSON object")
+        if req.get("action") == "acquire":
+            telemetry = getattr(self, "telemetry", None)
+            snapshot = telemetry.capacity() if telemetry else {}
+            # Lock order is memory -> status -> lease. The policy worker never
+            # holds status across sampling, FIFO acquisition or native I/O.
+            with self.memory_lock, self.status_lock:
+                self._finish_tool_residency()
+                row = self.tool_leases.acquire(req, snapshot, time.time())
+                demand = self.tool_leases.demand()
+                if demand and demand["mode"] != "unload" and not demand["terminal"]:
+                    if self.tool_resident is None:
+                        self.tool_resident = {"lease_id": demand["lease_id"], "proc": self.engine.proc,
+                            "vision_proc": getattr(self.vision, "proc", None), "drained_at": None,
+                            "operation": None, "control_wait_since": None,
+                            "pressure_since": None, "action_at": 0}
+                    pending = self.memory_live_pending
+                    if pending and self.tool_resident["operation"] is None:
+                        self.tool_leases.begin_operation(demand["lease_id"], "drain", pending["id"], id(pending["proc"]))
+                        self.tool_resident["operation"] = (pending["id"], id(pending["proc"]))
+                    self._retarget_resources()
+                return row
+        if req.get("action") in {"status", "start"}:
+            # Recheck availability for the owner just before it starts a tool.
+            # This does not acquire the lifecycle or unload from an HTTP thread.
+            self._observe_tool_headroom()
+        with self.memory_lock:
+            result = self.tool_leases.action(req)
+            self._finish_tool_residency()
+            if self.memory_policy:
+                self._retarget_resources()
+            return result
+
+    def _tool_floors(self):
+        policy, memory = self.idle_parking, self.memory_policy
+        limits = self.coadaptive.limits() if self.coadaptive.active else self.resource_presets.limits()
+        ram, gpu = limits or ((memory.configured_headroom, memory.configured_reserve_floor) if memory else (0, 0))
+        return (max(3, policy.min_ram_headroom_gib, policy.pressure_ram_available_gib, ram),
+                max(250, policy.min_vram_headroom_mib, policy.pressure_vram_free_mib, gpu, self.min_free_vram_mib),
+                max(3, policy.pressure_commit_available_gib))
+
+    def _finish_tool_residency(self):
+        """Drop only a settled owner's ceiling; native and running-tool holds survive TTL."""
+        context = self.tool_resident
+        if context is None or self.tool_leases.blocked():
+            return
+        if context.get("operation") is not None or self.memory_live_pending is not None:
+            return
+        if self.memory_policy:
+            self.memory_policy.clear_lease_ceiling(context["lease_id"])
+        if self.tool_resume:
+            self.tool_resume["after"] = time.time()
+        self.tool_resident = None
+        if self.memory_policy:
+            self._retarget_resources()
+
+    def _reconcile_tool_control(self, now):
+        context = self.tool_resident
+        if context is None or context.get("operation") is None or self.memory_live_pending is not None:
+            self._finish_tool_residency()
+            return
+        control_id, engine_identity = context["operation"]
+        if id(self.engine.proc) != engine_identity:
+            return  # replacing a process is not evidence of the old operation's completion
+        if not self.tool_leases.complete_operation(context["lease_id"], control_id, engine_identity):
+            return
+        context.update(operation=None, action_at=now, drained_at=now)
+        self._finish_tool_residency()
+
+    def _resident_tool_step(self):
+        """FIFO owner: choose against fresh current-process capacity; no MEMORY writes here."""
+        with self.memory_lock:
+            demand = self.tool_leases.demand()
+            if not demand or demand["mode"] == "unload":
+                return True
+            context = self.tool_resident
+            now = time.time()
+            if self.memory_policy and self.loaded():
+                self._drain_memory_acks(now)
+                self._reconcile_memory_control(now)
+                self._reconcile_tool_control(now)
+            if demand["terminal"]:
+                return False
+            # A formerly READY observation cannot survive a failed recheck.
+            # The owner must observe current identity/capacity before start.
+            self.tool_leases.select_action(demand["lease_id"], demand.get("selected_action") or "none",
+                                           "checking_resident_capacity")
+            capable = (self.loaded() and self.memory_policy and self.memory_policy.background_guard_active
+                       and self.engine.info.get("memory_hold") == 1 and not self._vision_down())
+            if not capable:
+                if demand["mode"] == "relieve":
+                    self.tool_leases.fail("resident_relief_unsupported")
+                    self._finish_tool_residency()
+                    return False
+                self.tool_leases.select_action(demand["lease_id"], "unload", "resident_relief_unsupported")
+                return True
+            if context is None or context["proc"] is not self.engine.proc or context["vision_proc"] is not getattr(self.vision, "proc", None):
+                self.tool_leases.fail("resident_process_changed")
+                return False
+            if self.memory_live_pending is not None:
+                # A slow/lost ACK cannot authorize a successor. Auto may fall
+                # back to verified teardown; strict relief retains the drain.
+                if context.get("control_wait_since") is None:
+                    context["control_wait_since"] = time.monotonic()
+                if time.monotonic() - context["control_wait_since"] >= 30:
+                    if demand["mode"] == "auto":
+                        self.tool_leases.select_action(demand["lease_id"], "unload", "live_relief_deadline")
+                        return True
+                    self.tool_leases.fail("live_relief_deadline")
+                return False
+            context["control_wait_since"] = None
+            snapshot = self.memory_snapshot(fresh=True)
+            now = time.time()
+            native = getattr(self.engine, "native_capacity", None)
+            if (not native or native.get("proc") is not self.engine.proc
+                    or native.get("memory_pending_id") != 0
+                    or snapshot.get("native_free_mib") is None
+                    or self.memory_policy._reading(snapshot, now) is None):
+                return False
+            if (context.get("drained_at") is not None
+                    and snapshot.get("native_sampled_at", 0) < context["drained_at"]):
+                return False  # an ACK must be followed by a new residency sample
+            if self.memory_policy.lease_ceiling() is None:
+                arena, cache = native.get("resident_mib"), native.get("cache_mib")
+                if not all(isinstance(n, (int, float)) and not isinstance(n, bool)
+                           and math.isfinite(n) and n >= 0 for n in (arena, cache)):
+                    return False
+                if not self.tool_leases.seal_residency(demand["lease_id"], id(self.engine.proc), arena, cache):
+                    return False
+                self.memory_policy.update_lease_ceiling(demand["lease_id"], arena / 1024, cache)
+                context["drained_at"] = now
+                ram, gpu, commit = self._tool_floors()
+                self.tool_resume = {"proc": self.engine.proc, "mode": demand["mode"],
+                    "ram_gib": max(ram, commit) + self.tool_leases.resume_ram_working_gib,
+                    "gpu_mib": math.ceil(gpu + self.tool_leases.resume_vram_working_mib), "after": now}
+            if snapshot.get("native_sampled_at", 0) < context["drained_at"]:
+                return False
+            ram, gpu, commit = self._tool_floors()
+            ram_target = max(ram, commit, demand["ram_target_gib"])
+            gpu_target = max(gpu, demand["vram_target_mib"])
+            physical = (snapshot["ram_total"] - snapshot["ram_used"]) / 2**30
+            commit_free = snapshot.get("ram_commit_available", float("inf")) / 2**30
+            ram_deficit = max(0, ram_target - min(physical, commit_free))
+            gpu_deficit = max(0, gpu_target - snapshot["native_free_mib"])
+            if ram_deficit == 0 and gpu_deficit == 0:
+                context["pressure_since"] = None
+                action = "relieve" if demand.get("selected_action") == "relieve" else "none"
+                self.tool_leases.select_action(demand["lease_id"], action, "fresh_resident_capacity")
+                self.tool_leases.observe_resident_ready(snapshot, now, lease_id=demand["lease_id"],
+                    engine_identity=id(self.engine.proc), drained_at=context["drained_at"],
+                    ram_floor=ram, gpu_floor=gpu, commit_floor=commit)
+                return False
+            # A healthy long-running tool has not spent its relief budget.
+            # Bound each continuous deficit episode, without extending it on polls.
+            if context.get("pressure_since") is None:
+                context["pressure_since"] = time.monotonic()
+            exhausted = (ram_deficit * 1024 > native["resident_mib"]
+                         or gpu_deficit > native["cache_mib"]
+                         or self.memory_limitation in {"prefill_cache_floor", "reserve_unreachable"}
+                         or time.monotonic() - context["pressure_since"] >= 30)
+            if exhausted:
+                if demand["mode"] == "relieve":
+                    self.tool_leases.fail("live_relief_insufficient")
+                    self._finish_tool_residency()
+                    return False
+                self.tool_leases.select_action(demand["lease_id"], "unload", "live_relief_insufficient")
+                return True
+            self.tool_leases.select_action(demand["lease_id"], "relieve", "reclaiming_live_caches")
+            self._retarget_resources()
+            return False
+
+    def _observe_tool_headroom(self):
+        if not self.tool_leases.enabled:
+            return
+        telemetry = getattr(self, "telemetry", None)
+        policy = self.idle_parking
+        memory = self.memory_policy
+        demand = self.tool_leases.demand()
+        if demand and demand["mode"] != "unload" and demand.get("selected_action") != "unload":
+            # An HTTP observer cannot certify drain while a lifecycle worker is
+            # using FIFO. Never hold memory_lock while waiting for FIFO.
+            if self.fifo.acquire(blocking=False):
+                try:
+                    with self.status_lock:
+                        occupied = self.status.get("busy") or self.status.get("queued") or self.preparing_requests
+                    if not occupied:
+                        self._resident_tool_step()
+                finally:
+                    self.fifo.release()
+            return
+        self.tool_leases.observe_ready(telemetry.capacity() if telemetry else {}, time.time(),
+            unloaded=not self.loaded() and (self.vision is None or not self.vision.alive()),
+            ram_floor=max(3, policy.min_ram_headroom_gib, policy.pressure_ram_available_gib,
+                          memory.headroom if memory else 0),
+            gpu_floor=max(250, policy.min_vram_headroom_mib, policy.pressure_vram_free_mib,
+                          memory.reserve_floor if memory else 0, self.min_free_vram_mib),
+            commit_floor=max(3, policy.pressure_commit_available_gib))
+
+    def observe_tool_lease(self):
+        """Only the policy worker unloads, under the same FIFO/lifecycle owner.
+
+        The lease barrier prevents new preparations while older ones drain. A
+        release/expiry during teardown keeps that barrier until confirmed death.
+        """
+        if not self.tool_leases.enabled or self.shutdown_event.is_set():
+            return False
+        with self.memory_lock:
+            self._finish_tool_residency()
+        if not self.tool_leases.blocked():
+            return False
+        if not self.fifo.acquire(blocking=False):
+            return False
+        try:
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued") or self.preparing_requests:
+                    return False
+            if not self._resident_tool_step():
+                return True
+            if self.tool_leases.needs_unload():
+                try:
+                    with self.memory_lock:
+                        if self.memory_loading:
+                            raise ValueError("another lifecycle is already active")
+                        parked = self.idle_parked
+                        if parked is None:
+                            footprint = self._parking_footprint()
+                            admission = self.idle_parking.admission(footprint)
+                            admission.required["gpu_bytes"] = max(admission.required["gpu_bytes"],
+                                                                   self.min_free_vram_mib * 2**20)
+                            parked = {"footprint": footprint, "identity": self._parking_identity(),
+                                      "admission": admission}
+                    with self.lifecycle_lock:
+                        # Footprint sampling can take time. Recheck monotonic
+                        # expiry before committing the destructive lifecycle.
+                        lease_id = self.tool_leases.begin_unload()
+                        if lease_id is None or self.shutdown_event.is_set():
+                            return False
+                        with self.memory_lock:
+                            self.idle_parked = parked
+                            self.memory_loading = True
+                            self.idle_parking_status.update(state="unloading", reason="supervisor_tool_lease")
+                        self._parking_unload(self.shutdown_event)
+                    with self.memory_lock:
+                        self._invalidate_live_memory()
+                        if self.tool_resident:
+                            self.memory_policy.clear_lease_ceiling(self.tool_resident["lease_id"])
+                            self.tool_resident = None
+                        self.tool_resume = None
+                        self.idle_parking_status.update(state="suspended", reason="supervisor_tool_lease")
+                    self.tool_leases.unloaded(lease_id, time.time())
+                except (OSError, ValueError, RuntimeError):
+                    # Do not reflect paths or process details to the lease endpoint.
+                    self.tool_leases.fail("model_release_failed")
+                    return False
+                finally:
+                    with self.memory_lock:
+                        self.memory_loading = False
+            self._observe_tool_headroom()
+            return True
+        finally:
+            self.fifo.release()
+
+    def observe_idle_pressure(self):
+        """Background-only destructive action, called without memory_lock."""
+        policy = self.idle_parking
+        if not policy.enabled or self.shutdown_event.is_set() or not self.loaded() or self.tool_leases.blocked():
+            return False
+        if not self.fifo.acquire(blocking=False):
+            policy.should_park({}, time.time())
+            return False
+        try:
+            with self.status_lock:
+                occupied = self.status.get("busy") or self.status.get("queued") or self.preparing_requests
+            if occupied:
+                policy.should_park({}, time.time())
+                return False
+            with self.memory_lock:
+                if (self.memory_loading or self.idle_parked is not None or not self.loaded()
+                        or self.tool_leases.blocked()):
+                    return False
+                snapshot, now = self.memory_snapshot(fresh=True), time.time()
+                trigger, reason = policy.pressure(snapshot, now)
+                if not trigger:
+                    return False
+                try:
+                    footprint = self._parking_footprint()
+                    identity = self._parking_identity()
+                    admission = policy.admission(footprint)
+                    admission.required["gpu_bytes"] = max(admission.required["gpu_bytes"],
+                                                           self.min_free_vram_mib * 2**20)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    self.idle_parking_status.update(state="unavailable", reason=str(exc))
+                    return False
+                self.idle_parked = {"footprint": footprint, "identity": identity, "admission": admission}
+                self.idle_parking_status.update(state="unloading", reason=reason, footprint=footprint)
+                self.memory_loading = True
+            try:
+                # No model request exists; this monitor owns FIFO throughout.
+                with self.lifecycle_lock:
+                    if self.shutdown_event.is_set():
+                        return False
+                    self._parking_unload(self.shutdown_event)
+                with self.memory_lock:
+                    self._invalidate_live_memory()
+                    self.idle_parking_status.update(state="suspended")
+                return True
+            except (OSError, RuntimeError) as exc:
+                self.idle_parking_status.update(state="unavailable", reason=str(exc))
+                return False
+            finally:
+                with self.memory_lock:
+                    self.memory_loading = False
+        finally:
+            self.fifo.release()
+
+    def _admit_loaded(self, cancel):
+        """Caller owns FIFO; wait before any native or vision allocation."""
+        if self.tool_leases.blocked() and not getattr(self.request_owner, "depth", 0):
+            # Direct callers that missed preparation admission must never wait
+            # here while owning the FIFO needed to release the model.
+            raise GpuBusy("a supervisor tool lease blocks new model admission")
+        parked = self.idle_parked
+        if parked is None:
+            if cancel.is_set() or self.shutdown_event.is_set():
+                raise RequestParkCancelled()
+            if self._preparation_admission_enabled() and (not self.loaded() or self._vision_down()):
+                raise GpuBusy("no measured idle reload footprint after engine failure; restart explicitly")
+            yield from self._admit_resident_return(cancel)
+            # AUTO return relief may have released the processes. Reuse the
+            # measured startup gate below, never the unconditional load path.
+            parked = self.idle_parked
+            if parked is None:
+                self._ensure_loaded_base()
+                return
+        if self.loaded() or self.vision is not None and self.vision.alive():
+            raise EngineStuck("idle memory release did not finish; refusing a second lifecycle")
+        admission = parked["admission"]
+        beat = 0.0
+        failures = 0
+        with self.memory_lock:
+            self.memory_loading = True
+        try:
+            while True:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                telemetry = getattr(self, "telemetry", None)
+                reading = admission.observe(telemetry.capacity() if telemetry else {}, time.time())
+                with self.memory_lock:
+                    self.idle_parking_status.update(state="admitting", admission=reading)
+                if not reading["ready"]:
+                    if time.monotonic() - beat >= 10:
+                        beat = time.monotonic()
+                        yield "ping", None
+                    cancel.wait(.25)
+                    continue
+                if self._parking_identity() != parked["identity"]:
+                    raise ValueError("idle parked model/config identity changed")
+                self.idle_parking_status.update(state="reloading")
+                try:
+                    yield from self._parking_lifecycle(self._idle_reload, cancel, starting=True)
+                    break
+                except RequestParkCapacity as exc:
+                    failures += 1
+                    admission.failed(time.time())
+                    self.idle_parking_status.update(state="suspended", reload_failures=failures,
+                                                   reload_error=str(exc))
+                    if failures > 2:
+                        raise GpuBusy("idle model reload exhausted its bounded capacity retries") from exc
+                except (EngineDied, EngineStuck):
+                    raise
+                except RuntimeError as exc:
+                    raise EngineDied("idle model reload failed before generation: " + str(exc)) from exc
+            if self._parking_identity() != parked["identity"] or not self.engine.can_stop:
+                yield from self._parking_lifecycle(self._parking_unload, cancel)
+                raise ValueError("idle reloaded model identity or capability changed")
+            with self.memory_lock:
+                self._record_live_load("idle_pressure_resumed")
+                self.idle_parked = None
+                self.idle_parking_status.update(state="ready", admission=None)
+                self.idle_parking.should_park({}, time.time())
+        finally:
+            with self.memory_lock:
+                self.memory_loading = False
+                if self.idle_parked is not None and not self.loaded():
+                    self.idle_parking_status.update(state="suspended")
+
+    def _park_resident_return(self, returning, cancel):
+        """FIFO owner: release a completed AUTO handoff through the existing lifecycle."""
+        with self.lifecycle_lock:
+            with self.memory_lock:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                if (returning.get("mode") != "auto" or self.tool_resume is not returning
+                        or self.tool_leases.blocked() or self.memory_loading or self.idle_parked is not None
+                        or returning["proc"] is not self.engine.proc or not self.loaded()):
+                    raise GpuBusy("resident return changed before release; request was not dispatched")
+                footprint = self._parking_footprint()
+                admission = self.idle_parking.admission(footprint)
+                admission.required["gpu_bytes"] = max(admission.required["gpu_bytes"],
+                                                       self.min_free_vram_mib * 2**20)
+                self.idle_parked = {"footprint": footprint, "identity": self._parking_identity(),
+                                    "admission": admission}
+                self.memory_loading = True
+                self.idle_parking_status.update(state="unloading", reason="resident_return_auto_unload",
+                                                footprint=footprint)
+            try:
+                yield from self._parking_lifecycle_owned(self._parking_unload, cancel)
+            finally:
+                # Cancellation still joins teardown. Only confirmed death of
+                # both processes settles native controls and the return gate.
+                with self.memory_lock:
+                    dead = not self.engine.alive() and (self.vision is None or not self.vision.alive())
+                    if dead:
+                        self._invalidate_live_memory()
+                        self.tool_resume = None
+                        self._retarget_resources()
+                        self.idle_parking_status.update(state="suspended")
+                    else:
+                        self.idle_parking_status.update(state="unavailable")
+                    self.memory_loading = False
+
+    def _admit_resident_return(self, cancel):
+        """Recheck extra inference work after a resident tool, without charging held weights twice.
+
+        Configured allowances cover the qualified request shape only, not every
+        possible 64K/vision peak. Missing telemetry or capacity times out before
+        dispatch. AUTO can use measured full reload admission if live relief
+        cannot supply that space; it never replays an already executed tool.
+        """
+        returning = self.tool_resume
+        if returning is None:
+            return
+        started, beat = time.monotonic(), 0.
+        with self.memory_lock:
+            self.tool_resuming = True
+            self._retarget_resources()
+        try:
+            while True:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                if returning["proc"] is not self.engine.proc or not self.loaded():
+                    raise GpuBusy("resident return identity changed; no safe inference admission")
+                with self.memory_lock:
+                    now = time.time()
+                    self._drain_memory_acks(now)
+                    self._reconcile_memory_control(now)
+                    self._reconcile_tool_control(now)
+                    sample = self.memory_snapshot(fresh=True)
+                    now = time.time()
+                    valid = self.memory_policy._reading(sample, now)
+                    native = getattr(self.engine, "native_capacity", None)
+                    ready = (valid and native and native.get("proc") is returning["proc"]
+                        and sample["sampled_at"] >= returning["after"]
+                        and sample.get("native_sampled_at", 0) >= returning["after"]
+                        and native.get("memory_pending_id") == 0 and self.memory_live_pending is None
+                        and self.memory_policy._free_ram(sample) >= returning["ram_gib"]
+                        and sample.get("native_free_mib", -1) >= returning["gpu_mib"])
+                    if ready:
+                        self.tool_resume = None
+                        self._retarget_resources()
+                        return
+                    floor = (valid and native and native.get("proc") is returning["proc"]
+                        and sample.get("native_sampled_at", 0) >= returning["after"]
+                        and sample.get("native_free_mib", -1) < returning["gpu_mib"]
+                        and self.memory_live_pending is None
+                        and native.get("memory_pending_id") == 0
+                        and self.memory_limitation in {"prefill_cache_floor", "reserve_unreachable"})
+                expired = time.monotonic() - started >= self.tool_leases.resume_timeout_seconds
+                if returning.get("mode") == "auto" and (floor or expired):
+                    yield from self._park_resident_return(returning, cancel)
+                    return
+                if expired:
+                    raise GpuBusy("resident inference working space is unavailable; request was not dispatched")
+                if time.monotonic() - beat >= 10:
+                    beat = time.monotonic()
+                    yield "ping", None
+                # MEMORY still has exactly one sender; FIFO keeps native/vision
+                # work out while this admission allows the existing policy to shrink.
+                self.observe_memory()
+                cancel.wait(.25)
+        finally:
+            with self.memory_lock:
+                self.tool_resuming = False
+
+    def load_events(self, cancel):
+        """Cancellable preparation admission; yields heartbeats while queued."""
+        yield from self._reserve_preparation(cancel)
+        try:
+            trace = getattr(self.request_trace, "record", None)
+            waiting = time.perf_counter()
+            beat = 0.0
+            while not self.fifo.acquire(timeout=.25):
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    raise RequestParkCancelled()
+                if time.monotonic() - beat >= 10:
+                    beat = time.monotonic()
+                    yield "ping", None
+            try:
+                loading = time.perf_counter()
+                if trace is not None:
+                    with self.status_lock:
+                        trace["queue_s"] += round(loading - waiting, 3)
+                        trace["state"] = "waiting for capacity or loading"
+                try:
+                    yield from self._admit_loaded(cancel)
+                finally:
+                    if trace is not None:
+                        with self.status_lock:
+                            trace["load_s"] += round(time.perf_counter() - loading, 3)
+                            trace["state"] = "preparing"
+            finally:
+                self.fifo.release()
+        finally:
+            self._release_preparation()
+
+    def _idle_reload(self, stopped):
+        self._parking_reload(stopped)
+        if self.vram_reserve is not None and hasattr(self.engine, "vram"):
+            try:
+                self.engine.vram(self.vram_reserve)
+            except BaseException:
+                self._parking_unload(stopped)
+                raise
+
+    def stop_background(self):
+        """Withdraw admission/startup before main closes native processes."""
+        self.shutdown_event.set()
+        with self.status_lock:
+            for cancel in tuple(self.request_cancels):
+                cancel.set()
+        # Startup sees shutdown within its bounded polling interval and joins
+        # cleanup. Never race a late READY with main's engine.close().
+        with self.lifecycle_lock:
+            pass
+
     def load(self):
+        if self._preparation_admission_enabled():
+            for _ in self.load_events(self.shutdown_event):
+                pass
+            return
+        self._load_base()
+
+    def _load_base(self):
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
-        if self.loaded() and not self._vision_down():
+        if self.loaded() and not self._vision_down() and self.memory_pending is None:
             return
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -3057,19 +4561,43 @@ class Service:
         with idle_for: one ran more recently than that) or "unsupported"."""
         if not hasattr(self.engine, "unload"):
             return "unsupported"
+        if self.tool_leases.blocked():
+            return "busy"
         if not self.fifo.acquire(blocking=False):
             return "busy"
         try:
             if not self.engine.alive():
                 return "not loaded"
             with self.status_lock:
-                if self.status.get("busy") or self.status.get("queued"):
+                if self.status.get("busy") or self.status.get("queued") or self.preparing_requests:
                     return "busy"
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
-            self.engine.unload()
-            if self.vision is not None and hasattr(self.vision, "unload"):
-                self.vision.unload()
+            with self.memory_lock:
+                if self.tool_leases.blocked():
+                    return "busy"  # acquire and destructive lifecycle commit share memory_lock
+                if self._preparation_admission_enabled():
+                    # Timed/manual unload must not bypass the next-load guard.
+                    try:
+                        footprint = self._parking_footprint()
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        raise EngineStuck("cannot guard the next load without a fresh full footprint") from exc
+                    policy = self.idle_parking if self.idle_parking.enabled else self.request_parking
+                    admission = policy.admission(footprint)
+                    admission.required["gpu_bytes"] = max(admission.required["gpu_bytes"],
+                                                           self.min_free_vram_mib * 2**20)
+                    self.idle_parked = {"footprint": footprint, "identity": self._parking_identity(),
+                                        "admission": admission}
+                    self.idle_parking_status.update(state="unloading", reason="explicit_or_timed",
+                                                   footprint=footprint)
+                with self.lifecycle_lock:
+                    self.engine.unload()
+                    if self.vision is not None and hasattr(self.vision, "unload"):
+                        self.vision.unload()
+                if self.memory_policy is not None and self.memory_policy.mode == "live":
+                    self._invalidate_live_memory()
+            if self.idle_parked is not None:
+                self.idle_parking_status.update(state="suspended")
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
@@ -3082,8 +4610,7 @@ class Service:
         print(f"[strata] the model unloads after {self.idle_unload_s} s without requests", flush=True)
 
         def loop():
-            while True:
-                time.sleep(max(1.0, min(30.0, self.idle_unload_s / 4)))
+            while not self.shutdown_event.wait(max(1.0, min(30.0, self.idle_unload_s / 4))):
                 try:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
@@ -3134,6 +4661,7 @@ class Service:
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
+            self._sync_resource_sampler()
             if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
@@ -3248,17 +4776,29 @@ class Service:
                         admitting=int(getattr(self.engine, "admitting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
+        info = dict(getattr(self.engine, "info", {}) or {})
+        if not self.loaded():
+            # Reporting idea from PR #1093; keep internal INFO for capabilities,
+            # identity and pre-unload admission, but do not publish dead usage.
+            # https://github.com/Niko1221/Strata/pull/1093
+            runtime = {"arena_mib", "expert_cache_mib", "expert_slots", "vram_free_mib",
+                       "vram_reserve_mib", "kv_mib", "gpu_mib", "ram_mib",
+                       "resident_mib", "cache_mib", "conversation_cache_mib",
+                       "gpu_experts", "ram_experts"}
+            info = {key: value for key, value in info.items() if key not in runtime}
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
-                  **dict(getattr(self.engine, "info", {}) or {})}
+                  **info}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
-                "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
+                "requests_kept": len(hist), "totals": totals,
+                "resources": self.resource_status(),
+                "hardware": {k: v for k, v in tel["now"].items() if k != "workload"},
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": {k: v for k, v in tel["history"].items() if k != "workload"}, "time": now}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -3306,6 +4846,8 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "memory_policy": self.memory_status(),
+            "resources": self.resource_status(),
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -3381,7 +4923,7 @@ class Service:
                     try:
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
-                        with self.fifo:          # the encoder takes its turn with the requests (see below)
+                        with self._vision_turn():  # admission is rechecked after any intervening active parking
                             self.vision.encode(src)
                     except (ValueError, OSError) as e:
                         why = str(e)
@@ -3390,7 +4932,47 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    @contextlib.contextmanager
+    def _vision_turn(self):
+        """Download may outlast another request's park: admit again under FIFO.
+
+        Keep preparation on its owning HTTP thread. The optional callback only
+        writes a heartbeat; it never starts another worker or touches the pipe.
+        """
+        cancel = getattr(self.request_owner, "cancel", self.shutdown_event)
+        heartbeat = getattr(self.request_owner, "preparation_heartbeat", lambda: None)
+        beat = 0.0
+        while not self.fifo.acquire(timeout=.25):
+            if cancel.is_set() or self.shutdown_event.is_set():
+                raise RequestParkCancelled()
+            if time.monotonic() - beat >= 10:
+                beat = time.monotonic()
+                heartbeat()
+        try:
+            # Check after ownership: a request ahead of us could have parked
+            # even if neither policy was enabled when this picture arrived.
+            if self._preparation_admission_enabled():
+                with contextlib.closing(self._admit_loaded(cancel)) as admission:
+                    for _ in admission:
+                        heartbeat()
+            yield
+        finally:
+            self.fifo.release()
+
+    def _preparation_admission_enabled(self):
+        return self.idle_parking.enabled or self.request_parking.enabled or self.idle_parked is not None
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None):
+        with self.preparation_reservation():
+            if self._preparation_admission_enabled():
+                cancel = getattr(self.request_owner, "cancel", self.shutdown_event)
+                heartbeat = getattr(self.request_owner, "preparation_heartbeat", lambda: None)
+                with contextlib.closing(self.load_events(cancel)) as admission:
+                    for _ in admission:
+                        heartbeat()
+            return self._prepare(messages, tools, kwargs, max_new, force, req)
+
+    def _prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
@@ -3414,7 +4996,7 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self.fifo:
+            with self._vision_turn():
                 encoded = (self.vision.encode_all(images) if hasattr(self.vision, "encode_all")
                            else [self.vision.encode(src) for src in images])
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
@@ -3592,13 +5174,308 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
+    def _parking_identity(self):
+        """Private journal identity; model assets use the existing runtime fingerprint."""
+        # __init__ temporarily sets max_context=0 until READY. A failed load
+        # retains known_ctx from the previous valid READY; the actual new READY
+        # is checked again once alive, rather than corrupting retry identity.
+        context = self.engine.max_context if self.loaded() else getattr(self.engine, "known_ctx", self.engine.max_context)
+        return {"runtime": runtime_key(self.engine), "context": context,
+                "vision": bool(self.vision)}
+
+    def _parking_footprint(self):
+        """Conservative full-reload admission, measured before giving memory away.
+
+        Private commit and working set are separate constraints on Windows. A
+        shrunken arena is not the footprint of the unchanged startup command.
+        Missing process/native readings disable parking instead of guessing.
+        """
+        import psutil
+        native = getattr(self.engine, "native_capacity", None)
+        if (not native or native.get("proc") is not self.engine.proc
+                or not 0 <= time.time() - native.get("sampled_at", 0) <= 5):
+            raise ValueError("fresh native footprint is unavailable")
+        ram = peak_ram = vision_ram = commit = 0
+        for engine in (self.engine, self.vision):
+            if engine is None or not engine.alive():
+                continue
+            try:
+                info = psutil.Process(engine.proc.pid).memory_info()
+            except psutil.Error as exc:
+                raise ValueError("process reload footprint is unavailable") from exc
+            ram += info.rss
+            peak = getattr(info, "peak_wset", None)
+            peak_ram += (max(info.rss, peak) if isinstance(peak, (int, float)) and not isinstance(peak, bool)
+                         and math.isfinite(peak) and peak >= 0 else info.rss)
+            if engine is self.vision:
+                vision_ram += info.rss
+            commit += getattr(info, "private", info.vms)
+        args = self.engine.spawn[1]
+        cap = float(args[args.index("--resident-budget-gib") + 1]) * 2**30
+        arena = native["resident_mib"] * 2**20
+        delta = max(0, cap - arena)
+        overhead = self.memory_policy.overhead * 2**30
+        # WDDM process usage excludes the desktop/game's allocations. CUDA's
+        # device-wide total-minus-free is a safe, possibly stricter fallback.
+        gpu = native.get("usage_mib")
+        if not isinstance(gpu, (int, float)) or gpu <= 0:
+            gpu = native["total_mib"] - native["free_mib"]
+        gpu *= 2**20
+        startup_cache = getattr(self, "parking_start_cache_mib", None)
+        if isinstance(startup_cache, (int, float)):
+            gpu += max(0, startup_cache - native["cache_mib"]) * 2**20
+        if self.vision is not None and "--gpu" in self.vision.spawn[0]:
+            gpu = max(gpu, self.telemetry.capacity().get("gpu_mem_used") or 0)
+        # Windows peak_wset survives OS trimming of pageable fixed allocations.
+        # Do not add the arena delta to a peak that already included the full
+        # startup arena. Without a peak, retain at least cap + live vision RSS;
+        # this remains a sampled envelope, not an arbitrary-load OOM guarantee.
+        footprint = {"ram_bytes": max(ram + delta, peak_ram, cap + vision_ram) + overhead,
+                     "commit_bytes": commit + delta + overhead, "gpu_bytes": gpu}
+        self.request_parking.admission(footprint)  # Validate every value before authorizing an unload.
+        return footprint
+
+    def _parking_prepare(self, cancel):
+        identity = self._parking_identity()
+        deadline = time.monotonic() + 3
+        pinged = False
+        while True:
+            if cancel.is_set():
+                raise RequestParkCancelled()
+            try:
+                return identity, self._parking_footprint()
+            except ValueError as exc:
+                # READY and the first periodic CAPACITY are separate lines.
+                # Give the stdout pump a bounded chance to publish the reading.
+                if str(exc) != "fresh native footprint is unavailable" or time.monotonic() >= deadline:
+                    raise
+                if not pinged:
+                    pinged = True
+                    yield "ping", None
+                cancel.wait(.1)
+
+    def _parking_lifecycle(self, operation, cancel, *, starting=False):
+        with self.lifecycle_lock:
+            if self.shutdown_event.is_set():
+                raise RequestParkCancelled()
+            return (yield from self._parking_lifecycle_owned(operation, cancel, starting=starting))
+
+    def _parking_lifecycle_owned(self, operation, cancel, *, starting=False):
+        """One owner performs blocking lifecycle work while HTTP pings continue.
+
+        The worker always finishes before the FIFO can be released. Disconnect
+        cancels startup and joins its cleanup, so a late READY cannot orphan a
+        process or collide with the next request's engine.
+        """
+        stopped, result = threading.Event(), queue.Queue(maxsize=1)
+
+        def work():
+            try:
+                result.put((True, operation(stopped)))
+            except BaseException as exc:
+                result.put((False, exc))
+
+        def withdraw():
+            stopped.set()
+            if starting:
+                # Only this request owns these processes until this worker joins.
+                # Kill interrupts a vision READY wait, which has no cancel API.
+                for engine in (self.engine, self.vision):
+                    proc = getattr(engine, "proc", None)
+                    if proc is not None and proc.poll() is None:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+
+        worker = threading.Thread(target=work, name="strata-request-lifecycle", daemon=False)
+        worker.start()
+        beat = 0.0
+        try:
+            while True:
+                if cancel.is_set() or self.shutdown_event.is_set():
+                    withdraw()
+                try:
+                    ok, value = result.get(timeout=.25)
+                    break
+                except queue.Empty:
+                    if time.monotonic() - beat >= 10:
+                        beat = time.monotonic()
+                        yield "ping", None
+            if not ok:
+                if (cancel.is_set() or self.shutdown_event.is_set()) and starting and not isinstance(value, EngineStuck):
+                    raise RequestParkCancelled() from value
+                raise value
+            if cancel.is_set() or self.shutdown_event.is_set():
+                raise RequestParkCancelled()
+            return value
+        except GeneratorExit:
+            withdraw()
+            raise
+        finally:
+            if worker.is_alive():
+                withdraw()
+            worker.join()
+            if starting and (stopped.is_set() or cancel.is_set()):
+                self._parking_unload(stopped)
+
+    def _parking_unload(self, stopped):
+        # Do not call Service.unload(): the active owner already holds FIFO.
+        self.engine.unload()
+        if self.vision is not None:
+            self.vision.unload()
+        if self.engine.alive() or self.vision is not None and self.vision.alive():
+            raise EngineStuck("a parked request could not release its processes")
+
+    def _parking_reload(self, stopped):
+        phase = "vision"
+        try:
+            if stopped.is_set():
+                raise RequestParkCancelled()
+            if self.vision is not None:
+                self.vision.restart()
+            if stopped.is_set():
+                raise RequestParkCancelled()
+            phase = "engine"
+            self.engine.restart(tries=1, startup_cancel=stopped)
+            if stopped.is_set():
+                raise RequestParkCancelled()
+        except BaseException as exc:
+            # Only known allocation failures before READY are candidates for a
+            # later, freshly admitted load. CUDA execution faults are never retried.
+            capacity = (isinstance(exc, RuntimeError) and not isinstance(exc, EngineStuck)
+                        and (phase == "vision" or self.engine.max_context == 0)
+                        and re.search(r"out of (?:device |host |video )?memory|cudaErrorMemoryAllocation|"
+                                      r"CUDA_ERROR_OUT_OF_MEMORY|cannot allocate memory|failed to allocate|"
+                                      r"allocation failed", str(exc), re.I) is not None
+                        and re.search(r"illegal|misaligned|device.side assert", str(exc), re.I) is None)
+            # A failed load never enters GEN. Release partial allocations before
+            # surfacing the error; do not replay any already streamed output.
+            self._parking_unload(stopped)
+            if capacity and not stopped.is_set():
+                raise RequestParkCapacity(str(exc)) from exc
+            raise
+
+    def _park_owned_request(self, active, prefix, sampling, max_new, consumed, cancel, st):
+        """Suspend and resume this response, with parser and FIFO still owned."""
+        control = active["control"]
+        if not control.acknowledged or control.proc is not self.engine.proc:
+            raise EngineDied("request parking has no matching committed STOP acknowledgement")
+        if cancel.is_set():
+            raise RequestParkCancelled()
+        try:
+            current_footprint = self._parking_footprint()
+        except (OSError, ValueError, RuntimeError) as exc:
+            # Keep the committed stream on the existing engine if telemetry
+            # disappeared. Native pressure waiting still services cancellation.
+            # Do not unload from an old, possibly smaller footprint.
+            active["disabled"] = True
+            with self.memory_lock:
+                active["control"] = None
+                self.parking_status.update(state="unavailable", reason=str(exc))
+            return list(prefix)
+        active["footprint"] = {key: max(active["footprint"][key], current_footprint[key])
+                               for key in active["footprint"]}
+        # Commit the exact current native segment prefix. Reasoning recovery can
+        # rewrite the prompt, so original input plus raw output is not sufficient.
+        if active["journal"] is None:
+            active["journal"] = self.request_parking.create_journal(active["identity"])
+        journal = active["journal"]
+        active["sequence"] += 1
+        journal.write(prefix, sampling, max_new, consumed, sequence=active["sequence"])
+        with self.memory_lock:
+            self.memory_loading = True  # no independent controller writes across process teardown/startup
+            active["control"] = None
+            self.parking_status.update(state="unloading", sequence=active["sequence"])
+        admission = None
+        try:
+            with self.status_lock:
+                st["phase"] = "releasing memory for other applications"
+            yield from self._parking_lifecycle(self._parking_unload, cancel)
+            with self.memory_lock:
+                self._invalidate_live_memory()
+                self.parking_status.update(state="suspended")
+            admission = self.request_parking.admission(active["footprint"])
+            beat = 0.0
+            failures = 0
+            while True:
+                if cancel.is_set():
+                    raise RequestParkCancelled()
+                # Deliberately bypass memory_snapshot(): its allocator overlay
+                # belongs to a process that no longer exists.
+                telemetry = getattr(self, "telemetry", None)
+                snapshot = telemetry.capacity() if telemetry else {}
+                reading = admission.observe(snapshot, time.time())
+                with self.memory_lock:
+                    self.parking_status.update(admission=reading)
+                if not reading["ready"]:
+                    with self.status_lock:
+                        st["phase"] = "waiting for model reload capacity"
+                    if time.monotonic() - beat >= 10:
+                        beat = time.monotonic()
+                        yield "ping", None
+                    cancel.wait(.5)
+                    continue
+                record = journal.load(self._parking_identity())
+                if record["remaining_budget"] != max_new - consumed or record["prefix_ids"] != list(prefix):
+                    raise ValueError("parked request prefix or remaining output budget changed")
+                with self.memory_lock:
+                    self.parking_status.update(state="reloading")
+                with self.status_lock:
+                    st["phase"] = "reloading the suspended model"
+                try:
+                    yield from self._parking_lifecycle(self._parking_reload, cancel, starting=True)
+                    break
+                except RequestParkCapacity as exc:
+                    failures += 1
+                    if failures > 2:
+                        raise
+                    admission.failed(time.time())
+                    with self.memory_lock:
+                        self.parking_status.update(state="suspended", reload_failures=failures,
+                                                   reload_error=str(exc))
+            if self._parking_identity() != active["identity"] or not self.engine.can_stop:
+                yield from self._parking_lifecycle(self._parking_unload, cancel)
+                raise ValueError("reloaded engine identity or capability changed")
+            with self.memory_lock:
+                self._record_live_load("request_resumed")
+                self.parking_status.update(state="resumed")
+            with self.status_lock:
+                st["phase"] = "reading the resumed prompt"
+            return record["prefix_ids"]
+        finally:
+            with self.memory_lock:
+                self.memory_loading = False
+                if not self.loaded() and self.idle_parked is None:
+                    # A canceled active suspension still left a measured,
+                    # unloaded model. The next request must use admission too.
+                    pending = (self.idle_parking.admission(active["footprint"]) if self.idle_parking.enabled
+                               else admission or self.request_parking.admission(active["footprint"]))
+                    if isinstance(admission, ResumeAdmission) and pending is not admission:
+                        pending.retry_at, pending.failures = admission.retry_at, admission.failures
+                    if self.min_free_vram_mib:
+                        pending.required["gpu_bytes"] = max(pending.required["gpu_bytes"],
+                                                            self.min_free_vram_mib * 2**20)
+                    self.idle_parked = {"footprint": active["footprint"], "identity": active["identity"],
+                                       "admission": pending}
+                    self.idle_parking_status.update(state="suspended", reason="active_request_parked",
+                                                   footprint=active["footprint"])
+
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force)
+            reserved = False
+            try:
+                if self.tool_leases.enabled:
+                    yield from self._reserve_preparation(cancel)
+                    reserved = True
+                yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force)
+            finally:
+                if reserved:
+                    self._release_preparation()
         finally:
             if ka is not None:
                 ka.release()
@@ -3655,6 +5532,7 @@ class Service:
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
+        park_state = None
         # Only a DONE line replaces engine.last, so a request that died, errored or was disconnected must not have
         # the PREVIOUS request's decode figures recorded as its own: each pass keeps its own DONE (a segment) if
         # one arrived.  A reasoning-budget continuation is another native generation, not another API request,
@@ -3679,6 +5557,8 @@ class Service:
                 got = False
                 try:
                     while not got:
+                        if cancel.is_set():
+                            break
                         got = self.fifo.acquire(timeout=QUEUE_BEAT_S)
                         if got:
                             turn.callback(self.fifo.release)
@@ -3687,10 +5567,12 @@ class Service:
                         else:
                             yield "ping", None
                 except BaseException:                    # the consumer closed us at a ping: no longer queued
+                    turn.close()
                     with self.status_lock:
                         self.status["queued"] -= 1
                     raise
-                if not got:                              # cancelled while queued
+                if not got or cancel.is_set():            # includes cancellation at FIFO handoff
+                    turn.close()
                     with self.status_lock:
                         self.status["queued"] -= 1
                     yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
@@ -3705,13 +5587,14 @@ class Service:
                         if not par:
                             self.status["queued"] -= 1
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
-                    # (parallel requests do not hold the fifo: one of them starts it, the others wait for that).
-                    # #1603: a parallel request stays counted as queued until it is registered as running below -
-                    # waiting here for the fifo (an image encode, a /v1/vram resize) left it neither - and one on a
-                    # loaded engine has nothing to start, so it does not wait for the fifo at all
+                    # Parallel adaptive ownership is rejected at configuration. Preserve upstream's
+                    # loaded-replica shortcut and queue accounting for ordinary parallel requests.
                     try:
                         if not par:
-                            self.ensure_loaded()
+                            if self._preparation_admission_enabled():
+                                yield from self._admit_loaded(cancel)
+                            else:
+                                self.ensure_loaded()
                         elif not (self.loaded() and not self._vision_down()):
                             with self.fifo:
                                 self.ensure_loaded()
@@ -3720,6 +5603,17 @@ class Service:
                             with self.status_lock:
                                 self.status["queued"] -= 1
                         raise
+                    # Decide after the FIFO wait, using fresh allocator/workload data.
+                    # This does not issue calibration requests on the user's behalf.
+                    if self.coadaptive.enabled and not par and not emb and (sampling or {}).get("pcie_frac") is None:
+                        with self.memory_lock:
+                            native = getattr(self.engine, "native_capacity", None)
+                            if native is not None and native["proc"] is not self.engine.proc:
+                                native = None
+                            route = self.coadaptive.choose_route(self.memory_snapshot(), native,
+                                                                 len(ids), max_new, time.time(), sampling)
+                            if self.coadaptive.active:
+                                sampling = {**(sampling or {}), "pcie_frac": route}
                     with self.status_lock:
                         if par:
                             self.status["queued"] -= 1
@@ -3734,12 +5628,37 @@ class Service:
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    if self.request_parking.enabled:
+                        if emb or par:
+                            self.parking_status.update(state="unsupported", reason="vision_or_parallel_request")
+                        else:
+                            # Footprint/identity failure leaves ordinary pressure waiting
+                            # available, but cannot authorize destructive process teardown.
+                            try:
+                                identity, footprint = yield from self._parking_prepare(cancel)
+                            except (OSError, ValueError, RuntimeError) as exc:
+                                self.parking_status.update(state="unavailable", reason=str(exc))
+                            else:
+                                sampling = self.request_parking.effective_sampling(sampling or {})
+                                park_state = {"identity": identity, "footprint": footprint, "cancel": cancel,
+                                              "journal": None, "sequence": 0, "control": None}
+                                with self.memory_lock:
+                                    self.parking_active = park_state
+                                    self.parking_status.update(state="ready", footprint=footprint)
+                                    self.request_parking.should_park({}, time.time())
                     for ev in opening:
                         yield "event", ev
                     while True:
                         segment_before = getattr(self.engine, "last", None)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        control = None
+                        if park_state is not None and not park_state.get("disabled"):
+                            control = RequestParkControl(self.engine.proc)
+                            with self.memory_lock:
+                                park_state["control"] = control
+                            gen = self.engine.generate(prompt, max_new - n, sampling, cancel, park=control)
+                        else:
+                            gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
+                                else self.engine.generate(prompt, max_new - n, sampling, cancel)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -3842,6 +5761,17 @@ class Service:
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
+                        if control is not None and control.acknowledged and not cancel.is_set() and n < max_new:
+                            try:
+                                prompt = yield from self._park_owned_request(
+                                    park_state, prompt + seg, sampling, max_new, n, cancel, st)
+                            except RequestParkCancelled:
+                                finish = "cancel"
+                                break
+                            except Exception:
+                                finish = "error"
+                                raise
+                            continue
                         if recover_prompt is not None and not cancel.is_set() and n < max_new:
                             recovery_count += 1
                             # Only the two settings that keep the same words coming are raised (temperature to at
@@ -3926,10 +5856,21 @@ class Service:
                               f"{run_len} times in a row: ended as \"length\" (repeat_stop_tokens in "
                               "strata-<model>.json; 0 turns this off). If a new request with a short prompt does the "
                               "same, restart the server and report it (#606)", flush=True)
+                except RequestParkCancelled:
+                    finish = "cancel"
                 except GeneratorExit:                   # the client disconnected mid-stream
                     finish = "disconnect"
                     raise
                 finally:
+                    with self.memory_lock:
+                        if park_state is not None and self.parking_active is park_state:
+                            self.parking_active = None
+                            self.parking_status.update(state="finished", finish=finish)
+                    if park_state is not None and park_state["journal"] is not None:
+                        try:
+                            park_state["journal"].remove()
+                        except (OSError, RuntimeError) as exc:
+                            self.parking_status.update(cleanup_error=str(exc))
                     # #266: settle this request's status, history and totals while still holding the fifo: once
                     # it is released the next request sets its own status, which this must not record or clear
                     with self.status_lock:
@@ -4467,6 +6408,9 @@ def make_handler(svc: Service):
 
         record = None                                       # #332: this request's monitor record, if kept
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
+        request_cancel = None
+        preparation = None
+        sse_started = False
         body_read = False                                   # whether a handler took this request's body
         DRAIN_SECONDS = 5                                   # the longest an unread body is read and dropped
 
@@ -4654,6 +6598,40 @@ def make_handler(svc: Service):
 
             threading.Thread(target=watch, daemon=True, name="strata-client-watch").start()
 
+        def _request_cancel(self):
+            if self.request_cancel is None:
+                self.request_cancel = threading.Event()
+                with svc.status_lock:
+                    svc.request_cancels.add(self.request_cancel)
+                self._watch_client(self.request_cancel)
+            svc.request_owner.cancel = self.request_cancel
+            return self.request_cancel
+
+        def _load_request(self, req):
+            if not svc._preparation_admission_enabled():
+                svc.load()
+                return
+            cancel = self._request_cancel()
+            def heartbeat():
+                if req.get("stream"):
+                    try:
+                        self._sse()
+                        self.wfile.write(b": waiting for model capacity\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        cancel.set()
+                        raise
+            svc.request_owner.preparation_heartbeat = heartbeat
+            events = svc.load_events(cancel)
+            try:
+                for _ in events:
+                    heartbeat()
+            except OSError:
+                cancel.set()
+                raise
+            finally:
+                events.close()
+
         def _note(self, **values):
             """#332: what the monitor shows about this request (nothing when the monitor is off)."""
             if self.record is not None:
@@ -4663,6 +6641,8 @@ def make_handler(svc: Service):
         def _cors(self):
             """#321: CORS headers for an API path (/v1/*) and an origin the config lists in cors_origins - nothing
             otherwise, so a browser keeps every other page away from the API, /settings, /unload and the MCP tools."""
+            if self.path.split("?")[0].rstrip("/") in ("/v1/resources", "/v1/resource-lease"):
+                return                                  # resource controls never inherit API wildcard CORS
             if not svc.cors_origins or not self.path.split("?")[0].startswith("/v1/"):
                 return
             origin = (self.headers.get("Origin") or "").rstrip("/")
@@ -4689,6 +6669,22 @@ def make_handler(svc: Service):
             self.end_headers()
 
         def _json(self, code, obj):
+            if self.sse_started:
+                # Admission may already have emitted heartbeats. Never send a
+                # second HTTP header block for a later preparation/load error.
+                error = obj.get("error", {"type": "server_error", "message": "request ended during preparation"})
+                self._note(error=error)
+                if self.path.split("?")[0].rstrip("/") == "/v1/responses":
+                    event = {"type": "response.failed", "response": {
+                        "id": "resp_" + uuid.uuid4().hex, "object": "response", "status": "failed", "error": error}}
+                    self.wfile.write(b"event: response.failed\ndata: " + json.dumps(event).encode() + b"\n\n")
+                elif self.path.split("?")[0].rstrip("/") == "/v1/messages":
+                    self.wfile.write(b"event: error\ndata: " +
+                                     json.dumps({"type": "error", "error": error}).encode() + b"\n\n")
+                else:
+                    self.wfile.write(b"data: " + json.dumps({"error": error}).encode() + b"\n\ndata: [DONE]\n\n")
+                self.wfile.flush()
+                return
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
@@ -4715,8 +6711,54 @@ def make_handler(svc: Service):
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
 
+        def _lease_authorized(self, *, public=False):
+            """Independent control credential; never inherits browser/API access."""
+            if not svc.tool_leases.enabled:
+                self._json(404, {"error": {"message": "tool leases are disabled"}})
+                return False
+            try:
+                peer = ipaddress.ip_address(self.client_address[0])
+                local = peer.is_loopback or bool(getattr(peer, "ipv4_mapped", None) and peer.ipv4_mapped.is_loopback)
+            except ValueError:
+                local = False
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+            if not local or "Origin" in self.headers or fetch_site not in ("", "none"):
+                self._json(403, {"error": {"message": "resource leases require a local non-browser supervisor"}})
+                return False
+            if public:
+                return True
+            auth = self.headers.get("Authorization", "")
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+            if not svc.tool_leases.authenticated(token):
+                self._json(401, {"error": {"message": "missing or wrong resource-lease control token"}})
+                return False
+            return True
+
+        def _lease_post(self):
+            if not self._lease_authorized():
+                return
+            try:
+                # Control messages are small, fixed JSON. No chunked uploads.
+                size = self.headers.get("Content-Length", "")
+                if self.headers.get("Transfer-Encoding") or not size.isdigit() or not 0 < int(size) <= 4096:
+                    raise LeaseError("resource-lease requests need a Content-Length of 1..4096 bytes")
+                req = json.loads(self._body())
+                self._json(200, svc.resource_lease_action(req))
+            except LeaseError as exc:
+                self._json(exc.status, {"error": {"type": "resource_lease_error", "message": str(exc)}})
+            except (ValueError, TypeError):
+                self._json(400, {"error": {"message": "invalid resource-lease JSON"}})
+
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/resource-lease":
+                if self._lease_authorized(public=True):
+                    self._json(200, svc.tool_leases.public())
+                return
+            if path == "/v1/resources":
+                if self._authorized():
+                    self._json(200, svc.resource_status())
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4868,12 +6910,36 @@ def make_handler(svc: Service):
                 self._post()
             except BadBody as e:                              # #893: a malformed or oversized chunked body
                 self._json(e.status, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except RequestParkCancelled:
+                self._note(outcome="cancelled")
+            except (GpuBusy, EngineStarting, EngineDied, EngineStuck) as e:
+                self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+            finally:
+                if self.watch_done is not None:
+                    self.watch_done.set()
+                if self.request_cancel is not None:
+                    with svc.status_lock:
+                        svc.request_cancels.discard(self.request_cancel)
+                if self.preparation is not None:
+                    self.preparation.__exit__(None, None, None)
+                    self.preparation = None
+                if hasattr(svc.request_owner, "cancel"):
+                    del svc.request_owner.cancel
+                if hasattr(svc.request_owner, "preparation_heartbeat"):
+                    del svc.request_owner.preparation_heartbeat
 
         def _post(self):
+            path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/resource-lease":
+                self._lease_post()
+                return
             if not self._authorized():
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path == "/v1/resources":
+                self._resources_post()
                 return
             if path == "/settings":
                 self._settings()
@@ -4899,7 +6965,7 @@ def make_handler(svc: Service):
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
-                    svc.load()
+                    self._load_request({})
                     self._json(200, {"status": "loaded"})
                 except GpuBusy as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
@@ -4923,18 +6989,35 @@ def make_handler(svc: Service):
                         if result == "busy":
                             raise ModelBusy("a request is running or queued")
                     else:
+                        if svc.tool_leases.enabled:
+                            self._load_request(req)
+                            self._json(200, {"status": "loaded", **svc.v1_status()})
+                            return
                         if not svc.fifo.acquire(blocking=False):
                             raise ModelBusy("a request is running or queued")
                         try:
                             with svc.status_lock:
                                 if svc.status.get("busy") or svc.status.get("queued"):
                                     raise ModelBusy("a request is running or queued")
-                            svc.ensure_loaded()
+                            for _ in svc._admit_loaded(self._request_cancel()):
+                                pass
                             svc.last_request_at = time.time()
                         finally:
                             svc.fifo.release()
                         result = "loaded"
                     self._json(200, {"status": result, **svc.v1_status()})
+                    return
+                if path == "/v1/memory/refresh":
+                    if not self._own_page("the model memory policy can be refreshed"):
+                        return
+                    if req.get("model") not in (None, svc.model):
+                        self._json(404, {"error": {"message": "model not found"}})
+                        return
+                    # Observation only: never unload or restart from this HTTP control endpoint.
+                    svc.observe_memory()
+                    memory = svc.memory_status()
+                    result = ("pending" if memory["pending"] else "observed") if memory.get("mode") == "live" else "deferred"
+                    self._json(200, {"status": result, "memory_policy": memory})
                     return
                 if path == "/v1/vram":                       # #533: give VRAM back to other programs, or take it
                     if not self._own_page("the VRAM reserve can be changed"):
@@ -4949,6 +7032,24 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
+                    if svc._preparation_admission_enabled():
+                        if svc.tool_leases.enabled:
+                            # Establish cancellation and heartbeats before a new
+                            # request can wait at the supervisor admission barrier.
+                            cancel = self._request_cancel()
+                            def lease_heartbeat():
+                                if req.get("stream"):
+                                    try:
+                                        self._sse()
+                                        self.wfile.write(b": waiting for supervisor resource lease\n\n")
+                                        self.wfile.flush()
+                                    except OSError:
+                                        cancel.set()
+                                        raise
+                            svc.request_owner.preparation_heartbeat = lease_heartbeat
+                        preparation = svc.preparation_reservation()
+                        preparation.__enter__()
+                        self.preparation = preparation
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -4968,6 +7069,9 @@ def make_handler(svc: Service):
                     self._count_tokens(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
+            except RequestParkCancelled:
+                self._note(outcome="cancelled")
+                return
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
                 if path == "/v1/responses":
@@ -5004,6 +7108,13 @@ def make_handler(svc: Service):
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
                     self.watch_done.set()
+                if self.preparation is not None:
+                    self.preparation.__exit__(None, None, None)
+                    self.preparation = None
+                if hasattr(svc.request_owner, "cancel"):
+                    del svc.request_owner.cancel
+                if hasattr(svc.request_owner, "preparation_heartbeat"):
+                    del svc.request_owner.preparation_heartbeat
                 record = self.record
                 if record is not None:
                     with svc.status_lock:
@@ -5073,6 +7184,33 @@ def make_handler(svc: Service):
             if not complete:
                 self._json(400, {"error": {"message": "incomplete control request body"}})
             return complete
+
+        def _resources_post(self):
+            if not self._own_page("resource presets can be changed"):
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                    or len(lengths[0]) > 4 or int(lengths[0]) > 4096
+                    or self.headers.get("Transfer-Encoding")):
+                self._json(400, {"error": {"message": "resource selection needs one JSON body of at most 4096 bytes"}})
+                return
+            timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(2.0)
+                body = self.rfile.read(int(lengths[0]))
+                if len(body) != int(lengths[0]):
+                    raise ValueError("incomplete resource selection body")
+                config = json.loads(body)
+                result = svc.set_resources(config)
+            except (ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            except OSError as e:
+                self._json(503, {"error": {"message": str(e)}})
+                return
+            finally:
+                self.connection.settimeout(timeout)
+            self._json(200, result)
 
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
@@ -5165,6 +7303,8 @@ def make_handler(svc: Service):
             self._json(200, {"shared": bool(shared), "defaults": shared})
 
         def _sse(self):
+            if self.sse_started:
+                return
             self._note(http_status=200)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -5172,6 +7312,7 @@ def make_handler(svc: Service):
             self.send_header("X-Accel-Buffering", "no")   # nginx and similar proxies pass each event at once
             self._cors()
             self.end_headers()
+            self.sse_started = True
 
         def _capture(self, items, api):
             """Retain bounded input/output for the monitor without changing the API response (the items as they
@@ -5223,9 +7364,7 @@ def make_handler(svc: Service):
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
-            svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
-            bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
@@ -5240,10 +7379,11 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            self._load_request(req)
+            bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
-            cancel = threading.Event()
-            self._watch_client(cancel)                       # #430 #431
+            cancel = self._request_cancel()
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
@@ -5309,8 +7449,7 @@ def make_handler(svc: Service):
                 return self._json(409, responses_error_body(str(e), "server_error", code="model_busy"))
             except (GpuBusy, EngineStarting, EngineStuck, EngineDied) as e:
                 return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
-            cancel = threading.Event()
-            self._watch_client(cancel)                       # #430 #431
+            cancel = self._request_cancel()
 
             def check(text, finish):
                 return validated_json(text, validator, finish)
@@ -5413,7 +7552,7 @@ def make_handler(svc: Service):
                 check_request_sampling(req)                   # the request is also the sampling dict (see below)
             except ValueError as e:                           # its message starts with the field's name: the param
                 raise ResponsesError(str(e), str(e).partition(":")[0]) from None
-            svc.load()
+            self._load_request(req)
             # #924 (opt-in): a Codex compaction request is rendered with its conversation's tools, so its prompt
             # starts as the cached one did; the parser and the response keep the request's own tools
             shown = responses_api.prompt_tools(req, tools) if svc.codex_compaction_cache else tools
@@ -5449,7 +7588,6 @@ def make_handler(svc: Service):
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
 
         def _anthropic(self, req):
-            svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
@@ -5460,10 +7598,10 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            self._load_request(req)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
-            cancel = threading.Event()
-            self._watch_client(cancel)                       # #430 #431
+            cancel = self._request_cancel()
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, force=force)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
@@ -5936,6 +8074,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
 def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: list[str], lazy: bool):
     """Opt-in data-parallel replicas (serve/replicas.py): one StrataEngine per card group, each with its own cards, log
     and CPU cores, started together; the ReplicaEngine in front spreads the requests."""
+    validate_adaptive_startup(cfg, groups)
     from serve import replicas as rp
     n = len(groups)
     cpus = rp.cpu_sets(n, cfg.get("replica_cpus") is not False)
@@ -6089,6 +8228,13 @@ def main() -> int:
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
+        from serve import replicas as rp
+        try:
+            groups = rp.gpu_groups(cfg)
+            validate_adaptive_startup(cfg, groups)
+            engine_args(cfg)  # validate native ownership flags before even the vision process starts
+        except (ValueError, rp.ReplicaConfigError) as e:
+            raise SystemExit(f"[strata] config {e}") from None
         vision = None
         env = child_env(cfg)
         sampling_defaults = sampling_defaults_from_config(cfg)
@@ -6127,11 +8273,6 @@ def main() -> int:
         try:
             effort_end = effort_end_args(cfg, exe, tok)  # #458
         except ValueError as e:
-            raise SystemExit(f"[strata] config {e}")
-        from serve import replicas as rp
-        try:
-            groups = rp.gpu_groups(cfg)
-        except rp.ReplicaConfigError as e:
             raise SystemExit(f"[strata] config {e}")
         if groups:
             engine = start_replicas(cfg, groups, exe, effort_end or [], lazy)
@@ -6211,6 +8352,12 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    try:
+        svc.configure_memory(cfg.get("memory_policy"))
+        svc.configure_resources(cfg.get("resource_presets"))
+        svc.configure_coadaptive(cfg.get("coadaptive"))
+    except (ValueError, TypeError) as e:
+        raise SystemExit(f"[strata] config {e}")
     # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
     # to the config's "cwd" (the engine's folder) when it has one.  Either way the engine gets an absolute path.
     if a.slot_save_path or cfg.get("slot_save_path"):
@@ -6276,6 +8423,7 @@ def main() -> int:
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
+    svc.start_memory_policy()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
@@ -6313,6 +8461,7 @@ def main() -> int:
             time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
+        svc.stop_background()
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
                    hub.close if hub is not None else None]
         for close in filter(None, closers):

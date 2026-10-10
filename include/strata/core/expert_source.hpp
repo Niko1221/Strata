@@ -252,6 +252,8 @@ public:
     /// A deeper one predicts layer + j from layer's input, which is less exact the further it looks.
     void set_depth(int d) { depth_ = d < 1 ? 1 : d > 4 ? 4 : d; }
     int depth() const { return depth_; }
+    /// Called between windows before changing host residency or releasing RAM blocks.
+    void drain();
     /// STRATA_LOOKAHEAD_STATS=1 (measurement only): remember each prediction (top k, k+4 and k+10 per token) and let the
     /// dispatch score it against the experts the next layer really routes outside the GPU cache.
     void enable_stats(int64_t n_layers);
@@ -560,6 +562,13 @@ public:
         const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,
         uint64_t headroom_bytes = 8ull << 30, uint64_t budget_bytes = 0,
         const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
+    /// Opt-in independently owned RAM blocks. Readers and staged exchanges must be drained by the caller.
+    bool enable_live_resident(bool pin, std::string& err, uint64_t pin_budget = UINT64_MAX);
+    /// include_gpu keeps profile-ranked duplicates inside target for prompt loans and later GPU eviction.
+    bool resize_live_resident(uint64_t target, uint64_t step_bytes, uint64_t headroom,
+                              const std::vector<int32_t>& host_res,
+                              const std::vector<std::pair<int32_t, int32_t>>& rank,
+                              bool& done, std::string& err, bool include_gpu = false);
     /// A layer split: the prompt path borrows the TAIL SLOTS of every stage's cache - CUDA0's own part
     /// first, then every stage in order.  Set these BEFORE `pin_cache_complement` to keep those slots' experts
     /// in the RAM copy too: each region lists its stage's (layer, expert) pairs, the highest cache slot first,
@@ -708,6 +717,9 @@ public:
     //   - an expert whose pages are all cached is still handed out as the mapped pointer (no copy).
     // The bytes are the same bytes, so the output is the same.  `threads` = I/O threads (0: default 4).
     void set_io_prefetch(bool on, int threads);
+    /// Call after draining all producers, before mutating resident ownership.
+    /// Discard speculative queued reads and wait for workers already reading.
+    void drain_io_prefetch();
     bool io_prefetch() const { return io_pf_; }
     /// Counts the cached / uncached bytes of every blob read from the files (mincore, page-granular).  Free with
     /// io_prefetch; otherwise opt in with STRATA_IO_STATS=1 (the check costs a few microseconds per blob).
@@ -814,6 +826,7 @@ private:
     std::condition_variable io_cv_;
     std::deque<std::pair<int32_t, int32_t>> io_q_;   ///< (layer, expert) to read ahead
     bool io_quit_ = false;
+    size_t io_active_ = 0;                            ///< protected by io_mu_
     std::vector<char> stage_pf_;                      ///< per stage buffer: filled ahead, not yet used by a layer
     std::vector<int> io_fds_;                         ///< per mapped file: a plain descriptor (POSIX_FADV_RANDOM) for the preads
     mutable std::atomic<uint64_t> io_cached_{0}, io_uncached_{0}, io_pread_bytes_{0}, io_pread_us_{0}, io_pread_n_{0};
@@ -840,6 +853,13 @@ private:
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
+    struct LiveBlock { uint8_t* host; uint8_t* device; uint64_t bytes; bool pinned; };
+    struct LiveBlob { uint8_t* host = nullptr; uint8_t* device = nullptr; size_t block = 0; };
+    bool live_resident_ = false, live_pin_ = true;
+    bool live_pin_refused_ = false;
+    uint64_t live_pin_cap_ = 0;
+    std::vector<LiveBlock> live_blocks_;
+    std::vector<LiveBlob> live_blobs_;
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered

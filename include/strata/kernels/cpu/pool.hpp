@@ -154,6 +154,22 @@ public:
     /// The watchdog's view of the pool (issue #31): the batch, the counters, every thread's state.
     void diag(std::FILE* f) const;
     ~ExpertPool();
+    /// At a drained background-control boundary, bypass the normal idle spin before sleeping.
+    /// This changes no in-flight job or epoch; the next published job still wakes every sleeper.
+    /// Returns the previous setting for scoped restoration (nested background waits are safe).
+    bool set_background_idle(bool enabled) { return background_idle_.exchange(enabled, std::memory_order_relaxed); }
+    bool background_idle() const { return background_idle_.load(std::memory_order_relaxed); }
+    int sleeping_workers() const { return (int) sleepers_.load(std::memory_order_relaxed); }
+    class BackgroundIdleScope {
+    public:
+        explicit BackgroundIdleScope(ExpertPool& pool) : pool_(pool), previous_(pool.set_background_idle(true)) {}
+        ~BackgroundIdleScope() { pool_.set_background_idle(previous_); }
+        BackgroundIdleScope(const BackgroundIdleScope&) = delete;
+        BackgroundIdleScope& operator=(const BackgroundIdleScope&) = delete;
+    private:
+        ExpertPool& pool_;
+        bool previous_;
+    };
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;
 
@@ -272,6 +288,7 @@ private:
     // The sleep after `kSpinBeforeSleep`.  `sleepers_` is how `publish` knows whether anyone needs waking, so the
     // token path pays one uncontended load per publish and never takes the mutex while the workers spin.
     alignas(64) std::atomic<uint32_t> sleepers_{0};
+    std::atomic<bool> background_idle_{false};
     std::mutex sleep_mu_;
     std::condition_variable sleep_cv_;
     std::chrono::microseconds spin_before_sleep_{kSpinBeforeSleep};

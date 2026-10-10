@@ -57,6 +57,8 @@ class TestWinJob(unittest.TestCase):
             for pid in (child, grandchild):              # on a failure, don't leave them sleeping
                 if pid and running(pid):
                     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            parent.wait(10)
+            parent.stdout.close()
 
     def test_elsewhere_or_without_a_process_it_is_a_no_op(self):
         from serve.winjob import contain

@@ -93,6 +93,16 @@ public:
     /// Plan v0.3 P6: slots of the given sizes, back to back (a native pack's blobs differ per layer, and a
     /// profile-filled tier never moves an expert to another layer's slot, so each slot keeps its first size).
     bool open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
+    /// Opt-in CUDA VMM storage. Offsets/base cover the full capacity for the lifetime of the cache;
+    /// only the active prefix owns physical memory. Call resize_live only with all readers drained.
+    bool open_live(const std::vector<int64_t>& slot_bytes, int64_t active_slots,
+                   int64_t n_layers, int64_t n_expert, std::string& err);
+    bool resize_live(int64_t active_slots, std::string& err);
+    bool live() const { return live_reserved_ != 0; }
+    int64_t capacity() const { return live() ? (int64_t) off_.size() - 1 : slots_; }
+    uint64_t committed_bytes() const { return live() ? live_handles_.size() * live_block_ : (uint64_t) bytes(); }
+    uint64_t live_block_bytes() const { return live_block_; }
+    int64_t slots_for_bytes(uint64_t budget) const;
     /// Byte offset of each slot in the arena (null for uniform slots).
     const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
     void close();
@@ -219,6 +229,9 @@ private:
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();
     uint8_t* base_ = nullptr;
+    uint64_t live_reserved_ = 0, live_block_ = 0;
+    int live_device_ = 0;
+    std::vector<uint64_t> live_handles_;
     int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)

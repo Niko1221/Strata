@@ -126,6 +126,17 @@ public:
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    /// Single-device cooperative run: after a fully consumed chunk (including on_chunk/draft K/V),
+    /// a true yield callback returns successfully with `consumed < n`. All run-local readers and DMA
+    /// have drained on return; the session and PLE history remain at pos0 + consumed. The callback
+    /// must only request a yield, never resize the buffers that run_impl still borrows. A caller may
+    /// then return its expert-cache loan, resize/rebind, and resume at precisely that position.
+    /// With no requested yield this retains the ordinary whole-prompt PLE prefetch pipeline.
+    bool run_cooperative(const int64_t* tokens, int64_t n, int64_t pos0,
+                         const std::function<bool()>& yield, int64_t& consumed, std::string& err);
+    /// Between completed chunks (or idle), finish host expert reads before changing live cache ownership.
+    /// The caller must also synchronize GPU readers; this does not reset prompt or session state.
+    void drain_expert_reads();
 
     const PrefillStats& stats() const { return stats_; }
 
@@ -192,7 +203,8 @@ private:
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
-    bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err,
+                  const std::function<bool()>* yield = nullptr, int64_t* progress_out = nullptr);
     bool drain_pipeline(std::string& err);
 
     int64_t stage_lb_ = 0, stage_le_ = -1;

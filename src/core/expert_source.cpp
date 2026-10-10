@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/conversation_memory.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -32,6 +33,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -652,6 +654,12 @@ void FileExpertSource::io_stop() {
     io_quit_ = false;
 }
 
+void FileExpertSource::drain_io_prefetch() {
+    std::unique_lock<std::mutex> lk(io_mu_);
+    io_q_.clear();
+    io_cv_.wait(lk, [&] { return io_active_ == 0; });
+}
+
 void FileExpertSource::io_enqueue(int64_t layer, int64_t expert) {
     {
         std::lock_guard<std::mutex> lk(io_mu_);
@@ -676,7 +684,14 @@ void FileExpertSource::io_worker() {
             layer = io_q_.back().first;   // the newest prediction first: it is the layer that comes next
             expert = io_q_.back().second;
             io_q_.pop_back();
+            ++io_active_;
         }
+        // Every early-continue path releases the drain waiter as well.
+        auto finish = [this](FileExpertSource*) {
+            { std::lock_guard<std::mutex> lk(io_mu_); --io_active_; }
+            io_cv_.notify_all();
+        };
+        const std::unique_ptr<FileExpertSource, decltype(finish)> active(this, finish);
         io_pf_jobs_.fetch_add(1, std::memory_order_relaxed);
         const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
         if (complement_ready_ && resident_blob(index) != nullptr) continue;
@@ -941,6 +956,11 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 
 void FileExpertSource::close() {
     io_stop();
+    for (const auto& block : live_blocks_) {
+        if (block.pinned) (void) cudaFreeHost(block.host);
+        else std::free(block.host);
+    }
+    live_blocks_.clear(); live_blobs_.clear(); live_resident_ = false;
     inputs_.clear();
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
@@ -2346,7 +2366,13 @@ void RouterLookahead::run() {
             std::lock_guard<std::mutex> lk(mu_);
             busy_ = false;
         }
+        cv_.notify_all();
     }
+}
+
+void RouterLookahead::drain() {
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&] { return !pending_ && !busy_; });
 }
 
 void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k) {
@@ -2407,8 +2433,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
     const uint64_t bytes = layer_blob_bytes_[(size_t) layer];
     if (complement_ready_) {
-        const uint8_t* held =
-            resident_blob(index);
+        const uint8_t* held = resident_blob(index);
         if (held == nullptr && !override_.empty()) held = override_[index];
         if (held != nullptr) {
             std::memcpy(dst, held, (size_t) bytes);
@@ -3135,8 +3160,124 @@ bool FileExpertSource::pin_cache_complement(
 }
 
 const uint8_t* FileExpertSource::resident_blob(size_t index) const {
+    if (live_resident_) return index < live_blobs_.size() ? live_blobs_[index].host : nullptr;
     if (exchange_storage_.active()) return exchange_storage_.resident(index).host;
     return detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr);
+}
+
+bool FileExpertSource::enable_live_resident(bool pin, std::string& err, uint64_t pin_budget) try {
+    if (!mapped() || complement_ready_) { err = "live RAM: requires an open source without a complement"; return false; }
+    uint64_t limit = 0;
+    std::string why;
+    if (pin && sliced_pin_limit(limit, why)) pin_budget = std::min(pin_budget, limit);
+    else pin_budget = 0;
+    const int configured_cap = arena_pin_cap_gib();
+    if (configured_cap > 0) pin_budget = std::min(pin_budget, (uint64_t) configured_cap << 30);
+    live_blobs_.assign((size_t) blobs_, {});
+    live_pin_cap_ = pin_budget; live_pin_refused_ = false;
+    live_resident_ = true; live_pin_ = pin; complement_ready_ = true;
+    return true;
+} catch (const std::bad_alloc&) {
+    err = "live RAM: pointer table allocation failed"; return false;
+}
+
+bool FileExpertSource::resize_live_resident(uint64_t target, uint64_t step, uint64_t headroom,
+                                           const std::vector<int32_t>& res,
+                                           const std::vector<std::pair<int32_t, int32_t>>& rank,
+                                           bool& done, std::string& err, bool include_gpu) try {
+    done = false;
+    if (!live_resident_ || res.size() != live_blobs_.size() || !staged_.empty() || step == 0) {
+        err = "live RAM: invalid state or exchanges still pending"; return false;
+    }
+    if (target < complement_bytes_) {
+        // One block per call: expert-size packing usually leaves a block slightly below 32 MiB.
+        // A byte-only loop would then release a second block and exceed the advertised work bound.
+        if (!live_blocks_.empty()) {
+            const size_t last = live_blocks_.size() - 1;
+            const LiveBlock block = live_blocks_.back();
+            // No reader is active. If the driver refuses a release, retain the old ownership table.
+            if (block.pinned) {
+                if (cudaFreeHost(block.host) != cudaSuccess) { err = "live RAM: block release failed"; return false; }
+            } else std::free(block.host);
+            // Adaptive swaps can change the expert owners of this block's slots.
+            for (auto& blob : live_blobs_) if (blob.host && blob.block == last) blob = {};
+            complement_bytes_ -= block.bytes;
+            if (block.pinned) { complement_pin_limit_ -= block.bytes; live_pin_refused_ = false; }
+            complement_pinned_ = complement_pin_limit_ != 0;
+            live_blocks_.pop_back();
+        }
+        // Whole-block release can round below the target. This shrink is complete; refilling
+        // that gap would turn a pressure release into a headroom-checked allocation.
+        done = complement_bytes_ <= target;
+        return true;
+    }
+    if (target == complement_bytes_) { done = true; return true; }
+    const uint64_t room = std::min<uint64_t>({target - complement_bytes_, step, 32ull << 20});
+    std::vector<size_t> chosen;
+    std::vector<uint8_t> seen(live_blobs_.size(), 0);
+    uint64_t bytes = 0;
+    auto choose = [&](size_t i) {
+        if (i >= live_blobs_.size() || seen[i] || (!include_gpu && res[i] >= 0) || live_blobs_[i].host) return;
+        seen[i] = 1;
+        const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
+        if (b <= room - bytes) { chosen.push_back(i); bytes += b; }
+    };
+    for (const auto& [l, e] : rank) if (l >= 0 && l < n_layers_ && e >= 0 && e < n_expert_)
+        choose((size_t) (l * n_expert_ + e));
+    for (size_t i = 0; i < live_blobs_.size(); ++i) choose(i);
+    if (chosen.empty()) { done = true; return true; }
+    uint64_t available = 0, commit = UINT64_MAX;
+    if (!available_memory_bytes(available, &commit) ||
+        !conversation_memory_admit(std::min(available, commit), bytes, headroom)) {
+        err = "live RAM: physical or commit headroom would be exceeded"; return false;
+    }
+    // No bookkeeping allocation may occur after a pinned block has been acquired.
+    live_blocks_.reserve(live_blocks_.size() + 1);
+    uint8_t* host = nullptr;
+    uint8_t* device = nullptr;
+    bool pinned = false;
+    uint64_t pin_room = 0;
+    std::string pin_reason;
+    // Reuse the sliced arena's WDDM limit, both as an aggregate cap and against current shared-segment usage.
+    // A pageable block still avoids file reads; it must never advertise a device alias or direct DMA.
+    if (live_pin_ && !live_pin_refused_ && bytes <= live_pin_cap_ - complement_pin_limit_ &&
+        sliced_pin_limit(pin_room, pin_reason) && bytes <= pin_room) {
+        if (cudaHostAlloc((void**) &host, (size_t) bytes, cudaHostAllocMapped) != cudaSuccess ||
+            cudaHostGetDevicePointer((void**) &device, host, 0) != cudaSuccess) {
+            if (host) (void) cudaFreeHost(host);
+            host = nullptr; device = nullptr; live_pin_refused_ = true;
+            (void) cudaGetLastError();
+        } else pinned = true;
+    }
+    if (!host) host = (uint8_t*) std::malloc((size_t) bytes);
+    if (!host) { err = "live RAM: allocation failed"; return false; }
+    auto release_block = [&](uint8_t* ptr) {
+        if (pinned) (void) cudaFreeHost(ptr); else std::free(ptr);
+    };
+    std::unique_ptr<uint8_t, decltype(release_block)> uncommitted(host, release_block);
+    if (std::getenv("STRATA_TEST_LIVE_RAM_FAIL_AFTER_ALLOC") != nullptr) throw std::bad_alloc();
+    uint64_t offset = 0;
+    for (size_t i : chosen) {
+        if (!copy_blob((int64_t) i / n_expert_, (int64_t) i % n_expert_, host + offset)) {
+            err = "live RAM: source read failed"; return false;
+        }
+        offset += layer_blob_bytes_[i / (size_t) n_expert_];
+    }
+    const size_t block = live_blocks_.size();
+    live_blocks_.push_back({host, device, bytes, pinned});
+    (void) uncommitted.release();
+    offset = 0;
+    for (size_t i : chosen) {
+        live_blobs_[i] = {host + offset, device ? device + offset : nullptr, block};
+        offset += layer_blob_bytes_[i / (size_t) n_expert_];
+    }
+    complement_bytes_ += bytes;
+    if (pinned) complement_pin_limit_ += bytes;
+    complement_pinned_ = complement_pin_limit_ != 0;
+    done = complement_bytes_ == target;
+    return true;
+} catch (const std::bad_alloc&) {
+    err = "live RAM: host bookkeeping allocation failed"; return false;
 }
 
 bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
@@ -3220,8 +3361,8 @@ bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, in
     if (override_[i_out] != nullptr) return false;
     for (const Exchange& x : staged_)
         if (x.in == i_in || x.q == q) return false;
-    override_[i_out] = exchange_buffer(q);
     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
+    override_[i_out] = exchange_buffer(q); // publish only after the potentially allocating bookkeeping succeeds
     return true;
 }
 
@@ -3229,6 +3370,14 @@ int64_t FileExpertSource::commit_exchanges() {
     int64_t n = 0;
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];
+        if (live_resident_) {
+            if (src && live_blobs_[x.in].host && !live_blobs_[x.out].host) {
+                std::memcpy(live_blobs_[x.in].host, src, (size_t) x.bytes);
+                live_blobs_[x.out] = live_blobs_[x.in]; live_blobs_[x.in] = {}; ++n;
+            }
+            override_[x.out] = nullptr;
+            continue;
+        }
         if (exchange_storage_.active()) {
             if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
                 // Admitting the GPU swap after a failed RAM ownership update would lose an expert.
@@ -3289,11 +3438,9 @@ int64_t FileExpertSource::commit_flip() {
 }
 
 const uint8_t* FileExpertSource::resident_blob(int64_t layer, int64_t expert) const {
-    if (!complement_ready_ || complement_host_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ ||
-        expert >= n_expert_) return nullptr;
+    if (!complement_ready_ || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
-    if (index >= complement_offsets_.size()) return nullptr;
-    return resident_blob(index);   // through the rotation's ownership table when STRATA_EXCHANGE_ROTATE is on
+    return resident_blob(index);   // the live blocks or rotation table own residency when enabled
 }
 
 const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
@@ -3350,6 +3497,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
 }
 
 bool FileExpertSource::pinned(int64_t layer, int64_t expert) const {
+    if (live_resident_) return device_alias(layer, expert) != nullptr;
     if (!complement_ready_ || !complement_pinned_ || complement_host_ == nullptr || layer < 0 || expert < 0 ||
         layer >= n_layers_ || expert >= n_expert_) return false;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
@@ -3361,6 +3509,7 @@ bool FileExpertSource::pinned(int64_t layer, int64_t expert) const {
 }
 
 const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) const {
+    if (live_resident_) return has_resident(layer, expert) ? live_blobs_[(size_t) (layer * n_expert_ + expert)].device : nullptr;
     if (!pinned(layer, expert) || complement_device_ == nullptr) return nullptr;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
     if (exchange_storage_.active()) return exchange_storage_.resident(index).device;
@@ -3368,6 +3517,7 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
 }
 
 bool FileExpertSource::pcie_layer(int64_t layer) const {
+    if (live_resident_) return complement_pinned_ && layer >= 0 && layer < n_layers_;
     if (complement_ready_ && complement_pinned_ && complement_device_ != nullptr)
         return layer >= 0 && layer < n_layers_;
     return device_alias(layer, 0) != nullptr;

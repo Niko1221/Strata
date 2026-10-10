@@ -1,0 +1,100 @@
+{
+  "schema": "strata.default-return-off.component.v1",
+  "status": "passed",
+  "scope": "One bounded direct lease component with a known-correct C++ fixture; not a complete Hermes run or a speedup comparison.",
+  "source": {
+    "base_release": "v0.1.42",
+    "adaptive_revision": "1cb95593",
+    "native_sha256": "d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9",
+    "server_sha256": "e291fd6b7e5179a6bb212628d1173342e85fa454782bc446aa3f60130e13799a",
+    "harness_sha256": "1864bcf52a31b4d78759aae08fb06b645017faf792f04b33bfea662b5542e389"
+  },
+  "profile": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "cpu": "AMD Ryzen 9 7940HS",
+    "gpu": "NVIDIA RTX 4070 Laptop 8 GB",
+    "installed_ram_gib": 64,
+    "operating_system": "Windows",
+    "context_tokens": 65536,
+    "reasoning": "high",
+    "reasoning_budget_tokens": 8192,
+    "vision_enabled": true,
+    "vision_on_CPU": true,
+    "projection_enabled": false,
+    "additional_return_vram_mib": 256,
+    "normal_policy_gpu_floor_mib": 320,
+    "return_gpu_target_mib": 576,
+    "sampled_gpu_guard_mib": 250,
+    "sampled_ram_guard_gib": 3,
+    "resident_budget_gib": 32
+  },
+  "acceptance": {
+    "passed_without_failures": true,
+    "exact_before_42": true,
+    "exact_after_42": true,
+    "four_job_compiler": true,
+    "one_owner_identity": true,
+    "one_execution_start": true,
+    "released_after_compile": true,
+    "AUTO_initial_action_none": true,
+    "same_two_roles_through_compile": true,
+    "both_processes_replaced_on_return": true,
+    "explicit_return_fallback": true,
+    "observed_unloaded_interval": true,
+    "initial_native_projection_OFF": true,
+    "reloaded_native_projection_OFF": true,
+    "two_actual_OFF_high_requests": true,
+    "default_256_retained": true,
+    "64K_high_cpu_vision": true,
+    "projection_configuration_OFF": true,
+    "sampled_floors": true,
+    "compiler_gone_before_release": true,
+    "owned_cleanup_complete": true
+  },
+  "counts": {
+    "model_requests": 2,
+    "compiler_jobs": 4,
+    "successful_translation_units": 9,
+    "deterministic_fixture_checks": 2096
+  },
+  "lifecycle": {
+    "tool_admission_action": "none",
+    "resident_during_compilation": true,
+    "next_request_action": "verified_full_unload_and_guarded_reload",
+    "return_reason": "resident_return_auto_unload",
+    "observed_return_states": [
+      "unloading",
+      "admitting",
+      "reloading",
+      "ready"
+    ],
+    "same_native_and_vision_before_tool_release": true,
+    "new_native_and_vision_after_reload": true
+  },
+  "timings_seconds": {
+    "startup": 44.437999999994645,
+    "before_tool_http": 25.125,
+    "lease_admission": 0.4220000000204891,
+    "compiler_worker_total": 2.100395799992839,
+    "compile_only": 1.8684111000038683,
+    "compiler_wrapper_observed": 2.4530000000086147,
+    "release": 0.03200000000651926,
+    "after_tool_http_including_reload": 71.375,
+    "model_tool_model_cycle": 99.625,
+    "whole_case": 146.43799999999464
+  },
+  "memory_observed": {
+    "min_available_ram_gib": 9.789176940917969,
+    "min_native_free_vram_mib": 342,
+    "cache_before_return_mib": 672,
+    "smallest_sampled_cache_during_576_target_mib": 640,
+    "maximum_sampled_native_free_during_576_target_mib": 374
+  },
+  "limits": [
+    "Sampled headroom is not an operating-system reservation or an OOM guarantee.",
+    "CPU vision was enabled; this direct component does not contain an image request.",
+    "AUTO selected none for tool admission, then deliberately unloaded on inference return; it did not stay resident throughout the cycle.",
+    "This qualifies the default additional256MiB fallback, not default256MiB resident performance or arbitrary long-context work.",
+    "The separate full Hermes projection-OFF case used zero additional return allowance; results are not interchangeable."
+  ]
+}

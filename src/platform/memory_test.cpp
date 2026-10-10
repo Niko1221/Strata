@@ -75,6 +75,10 @@ int file_cache_keeps_cases() {
 
 int main() {
     int fail_keeps = file_cache_keeps_cases();
+    uint64_t budget = 123, usage = 456;
+    std::string why;
+    const bool local = strata::platform::gpu_local_memory_budget(nullptr, budget, usage, why);
+    fail_keeps |= local || budget != 0 || usage != 0 || why.empty();
     const uint64_t bytes = 256ull << 20;
     void* p = std::malloc(bytes);
     if (p == nullptr) return 2;

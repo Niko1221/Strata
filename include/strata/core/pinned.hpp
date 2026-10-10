@@ -27,6 +27,9 @@ enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
 /// decides, as in 0.1.30), 0 = no cap (the whole arena, or as many slices as the driver takes), N > 0 = at most N GiB,
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
+/// Remaining room for sliced mapped-host allocations, with the existing WDDM shared-budget reserve.
+/// Non-Windows backends return an unlimited bound; false means Windows telemetry has no safe bound.
+bool sliced_pin_limit(uint64_t& limit, std::string& why);
 
 struct PinnedArena {
     void* base = nullptr;

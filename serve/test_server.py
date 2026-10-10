@@ -3960,6 +3960,7 @@ class RestartWindow(unittest.TestCase):
                 self.assertEqual(r.status, 200)
         finally:
             httpd.shutdown()
+            httpd.server_close()
 
     def test_context_zero_is_503(self):
         tok = ByteTokenizer()
@@ -4948,15 +4949,18 @@ class LazyVision(unittest.TestCase):
                 self.stdin = io.StringIO()
                 self.stdout = io.StringIO("READY 1" + chr(10) if ready else "oops" + chr(10))
                 self.killed = False
+                self.returncode = None
 
             def poll(self):
-                return None
+                return self.returncode
 
             def kill(self):
                 self.killed = True
+                self.returncode = -9
 
             def wait(self, timeout=None):
-                return 0
+                self.returncode = 0 if self.returncode is None else self.returncode
+                return self.returncode
 
         def popen(what, args, **kw):
             p = Proc()
@@ -4991,11 +4995,16 @@ class LazyVision(unittest.TestCase):
             class P:
                 stdin, stdout, killed = io.StringIO(), io.StringIO("oops" + chr(10)), False
 
+                def poll(self):
+                    return -9 if P.killed else None
+
                 def kill(self):
                     P.killed = True
 
                 def wait(self, timeout=None):
-                    return 0
+                    if not P.killed:  # A broken startup also ignores the graceful QUIT.
+                        raise server.subprocess.TimeoutExpired("vision", timeout)
+                    return -9
             started.append(P)
             return P()
         with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
@@ -5019,12 +5028,17 @@ class VisionShutdown(unittest.TestCase):
 
             class Proc:
                 stdin = io.StringIO()
+                returncode = None
+
+                def poll(self):
+                    return self.returncode
 
                 def wait(self, timeout=None):
-                    return 0
+                    self.returncode = 0 if self.returncode is None else self.returncode
+                    return self.returncode
 
                 def kill(self):
-                    pass
+                    self.returncode = -9
 
             v.proc = Proc()
             v.close()
@@ -5201,7 +5215,14 @@ class UntimedReads(unittest.TestCase):
     def test_vision_ready_read_times_out(self):
         import serve.server as server
         silent = self.Silent()
-        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill, poll=lambda: None)
+
+        def wait(timeout=None):
+            if not silent.killed:
+                raise server.subprocess.TimeoutExpired("vision", timeout)
+            return -9
+
+        proc = SimpleNamespace(stdin=io.StringIO(), stdout=silent, kill=silent.kill,
+                               poll=lambda: -9 if silent.killed else None, wait=wait)
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))

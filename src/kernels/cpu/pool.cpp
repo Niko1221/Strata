@@ -513,7 +513,8 @@ void ExpertPool::worker(int id) {
             if (stop_.load(std::memory_order_relaxed)) return;
             _mm_pause();
             if ((++spins & 1023u) != 0) continue;
-            if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
+            if (!background_idle_.load(std::memory_order_relaxed) &&
+                std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
             wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
             sleepers_.fetch_add(1, std::memory_order_seq_cst);
