@@ -820,6 +820,29 @@ void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int3
 }
 #endif
 
+namespace {
+// grid (kNonfiniteBlocks, rows): block b of row t scans [b * per_block, +per_block) and writes its own word.  The
+// test is on the bits (exponent all ones), so --use_fast_math cannot fold it away.
+__global__ void logits_nonfinite_kernel(const float* __restrict__ logits, int n, int per_block, uint32_t* flags) {
+    const int row = (int) blockIdx.y, b = (int) blockIdx.x;
+    const float* l = logits + (size_t) row * n;
+    const int lo = b * per_block, hi = min(n, lo + per_block);
+    int bad = 0;
+    for (int v = lo + (int) threadIdx.x; v < hi; v += (int) blockDim.x)
+        bad |= (__float_as_uint(l[v]) & 0x7f800000u) == 0x7f800000u;
+    bad = __syncthreads_or(bad);
+    if (threadIdx.x == 0) flags[row * kNonfiniteBlocks + b] = bad ? 1u : 0u;
+}
+}  // namespace
+
+void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* flags, void* stream) {
+    if (n_rows <= 0 || n <= 0) return;
+    const int per_block = (n + kNonfiniteBlocks - 1) / kNonfiniteBlocks;
+    logits_nonfinite_kernel<<<dim3((unsigned) kNonfiniteBlocks, (unsigned) n_rows), 256, 0, (cudaStream_t) stream>>>(
+        logits, n, per_block, flags);
+    check("logits_nonfinite_rows");
+}
+
 bool multi_block_head_ops() {
 #if defined(__HIPCC__)
     return false;

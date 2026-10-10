@@ -85,6 +85,21 @@ public:
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
+    /// #879 GUARD: the first row of the last finished window (run, run_slot_rows, batch_poll, pl_finish) whose head
+    /// logits held a NaN or an infinity, else -1; nonfinite_pos() is that row's position.  Every window graph
+    /// checks its T rows on the device beside the greedy pick (logits_nonfinite_rows into mapped flags, read after
+    /// the sync the window already does: no extra sync).  On the stage with the head (a layer split asks the last
+    /// stage).  STRATA_NAN_GUARD=0: off (always -1).  STRATA_NAN_INJECT=<n>[,<n>...] (debug): the n-th window the
+    /// guard checks in this process (counted from 1 over every stage-with-head verifier: prompt-tail windows, decode
+    /// windows and batch windows alike) reports row 0 as non-finite, so the whole response can be tested.
+    int nonfinite_row() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_row() : nf_row_; }
+    int64_t nonfinite_pos() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_pos() : nf_pos_; }
+    /// Row t of the last window (a batch window: each slot's own rows) held a non-finite logit.
+    bool nonfinite_in(int t) const {
+        if (next_ != nullptr && !last_stage()) return next_->nonfinite_in(t);
+        return t >= 0 && t < 32 && ((nf_mask_ >> t) & 1u) != 0;
+    }
+    static bool nan_guard_on();
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -420,6 +435,11 @@ private:
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
+    uint32_t* h_nf_ = nullptr;   uint32_t* m_nf_ = nullptr;     // #879: kVerifyMaxT * kNonfiniteBlocks flags
+    int nf_row_ = -1;                     ///< nonfinite_row()
+    int64_t nf_pos_ = -1;                 ///< nonfinite_pos()
+    uint32_t nf_mask_ = 0;                ///< nonfinite_in(): bit t = row t
+    void note_nonfinite(int T, const int64_t* pos_b);   ///< the window's flags (+ STRATA_NAN_INJECT) -> nf_row_
     float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k

@@ -444,7 +444,7 @@ Verifier::~Verifier() {
         if (e) cudaEventDestroy(e);
     if (arena_) cudaFree(arena_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_};
+                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -540,6 +540,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
               mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
               mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+              mapped((size_t) strata::kernels::kVerifyMaxT * strata::kernels::kNonfiniteBlocks * 4, (void**) &h_nf_,
+                     (void**) &m_nf_) &&
               mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
               mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
               mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) &&
@@ -1688,6 +1690,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             sp.temperature = 0.0f;
             sample_tokens(head_logits_, T, (int) n_vocab_, nullptr, 0, sp, m_out_, cs);
         }
+        // #879: whether each row's logits are all finite, beside the pick (read after the window's own sync)
+        if (nan_guard_on()) strata::kernels::logits_nonfinite_rows(head_logits_, T, (int) n_vocab_, m_nf_, cs);
     }
     stamp(g.n_layers, 1, 0);
     return true;
@@ -2170,6 +2174,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    note_nonfinite(T, nullptr);
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {
@@ -2703,6 +2708,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
         if (!sample_rows(S, err)) return false;
         for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+        note_nonfinite(S, last_pos_b_);
         progress_at("decode");
         progress_beat();
         return true;
@@ -2766,6 +2772,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
     if (!sample_rows(S, err)) return false;
     for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    note_nonfinite(S, last_pos_b_);
     progress_at("decode");
     progress_beat();
     return true;
@@ -2922,11 +2929,63 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (last_stage()) {
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
         for (int t = 0; t < S; ++t) b_out_[t] = ((volatile int32_t*) h_out_)[t];
+        note_nonfinite(S, last_pos_b_);
     }
     ++windows;
     b_running_ = false;
     progress_beat();
     return 1;
+}
+
+// #879: STRATA_NAN_GUARD=0 turns the guard off (no kernel is recorded; the graphs are captured once, so it is read once)
+bool Verifier::nan_guard_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_NAN_GUARD");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
+
+namespace {
+// STRATA_NAN_INJECT=<n>[,<n>...] (debug): the windows (counted from 1 over the process) the guard reports as non-finite
+const std::vector<long long>& nan_inject_list() {
+    static const std::vector<long long> list = [] {
+        std::vector<long long> v;
+        if (const char* e = std::getenv("STRATA_NAN_INJECT"))
+            for (const char* q = e; *q != 0;) {
+                char* end = nullptr;
+                const long long n = std::strtoll(q, &end, 10);
+                if (end == q) break;
+                if (n > 0) v.push_back(n);
+                q = *end == ',' ? end + 1 : end;
+            }
+        return v;
+    }();
+    return list;
+}
+std::atomic<long long> g_nf_windows{0};
+}  // namespace
+
+void Verifier::note_nonfinite(int T, const int64_t* pos_b) {
+    nf_row_ = -1;
+    nf_pos_ = -1;
+    nf_mask_ = 0;
+    if (!nan_guard_on() || h_nf_ == nullptr || !last_stage()) return;   // (a stage without the head checks nothing)
+    const volatile uint32_t* f = h_nf_;
+    for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
+        for (int b = 0; b < strata::kernels::kNonfiniteBlocks; ++b)
+            if (f[t * strata::kernels::kNonfiniteBlocks + b] != 0) { nf_mask_ |= 1u << t; break; }
+    const std::vector<long long>& inject = nan_inject_list();
+    if (!inject.empty()) {
+        const long long k = g_nf_windows.fetch_add(1) + 1;
+        if (nf_mask_ == 0 && std::find(inject.begin(), inject.end(), k) != inject.end()) {
+            nf_mask_ = 1u;
+            std::fprintf(stderr, "strata verify: STRATA_NAN_INJECT: window %lld reported as non-finite\n", k);
+        }
+    }
+    for (int t = 0; t < T && nf_row_ < 0; ++t)
+        if ((nf_mask_ >> t) & 1u) nf_row_ = t;
+    if (nf_row_ >= 0) nf_pos_ = pos_b != nullptr ? pos_b[nf_row_] : last_pos0_ + nf_row_;
 }
 
 bool Verifier::copy_logits(int t, float* host) const {
@@ -3188,6 +3247,7 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     }
     if (out != nullptr)
         for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    note_nonfinite(T, nullptr);
     progress_beat();
     return true;
 }

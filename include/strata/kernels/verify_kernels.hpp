@@ -117,6 +117,11 @@ void argmax_rows(const float* logits, int n_rows, int n, void* scratch, int32_t*
 uint64_t row_top_prob_scratch_bytes(int n_rows);
 void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* scratch,
                         void* stream);
+/// #879 guard: flags[t * kNonfiniteBlocks + b] = 1 when slice b of row t (n floats a row) holds a NaN or an infinity,
+/// else 0, for n_rows rows.  Every word is written on every launch (nothing to clear between windows), so `flags` can
+/// be mapped host memory read after the window's own sync.  Graph-capturable; CUDA and HIP.
+inline constexpr int kNonfiniteBlocks = 16;
+void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* flags, void* stream);
 /// True where row_top_prob_split runs as its own kernel (CUDA; AMD keeps the one-block row_top_prob, so it calls
 /// that).  STRATA_MULTI_BLOCK_ARGMAX=0: off.
 bool multi_block_head_ops();

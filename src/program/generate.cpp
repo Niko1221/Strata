@@ -6092,8 +6092,13 @@ int main(int argc, char** argv) {
     //
     // and each generated token is written to stdout as `T <id>` as soon as its verify window is done, followed by
     //
-    //     DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <stop|length|cancel> <drafts accepted>
+    //     DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms> <stop|length|cancel|nonfinite> <drafts accepted>
     //          <drafts offered> <prompt tokens reused> ... <prompt tokens read>   (see the DONE line below; #471)
+    //
+    // `nonfinite` (#879): a window's head logits held a NaN or an infinity (Verifier::nonfinite_row).  None of that
+    // window's tokens was written; every state that may carry the poison (the live session, the checkpoints, the
+    // parked conversations, the idle batch slots) is dropped at the next request's start, which reads its prompt from
+    // token 0.  A batch slot ends the same way: `BDONE <slot> <n> nonfinite`.
     //
     // Before that, `RESUME <n>` (n prompt tokens are not read again), `PP <position> <prompt_tokens> <ms> <tok/s>`
     // after every prompt chunk, and `REUSED <n>` once the prompt is read.  (`ERR <message>` instead when a request
@@ -7604,6 +7609,8 @@ int main(int argc, char** argv) {
         std::vector<int32_t> live;
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
+        // #879: a window met non-finite logits: the next request drops every cached state first and reads from token 0
+        bool nan_flush = false;
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
@@ -7864,6 +7871,20 @@ int main(int argc, char** argv) {
         // failed): a request cancelled here keeps them as the live conversation instead of dropping what it restored
         bool pp_exact = false;
         Clock::time_point pp_t0 = Clock::now();
+        // #879: this request met a window whose head logits were not all finite (nonfinite_hit): it ends with
+        // DONE ... nonfinite, emitting none of that window's tokens
+        bool nf_hit = false;
+        auto nonfinite_hit = [&](const strata::core::Verifier& v, const char* what) -> bool {
+            const int row = v.nonfinite_row();
+            if (row < 0) return false;
+            std::fprintf(stderr, "strata serve: non-finite logits (#879) in a %s window at position %lld (row %d): its "
+                                 "tokens are not emitted, the request ends (DONE nonfinite) and the next request reads "
+                                 "its prompt from token 0\n", what, (long long) v.nonfinite_pos(), row);
+            std::fflush(stderr);
+            nf_hit = true;
+            nan_flush = true;
+            return true;
+        };
         auto imgs_below = [&](const std::vector<ImgKey>& all, int64_t L) {
             std::vector<ImgKey> v;
             for (const ImgKey& k : all) if (k.start < L) v.push_back(k);
@@ -8999,6 +9020,9 @@ int main(int argc, char** argv) {
             // a prompt read that gave way to a waiting request (BYIELD): `ids` is the part read so far, and the same
             // request continues from it (the read goes on with the same chunks; `from0`: it had started at token 0)
             bool partial = false, partial_from0 = false;
+            // #879: it was running when non-finite logits dropped the cached state; its state may have started from
+            // that state (a checkpoint, a parked conversation), so it is not kept as a cache when it ends
+            bool tainted = false;
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // timing of the batch windows since the slots were last all idle (one stderr line then)
@@ -9221,6 +9245,20 @@ int main(int argc, char** argv) {
             for (int t = 0; t < A; ++t) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
+                bool nf = false;   // #879: a row of this slot held non-finite logits: the slot ends, nothing emitted
+                for (int r = first[t]; r < first[t] + (batch_mtp ? 2 : 1); ++r) nf = nf || ver.nonfinite_in(r);
+                if (nf) {
+                    std::fprintf(stderr, "strata batch: non-finite logits (#879) in slot %d at position %lld: it ends "
+                                         "(BDONE nonfinite) and the next request reads its prompt from token 0\n", b,
+                                 (long long) pos[first[t]]);
+                    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
+                    std::printf("BDONE %d %lld nonfinite %.1f\n", b, (long long) sl.produced, ms);
+                    sl.active = false;
+                    sl.cached = false;
+                    sl.checks.clear();
+                    nan_flush = true;
+                    continue;
+                }
                 for (int j = 0; j < keep[b]; ++j) {
                     const int32_t y = outb[first[t] + j];
                     sl.ids.push_back(tok[first[t] + j]);
@@ -9233,7 +9271,7 @@ int main(int argc, char** argv) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
                         std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
                         sl.active = false;
-                        sl.cached = o.prompt_cache > 0 && !sl.img;
+                        sl.cached = o.prompt_cache > 0 && !sl.img && !sl.tainted;
                         break;
                     }
                     sl.x = y;
@@ -9367,6 +9405,18 @@ int main(int argc, char** argv) {
                 for (int t = 0; t < G.S; ++t) {
                     BSlot& sl = bs[(size_t) (gi * GS + t)];
                     if (!sl.active) continue;
+                    if (vk.nonfinite_in(t)) {   // #879: the slot ends, nothing emitted
+                        std::fprintf(stderr, "strata batch: non-finite logits (#879) in slot %d at position %lld: it "
+                                             "ends (BDONE nonfinite) and the next request reads its prompt from token 0\n",
+                                     gi * GS + t, (long long) sl.p);
+                        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
+                        std::printf("BDONE %d %lld nonfinite %.1f\n", gi * GS + t, (long long) sl.produced, ms);
+                        sl.active = false;
+                        sl.cached = false;
+                        sl.checks.clear();
+                        nan_flush = true;
+                        continue;
+                    }
                     const int32_t y = outb[t];
                     std::printf("BT %d %d\n", gi * GS + t, (int) y);
                     ++sl.produced;
@@ -9382,7 +9432,7 @@ int main(int argc, char** argv) {
                         // a pipelined slot is a cache again (#857: a request left alone in its slot goes back to the solo path with its
                         // drafts): its state is final once its last window has left the last stage.  A later group window whose pad
                         // row writes this slot clears the flag (below, where the group starts), so a stale state is never reused
-                        sl.cached = o.prompt_cache > 0 && !sl.img;
+                        sl.cached = o.prompt_cache > 0 && !sl.img && !sl.tainted;
                     } else {
                         sl.x = y;
                         sl.p += 1;
@@ -9739,6 +9789,13 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
+                    if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
+                        nan_flush = false;
+                        const size_t n_parked = conversations.clear();
+                        std::fprintf(stderr, "strata serve: after non-finite logits (#879): the restored session "
+                                             "replaces the live one; dropped %zu parked conversation%s\n", n_parked,
+                                     n_parked == 1 ? "" : "s");
+                    }
                     std::fprintf(stderr, "strata serve: session restored %zu tokens, %zu checkpoints, %zu bytes from %s "
                                  "in %.1f ms (read+check %.1f ms)\n", live.size(), checks.size(), bytes, path.c_str(),
                                  ms(), read_ms);
@@ -9972,6 +10029,34 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                     return 1;
                 }
+            }
+            nf_hit = false;
+            // #879: an earlier window met non-finite logits.  The poison sits in a conversation's K/V and recurrent
+            // state, so nothing that may hold it is continued: the live session, every checkpoint, every parked
+            // conversation and every idle batch slot go, and this prompt is read from token 0 (resume == 0 below)
+            if (nan_flush) {
+                nan_flush = false;
+                const size_t n_checks = checks.size();
+                live_ok = false;
+                checks.clear();
+                tail_ckpt_len = -1;
+                const size_t n_parked = conversations.clear();
+                size_t n_slots = 0, n_running = 0;
+                for (BSlot& sl : bs)
+                    if (sl.active) {   // a running slot finishes its reply, but is not kept as a cache after it
+                        sl.tainted = true;
+                        ++n_running;
+                    } else if (sl.cached) {
+                        sl.cached = false;
+                        sl.partial = false;
+                        sl.checks.clear();
+                        ++n_slots;
+                    }
+                std::fprintf(stderr, "strata serve: after non-finite logits (#879): dropped the live session, %zu "
+                                     "checkpoint%s, %zu parked conversation%s and %zu idle slot%s (%zu running slot%s "
+                                     "not kept after their reply); reading this prompt from token 0\n", n_checks,
+                             n_checks == 1 ? "" : "s", n_parked, n_parked == 1 ? "" : "s", n_slots,
+                             n_slots == 1 ? "" : "s", n_running, n_running == 1 ? "" : "s");
             }
             int64_t resume = 0;
             bool from_live = false;
@@ -10344,6 +10429,7 @@ int main(int argc, char** argv) {
                         if (v.service(win_pool_fn, PSD[f1 & 1], e) < 0) return fail(e);
                         if (v.done(e)) {
                             if (!v.pl_finish(nullptr, e)) return fail(e);
+                            if (nonfinite_hit(v, "prompt")) return fail("non-finite logits (#879)");
                             const Win& w = wins[f1];
                             for (int t = 0; t < w.T; ++t) nx[(size_t) t] = (int32_t) cur[(size_t) (w.q + t + 1)];
                             if (!mtp.prefill(v.final_R(0), nx.data(), w.T, w.q, e, false)) return fail(e);
@@ -10394,6 +10480,10 @@ int main(int argc, char** argv) {
                     drive.d.failed = false;
                     if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
+                        return false;
+                    }
+                    if (nonfinite_hit(ver, "prompt")) {   // (its commit is not needed: the next request reads from 0)
+                        e = "non-finite logits (#879)";
                         return false;
                     }
                     // STRATA_LOGPOS=<path>: the teacher-forced log-probability of every token read here (every
@@ -10778,6 +10868,10 @@ int main(int argc, char** argv) {
                                  std::chrono::duration<double, std::milli>(Clock::now() - tsp).count());
                     std::fflush(stderr);
                 }
+                if (!sp_ok && nf_hit) {   // #879: DONE nonfinite (the lent slots are refilled below)
+                    cancelled = true;
+                    break;
+                }
                 if (!sp_ok) {
                     if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
@@ -10870,7 +10964,7 @@ int main(int argc, char** argv) {
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
-            if (cancelled) finish = "cancel";
+            if (cancelled) finish = nf_hit ? "nonfinite" : "cancel";
             // ======== --pipeline-windows 2: the decode windows with the two cards overlapped ========
             // Stage 0 (the first card) runs window K+1 while stage 1 verifies window K, on the guess that K is accepted
             // whole and that its bonus token is the drafter's.  The drafter, teacher-forced through K+1's drafts,
@@ -11381,8 +11475,9 @@ int main(int argc, char** argv) {
                     if (drive.d.fs) drive.d.fs->completed.fetch_add(1, std::memory_order_release);
                     ++dec_windows;
                     dec_T += A.T;
+                    const bool nf = nonfinite_hit(V1(A), "decode");   // #879: none of its tokens goes out
                     bool eos = false;
-                    for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
+                    for (int i = 0; !nf && i <= a && produced_n < max_new && !eos; ++i) {
                         std::printf("T %d\n", (int) outp[(size_t) i]);
                         strata::core::progress_beat();
                         ++produced_n;
@@ -11390,10 +11485,11 @@ int main(int argc, char** argv) {
                         eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[(size_t) i]) != o.eos_ids.end();
                     }
                     std::fflush(stdout);
-                    if (eos) finish = "stop";
+                    if (nf) finish = "nonfinite";
+                    else if (eos) finish = "stop";
                     else if (stop_req.load()) finish = "cancel";
-                    const bool last = eos || produced_n >= max_new || stop_req.load();
-                    const bool on = B.launched && a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
+                    const bool last = nf || eos || produced_n >= max_new || stop_req.load();
+                    const bool on = !nf && B.launched && a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
                     if (B.made) {   // the gate's calibration: would B have been on the path, by its estimate p_on
                         const bool would = a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
                         const int bin = std::min(9, std::max(0, (int) (B.p_on * 10.0f)));
@@ -11637,6 +11733,15 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                if (nonfinite_hit(ver, first_window ? "first decode" : "decode")) {   // #879: none of its tokens goes out
+                    if (adapt_thr.joinable()) adapt_thr.join();
+                    if (!adapt_ok) {
+                        std::printf("ERR an adaptive refill failed\n");
+                        return 1;
+                    }
+                    finish = "nonfinite";
+                    break;
+                }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
@@ -11734,7 +11839,9 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
-            } else if (pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt && pp_reached <= (int64_t) cur.size()) {
+                if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
+            } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
+                       pp_reached <= (int64_t) cur.size()) {
                 // #1620: stopped between two windows (or before the first token was read): the session is exactly at
                 // pp_reached, so it stays the live conversation - the next request continues from it or parks it.
                 // Without this a cancelled request that had restored a parked conversation dropped it.
