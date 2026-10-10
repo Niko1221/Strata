@@ -141,6 +141,13 @@ answer. `STRATA_HTTP_BACKLOG=<n>` sets that number (at least 5).
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
 (NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
 
+**Traces do not show up in my collector (0.1.41, opt-in tracing).**
+Tracing is off unless you set `--trace-otlp`, `"trace_otlp"` in `strata-<model>.json`, or `$STRATA_TRACE_OTLP`;
+`default` is `http://localhost:4318/v1/traces`. Check the endpoint and that the collector is running - when it is
+not, the server prints `tracing: <endpoint> is not taking spans (...)` and requests keep working, unaffected. The
+endpoint must be an OTLP trace endpoint ending in `/v1/traces`; a `400`/`404`/`415` from it is named in the same log
+line. Details: [DETAILS.md](DETAILS.md#opentelemetry-traces-of-every-request).
+
 ## AMD cards
 
 **"No AMD GPU found (the amdgpu driver's KFD topology is empty)" on Linux.**

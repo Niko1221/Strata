@@ -163,6 +163,7 @@ experts from `experts.bin` into RAM (page-locked when the driver allows, else lo
 nothing is read from the SSD, however little RAM the OS leaves for its file cache. Examples with setup's context: a
 32 GB PC with a 24 GB GPU runs Q2_0, IQ2_XS and the Coder this way (~16-18 GB of experts in RAM, the GPU holds the
 other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC stays mapped. The details:
+
 - The prompt path borrows room in the GPU's expert cache for its buffers and puts those experts back after the prompt;
   as far as the RAM allows, their experts are kept in RAM too (so a prompt reads nothing from the SSD either).
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
@@ -258,6 +259,7 @@ is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 G
 RTX 5070, against ~3 tokens/s before these changes.
 
 **Switches added in 0.1.40 (all off unless noted; none changes the default output):**
+
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
@@ -473,6 +475,7 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
 
 **Tuning for your PC (`--calibrate`, engine 0.1.19).** Four engine settings depend on the PC more than on the model:
+
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU
   (`--pcie-frac`: a fast PCIe link and a slower CPU want more, a laptop's narrower link less);
 - how sure the draft layer must be to add another guess to a check (`--spec-min-p`);
@@ -1734,8 +1737,10 @@ The margin is the whole trade: at 0 the router answers alone, and a large margin
 already holds, at the price of answers that are not the routing the model chose. When the engine stops it says what it
 did, once for the prompt windows (more than 8 tokens) and once for the decode windows (8 or fewer), in this shape:
 
-    route-resident: margin=<margin> ranks=<lo>-<hi> windows T>8 (prompt reads): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
-    route-resident: margin=<margin> ranks=<lo>-<hi> windows T<=8 (decode): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+```text
+route-resident: margin=<margin> ranks=<lo>-<hi> windows T>8 (prompt reads): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+route-resident: margin=<margin> ranks=<lo>-<hi> windows T<=8 (decode): tail_nonres=.. swaps=.. (..%) nonres_entries before=.. after=..
+```
 
 `tail_nonres` counts the ranks in that range whose expert the cache lacked, `swaps` those it could replace, and
 `before` / `after` are the non-resident entries of the ten, summed over the window's tokens, before and after the
@@ -1962,6 +1967,42 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+### OpenTelemetry traces of every request
+
+Off by default: with no endpoint set nothing here runs and the request path is byte-identical to the release
+build. Turn it on with `serve/server.py --trace-otlp URL`, `"trace_otlp"` in `strata-<model>.json`, or
+`$STRATA_TRACE_OTLP` (`--trace-otlp` beats the config, the config beats the environment). The value `default`
+(also `1`, `true`, `on`, `local`) is `http://localhost:4318/v1/traces`, where a Foundry Toolkit collector, Jaeger
+or Tempo listen; a bare host is completed to that path, and the run config checks the endpoint with the same rule
+the server applies at start, so a typo stops the start rather than tracing into nothing.
+
+One trace per `/v1` request, built from the seconds the Monitor already measures - nothing is timed twice and no
+clock is added to the generation loop:
+
+```text
+strata.request  POST /v1/chat/completions   the whole request, first byte to last
+  strata.queue    waiting for the model to be free
+  strata.load     starting the engine for it
+  strata.prefill  reading the prompt  (the engine's prompt_ms)
+  strata.decode   writing the answer  (the engine's predicted_ms)
+```
+
+Queue and load are the server's own `perf_counter`; prefill and decode come from the engine's DONE line, so they
+are the GPU's time, not the host's wall around it. A span whose number the server does not have (an engine that
+said nothing, a request that never reached the model) is left out rather than drawn as zero. The root span carries
+the method, HTTP status, model, input/output tokens, time-to-first-token and the queue/load/wallclock seconds;
+prefill and decode carry their token counts and tok/s.
+
+W3C context is followed both ways: a `traceparent` header you send becomes the root span's parent, so Strata shows
+up inside your own trace, and every answer carries the `traceparent` of its own root span, which you put on the
+next request to line your spans up with ours.
+
+The export runs on its own thread and never blocks or fails a request: a collector that is down costs one line in
+the log and a counted drop. OTLP/HTTP is written as JSON by hand, so tracing adds no package to the install. With
+tracing on and the Monitor off, the record behind the spans holds timings and token counts only - the prompt and
+the answer text are never recorded, so no conversation text reaches a collector. The module is `serve/tracing.py`,
+covered by `serve/test_tracing.py`.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
