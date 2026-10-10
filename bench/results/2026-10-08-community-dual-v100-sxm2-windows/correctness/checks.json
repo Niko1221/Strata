@@ -1,0 +1,32 @@
+[
+  {
+    "name": "anthropic_tool_roundtrip",
+    "passed": true,
+    "detail": {
+      "expected_tool": "add_numbers",
+      "expected_arguments": {
+        "a": 19,
+        "b": 23
+      },
+      "expected_final": "42",
+      "actual_final": "42"
+    }
+  },
+  {
+    "name": "vision_card",
+    "passed": true,
+    "detail": {
+      "expected": {
+        "code": "VX-4827",
+        "total": 37,
+        "blue_squares": 3
+      },
+      "actual": {
+        "code": "VX-4827",
+        "total": 37,
+        "blue_squares": 3
+      },
+      "client_elapsed_s": 3.282969000050798
+    }
+  }
+]

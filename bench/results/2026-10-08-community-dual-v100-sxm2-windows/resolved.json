@@ -1,0 +1,75 @@
+{
+  "context": 262144,
+  "kv_type": "int8",
+  "kv_resident_tokens": 32768,
+  "expert_cache_requested": "auto",
+  "expert_cache_resolved_slots": [
+    7561,
+    7315
+  ],
+  "expert_cache_total_slots": 14876,
+  "expert_cache_total_mib": 20409,
+  "expert_cache_policy": "PROFILE: ranked routing frequency, no eviction",
+  "layer_split_requested": "auto",
+  "layer_split_resolved": {
+    "cuda0": [
+      0,
+      22
+    ],
+    "cuda1": [
+      23,
+      47
+    ],
+    "split_at": 23
+  },
+  "prefill_requested": "auto",
+  "prefill_resolved_tokens": 8192,
+  "prefill_ring_slots": 96,
+  "pool_workers": 47,
+  "host_thread_additional": true,
+  "expert_arena_pin_limit_gib": 8,
+  "expert_arena_pinned_slices": 12,
+  "expert_arena_pinned_gib_reported": 7,
+  "expert_arena_virtual_lock_mib": 25626,
+  "large_pages": false,
+  "low_ram": false,
+  "calibration": "No calibration run or applied override in this configuration; engine PCIe probes/auto choices active.",
+  "mtp_spec_requested": 4,
+  "mtp_spec_min_p": 0.5,
+  "engine_verify_window": 6,
+  "engine_lookup": 3,
+  "draft_vocab": "cjk",
+  "draft_vocab_tokens": 106299,
+  "vision": {
+    "enabled": true,
+    "gpu": true,
+    "cuda_device": "GPU-f145a48f-ccc7-cccf-94ad-acf680ff0891",
+    "max_tokens": 1024,
+    "min_tokens": "not explicitly configured",
+    "threads": 16
+  },
+  "parallel": 1,
+  "reasoning_effort": "none",
+  "sampling": {
+    "temperature": 0,
+    "top_p": 1.0,
+    "top_k": 20,
+    "min_p": 0,
+    "seed": 0,
+    "repetition_penalty": 1,
+    "frequency_penalty": 0,
+    "presence_penalty": 0,
+    "penalty_last_n": 0
+  },
+  "sampling_evidence": "src/program/generate.cpp serve request defaults around lines 8025-8029; temperature 0 in actual requests. Greedy bypasses top-p/top-k.",
+  "experimental_speed_projection": false,
+  "conversation_cache_mib": 0,
+  "vram_reserve_mib": 700,
+  "normal_startup_pcie_probe_measured_gb_s": [
+    6.5,
+    6.5
+  ],
+  "pcie_fraction_resolved": 0.18,
+  "source": "Startup engine.log plus /metrics and source defaults. Split performance prediction is excluded; no tuning.",
+  "original_core_configuration_changed": false
+}
