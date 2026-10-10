@@ -1,0 +1,13 @@
+{
+  "exe": "/strata-work/comparison/hardin22-03a5ec955ba152a5f499a18a0f2f2ac192309c28/build/strata",
+  "cwd": "/strata-work/comparison/hardin22-03a5ec955ba152a5f499a18a0f2f2ac192309c28",
+  "tokenizer": "/strata-work/models/iq3_s/pack/tokenizer",
+  "lib_dirs": [],
+  "args": [
+    "--pack", "/strata-work/models/iq3_s/pack",
+    "--native", "/strata-work/models/iq3_s/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf", "/strata-work/models/iq3_s/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--mtp", "/strata-work/models/iq3_s/mtp/rt",
+    "--expert-profile", "/strata-work/models/iq3_s/expert-profile.bin"
+  ]
+}
