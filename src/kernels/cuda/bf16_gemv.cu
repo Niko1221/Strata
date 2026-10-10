@@ -65,6 +65,40 @@ __global__ void bf16_gemv_split_kernel(const uint16_t* __restrict__ x, const uin
     if (t == 0) y[o] = scratch[0];
 }
 
+/// TWO weight matrices from one read of x - llama.cpp's `*_mul_mat_multi` shape.  One warp computes row `o`
+/// of `w1` and row `o` of `w2` with two independent accumulators over the SAME lane-strided loop, so each
+/// accumulator sees the addend sequence its standalone `bf16_gemv_warp_kernel` run gave it: bitwise equal
+/// (checked by `bf16_gemv_pair_parity`).  Rows past a matrix's `n_out` skip that accumulator only.
+__global__ void bf16_gemv_pair_warp_kernel(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w1,
+                                           float* __restrict__ y1, long long n_out1,
+                                           const uint16_t* __restrict__ w2, float* __restrict__ y2,
+                                           long long n_out2, long long n_in) {
+    const int warps_per_block = (int) (blockDim.x >> 5);
+    const long long o = (long long) blockIdx.x * warps_per_block + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    const long long n_out = n_out1 > n_out2 ? n_out1 : n_out2;
+    if (o >= n_out) return;
+    const int run1 = o < n_out1, run2 = o < n_out2;
+    const uint16_t* r1 = w1 + o * n_in;
+    const uint16_t* r2 = w2 + o * n_in;
+    float acc1 = 0.0f, acc2 = 0.0f;
+    for (long long i = lane; i < n_in; i += 32) {
+        const float xv = f32_from_bf16(x[i]);
+        if (run1) acc1 += xv * f32_from_bf16(r1[i]);
+        if (run2) acc2 += xv * f32_from_bf16(r2[i]);
+    }
+    if (run1) {
+        float a = acc1;
+        for (int off = 16; off > 0; off >>= 1) a += __shfl_down_sync(0xFFFFFFFFu, a, off);
+        if (lane == 0) y1[o] = a;
+    }
+    if (run2) {
+        float a = acc2;
+        for (int off = 16; off > 0; off >>= 1) a += __shfl_down_sync(0xFFFFFFFFu, a, off);
+        if (lane == 0) y2[o] = a;
+    }
+}
+
 inline void finish(void* stream, const char* what) {
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -112,6 +146,20 @@ void bf16_gemv(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int
     const unsigned grid = (unsigned) ((n_out + THREADS - 1) / THREADS);
     bf16_gemv_naive_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(x, w, y, n_in, n_out);
     finish(stream, "bf16_gemv");
+}
+
+void bf16_gemv_pair(const uint16_t* x, const uint16_t* w1, float* y1, int64_t n_out1, const uint16_t* w2,
+                    float* y2, int64_t n_out2, int64_t n_in, void* stream) {
+    if (n_in <= 0 || (n_out1 <= 0 && n_out2 <= 0)) return;
+    // THE PAIR KERNEL IS THE WARP-PER-ROW ACCUMULATION on both sides, so it is bitwise what
+    // `bf16_gemv` (n_out >= 64) and `bf16_gemv_split` at tpr 32 produced.  Callers whose standalone path
+    // was the NAIVE kernel (a small `n_out` with the plain entry) must not use this.
+    const int warps = THREADS / 32;
+    const long long n_out = n_out1 > n_out2 ? n_out1 : n_out2;
+    const unsigned grid = (unsigned) ((n_out + warps - 1) / warps);
+    bf16_gemv_pair_warp_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(
+        x, w1, y1, n_out1, w2, y2, n_out2, n_in);
+    finish(stream, "bf16_gemv_pair");
 }
 
 void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out,

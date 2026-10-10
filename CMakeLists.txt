@@ -333,6 +333,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # reference is the whole point - a kernel checked against another copy of itself proves nothing.
   add_library(strata_kernels STATIC src/kernels/cuda/dequant_s2.cu src/kernels/cuda/s2_gemv.cu
                           src/kernels/cuda/s_gemv.cu
+                          src/kernels/cuda/s_gemv_pair.cu
                           src/kernels/cuda/s2_gemv_quads.cu
                           src/kernels/cuda/s2_gemv_fast.cu
                           src/kernels/cuda/router_top10.cu
@@ -941,6 +942,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(bf16_gemv_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(bf16_gemv_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME bf16_gemv_parity COMMAND bf16_gemv_parity --selftest)
+
+  # the V100 fusion work: every fused kernel against its unfused pipeline, bitwise, and the before/after
+  # CUDA-event timings at decode shapes (`--bench`).  It is a .cu because it carries the unfused reference
+  # kernels it compares against.
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    add_executable(fusions_parity bench/micro/fusions_parity.cu)
+    target_include_directories(fusions_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(fusions_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME fusions_parity COMMAND fusions_parity)
+  endif()
 
   add_executable(s_gemv_q8k_parity src/kernels/s_gemv_q8k_parity.cpp)
   target_include_directories(s_gemv_q8k_parity PRIVATE ${_strata_gpu_include_directories})

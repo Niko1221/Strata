@@ -130,4 +130,21 @@ void s_gemv_q8k_split(const uint8_t* x_q8k, const uint8_t* codes, const float* s
 void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float* scales, const float* offset,
                        float* y, int64_t n_in, int64_t n_out, const SForm& form, void* stream);
 
+/// GATE/UP DUAL GEMV + SwiGLU IN ONE KERNEL (llama.cpp's `mul_mat_gated`): `out[o] = silu(gate_row_o) *
+/// up_row_o`, one read of the activation for both projections, the `up` intermediate never materialised.
+///
+/// Each row is accumulated by the same row function its standalone kernel uses
+/// (`strata/kernels/s_rowdev.cuh`) and the SwiGLU is the shared expression (`strata/kernels/swiglu.cuh`),
+/// so the output is BITWISE what `gemv(gate)` + `gemv(up)` + the standalone SwiGLU produced - checked by
+/// `fusions_parity`.  Both forms may be any S-family form (the two sides are dispatched independently;
+/// a Q8_0 side and a Q8_K side in one kernel is fine).
+///
+/// `swilu_kind`: 0 = the double-precision `ref/moe.py` form, 1 = the float `__expf` form, 2 = the pinned
+/// CUDA native form.  Returns false when a side's form is outside the warp-per-row kernel's contract
+/// (the caller keeps its unfused sequence).
+bool s_gemv_pair_silu(const uint8_t* x_q8_0, const uint8_t* x_q8k, const SForm& form_g, const uint8_t* codes_g,
+                      const float* scales_g, const float* off_g, const SForm& form_u, const uint8_t* codes_u,
+                      const float* scales_u, const float* off_u, float* out, int64_t n_in, int64_t n_out,
+                      int threads_per_row, int swilu_kind, void* stream);
+
 }  // namespace strata::kernels
