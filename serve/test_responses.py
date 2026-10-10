@@ -290,6 +290,25 @@ class NoLeakedSampler(unittest.TestCase):
             time.sleep(0.1)
         self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
 
+    def test_close_waits_for_a_sample_in_progress(self):
+        """close() returns once the sampler has ended, even mid-sample: a sampler still ending after its server
+        closed made the count above off by one in a full run."""
+        import threading
+        import time
+        from serve.telemetry import Telemetry
+        started = threading.Event()
+
+        def slow():
+            started.set()
+            time.sleep(0.5)
+            return {}
+        before = set(threading.enumerate())
+        tel = Telemetry(extra=slow)
+        sampler, = [t for t in threading.enumerate() if t not in before and t.name.endswith("(_loop)")]
+        self.assertTrue(started.wait(5))
+        tel.close()
+        self.assertFalse(sampler.is_alive())
+
 
 # ------------------------------------------------------------------------------------------------ over HTTP
 class Server(unittest.TestCase):
