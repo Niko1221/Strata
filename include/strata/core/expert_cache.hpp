@@ -112,11 +112,11 @@ inline double expert_cache_headroom() {
             if (parsed >= 0.0) return parsed > 1.0 ? 0.0 : parsed;
             return 0.0;   // an unparseable value: no headroom, never a crash
         }
-#if defined(STRATA_SYCL_PORT)
-        return 1.0 / 6.0;   // measured above; unmeasured anywhere else
-#else
-        return 0.0;         // CUDA / HIP: the sizing they always had
-#endif
+        return 0.0;   // #1549: a pure A/B knob.  Where the free-VRAM figure is live (CUDA's cudaMemGetInfo,
+                      // and the SYCL port's DXGI query - see src/core/expert_cache.cpp) the sizing already
+                      // excludes what is resident, so no extra share should be taken.  The B70's 1/6 was
+                      // standing in for that missing query, not for a real requirement: with the query live,
+                      // 1/6 sizes the Coder 1.9 GiB smaller than it can safely hold and costs decode.
     }();
     return v;
 }
