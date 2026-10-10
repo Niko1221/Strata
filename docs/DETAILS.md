@@ -1618,6 +1618,16 @@ llama.cpp's `json_schema` send. A root that also allows an array, string, number
 "jsonschema>=4.23,<5"`; setup does not add it); without it the answer is only checked to be one JSON object, and the
 server says so once.
 
+**A schema that is one string field** (opt-in, `"structured_plain_string": true` in `strata-<model>.json`;
+`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`, an optional `description`/`title`, no
+enum, pattern or length limit, nothing else allowed) can be answered as **plain text**, the server building the object
+around it: the directive asks for the text alone, and the answer becomes
+`{"text": "<the text>"}`. Measured on a scanned rent roll (UD-IQ4_XS, temperature 0, a document-reading prompt): asked
+for the JSON object, the model wrote the table inside the string, then the escaped newline `\n` 256 times in place of
+the page's last lines and the closing quote (stopped by the repetition guard); with the plain-text directive the same
+page came out whole in 165 tokens and ended on its own. A model that writes the JSON object anyway is taken at its
+word (that object, checked against the schema as usual). Not with tools.
+
 This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
 is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
 duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
@@ -1625,7 +1635,9 @@ duplicate keys, non-finite numbers, schema violations and incomplete generations
 tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
 
 Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
-then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
+then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas. Once the
+model writes, the keep-alive comments (about one a second) say how far it is (`: keep-alive: structured output buffered
+until it is validated, 312 pieces (1480 characters) written so far`), so a long answer can be told from a stuck one.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
 ### API request monitor

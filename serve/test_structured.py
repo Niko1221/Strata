@@ -201,6 +201,73 @@ class Structured(unittest.TestCase):
                     self.assertIn("only JSON objects", reply["error"]["message"])
             load.assert_not_called()
 
+    # ---- a schema that is one string field: answered as plain text, wrapped by the server ----------------------
+    PAGE = {"type": "json_schema", "json_schema": {"name": "page", "strict": True, "schema": {
+        "type": "object", "properties": {"text": {"type": "string", "description": "the page, line by line"}},
+        "required": ["text"], "additionalProperties": False}}}
+
+    def test_one_string_field_is_answered_as_plain_text_and_wrapped(self):
+        self.svc.structured_plain_string = True                  # opt-in
+        page = 'RENT ROLL\nUnit | Rent\n1A | $1,250\nSay "hi" \\ done'
+        code, reply = self.chat(page, response_format=self.PAGE)
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(json.loads(reply["choices"][0]["message"]["content"]), {"text": page})
+        prompt = self.tok.decode(self.engine.last_prompt)
+        self.assertIn("plain text only", prompt)
+        self.assertIn('the JSON field "text"', prompt)
+        self.assertIn("the page, line by line", prompt)            # the field's description goes with it
+        self.assertNotIn("JSON Schema:", prompt)
+        code, raw = self.chat(page, response_format=self.PAGE, stream=True)
+        chunks = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        self.assertEqual(json.loads("".join(c["choices"][0]["delta"].get("content", "") for c in chunks)),
+                         {"text": page})
+
+    def test_one_string_field_answered_as_json_anyway(self):
+        self.svc.structured_plain_string = True
+        code, reply = self.chat('{"text": "already JSON"}', response_format=self.PAGE)
+        self.assertEqual((code, json.loads(reply["choices"][0]["message"]["content"])), (200, {"text": "already JSON"}))
+        if HAVE_JSONSCHEMA:                                       # an object that fails the schema stays an error
+            code, reply = self.chat('{"text": 3}', response_format=self.PAGE)
+            self.assertEqual((code, reply["error"]["code"]), (502, "structured_output_failed"))
+        self.assertEqual(self.chat("", response_format=self.PAGE)[0], 502)   # nothing written is no answer
+
+    def test_plain_string_is_only_for_one_unconstrained_string(self):
+        key = structured.single_string_key
+        base = self.PAGE["json_schema"]["schema"]
+        self.assertEqual(key(base), "text")
+        self.assertEqual(key({**base, "additionalProperties": True}), None)
+        self.assertEqual(key({**base, "required": []}), None)
+        for field in ({"type": "string", "enum": ["a"]}, {"type": "string", "maxLength": 9}, {"type": "integer"},
+                      {"type": ["string", "null"]}):
+            self.assertIsNone(key({**base, "properties": {"text": field}}), field)
+        self.assertIsNone(key(STORY_SCHEMA))
+        _, validator = structured.prepare_format(self.PAGE, [{"role": "user", "content": "x"}], with_tools=True,
+                                                 plain_string=True)
+        self.assertNotIsInstance(validator, structured._PlainString)   # with tools: the JSON directive as before
+
+    def test_plain_string_is_off_by_default(self):
+        self.assertEqual(self.chat("RENT ROLL", response_format=self.PAGE)[0], 502)
+        self.assertIn("JSON Schema:", self.tok.decode(self.engine.last_prompt))
+        self.assertEqual(self.chat('{"text":"RENT ROLL"}', response_format=self.PAGE)[0], 200)
+
+    def test_structured_streams_say_how_far_they_are(self):
+        from serve import server
+
+        def chunks():
+            for piece in ('{"text":', '"a', 'b"}'):
+                yield {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                       "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]}
+            yield {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m", "usage": {},
+                   "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+
+        clock = iter(range(0, 1000, 2))                        # every chunk is 2 s after the last
+        with mock.patch.object(server.time, "monotonic", lambda: next(clock)):
+            out = list(server.structured_chunks(chunks(), structured._ObjectOnly()))
+        notes = [c for c in out if isinstance(c, str)]
+        self.assertTrue(notes and all("written so far" in n for n in notes), out)
+        self.assertIn("3 pieces (13 characters)", notes[-1])
+        self.assertEqual(json.loads(out[-2]["choices"][0]["delta"]["content"]), {"text": "ab"})
+
     def test_the_server_does_not_import_jsonschema_at_start(self):
         import subprocess
         import sys
