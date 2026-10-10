@@ -29,6 +29,9 @@ struct ConversationCheckpoint {
     // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
     // mark only: it is not in the session file, a request that pins the same prefix again sets it.
     bool pinned = false;
+    // A remote stage (docs/remote-stage/CHECKPOINTS.md): the id the worker keeps its layers' part under (0 = none).
+    // 32 bits in the padding after `pinned`: the struct's size, which the parking byte counts use, stays as it was.
+    int32_t remote_id = 0;
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;

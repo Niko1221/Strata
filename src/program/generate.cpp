@@ -61,6 +61,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/net/stage_link.hpp"
+#include "strata/net/stage_ckpt_store.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
@@ -628,6 +629,8 @@ struct Options {
     /// prompt again, the v0.1.2 behaviour).  One is the GDN recurrence of the 36 layers, the QSA indexer tails and
     /// the PLE history (~118 MB of host RAM); the KV cache itself is positional and stays where it is.
     int prompt_cache = 6;
+    /// --prompt-cache was given: a remote stage keeps checkpoints only then (docs/remote-stage/CHECKPOINTS.md)
+    bool prompt_cache_explicit = false;
     int64_t conversation_cache_mib = 0; // opt-in host RAM for independent conversations
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
@@ -2085,7 +2088,10 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
-        else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--prompt-cache") {
+            o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+            o.prompt_cache_explicit = true;
+        }
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib") {
@@ -2422,15 +2428,23 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: remote stage: %s\n", why);
             return 2;
         }
-        // conversation checkpoints hold only this process's layers: every prompt is read from token 0
-        if (remote_main)
+        // conversation checkpoints hold only this process's layers: every prompt is read from token 0, unless the main
+        // process is given --prompt-cache: then the worker keeps its layers' part of each checkpoint, saved at the
+        // prompt's synchronous cut points only (docs/remote-stage/CHECKPOINTS.md)
+        if (!remote_main || !o.prompt_cache_explicit) o.prompt_cache = 0;
+        if (remote_main && o.prompt_cache == 0)
             std::fprintf(stderr, "strata generate: remote stage: conversation checkpoints are off, every prompt is read "
-                                 "from token 0%s\n",
-                         o.conversation_cache_mib > 0 ? "; conversation parking is off (--conversation-cache-mib ignored)"
-                                                      : "");
-        o.prompt_cache = 0;
+                                 "from token 0 (--prompt-cache N on the main process turns them on)\n");
+        if (remote_main && o.conversation_cache_mib > 0)
+            std::fprintf(stderr, "strata generate: remote stage: conversation parking is off "
+                                 "(--conversation-cache-mib ignored)\n");
+        if (o.prompt_cache > 0)
+            std::fprintf(stderr, "strata generate: remote stage: %d conversation checkpoints, at the prompt's turn "
+                                 "boundaries only (--prompt-cache-every and --prompt-cache-tail are off)\n",
+                         o.prompt_cache);
         o.conversation_cache_mib = 0;
         o.prompt_cache_every = 0;
+        o.prompt_cache_tail = false;
         o.kv_grow = false;   // the elastic K/V gives this process's cache slots up without the other side knowing
         if (remote_main) own_hi = split_at[0];
         else {
@@ -8318,6 +8332,31 @@ int main(int argc, char** argv) {
                        ") - a GPU hang; on Windows the driver is then reset";
             return false;
         };
+        // the item the retention policy drops from a chain of n over its budget (`at(i)`: the i-th; `tail_len`: the
+        // length of the one tail checkpoint, -1 none)
+        auto evict_victim = [&](size_t n, const std::function<const ConvCheckpoint&(size_t)>& at, int64_t tail_len) {
+            std::vector<uint64_t> stamps;
+            std::vector<char> is_tail;
+            stamps.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+                stamps.push_back(at(i).used);
+                is_tail.push_back(tail_len >= 0 && (int64_t) at(i).ids.size() == tail_len);
+            }
+            // the tail checkpoint serves only a branch of the last request: it leaves before a periodic one
+            std::unique_ptr<bool[]> tail_flags(new bool[is_tail.size()]);
+            for (size_t i = 0; i < is_tail.size(); ++i) tail_flags[i] = is_tail[i] != 0;
+            // the pin=N prefix is never the victim (flags only when one is pinned: nothing changes without)
+            std::unique_ptr<bool[]> pin_flags;
+            for (size_t i = 0; i < n; ++i)
+                if (at(i).pinned) {
+                    pin_flags.reset(new bool[n]);
+                    for (size_t j = 0; j < n; ++j) pin_flags[j] = at(j).pinned;
+                    break;
+                }
+            return strata::program::conv_cache::eviction_victim(stamps.data(), stamps.size(), o.prompt_cache,
+                                                                tail_flags.get(), pin_flags.get());
+        };
+        int32_t remote_ckpt_id = 0;   // remote-stage: the last id a checkpoint's worker part got (from 1, never reused)
         auto checkpoint_at = [&](int64_t L, std::vector<ConvCheckpoint>* parts = nullptr, bool as_tail = false) -> bool {
             ckpt_why.clear();
             if (o.prompt_cache <= 0 || L < 1) return true;
@@ -8330,6 +8369,41 @@ int main(int argc, char** argv) {
             ConvCheckpoint c;
             c.ids.assign(cur.begin(), cur.begin() + L);
             c.imgs = imgs_below(req_imgs, L);
+            if (remote_main) {
+                // the worker's part first (docs/remote-stage/CHECKPOINTS.md), with the chain this checkpoint leaves -
+                // the eviction below, worked out here and applied only once the worker has stored its part
+                if (parts != nullptr) {   // (no mid-prompt checkpoints with a remote stage)
+                    ckpt_why = ": a mid-prompt checkpoint with a remote stage";
+                    return false;
+                }
+                c.remote_id = ++remote_ckpt_id;
+                c.used = check_clock + 1;   // the stamp it gets below
+                std::vector<const ConvCheckpoint*> after;
+                for (const ConvCheckpoint& k : checks)
+                    if (!as_tail || tail_ckpt_len < 0 || (int64_t) k.ids.size() != tail_ckpt_len) after.push_back(&k);
+                const int64_t tail_after = as_tail ? L : L == tail_ckpt_len ? -1 : tail_ckpt_len;
+                after.push_back(&c);
+                auto after_at = [&](size_t i) -> const ConvCheckpoint& { return *after[i]; };
+                while ((int) after.size() > o.prompt_cache)
+                    after.erase(after.begin() + (std::ptrdiff_t) evict_victim(after.size(), after_at, tail_after));
+                std::vector<int64_t> keep;
+                for (const ConvCheckpoint* k : after)
+                    if (k->remote_id != 0) keep.push_back(k->remote_id);
+                if (std::find(keep.begin(), keep.end(), c.remote_id) == keep.end()) keep.push_back(c.remote_id);
+                bool stored = false;
+                std::string re;
+                if (!remote_link.ckpt_save(c.remote_id, L, keep, stored, re)) {
+                    ckpt_why = ": " + re;
+                    return false;
+                }
+                if (!stored) {   // the worker could not keep it: no checkpoint here, the chain as it was
+                    std::fprintf(stderr, "strata serve: the remote stage did not store a checkpoint at %lld tokens: "
+                                         "none there\n", (long long) L);
+                    return true;
+                }
+                std::fprintf(stderr, "strata serve: remote stage: checkpoint %lld at %lld tokens saved on the worker\n",
+                             (long long) c.remote_id, (long long) L);
+            }
             if (parts != nullptr) {
                 if (parts->size() != stages.size() + 1) return false;
                 c.gdn = std::move((*parts)[0].gdn);
@@ -8359,29 +8433,9 @@ int main(int argc, char** argv) {
                 tail_ckpt_len = -1;   // the flagged tail was dropped and a normal checkpoint takes its length
             }
             checks.push_back(std::move(c));
-            while ((int) checks.size() > o.prompt_cache) {
-                std::vector<uint64_t> stamps;
-                std::vector<char> is_tail;
-                stamps.reserve(checks.size());
-                for (const ConvCheckpoint& k : checks) {
-                    stamps.push_back(k.used);
-                    is_tail.push_back(tail_ckpt_len >= 0 && (int64_t) k.ids.size() == tail_ckpt_len);
-                }
-                // the tail checkpoint serves only a branch of the last request: it leaves before a periodic one
-                std::unique_ptr<bool[]> tail_flags(new bool[is_tail.size()]);
-                for (size_t i = 0; i < is_tail.size(); ++i) tail_flags[i] = is_tail[i] != 0;
-                // the pin=N prefix is never the victim (flags only when one is pinned: nothing changes without)
-                std::unique_ptr<bool[]> pin_flags;
-                for (const ConvCheckpoint& k : checks)
-                    if (k.pinned) {
-                        pin_flags.reset(new bool[checks.size()]);
-                        for (size_t i = 0; i < checks.size(); ++i) pin_flags[i] = checks[i].pinned;
-                        break;
-                    }
-                const size_t victim = strata::program::conv_cache::eviction_victim(
-                    stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
-                checks.erase(checks.begin() + (std::ptrdiff_t) victim);
-            }
+            auto checks_at = [&](size_t i) -> const ConvCheckpoint& { return checks[i]; };
+            while ((int) checks.size() > o.prompt_cache)
+                checks.erase(checks.begin() + (std::ptrdiff_t) evict_victim(checks.size(), checks_at, tail_ckpt_len));
             return true;
         };
         // STRATA_SPLIT_MTP_BATCH=1 (default off): the layer split's drafter is on the last stage, so E-9 (Prefill::draft_kv)
@@ -9625,6 +9679,9 @@ int main(int argc, char** argv) {
             me.handoff_floats = HBF;
             me.tail_skip = (int32_t) strata::core::tail_skip_rank();   // a worker's: informational
             me.vision = o.vision ? 1 : 0;   // images: the worker's layers need the position table (StageMsg::Positions)
+            // conversation checkpoints: the parts the main process may have the worker keep (the chain and the one
+            // being saved); a worker's own hello: its limit
+            me.ckpt_max = stage_worker ? strata::net::kStageCkptMax : o.prompt_cache > 0 ? o.prompt_cache + 1 : 0;
             std::snprintf(me.build, sizeof me.build, "strata remote-stage %s", stage_worker ? "worker" : "main");
             // the model pack's fingerprint: its tensor index and expert table (the same model on both PCs)
             for (const char* f : {"/index.txt", "/native_experts.txt"}) {
@@ -9702,6 +9759,7 @@ int main(int argc, char** argv) {
                     }
                     return want >= tokens;
                 };
+                int32_t main_ckpt_max = 0;       // the checkpoint parts the main process may have this worker keep
                 hs.hello = [&](const strata::net::StageHello& theirs, strata::net::StageHello& mine, std::string& e) {
                     mine = me;   // (the worker's own hello carries no token)
                     // another protocol: the link refuses it for its number (its fields may sit elsewhere)
@@ -9727,6 +9785,17 @@ int main(int argc, char** argv) {
                             std::to_string(theirs.max_t) + ") is larger than this worker's (" +
                             std::to_string(o.max_context) + ", " + std::to_string(me.max_t) + ")";
                         return false;
+                    }
+                    // its conversation checkpoints: this worker's part of each (its layers' running state) must fit in
+                    // half of the RAM available
+                    {
+                        const ConvStateSizes cz = conv_state_sizes(g, ss);
+                        const uint64_t qsa = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
+                        const uint64_t part = cz.gdn + (ss.ple_hist ? cz.ple : 0) +
+                                              qsa * (cz.tail + cz.dead + cz.block_pos);
+                        if (!strata::net::stage_ckpt_ram_ok(theirs.ckpt_max, part,
+                                                            strata::core::available_host_bytes(), e))
+                            return false;
                     }
                     mine.chunk = theirs.chunk;   // informational
                     main_chunk = theirs.chunk;
@@ -9756,6 +9825,7 @@ int main(int argc, char** argv) {
                         (void) relay.wait(we);
                         next_link.close();
                     }
+                    main_ckpt_max = theirs.ckpt_max;
                     return true;
                 };
                 int64_t wk_rounds = 0;
@@ -9866,6 +9936,12 @@ int main(int argc, char** argv) {
                     const WkBusy busy("stage worker prompt chunk");
                     pf_cur_out = rows_out;
                     relay_skip = skip;   // a relay worker passes the main process's skip on
+                    // a prompt that continues the live session comes straight after windows: their commit and the
+                    // adaptive tier's swaps in flight land first (as a reset and a checkpoint restore do) - a loan
+                    // below could hand the prompt path slots a swap is still writing.  (Both return at once when
+                    // nothing is pending, so every chunk may ask.)  The windows' own loan went back in hs.run.
+                    if (!ver.wait_commit(e)) return false;
+                    apply_pending(true);
                     // the prompt path's buffers out of this worker's cache, for the main process's chunk size or this
                     // worker's own (lend_chunk, the hello's choice; a loan that covers it stays for the rest of the
                     // prompt)
@@ -9904,6 +9980,7 @@ int main(int argc, char** argv) {
                     mine_next.chunk = main_chunk;   // the main process's (this worker's own until its hello)
                     mine_next.tail_skip = (int32_t) strata::core::tail_skip_rank();   // the main process's, as above
                     mine_next.vision = main_vision;   // the main process's (a worker started with --vision has it)
+                    mine_next.ckpt_max = main_ckpt_max;
                     std::memcpy(mine_next.token, stage_token.data(), stage_token.size());
                     for (int i = 0;; ++i) {
                         // each try can block (a connect's SYN tries, the hello's reply): its own allowance (as in
@@ -9924,18 +10001,97 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: relay: %s\n", err.c_str());
                     return 1;
                 }
-                hs.reset = [&](std::string& e) -> bool {
+                // conversation checkpoints (docs/remote-stage/CHECKPOINTS.md): this worker's layers' part of each,
+                // under the main process's id; the main process decides what stays (`keep`), this store never evicts
+                strata::net::StageCkptStore ckpt_store;
+                hs.reset = [&](const std::vector<int64_t>& keep, std::string& e) -> bool {
                     const WkBusy busy("stage worker reset");
                     if (stage_relay) {   // the next worker zeroes its session too (a broken link is made again)
                         const NextWorkerWait wait("stage worker: the next worker's reset");
                         if (!relay.wait(e) && next_link.connected()) return false;
                         if (!next_link.connected() && !connect_next(e)) return false;
-                        if (!next_link.reset(e)) return false;
+                        if (!next_link.reset(keep, e)) return false;
                     }
                     if (!ver.wait_commit(e) || !refill(e)) return false;
                     apply_pending(true);
                     strata::core::session_zero(ss, g, nullptr, main_cs);
-                    return cudaStreamSynchronize(main_stream) == cudaSuccess;
+                    if (cudaStreamSynchronize(main_stream) != cudaSuccess) return false;
+                    ckpt_store.prune(keep);
+                    return true;
+                };
+                // a relay: the next worker first, synchronously (its reply then decides this worker's step)
+                hs.ckpt_save = [&](int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& e) -> int {
+                    const WkBusy busy("stage worker checkpoint save");
+                    // a relay whose next worker stored the part (and pruned to keep) cannot skip it: the main
+                    // process would keep ids the next worker no longer holds - an error instead
+                    auto not_stored = [&](const char* why) -> int {
+                        std::fprintf(stderr, "strata stage worker: checkpoint %lld not stored (%s)\n", (long long) id,
+                                     why);
+                        if (!stage_relay) return 0;
+                        e = std::string("relay: the next worker stored a checkpoint this one could not (") + why + ")";
+                        return -1;
+                    };
+                    if (stage_relay) {
+                        const NextWorkerWait wait("stage worker: the next worker's checkpoint save");
+                        bool stored = false;
+                        if (!relay.wait(e) || !next_link.ckpt_save(id, L, keep, stored, e)) {
+                            e = "relay: the next worker: " + e;
+                            return -1;
+                        }
+                        if (!stored) return 0;   // it could not: neither does this one (the main process skips it)
+                    }
+                    if (!ver.wait_commit(e)) return -1;
+                    if (!ckpt_store.admits(id, keep)) return not_stored("64 kept at most");
+                    try {
+                        strata::net::StageCkptStore::Part part;
+                        part.L = L;
+                        if (const cudaError_t se = cudaDeviceSynchronize(); se != cudaSuccess) {
+                            e = std::string("stage worker: before a checkpoint: ") + cudaGetErrorString(se);
+                            return -1;
+                        }
+                        if (!strata::core::conversation_checkpoint_save(part.state, ss, g, (size_t) L, e)) return -1;
+                        ckpt_store.put(id, std::move(part), keep);
+                    } catch (const std::bad_alloc&) {   // host RAM: not stored, the store as it was
+                        return not_stored("allocation failed");
+                    }
+                    return 1;
+                };
+                hs.ckpt_restore = [&](int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& e) -> bool {
+                    const WkBusy busy("stage worker checkpoint restore");
+                    bool next_missing = false;   // (the next worker's missing id is an error of this relay's session)
+                    if (stage_relay) {
+                        const NextWorkerWait wait("stage worker: the next worker's checkpoint restore");
+                        if (!relay.wait(e) || !next_link.ckpt_restore(id, L, keep, next_missing, e)) {
+                            e = "relay: the next worker: " + e;
+                            return false;
+                        }
+                    }
+                    if (!ver.wait_commit(e) || !refill(e)) return false;
+                    apply_pending(true);
+                    // STRATA_REMOTE_CKPT_DROP=1 (testing): the store is emptied first, so the main process's fallback
+                    // (the prompt from token 0) runs
+                    static const bool drop = [] {
+                        const char* v = std::getenv("STRATA_REMOTE_CKPT_DROP");
+                        return v && v[0] == '1';
+                    }();
+                    if (drop) ckpt_store.clear();
+                    const strata::net::StageCkptStore::Part* part = ckpt_store.find(id);
+                    if (part == nullptr) {
+                        e = strata::net::kStageCkptMissing + std::to_string(id);
+                        return false;
+                    }
+                    if (part->L != L) {
+                        e = "checkpoint " + std::to_string(id) + " was saved at " + std::to_string(part->L) +
+                            ", not at " + std::to_string(L);
+                        return false;
+                    }
+                    if (const cudaError_t se = cudaDeviceSynchronize(); se != cudaSuccess) {
+                        e = std::string("stage worker: before a checkpoint restore: ") + cudaGetErrorString(se);
+                        return false;
+                    }
+                    if (!strata::core::conversation_checkpoint_restore(part->state, ss, g, (size_t) L, e)) return false;
+                    ckpt_store.prune(keep);
+                    return true;
                 };
                 // --vision: the main process's position table for its next request.  A picture's cells rotate by
                 // their (t, h, w) and every cell after it by the picture's extent, not its token count, so this
@@ -9981,6 +10137,7 @@ int main(int argc, char** argv) {
                     };
                 hs.disconnected = [&] {
                     std::string e;
+                    ckpt_store.clear();   // a new main process is a new id space
                     (void) ver.wait_commit(e);
                     // a picture's positions do not reach the next main process's text (a relay's next worker resets
                     // its own when this relay closes the link below)
@@ -10816,6 +10973,8 @@ int main(int argc, char** argv) {
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
+                // (a file would hold only this process's layers: the worker's part of a checkpoint stays there)
+                if (remote_main) { refuse("session files do not support --remote-stage"); continue; }
                 if (!ver.wait_commit(err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
@@ -11484,21 +11643,36 @@ int main(int argc, char** argv) {
                 }
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
-            if (resume == 0) {
+            // remote-stage: the worker's parts of the checkpoints kept here (a Reset or CkptRestore keeps only those)
+            auto remote_keep = [&] {
+                std::vector<int64_t> v;
+                for (const ConvCheckpoint& k : checks)
+                    if (k.remote_id != 0) v.push_back(k.remote_id);
+                return v;
+            };
+            // every session zeroed for a read from token 0 - a remote worker's too, keeping its checkpoint parts `keep`
+            auto session_from0 = [&](const std::vector<int64_t>& keep) -> bool {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
-                // (a link lost while idle: made again, then the reset again; else the engine ends, as mid-request -
-                // but for a STOP while connecting again: the link stays closed, and the next request starts from 0 too)
-                if (remote_main && !remote_link.reset(err) && !(remote_relink(err) && remote_link.reset(err))) {
-                    std::printf("ERR %s\n", err.c_str());
-                    std::fflush(stdout);
-                    if (remote_cancelled) continue;
-                    return 1;
-                }
+                // (a link lost while idle: made again, then the reset again - the new worker holds no checkpoint
+                // parts, so its reset keeps none; else the engine ends, as mid-request, but for a STOP while
+                // connecting again: `remote_cancelled`, the caller's request ends and the link stays closed)
+                if (remote_main && !remote_link.reset(keep, err) &&
+                    !(remote_relink(err) && remote_link.reset({}, err)))
+                    return false;
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                     cudaStreamSynchronize(st->stream);
+                }
+                return true;
+            };
+            if (resume == 0) {
+                if (!session_from0(remote_keep())) {
+                    std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    if (remote_cancelled) continue;   // (a STOP while connecting again: the engine stays)
+                    return 1;
                 }
                 checks.clear();
             } else if (!from_live) {
@@ -11511,13 +11685,13 @@ int main(int argc, char** argv) {
                     // one run (below, with the prompt path's slots lent like any read) - the same chunks the request
                     // that saved it read them in, when that request started at 0.  With the VRAM expert set fixed
                     // (--adapt-swaps 0) the answer must match the restored one token for token; anything the
-                    // checkpoint missed shows up as a difference.
-                    strata::core::session_zero(ss, g, nullptr, main_cs);
-                    cudaStreamSynchronize(main_stream);
-                    for (auto& st : stages) {
-                        const strata::core::OnDevice on(st->dev);
-                        strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
-                        cudaStreamSynchronize(st->stream);
+                    // checkpoint missed shows up as a difference.  (A remote stage: the worker's session too, its
+                    // checkpoint parts kept.)
+                    if (!session_from0(remote_keep())) {
+                        std::printf("ERR %s\n", err.c_str());
+                        std::fflush(stdout);
+                        if (remote_cancelled) continue;
+                        return 1;
                     }
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
@@ -11532,8 +11706,38 @@ int main(int argc, char** argv) {
                            }()) {
                     std::printf("ERR restoring a conversation checkpoint failed\n");
                     return 1;
+                } else if (remote_main) {   // the worker's part of the same checkpoint
+                    bool missing = false;
+                    if (!remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err)) {
+                        if (!missing) {   // the worker's session is lost: the engine stops (the server starts it again)
+                            std::printf("ERR restoring a conversation checkpoint failed: %s\n", err.c_str());
+                            return 1;
+                        }
+                        // it does not hold that part (it should): this request reads its prompt from token 0, and
+                        // everything below follows `resume`
+                        std::fprintf(stderr, "strata serve: the remote stage does not hold the checkpoint at %lld "
+                                             "tokens (%s): reading the prompt from token 0\n", (long long) resume,
+                                     err.c_str());
+                        err.clear();
+                        if (!session_from0({})) {
+                            std::printf("ERR %s\n", err.c_str());
+                            std::fflush(stdout);
+                            if (remote_cancelled) continue;
+                            return 1;
+                        }
+                        resume = 0;
+                        from_live = false;
+                        reread_to = -1;
+                        checks.clear();
+                    } else {
+                        std::fprintf(stderr, "strata serve: remote stage: checkpoint %lld at %lld tokens restored on "
+                                             "both sides\n", (long long) c->remote_id, (long long) resume);
+                    }
                 }
             }
+            if (remote_main && resume > 0 && from_live)
+                std::fprintf(stderr, "strata serve: remote stage: continuing the live session at %lld tokens\n",
+                             (long long) resume);
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
