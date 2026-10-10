@@ -3369,18 +3369,19 @@ class Service:
         tail = "" if off else EFFORT_TURN.format(EFFORT_TEXT.get(effort, EFFORT_TEXT["medium"]))
         return history + tail + full[len(mine):]
 
-    def encode_prompt(self, messages, tools, kwargs) -> list[int]:
+    def encode_prompt(self, messages, tools, kwargs, store: bool = True) -> list[int]:
         """The request's prompt: the template rendered and tokenized.  #537: a <think> / </think> written inside a
         message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
-        the control tokens the template writes are control tokens."""
+        the control tokens the template writes are control tokens.  `store=False` (a token count) reuses the kept
+        prompts without adding or replacing one."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
-            return self.prompts.encode(prompt, plain)
+            return self.prompts.encode(prompt, plain, store)
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
             self.tok.encode(prompt, parse_special=True)
 
@@ -5477,7 +5478,7 @@ def make_handler(svc: Service):
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
-            self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
+            self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
 
         def _anthropic(self, req):
             svc.load()

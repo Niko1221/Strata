@@ -372,7 +372,9 @@ class PromptEncoder:
 
     A few recent prompts are kept (one per conversation: a prompt replaces the one it continues, that is, one whose
     text it reuses for more than half; a prompt that shares only the template's head with every entry is a new
-    entry), so a second client does not evict the first.  The tokenizer needs `encode_marked` and `max_special_len`.
+    entry), so a second client does not evict the first.  `encode(..., store=False)` reads the kept prompts without
+    writing one (a token count is not a conversation's turn).  The tokenizer needs `encode_marked` and
+    `max_special_len`.
     """
 
     def __init__(self, tok, keep: int = 4):
@@ -382,7 +384,7 @@ class PromptEncoder:
         self.lock = threading.Lock()
         self.last_reused = 0                            # characters taken from an earlier prompt (for tests)
 
-    def encode(self, text: str, plain=()) -> list[int]:
+    def encode(self, text: str, plain=(), store: bool = True) -> list[int]:
         plain = tuple(sorted(plain))
         with self.lock:
             entries = self.entries                      # replaced, never changed in place
@@ -405,6 +407,8 @@ class PromptEncoder:
             ends = src[3][:cut_k + 1] + [c + m[0] for m in marks]
             counts = src[4][:cut_k + 1] + [n + m[1] for m in marks]
             self.last_reused = c
+        if not store:
+            return ids
         # every rendered prompt starts with the template's header, so sharing a special boundary does not make two
         # prompts one conversation: only the entry whose text is mostly reused is replaced
         old = src if src is not None and 2 * src[3][cut_k] > len(src[0]) else None

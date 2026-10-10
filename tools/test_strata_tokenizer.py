@@ -228,6 +228,19 @@ class Prompts(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.check(enc, text)
 
+    def test_a_read_only_encode_gives_the_ids_and_stores_nothing(self):
+        enc = ST.PromptEncoder(self.tk)
+        a = self.template.render([{"role": "user", "content": "first question " * 50}])
+        enc.encode(a)
+        kept = list(enc.entries)
+        for text in (a + "<|im_start|>user\nand a follow-up<|im_end|>\n", a[:len(a) // 2], "<|im_end|>x",
+                     self.template.render([{"role": "user", "content": "another conversation"}])):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(enc.encode(text, store=False), self.tk.encode(text, parse_special=True))
+                self.assertTrue(enc.entries == kept, "a read-only encode wrote an entry")
+        self.assertEqual(enc.encode(a + "tail", store=False), self.tk.encode(a + "tail", parse_special=True))
+        self.assertGreater(enc.last_reused, len(a) // 2)
+
     def test_the_returned_ids_are_the_callers(self):
         enc = ST.PromptEncoder(self.tk)
         text = "<|im_start|>user\nhi<|im_end|>\n" + "and a tail longer than the look-ahead margin. " * 3

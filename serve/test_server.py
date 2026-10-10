@@ -1808,6 +1808,29 @@ class IncrementalPrompts(unittest.TestCase):
             svc.encode_prompt(self.conversation(n), None, {})
         self.assertEqual(len(svc.prompts.entries), 4)
 
+    def test_counting_tokens_leaves_the_kept_prompts_alone(self):
+        svc = self.service(conversation_cache_slots=2)
+        httpd = serve(svc, port=0)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        main = self.conversation(0)
+        status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 8, "messages": main})
+        self.assertEqual(status, 200, b)
+        before = list(svc.prompts.entries)
+        full = self.service()
+        full.prompts = None
+        for n in range(1, 6):
+            other = self.conversation(n)
+            status, b = self.post("/v1/messages/count_tokens", {"model": "m", "messages": other})
+            self.assertEqual(status, 200, b)
+            self.assertEqual(b["input_tokens"], len(full.encode_prompt(other, None, {})))
+        self.assertTrue(svc.prompts.entries == before, "the count wrote into the kept prompts")
+        main.append({"role": "assistant", "content": "ok"})
+        main.append({"role": "user", "content": "and then?"})
+        svc.encode_prompt(main, None, {})
+        self.assertGreater(svc.prompts.last_reused, len(svc.render_prompt(main, None, {})) // 2)
+
     def test_same_ids_as_a_full_encode_on_varied_conversations(self):
         import random
         sys.path.insert(0, str(ROOT / "tools"))
