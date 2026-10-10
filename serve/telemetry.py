@@ -3,7 +3,8 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power; on Windows the AMD driver's ADL library
+  (atiadlxx.dll, installed with Adrenalin) and the OS's GPU memory counter - the same four.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -182,17 +183,230 @@ class _Amd:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ AMD (Windows)
+WINDOWS = os.name == "nt"
+
+# ADL's PMLog sensor ids (ADLSensorType in the ADL SDK's adl_defines.h), first supported one wins.  Checked on a
+# Radeon 8060S (Strix Halo, driver 32.0.31041.1004) against a prompt: activity 6 -> 85-96 %, the graphics temperature
+# 48 -> 53-81 C, ASIC power 45 -> 80-110 W (the whole APU; GFX power alone 4 -> 22-31 W).  Power is the board's where
+# the card reports it (73: an RX 7900 XTX does, and has neither 23 nor 30 - #1434's review), else ASIC power, the
+# counterpart of NVML's board power on an APU, whose CPU, GPU and memory share that package (the 8060S has no 73).
+ADL_UTIL = (19,)                    # PMLOG_INFO_ACTIVITY_GFX
+ADL_TEMP = (28, 8, 27, 29)          # PMLOG_TEMPERATURE_GFX, _EDGE, _HOTSPOT, _SOC
+ADL_POWER = (73, 23, 30)            # PMLOG_BOARD_POWER, PMLOG_ASIC_POWER, PMLOG_GFX_POWER
+
+
+def adl_pick(sensors: dict, ids):
+    """The value of the first of `ids` the card supports (`sensors`: {sensor id: value} of the supported ones)."""
+    return next((sensors[i] for i in ids if i in sensors), None)
+
+
+def luid_instance(high: int, low: int) -> str:
+    """The instance name Windows' GPU counters give an adapter LUID ("luid_0x00000000_0x000179e6_phys_0")."""
+    return f"luid_0x{high & 0xFFFFFFFF:08x}_0x{low & 0xFFFFFFFF:08x}_phys_0"
+
+
+class _AmdWindows:
+    """An AMD card's readings on Windows, with _Nvml's interface: load, temperature and power from the PMLog sensors
+    of the driver's ADL library (atiadlxx.dll, part of every Adrenalin install), the memory size from ADL, and the
+    memory in use from the OS counter "\\GPU Adapter Memory(<luid>)\\Dedicated Usage" (pdh.dll), its adapter found
+    by PCI bus through D3DKMT.  (ADL's own VRAM-usage call reads nonsense on a Strix Halo.)  `index`: the AMD cards
+    in PCI bus order, as HIP numbers them."""
+
+    class _AdapterInfo(ctypes.Structure):
+        _fields_ = [("iSize", ctypes.c_int), ("iAdapterIndex", ctypes.c_int), ("strUDID", ctypes.c_char * 256),
+                    ("iBusNumber", ctypes.c_int), ("iDeviceNumber", ctypes.c_int), ("iFunctionNumber", ctypes.c_int),
+                    ("iVendorID", ctypes.c_int), ("strAdapterName", ctypes.c_char * 256),
+                    ("strDisplayName", ctypes.c_char * 256), ("iPresent", ctypes.c_int), ("iExist", ctypes.c_int),
+                    ("strDriverPath", ctypes.c_char * 256), ("strDriverPathExt", ctypes.c_char * 256),
+                    ("strPNPString", ctypes.c_char * 256), ("iOSDisplayIndex", ctypes.c_int)]
+
+    class _MemInfo2(ctypes.Structure):
+        _fields_ = [("iMemorySize", ctypes.c_longlong), ("strMemoryType", ctypes.c_char * 256),
+                    ("iMemoryBandwidth", ctypes.c_longlong), ("iHyperMemorySize", ctypes.c_longlong),
+                    ("iInvisibleMemorySize", ctypes.c_longlong), ("iVisibleMemorySize", ctypes.c_longlong)]
+
+    class _PdhValue(ctypes.Structure):
+        _fields_ = [("CStatus", ctypes.c_ulong), ("largeValue", ctypes.c_longlong)]
+
+    _MALLOC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
+    _malloc = None                  # ADL allocates through this; kept alive with the class
+
+    def __init__(self, index=0):
+        self.adl = self.ctx = self.adapter = self._lib = None
+        self.bus = self.label = self.total = None
+        self.pdh = self.query = self.counter = None
+        try:
+            self._open_adl(index)
+        except (AttributeError, OSError, ValueError):
+            self.adl = None
+        if self.adl is not None:
+            try:
+                self._open_counter()
+            except (AttributeError, OSError, ValueError):
+                self.pdh = None
+        if not self.ok():
+            self.close()            # a reader that reads nothing holds nothing (an ADL context made before it failed)
+
+    def close(self):
+        """Give back the ADL context and the PDH query (both are OS handles: #1434's review saw +2 per reader that
+        was never closed).  Safe to call again; a closed reader reads nothing."""
+        q, self.query, self.counter = self.query, None, None
+        if q is not None and self.pdh is not None:
+            try:
+                self.pdh.PdhCloseQuery(q)
+            except OSError:
+                pass
+        ctx, self.ctx = self.ctx, None
+        if ctx is not None and self._lib is not None:
+            try:
+                self._lib.ADL2_Main_Control_Destroy(ctx)
+            except (AttributeError, OSError):
+                pass
+        self.adl = self.adapter = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - interpreter shutdown: the OS takes the handles back anyway
+            pass
+
+    def _open_adl(self, index):
+        self.adl = self._lib = ctypes.CDLL("atiadlxx.dll")
+        if _AmdWindows._malloc is None:
+            crt_malloc = ctypes.CDLL("msvcrt").malloc
+            crt_malloc.restype = ctypes.c_void_p
+            _AmdWindows._malloc = self._MALLOC(lambda n: crt_malloc(ctypes.c_size_t(n)))
+        ctx = ctypes.c_void_p()
+        if self.adl.ADL2_Main_Control_Create(self._malloc, 1, ctypes.byref(ctx)) != 0:
+            self.adl = None
+            return
+        self.ctx = ctx
+        n = ctypes.c_int()
+        if self.adl.ADL2_Adapter_NumberOfAdapters_Get(self.ctx, ctypes.byref(n)) != 0 or n.value <= 0:
+            self.adl = None
+            return
+        infos = (self._AdapterInfo * n.value)()
+        if self.adl.ADL2_Adapter_AdapterInfo_Get(self.ctx, infos, ctypes.sizeof(infos)) != 0:
+            self.adl = None
+            return
+        cards = {}                  # ADL lists one entry per display output: one card per PCI bus
+        for a in infos:
+            if a.iVendorID == 1002 and a.iExist and a.iBusNumber not in cards:
+                cards[a.iBusNumber] = a
+        ordered = [cards[b] for b in sorted(cards)]
+        if not 0 <= index < len(ordered):
+            self.adl = None
+            return
+        a = ordered[index]
+        self.adapter, self.bus = a.iAdapterIndex, a.iBusNumber
+        self.label = a.strAdapterName.decode(errors="replace").strip() or "AMD Radeon"
+        m = self._MemInfo2()
+        if self.adl.ADL2_Adapter_MemoryInfo2_Get(self.ctx, self.adapter, ctypes.byref(m)) == 0 and m.iMemorySize > 0:
+            self.total = m.iMemorySize
+
+    def _luid_of_bus(self, bus):
+        """The LUID of the display adapter on PCI bus `bus` (D3DKMTEnumAdapters2 + KMTQAITYPE_ADAPTERADDRESS)."""
+        class AdapterInfo(ctypes.Structure):
+            _fields_ = [("hAdapter", ctypes.c_uint), ("LowPart", ctypes.c_ulong), ("HighPart", ctypes.c_long),
+                        ("NumOfSources", ctypes.c_ulong), ("bPrecisePresentRegionsPreferred", ctypes.c_int)]
+
+        class Enum2(ctypes.Structure):
+            _fields_ = [("NumAdapters", ctypes.c_ulong), ("pAdapters", ctypes.POINTER(AdapterInfo))]
+
+        class Query(ctypes.Structure):
+            _fields_ = [("hAdapter", ctypes.c_uint), ("Type", ctypes.c_int),
+                        ("pPrivateDriverData", ctypes.c_void_p), ("PrivateDriverDataSize", ctypes.c_uint)]
+
+        class Address(ctypes.Structure):
+            _fields_ = [("BusNumber", ctypes.c_uint), ("DeviceNumber", ctypes.c_uint), ("FunctionNumber", ctypes.c_uint)]
+
+        gdi = ctypes.WinDLL("gdi32")
+        e = Enum2()
+        if gdi.D3DKMTEnumAdapters2(ctypes.byref(e)) != 0 or not e.NumAdapters:
+            return None
+        arr = (AdapterInfo * e.NumAdapters)()
+        e.pAdapters = arr
+        if gdi.D3DKMTEnumAdapters2(ctypes.byref(e)) != 0:
+            return None
+        found = None
+        for a in arr[:e.NumAdapters]:
+            addr = Address()
+            q = Query(a.hAdapter, 6, ctypes.cast(ctypes.pointer(addr), ctypes.c_void_p), ctypes.sizeof(addr))
+            if found is None and gdi.D3DKMTQueryAdapterInfo(ctypes.byref(q)) == 0 and addr.BusNumber == bus:
+                found = (a.HighPart, a.LowPart)
+            gdi.D3DKMTCloseAdapter(ctypes.byref(ctypes.c_uint(a.hAdapter)))
+        return found
+
+    def _open_counter(self):
+        luid = self._luid_of_bus(self.bus)
+        if luid is None:
+            return
+        self.pdh = ctypes.WinDLL("pdh")
+        q, c = ctypes.c_void_p(), ctypes.c_void_p()
+        path = f"\\GPU Adapter Memory({luid_instance(*luid)})\\Dedicated Usage"
+        if self.pdh.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
+            self.pdh = None
+            return
+        if self.pdh.PdhAddEnglishCounterW(q, ctypes.c_wchar_p(path), None, ctypes.byref(c)) != 0:
+            self.pdh.PdhCloseQuery(q)
+            self.pdh = None
+            return
+        self.query, self.counter = q, c
+
+    def ok(self):
+        return self.adl is not None and self.adapter is not None
+
+    def name(self):
+        return self.label
+
+    def _sensors(self):
+        buf = (ctypes.c_int * (1 + 2 * 256))()          # ADLPMLogDataOutput: int size; {int supported, value}[256]
+        if self.adl.ADL2_New_QueryPMLogData_Get(self.ctx, self.adapter, buf) != 0:
+            return {}
+        return {i: buf[2 + 2 * i] for i in range(256) if buf[1 + 2 * i]}
+
+    def _mem_used(self):
+        if self.counter is None or self.pdh.PdhCollectQueryData(self.query) != 0:
+            return None
+        v = self._PdhValue()
+        if self.pdh.PdhGetFormattedCounterValue(self.counter, 0x00000400, None, ctypes.byref(v)) != 0:  # PDH_FMT_LARGE
+            return None
+        return v.largeValue if v.CStatus in (0, 1) else None   # PDH_CSTATUS_VALID_DATA / _NEW_DATA
+
+    def read(self):
+        if not self.ok():
+            return {}
+        try:
+            s = self._sensors()
+            used = self._mem_used()
+        except OSError:
+            return {}
+        util, temp, power = adl_pick(s, ADL_UTIL), adl_pick(s, ADL_TEMP), adl_pick(s, ADL_POWER)
+        return {"util": util, "mem_used": used, "mem_total": self.total if used is not None else None,
+                "temp": float(temp) if temp is not None else None,
+                "power": float(power) if power is not None else None, "power_limit": None}
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    """The card's readings: NVML (NVIDIA), or with the AMD backend the amdgpu sysfs files (Linux, #301) or ADL plus
+    the OS's GPU memory counter (Windows)."""
+    if not amd:
+        return _Nvml(index)
+    return _AmdWindows(index) if WINDOWS else _Amd(index)
 
 
 def free_vram_mib(index=0, amd=False):
-    """Free VRAM of a card in MiB, or None when it cannot be read."""
+    """Free VRAM of a card in MiB, or None when it cannot be read.  A one-off reader: closed again here (#1434)."""
     g = gpu_reader(index, amd)
-    if not g.ok():
-        return None
-    r = g.read()
+    try:
+        if not g.ok():
+            return None
+        r = g.read()
+    finally:
+        close = getattr(g, "close", None)
+        if close is not None:
+            close()
     if r.get("mem_total") is None or r.get("mem_used") is None:
         return None
     return int((r["mem_total"] - r["mem_used"]) >> 20)
@@ -287,10 +501,11 @@ class Telemetry:
         self.static = {
             "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
             "gpu_count": len(self.gpus),
-            # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
-            # dashboard said "not readable (NVML)" or showed empty tiles with no word why
-            "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
-                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
+            # #1380: an AMD card whose readings cannot be read says why, instead of "not readable (NVML)" or empty tiles
+            "gpu_note": (("no GPU readings: AMD's ADL library (atiadlxx.dll, installed with the Adrenalin driver) did "
+                          "not answer for this card" if WINDOWS else
+                          "no GPU readings: the amdgpu driver's sysfs files were not found for this card")
+                         + "; the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
