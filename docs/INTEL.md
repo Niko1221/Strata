@@ -476,6 +476,12 @@ kernels sum in a different order). Q8_0 kernels 4-6x (189 -> 31 us at 2560 x 102
 restores the old Q8_0/IQ4_NL kernels. The sliced GR down kernel (GR read 108.6 -> 76.5 us at 6 tokens, sums equal to
 ~1e-7) flips that near-tie back: its output is the original one. `STRATA_GR_DOWN_SLICED=0` restores the direct kernel.
 
+`STRATA_GR_FUSE_NORM=1` (opt-in, 2026-10-10; ignored with `STRATA_GR_DOWN_SLICED=0`) runs the sliced GR read in 3
+kernels instead of 4: the down kernel takes the dot products against the unscaled rows and the reduce kernel applies
+each stream's norm factor, so no norm pass sits ahead of the weights. One read 47.4 -> 43.4 us at T=1 and 58.3 ->
+53.8 us with MTP (unitrace, B70, IQ3_XXS, one card). The greedy output parts from the default at token 198 of 256
+(the sums of squares are summed per slice).
+
 Kernel level: IQ4_XS 107 -> 323 GB/s at 2 columns (61 -> 212 at 6), Q4_K/Q5_K 1.3-1.6x; the GR read 135 -> 110 us at
 6 tokens (bitwise equal). Switches to the old paths: `STRATA_PLAN_PARALLEL=0`, `STRATA_GR_DOWN_DIRECT=0`,
 `STRATA_MMVQ_WIDE_K=0`. (`iq_parity` reports 10 "missing fixture" failures with and without the change: the oracle

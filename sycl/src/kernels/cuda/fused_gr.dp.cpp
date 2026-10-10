@@ -568,6 +568,108 @@ __dpct_inline__ void gr_down_sliced_kernel(GrMulti m, float* tile) {
         }
     }
 }
+// STRATA_GR_FUSE_NORM=1 (opt-in): no norm before the dot products. A slice lies in one stream c, and the norm scales all of
+// stream c by one rs[c], so a slice's partial is rs[c] times the dot over the unscaled x' = R' * w_norm. The down
+// kernel streams the rows against x' at once (no sums-of-squares pass and no barriers ahead of the weights) and
+// writes each slice's sum of squares of R'; the reduce kernel takes rs from those, writes it for the up kernel, and
+// sums rs[c] * partial over the slices in the fixed slice order. Same formula as the two-kernel pair, another
+// rounding order: rs (its sum of squares is summed per slice) and the down rows differ from it in the last bits.
+// xn is not written (nothing reads it after the read).
+__dpct_inline__ void gr_down_raw_sliced_kernel(GrMulti m, float* tile, float* ssp) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto& part = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kFusedGrMaxT][GRS_COLS / 32]>(item.get_group());
+    const int t = (int) item.get_local_id(2), lane = t & 31, warp = t >> 5;
+    const int T = m.T, sl = (int) item.get_group(2), c0 = sl * GRS_COLS, c = c0 / N;
+    const int rsub = lane >> 2, q = lane & 3;
+    const bool inj = m.a[0].w_inject != nullptr;
+    auto load_w = [&](int r0, sycl::uint4* wv, bool& ok, int& r) {
+        r = r0 + warp * 8 + rsub;
+        ok = r < LR || (r < GRS_ROWS && inj);
+        const uint16_t* wrow = r < LR ? m.a[0].w_down + (size_t) r * D : m.a[0].w_inject + (size_t) (ok ? r - LR : 0) * D;
+#pragma unroll
+        for (int cc = 0; cc < 4; ++cc)
+            wv[cc] = ok ? reinterpret_cast<const sycl::uint4*>(wrow + c0)[q + 4 * cc] : sycl::uint4(0, 0, 0, 0);
+    };
+    sycl::uint4 wv[4];
+    bool ok;
+    int r;
+    load_w(0, wv, ok, r);   // in flight while the tile is built
+    for (int i = t; i < T * GRS_COLS; i += THREADS) {
+        const int k = i / GRS_COLS, col = c0 + (i - k * GRS_COLS), d = col - c * N;
+        const FusedGrArgs& a = m.a[k];
+        float rv = a.R[col];
+        if (a.apply) rv = sycl::fma((float) a.bo_prev[d], 2.0f * sigmoidf_(a.inj_prev[c] / (float) HC), rv);
+        tile[i] = rv * a.w_norm[col];
+        const float v = warp_sum(rv * rv);   // GRS_COLS is a multiple of 32: a warp never spans two tokens
+        if (lane == 0) part[k][(i - k * GRS_COLS) >> 5] = v;
+    }
+    item.barrier(sycl::access::fence_space::local_space);
+    if (t < T) {
+        float s2 = 0.0f;
+#pragma unroll
+        for (int w = 0; w < GRS_COLS / 32; ++w) s2 += part[t][w];
+        ssp[(size_t) sl * kFusedGrMaxT + t] = s2;
+    }
+    for (int r0 = 0; r0 < GRS_ROWS; r0 += WARPS * 8) {
+        if (r0 != 0) load_w(r0, wv, ok, r);
+        float acc[kFusedGrMaxT];
+#pragma unroll
+        for (int k = 0; k < kFusedGrMaxT; ++k) {
+            acc[k] = 0.0f;
+            if (k < T) {
+#pragma unroll
+                for (int cc = 0; cc < 4; ++cc) acc[k] += dot8(wv[cc], tile + k * GRS_COLS + (q + 4 * cc) * 8);
+            }
+        }
+        auto sg = item.get_sub_group();
+#pragma unroll
+        for (int k = 0; k < kFusedGrMaxT; ++k) {
+            if (k >= T) break;
+            float v = acc[k];
+            v += sycl::permute_group_by_xor(sg, v, 1);
+            v += sycl::permute_group_by_xor(sg, v, 2);
+            if (q == 0 && ok) m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r] = v;
+        }
+    }
+}
+// rs is taken by the first T * HC threads of each 128-thread group (the launch below).
+static_assert(kFusedGrMaxT * HC <= 128, "gr_down_reduce_rs_kernel: a group must cover every (token, stream) rs");
+__dpct_inline__ void gr_down_reduce_rs_kernel(GrMulti m, const float* ssp) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto& s_rs = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kFusedGrMaxT][HC]>(item.get_group());
+    constexpr int SPS = N / GRS_COLS;   // slices per stream
+    const int lt = (int) item.get_local_id(2);
+    if (lt < m.T * HC) {   // every group takes rs itself (the same sums in the same order)
+        const int k = lt / HC, c = lt - k * HC;
+        float s2 = 0.0f;
+        for (int j = 0; j < SPS; ++j) s2 += ssp[(size_t) (c * SPS + j) * kFusedGrMaxT + k];
+        s_rs[k][c] = sycl::rsqrt(s2 / (float) N + m.a[k].eps);
+        if (item.get_group(2) == 0) m.a[k].rs[c] = s_rs[k][c];
+    }
+    item.barrier(sycl::access::fence_space::local_space);
+    const int i = (int) item.get_global_id(2);
+    if (i >= m.T * GRS_ROWS) return;
+    const int k = i / GRS_ROWS, r = i - k * GRS_ROWS;
+    if (r >= LR && m.a[0].w_inject == nullptr) return;
+    float x = 0.0f;
+    for (int sl = 0; sl < GRS_SLICES; ++sl) x += s_rs[k][sl / SPS] * m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r];
+    if (r < LR) m.part[(size_t) k * LR + r] = x;   // split 0
+    else m.a[k].inject_out[r - LR] = x;
+}
+float* slice_ss(sycl::queue* q) {
+    static std::mutex mu;
+    static std::unordered_map<sycl::queue*, float*> bufs;
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = bufs.find(q);
+    if (it != bufs.end()) return it->second;
+    float* p = sycl::malloc_device<float>((size_t) GRS_SLICES * kFusedGrMaxT, *q);
+    bufs[q] = p;
+    return p;
+}
+bool gr_fuse_norm() {
+    static const bool v = std::getenv("STRATA_GR_FUSE_NORM") != nullptr && std::atoi(std::getenv("STRATA_GR_FUSE_NORM")) != 0;
+    return v;
+}
 __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item.get_global_id(2);
@@ -1755,7 +1857,8 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         return false;   // SYCL port: never writes the q8_1 images (STRATA_QFUSE is not supported here)
     }
     m.part = down_partials(st);
-    {
+    const bool fuse_norm = gr_down_sliced() && gr_fuse_norm();
+    if (!fuse_norm) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
@@ -1793,6 +1896,17 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     if (gr_down_sliced()) {
         m.part2 = slice_partials(st);
         m.nsplit = 1;
+        float* ssp = fuse_norm ? slice_ss(st) : nullptr;
+        if (fuse_norm)
+            st->submit([&](sycl::handler& cgh) {
+                sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
+                cgh.parallel_for<dpct_kernel_name<class gr_down_raw_sliced_k>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, GRS_SLICES) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_raw_sliced_kernel(m, tl.get_multi_ptr<sycl::access::decorated::no>().get(), ssp);
+                    });
+            });
+        else
         st->submit([&](sycl::handler& cgh) {
             sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
             cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_k>>(
@@ -1802,6 +1916,11 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
                 });
         });
         const unsigned nred = unsigned((n_tok * GRS_ROWS + 127) / 128);
+        if (fuse_norm)
+            st->parallel_for<dpct_kernel_name<class gr_down_reduce_rs_k>>(
+                sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_rs_kernel(m, ssp); });
+        else
         st->parallel_for<dpct_kernel_name<class gr_down_reduce_k>>(
             sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel(m); });
