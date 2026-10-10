@@ -24,6 +24,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-mcp" aria-controls="view-mcp" aria-selected="false" data-tab="mcp">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-tool"/></svg>MCP</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -37,6 +39,17 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+    <div class="chat-layout">
+      <aside class="conversation-panel" id="conversation-panel" aria-label="Conversations">
+        <div class="conversation-panel__head">
+          <span class="card-title">Conversations</span>
+          <button type="button" class="st-btn st-btn--icon" id="conv-new-btn" title="New conversation" aria-label="New conversation">
+            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+        </div>
+        <div class="conversation-list" id="conversation-list"><span class="muted small">Loading&hellip;</span></div>
+        <button type="button" class="conversation-toggle" id="conv-toggle-btn" title="Collapse conversations" aria-label="Collapse conversations" aria-expanded="true">&lt;</button>
+      </aside>
+      <div class="chat-main">
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat" id="chat">
         <div class="chat-empty" id="chat-empty">
@@ -59,6 +72,18 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
             <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+          <span class="context-meter" id="context-meter" title="Current context usage">
+            <span class="context-meter__dial" id="context-gauge" aria-hidden="true">
+              <svg class="context-meter__svg st-gauge" viewBox="0 0 120 120">
+                <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="12" stroke-linecap="round"
+                        stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+                <circle class="st-gauge__fill" id="context-gauge-fill" cx="60" cy="60" r="50" fill="none" stroke-width="12"
+                        stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+              </svg>
+              <span class="context-meter__pct" id="context-pct">0%</span>
+            </span>
+            <span id="context-label">0 / 262,144</span>
+          </span>
           <span class="spacer"></span>
           <span class="composer-hint" id="composer-hint"></span>
           <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
@@ -67,6 +92,8 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
         </div>
       </form>
+    </div>
+      </div>
     </div>
   </section>
 
@@ -137,11 +164,52 @@
         <p class="muted small cc-note" id="cc-note"></p>
       </div>
 
-      <div class="st-card mcp-card" id="mcp-card" hidden>
-        <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
-        <div class="mcp-list" id="mcp-list"></div>
-        <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
-          (in this page's chat only; switch it off in Sampling).</p>
+    </div>
+  </section>
+
+  <!-- ============================ MCP ============================ -->
+  <section class="view view--mcp" id="view-mcp" role="tabpanel" aria-labelledby="tab-btn-mcp" hidden>
+    <div class="mcp-view">
+      <div class="st-card mcp-manage">
+        <div class="req-head"><span class="card-title">MCP connections</span><span class="muted small" id="mcp-config-file"></span></div>
+        <p class="muted small">Configure any number of Streamable HTTP or stdio MCP servers. Each saved server is kept
+          independently in this model's run config; restart Strata after changing the list. A stdio entry starts a local
+          process with your user rights, just like a stdio entry written directly in the run config.</p>
+        <div class="mcp-configured-list" id="mcp-configured-list"><span class="muted small">Loading configured servers&hellip;</span></div>
+        <div class="mcp-editor">
+          <div class="mcp-config-grid">
+            <label class="st-label" for="mcp-name">Name</label>
+            <input class="st-input" id="mcp-name" placeholder="my-server" autocomplete="off">
+            <label class="st-label" for="mcp-transport">Transport</label>
+            <select class="st-input" id="mcp-transport">
+              <option value="http">Streamable HTTP</option>
+              <option value="stdio">stdio (local process)</option>
+            </select>
+            <label class="st-label mcp-field-http" for="mcp-url">URL</label>
+            <input class="st-input mcp-field-http" id="mcp-url" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off" spellcheck="false">
+            <label class="st-label mcp-field-stdio" for="mcp-command" hidden>Command</label>
+            <input class="st-input mcp-field-stdio" id="mcp-command" placeholder="npx" autocomplete="off" spellcheck="false" hidden>
+            <label class="st-label mcp-field-stdio" for="mcp-args" hidden>Args (JSON)</label>
+            <textarea class="st-input mcp-field-stdio mcp-json" id="mcp-args" rows="3" placeholder='["-y","@modelcontextprotocol/server-filesystem","."]' spellcheck="false" hidden></textarea>
+            <label class="st-label mcp-field-stdio" for="mcp-cwd" hidden>Working dir</label>
+            <input class="st-input mcp-field-stdio" id="mcp-cwd" placeholder="optional" autocomplete="off" spellcheck="false" hidden>
+            <label class="st-label mcp-field-stdio" for="mcp-env" hidden>Environment (JSON)</label>
+            <textarea class="st-input mcp-field-stdio mcp-json" id="mcp-env" rows="3" placeholder='{"KEY":"value"}' spellcheck="false" hidden></textarea>
+          </div>
+          <p class="muted small mcp-env-note" id="mcp-secret-note"></p>
+          <div class="cfg-actions">
+            <button class="st-btn st-btn--primary" id="mcp-save" type="button">Save server</button>
+            <button class="st-btn st-btn--secondary" id="mcp-new" type="button">New server</button>
+            <button class="st-btn st-btn--secondary" id="mcp-refresh" type="button">Refresh</button>
+            <span class="muted small" id="mcp-config-msg" role="status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="st-card mcp-card" id="mcp-card">
+        <div class="req-head"><span class="card-title">Available MCP tools</span><span class="muted small" id="mcp-sum"></span></div>
+        <div class="mcp-list" id="mcp-list"><span class="muted small">No MCP status yet.</span></div>
+        <p class="muted small mcp-note">These tools run on this PC with your rights when the model decides to call them
+          (this page's chat only; switch tool use off in Sampling when you do not want calls).</p>
       </div>
     </div>
   </section>
@@ -236,6 +304,25 @@
     </div>
   </div>
 </aside>
+
+<div class="conversation-modal" id="conversation-delete-modal" hidden>
+  <div class="conversation-modal__card" role="dialog" aria-modal="true" aria-labelledby="conversation-delete-title"
+       aria-describedby="conversation-delete-text">
+    <h2 class="conversation-modal__title" id="conversation-delete-title">Delete conversation?</h2>
+    <p class="conversation-modal__body" id="conversation-delete-text">
+      Permanently delete <span class="conversation-modal__name" id="conversation-delete-name">this conversation</span>?
+      The saved conversation JSON will be removed from disk and cannot be restored.
+    </p>
+    <div class="conversation-modal__actions">
+      <button class="st-btn st-btn--secondary" id="conversation-delete-cancel" type="button">Cancel</button>
+      <button class="st-btn st-btn--danger" id="conversation-delete-confirm" type="button">
+        <svg class="st-icon st-icon--sm" aria-hidden="true"><use href="web/sprite.svg#i-trash"/></svg>
+        Delete
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/app.js"></script>
