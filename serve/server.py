@@ -2161,6 +2161,15 @@ class Vision:
                 proc.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        # Close the encoder's stdin here, with close()'s error ignored, instead of leaving it to the interpreter's
+        # GC: a Ctrl+C reaches the encoder through the console too, so it can already be gone - the QUIT write's
+        # flush fails (the OSError [Errno 22] caught above) and its line stays in the wrapper's buffer, which the
+        # GC then flushes again and prints as "Exception ignored in: <_io.TextIOWrapper name=N ...>" right after
+        # "[strata] stopping".  (StrataEngine.close() guards its stdin the same way, and for the same reason.)
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
         self.stopped = True
 
     def shutdown(self):
