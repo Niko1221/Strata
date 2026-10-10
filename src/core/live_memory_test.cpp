@@ -285,6 +285,89 @@ void device_arena() {
             cache.slots() == 2 && cache.full_slots() == 64,
             "reopening live releases prior segmented mappings and restores full live geometry");
 }
+// Real mappings and stream lifetime with a policy-sized prefix. This fixture tests
+// loan ownership/refill bytes, not model kernels or first-use MMQ allocations.
+void pressure_prefix_arena() {
+    using namespace strata::core;
+    constexpr uint64_t MiB = 1ull << 20, loan = 16 * MiB;
+    std::string err;
+    ExpertCache cache;
+    require(cache.open_live(std::vector<int64_t>(160, MiB), 160, 2, 80, err), "pressure prefix VMM open: " + err);
+    const auto* offsets = cache.slot_offsets();
+    void* const stable_base = cache.device_slot(0);
+    std::vector<uint8_t> original(MiB);
+    auto refill = [&](int64_t begin, int64_t end, std::string& why) {
+        for (int64_t slot = begin; slot < end; ++slot) {
+            std::fill(original.begin(), original.end(), (uint8_t) (slot + 1));
+            if (!cache.fill_slot_blocking((int32_t) slot, original.data(), why, MiB)) return false;
+        }
+        return true;
+    };
+    require(refill(0, 160, err), "fill immutable per-slot fixture bytes");
+    cudaStream_t stream = nullptr;
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    uint8_t* output = nullptr;
+    require(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
+            cudaHostAlloc((void**) &output, 256, cudaHostAllocDefault) == cudaSuccess, "pressure fixture stream/readback");
+    require(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal) == cudaSuccess &&
+            cudaMemcpyAsync(output, stable_base, 256, cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
+            cudaStreamEndCapture(stream, &graph) == cudaSuccess &&
+            cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0) == cudaSuccess, "capture fixed-address resident read");
+    for (const int64_t minimum : {0ll, 32ll}) {
+        const uint64_t before = cache.committed_bytes();
+        const int64_t normal = live_prefill_floor(offsets, cache.capacity(), loan);
+        const int64_t floor = live_prefill_floor(offsets, cache.capacity(), loan, minimum);
+        require(normal == 144 && floor == minimum + 16, "physical fixture exact minimum loan floor");
+        require(live_prefill_control_floor(offsets, cache.slots(), normal, floor, cache.live_block_bytes(), true) == floor,
+                "fresh pressure chooses a physically useful lower floor");
+        const int64_t old_first = live_prefill_first(offsets, cache.slots(), loan);
+        void* old_view = cache.device_slot(old_first);
+        const int64_t keep = live_prefill_retained(offsets, floor, loan, minimum);
+        const int64_t first = live_prefill_first(offsets, floor, loan, keep);
+        void* const new_view = cache.device_slot(first); // arithmetic plan before unmapping
+        require(keep == minimum && first == minimum, "minimum-sized cache borrows exactly the planned tail");
+        require(cudaMemsetAsync(old_view, 0x5a, loan, stream) == cudaSuccess &&
+                cudaMemcpyAsync(output, old_view, 256, cudaMemcpyDeviceToHost, stream) == cudaSuccess,
+                "queue a real consumer of the old loan before retirement");
+        bool active = true;
+        std::vector<int32_t> residency(160);
+        for (int i = 0; i < 160; ++i) residency[i] = i;
+        require(live_prefill_pause(active,
+            [&](std::string& why) {
+                if (cudaStreamSynchronize(stream) == cudaSuccess && output[0] == 0x5a) return true;
+                why = "old-view stream consumer did not observe its ordered write";
+                return false;
+            },
+            [&](std::string& why) { return refill(old_first, cache.slots(), why); },
+            [&](std::string& why) {
+                for (auto& slot : residency) if (slot >= floor) slot = -1;
+                return cache.resize_live(floor, why);
+            }, [] { return false; },
+            [&](std::string&) {
+                for (auto& slot : residency) if (slot >= first) slot = -1;
+                return cudaMemset(new_view, 0xa7, loan) == cudaSuccess;
+            }, err) && active, "old reads and refill finish before the pressure loan retires mappings: " + err);
+        require(cache.committed_bytes() == live_prefill_mapped_bytes(offsets[floor], cache.live_block_bytes()) &&
+                cache.committed_bytes() < before && cache.device_slot(0) == stable_base,
+                "real physical commitment matches rounded planner and preserves virtual base");
+        for (int32_t slot : residency) require(slot < first, "no active residency points into borrowed or retired slots");
+        if (minimum == 0)
+            require(live_prefill_donor(residency.data(), nullptr, 160, 0, [](int32_t) { return true; }) == -1,
+                    "keep0 cannot invent a GPU duplicate donor; immutable file fallback remains available");
+        require(cudaDeviceSynchronize() == cudaSuccess && refill(first, floor, err), "refill every new borrower before decode");
+        for (int64_t slot = first; slot < floor; ++slot) {
+            std::fill(original.begin(), original.end(), (uint8_t) (slot + 1));
+            require(cache.verify_slot((int32_t) slot, original.data(), err, MiB), "refilled bytes match immutable source exactly");
+        }
+        require(cudaGraphLaunch(exec, stream) == cudaSuccess && cudaStreamSynchronize(stream) == cudaSuccess && output[0] == 1,
+                "captured graph reads correct expert bytes after zero-prefix loan/refill");
+        require(cache.resize_live(160, err) && refill(floor, 160, err), "recovery regrows and fills expert tail");
+        require(live_prefill_retained(offsets, cache.slots(), loan, minimum) == 128,
+                "regrowth restores normal retention without enlarging minimum workspace");
+    }
+    cudaGraphExecDestroy(exec); cudaGraphDestroy(graph); cudaStreamDestroy(stream); cudaFreeHost(output);
+}
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)
 void ram_blocks(bool pin, bool mixed = false) {
     using namespace strata::core;
@@ -439,6 +522,7 @@ int main(int argc, char** argv) {
         loan_donors();
         if (argc <= 1 || std::strcmp(argv[1], "--protocol-only") != 0) {
             device_arena();
+            pressure_prefix_arena();
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)
             ram_blocks(false);
             ram_blocks(true);

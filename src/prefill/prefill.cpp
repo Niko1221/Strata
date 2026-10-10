@@ -1268,6 +1268,15 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
         err = "prefill: relayout needs borrowed buffers and a chunk of at most " + std::to_string(m.T_max);
         return false;
     }
+    // Reject an undersized loan before changing GEMM or any raw view. In particular,
+    // a failed outer region take must not leave a null nested Alloc base: that denotes
+    // owned cudaMalloc buffers, not a failed borrowed allocation. Use the same counted
+    // carve (including source layout, ring, KV staging and alignment slack) as admission.
+    const uint64_t required = bytes_needed(*m.g, *m.ss, chunk, m.src != nullptr);
+    if (borrow_bytes < required) {
+        err = "prefill: relayout loan is smaller than its counted buffers";
+        return false;
+    }
     if (cudaStreamSynchronize(m.cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess ||
         (m.kv_copy && cudaStreamSynchronize(m.kv_copy) != cudaSuccess)) {
         err = "prefill: relayout: the stream failed";

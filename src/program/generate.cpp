@@ -453,6 +453,8 @@ struct Options {
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
     bool live_memory = false;
+    int64_t live_prefill_min_retained = 128;
+    bool live_prefill_min_retained_given = false;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -920,6 +922,9 @@ void usage() {
                  "  --live-memory        opt-in single-GPU CUDA serve: resize expert VRAM/RAM at safe points via\n"
                  "                       MEMORY <id> <resident_mib> <vram_reserve_mib>; retains conversation state.\n"
                  "                       Requires a native pack, mmap and profile; guards prompt-buffer borrowing.\n"
+                 "  --live-prefill-min-retained N\n"
+                 "                       opt-in pressure-only loan prefix, 0..128 (default 128); fixed KV and\n"
+                 "                       borrowed live prefill required. Startup still retains 128 slots.\n"
                  "  --adapt-min-gain F   the adaptive tier swaps an expert in only when its decayed routing count beats\n"
                  "                       the one it replaces by more than F (default 1.5; higher = fewer, surer swaps)\n"
                  "  --adapt-async 1      --serve with the resident RAM mode (opt-in): the adaptive tier's swaps\n"
@@ -1906,6 +1911,14 @@ int main(int argc, char** argv) {
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--live-memory") o.live_memory = true;
+        else if (a == "--live-prefill-min-retained") {
+            if (!strata::core::live_prefill_parse_min_retained(next("--live-prefill-min-retained"),
+                                                             o.live_prefill_min_retained)) {
+                std::fprintf(stderr, "strata serve: --live-prefill-min-retained requires an integer from 0 to 128\n");
+                return 2;
+            }
+            o.live_prefill_min_retained_given = true;
+        }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
         else if (a == "--prefill") {
@@ -2265,6 +2278,14 @@ int main(int argc, char** argv) {
     }
     const bool remote_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 ||
                                o.expert_cache_remote[2] > 0;
+    if (o.live_prefill_min_retained_given &&
+        (!o.live_memory || o.no_prefill_borrow || o.prefill_chunk < 256 || std::getenv("STRATA_KV_STAGE_OWN") ||
+         strata::core::live_prefill_kv_grow_requested(o.kv_grow, std::getenv("STRATA_KV_GROW")))) {
+        std::fprintf(stderr, "strata serve: --live-prefill-min-retained requires --live-memory, borrowed "
+                             "prefill of at least 256 tokens, fixed KV (including STRATA_KV_GROW), "
+                             "and no STRATA_KV_STAGE_OWN override\n");
+        return 2;
+    }
     if (o.live_memory) {
         // ForesightSwap's filler queue retains host expert pointers until it submits
         // their copies. Device synchronization does not drain that host queue, so a
@@ -7281,9 +7302,14 @@ int main(int argc, char** argv) {
         const bool live_borrow = o.live_memory && pf_borrow;
         const int64_t live_chunk_max = o.prefill_chunk; // host buffers allocated by init; relayout never exceeds it
         int64_t live_cache_floor = 0;
+        int64_t live_pressure_floor = 0, live_retained = 128;
+        uint64_t live_minimum_loan_bytes = 0;
         if (live_borrow) {
+            live_minimum_loan_bytes = strata::prefill::Prefill::bytes_needed(g, ss, 256);
             live_cache_floor = strata::core::live_prefill_floor(xcache.slot_offsets(), xcache.capacity(),
-                strata::prefill::Prefill::bytes_needed(g, ss, 256));
+                live_minimum_loan_bytes);
+            live_pressure_floor = strata::core::live_prefill_floor(xcache.slot_offsets(), xcache.capacity(),
+                live_minimum_loan_bytes, o.live_prefill_min_retained);
             if (!borrow || pf_parts.size() != 1 || live_chunk_max < 256 || live_cache_floor < 0 || xcache.slots() < live_cache_floor) {
                 std::fprintf(stderr, "strata live memory: cache cannot fund a 256-token prompt loan and 128 decode slots\n");
                 return 1;
@@ -7292,21 +7318,29 @@ int main(int argc, char** argv) {
                          (long long) live_cache_floor,
                          (unsigned long long) ((xcache.slot_offsets()[live_cache_floor] + (1ull << 20) - 1) >> 20));
         }
+        auto live_control_floor = [&](uint64_t available, uint64_t reserve) {
+            if (!live_borrow || o.live_prefill_min_retained == 128) return live_cache_floor;
+            return strata::core::live_prefill_control_floor(xcache.slot_offsets(), xcache.slots(),
+                live_cache_floor, live_pressure_floor, xcache.live_block_bytes(), available < reserve);
+        };
         // Rebind every raw Prefill view before retiring mappings (or after growing them). This touches only
         // layout metadata: cache bytes stay expert weights until lend() marks their current owners nonresident.
         auto rebind_live_prefill = [&](int64_t slots, std::string& why) -> bool {
             if (!live_borrow) return true;
-            if (live_prompt_active || !pf_parts[0].lent.empty() || slots < live_cache_floor) {
+            if (live_prompt_active || !pf_parts[0].lent.empty() || slots < live_pressure_floor) {
                 why = "live prefill: loan is active or cache is below its prompt floor"; return false;
             }
             static constexpr int64_t chunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1536, 1024, 512, 256};
             int64_t chunk = std::min(live_chunk_max, o.prefill_chunk);
             int64_t first = -1;
+            const int64_t keep = strata::core::live_prefill_retained(xcache.slot_offsets(), slots,
+                live_minimum_loan_bytes, o.live_prefill_min_retained);
+            if (keep < 0) { why = "live prefill: no retained-prefix plan fits"; return false; }
             // Regrowth can recover the initial chunk; the initial init's host allocations remain the cap.
             for (const int64_t c : chunks) {
                 if (c > live_chunk_max) continue;
                 const int64_t at = strata::core::live_prefill_first(xcache.slot_offsets(), slots,
-                    strata::prefill::Prefill::bytes_needed(g, ss, c));
+                    strata::prefill::Prefill::bytes_needed(g, ss, c), keep);
                 if (at >= 0 && (!o.prefill_auto || (slots - at) * 100 <= kAutoLendPct * slots || c == 256)) {
                     chunk = c; first = at; break;
                 }
@@ -7316,10 +7350,22 @@ int main(int argc, char** argv) {
             }
             const int32_t first_slot = (int32_t) first;
             const uint64_t bytes = xcache.slot_offsets()[slots] - xcache.slot_offsets()[first];
-            if (!sp.relayout(chunk, xcache.device_slot(first_slot), bytes, why)) return false;
             PfPart& p = pf_parts[0];
+            const int64_t old_chunk = sp.chunk();
+            void* old_borrow = xcache.device_slot(p.first_now);
+            const uint64_t old_bytes = xcache.slot_offsets()[xcache.slots()] - xcache.slot_offsets()[p.first_now];
+            const auto rebound = strata::core::live_prefill_rebind(
+                [&](std::string& e) { return sp.relayout(chunk, xcache.device_slot(first_slot), bytes, e); },
+                [&](std::string& e) { return sp.relayout(old_chunk, old_borrow, old_bytes, e); }, why);
+            if (rebound == strata::core::LivePrefillRebind::invalid) {
+                std::fprintf(stderr, "strata live memory: fatal prompt layout rollback: %s\n", why.c_str());
+                std::fflush(stderr);
+                std::abort(); // no GEN or successful MEMORY ACK may use partially rebound raw views
+            }
+            if (rebound != strata::core::LivePrefillRebind::applied) return false;
             p.first = p.first_now = first_slot; p.lent_chunk = 0;
             lend_first = p.first; borrow = xcache.device_slot(first_slot); borrow_bytes = bytes;
+            live_retained = keep;
             if (o.prefill_chunk != chunk)
                 std::fprintf(stderr, "strata live memory: prompt loan now %lld tokens / %llu MiB with %lld cache slots\n",
                              (long long) chunk, (unsigned long long) (bytes >> 20), (long long) slots);
@@ -8805,6 +8851,8 @@ int main(int argc, char** argv) {
         // Call only after readers and CUDA work have drained. Both startup admission and live control remove
         // authoritative residency before releasing mappings, preserving the captured base and offset table.
         auto trim_live_cache = [&](int64_t slots, std::string& why) -> bool {
+            const int64_t old_slots = xcache.slots();
+            const uint64_t old_mapped = xcache.committed_bytes();
             std::vector<int32_t> next_res = host_res;
             for (auto& slot : next_res) if (slot >= slots) slot = strata::core::kNotResident;
             if (!rebind_live_prefill(slots, why)) return false;
@@ -8812,33 +8860,27 @@ int main(int argc, char** argv) {
                            cudaMemcpyHostToDevice) != cudaSuccess) {
                 if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
                                cudaMemcpyHostToDevice) != cudaSuccess) std::abort();
+                std::string rollback;
+                if (!rebind_live_prefill(old_slots, rollback)) std::abort();
                 why = "cannot publish reduced residency"; return false;
             }
             if (!xcache.resize_live(slots, why)) {
                 if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
                                cudaMemcpyHostToDevice) != cudaSuccess) std::abort();
+                std::string rollback;
+                if (!rebind_live_prefill(old_slots, rollback)) std::abort();
                 return false;
             }
             std::copy(next_res.begin(), next_res.end(), host_res.begin());
+            if (o.live_prefill_min_retained_given)
+                std::fprintf(stderr, "strata live prefill: shrink id=%llu minimum_keep=%lld selected_keep=%lld "
+                             "slots=%lld normal_floor=%lld pressure_floor=%lld mapped_before=%llu mapped_after=%llu\n",
+                             (unsigned long long) (memory_request ? memory_request->id : 0),
+                             (long long) o.live_prefill_min_retained, (long long) live_retained, (long long) slots,
+                             (long long) live_cache_floor, (long long) live_pressure_floor,
+                             (unsigned long long) old_mapped, (unsigned long long) xcache.committed_bytes());
             return true;
         };
-        auto memory_reply = [&](uint64_t id, const char* status, const char* code, uint64_t reserve) {
-            size_t free_b = 0, total_b = 0;
-            const bool measured = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
-            if (!measured) { status = "error"; code = "telemetry"; }
-            if (id != 0 && (std::strcmp(status, "applied") == 0 || std::strcmp(status, "error") == 0))
-                memory_last_terminal_id = id;
-            std::printf("MEMORY %llu status=%s resident_mib=%llu expert_cache_mib=%llu expert_slots=%lld "
-                        "vram_free_mib=%lld vram_reserve_mib=%llu error=%s\n",
-                        (unsigned long long) id, status, (unsigned long long) (src.resident_bytes() >> 20),
-                        (unsigned long long) (xcache.committed_bytes() >> 20), (long long) xcache.slots(),
-                        measured ? (long long) (free_b >> 20) : -1ll, (unsigned long long) reserve, code);
-            std::fflush(stdout);
-            return measured;
-        };
-        // Main-thread only. The reader queues control lines even while GEN is running; the actual mutation
-        // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
-        Clock::time_point capacity_at{};
         // WDDM's local residency budget is distinct from CUDA's allocator free count. Use the current
         // CUDA device's adapter LUID; adapter 0 could be the laptop's iGPU. Unavailable budgets are omitted.
         auto local_gpu_budget = [&](uint64_t& budget, uint64_t& usage) {
@@ -8857,6 +8899,32 @@ int main(int argc, char** argv) {
             if (!local_gpu_budget(budget, usage)) return cuda_free;
             return std::min(cuda_free, budget > usage ? budget - usage : 0);
         };
+        auto memory_reply = [&](uint64_t id, const char* status, const char* code, uint64_t reserve) {
+            size_t free_b = 0, total_b = 0;
+            const bool measured = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+            if (!measured) { status = "error"; code = "telemetry"; }
+            if (id != 0 && (std::strcmp(status, "applied") == 0 || std::strcmp(status, "error") == 0))
+                memory_last_terminal_id = id;
+            std::printf("MEMORY %llu status=%s resident_mib=%llu expert_cache_mib=%llu expert_slots=%lld "
+                        "vram_free_mib=%lld vram_reserve_mib=%llu error=%s\n",
+                        (unsigned long long) id, status, (unsigned long long) (src.resident_bytes() >> 20),
+                        (unsigned long long) (xcache.committed_bytes() >> 20), (long long) xcache.slots(),
+                        measured ? (long long) (free_b >> 20) : -1ll, (unsigned long long) reserve, code);
+            std::fflush(stdout);
+            if (o.live_prefill_min_retained_given)
+                std::fprintf(stderr, "strata live prefill: memory id=%llu status=%s minimum_keep=%lld selected_keep=%lld "
+                             "slots=%lld normal_floor=%lld pressure_floor=%lld mapped_bytes=%llu "
+                             "available_bytes=%llu reserve_bytes=%llu error=%s\n",
+                             (unsigned long long) id, status, (long long) o.live_prefill_min_retained,
+                             (long long) live_retained, (long long) xcache.slots(), (long long) live_cache_floor,
+                             (long long) live_pressure_floor, (unsigned long long) xcache.committed_bytes(),
+                             (unsigned long long) (measured ? admissible_gpu_free(free_b) : 0),
+                             (unsigned long long) (reserve << 20), code);
+            return measured;
+        };
+        // Main-thread only. The reader queues control lines even while GEN is running; the actual mutation
+        // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
+        Clock::time_point capacity_at{};
         auto service_memory = [&](bool pressure_pause = false) {
           try {
             // The engine's allocator view can differ substantially from NVML on WDDM.
@@ -8945,9 +9013,11 @@ int main(int argc, char** argv) {
             const uint64_t reserve = request.vram_reserve_mib << 20;
             const uint64_t committed = xcache.committed_bytes();
             const uint64_t quantum = xcache.live_block_bytes();
-            const uint64_t budget = strata::core::live_memory_gpu_budget(admissible_gpu_free(free_b), committed, reserve, quantum,
+            const uint64_t available = admissible_gpu_free(free_b);
+            const int64_t control_floor = live_control_floor(available, reserve);
+            const uint64_t budget = strata::core::live_memory_gpu_budget(available, committed, reserve, quantum,
                                                                         memory_gpu_growth);
-            int64_t target_slots = std::max(live_cache_floor, xcache.slots_for_bytes(budget));
+            int64_t target_slots = std::max(control_floor, xcache.slots_for_bytes(budget));
             const int64_t old_slots = xcache.slots();
             if (!memory_gpu_growth) target_slots = std::min(target_slots, old_slots);
             // At most 128 MiB of VRAM and one 32 MiB RAM block per window. Mapping rounds to the driver's
@@ -9032,7 +9102,7 @@ int main(int argc, char** argv) {
                 fail_memory("telemetry", "VRAM telemetry unavailable after resize"); return;
             }
             const uint64_t available_final = admissible_gpu_free(final_free);
-            const bool unreachable = available_final < reserve && xcache.slots() == live_cache_floor;
+            const bool unreachable = available_final < reserve && xcache.slots() == live_control_floor(available_final, reserve);
             if (available_final < reserve && memory_gpu_growth) {
                 memory_gpu_growth = false; memory_gpu_capped = true;
             }
@@ -11185,8 +11255,10 @@ int main(int argc, char** argv) {
                                 if (!memory_request) return false;
                                 if (!memory_ram_done && (memory_request->resident_mib << 20) < src.resident_bytes()) return true;
                                 size_t free_b = 0, total_b = 0;
-                                return xcache.slots() > live_cache_floor && cudaMemGetInfo(&free_b, &total_b) == cudaSuccess &&
-                                       admissible_gpu_free(free_b) < (memory_request->vram_reserve_mib << 20);
+                                if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) return false;
+                                const uint64_t available = admissible_gpu_free(free_b);
+                                const uint64_t reserve = memory_request->vram_reserve_mib << 20;
+                                return xcache.slots() > live_control_floor(available, reserve) && available < reserve;
                             };
                             while (relief_needed() && !stop_req.load()) {
                                 service_memory(true);
