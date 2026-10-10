@@ -118,6 +118,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include "strata/core/token_mask.hpp"
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -8401,7 +8402,7 @@ int main(int argc, char **argv) try {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s token_mask=1 engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -9332,6 +9333,7 @@ int main(int argc, char **argv) try {
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            bool req_mask = false;   // mask=1: serve/constrain.py answers MQ before every window (token_mask.hpp)
             // SYCL port: logprobs=K (0..20) - after each "T id" an "LP logprob id:logprob ..." line with the token's
             // log-probability and the K most likely tokens', from the verify window's head logits (before sampling,
             // penalties and temperature). -1 (absent): no LP lines; a server that does not ask never sees one.
@@ -9370,6 +9372,7 @@ int main(int argc, char **argv) try {
                     else if (key == "logprobs") req_logprobs = std::clamp(std::atoi(tok.c_str() + eq + 1), -1, 20);
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "mask") req_mask = std::atoi(tok.c_str() + eq + 1) != 0;
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
             }
@@ -10405,7 +10408,8 @@ int main(int argc, char **argv) try {
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap2[0] != nullptr;
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
-                                  : mtp.coupled() ? "coupled draft sampling" : nullptr;
+                                  : mtp.coupled() ? "coupled draft sampling"
+                                  : req_mask ? "a JSON response format (token mask)" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
                 if (said.insert(pl_serial).second)
@@ -11082,8 +11086,24 @@ int main(int argc, char **argv) try {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
-                if (use_mtp && req_spec_min_p > 0.0) {
+                // serve/constrain.py: the server's token mask for this window (token_mask.hpp); MF = free, MK = masked
+                bool gm_on = false;
+                std::vector<uint32_t> gm_words;
+                std::vector<int32_t> gm_cut;
+                if (req_mask) {
+                    std::printf("MQ\n");
+                    std::fflush(stdout);
+                    std::string gm_line, gm_err;
+                    if (!next_line(gm_line)) { finish = "cancel"; break; }   // the server closed stdin
+                    if (!strata::core::mask_parse_reply(gm_line, gm_on, gm_words, gm_cut, gm_err)) {
+                        std::fprintf(stderr, "strata serve: %s; the request ends\n", gm_err.c_str());
+                        finish = "cancel";
+                        break;
+                    }
+                    if (stop_req.load()) { finish = "cancel"; break; }
+                }
+                int T = gm_on ? 1 : (use_mtp ? S_mtp : 1);  // no --mtp: one token a round unless a lookup draft fires
+                if (!gm_on && use_mtp && req_spec_min_p > 0.0) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
@@ -11092,7 +11112,7 @@ int main(int argc, char **argv) try {
                 // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
                 bool from_sfx = false;
                 int sfx_match = 0;
-                if (o.suffix_draft > 0 && !first_window) {
+                if (!gm_on && o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
                     if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
@@ -11102,7 +11122,7 @@ int main(int argc, char **argv) try {
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
-                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
+                if (!gm_on && o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
                     int csrc = -1;
                     const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                     chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
@@ -11158,6 +11178,7 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 tr("window", p, T);
+                ver.set_token_mask(gm_on ? gm_words.data() : nullptr, gm_on ? (int64_t) gm_words.size() : 0);
                 const Clock::time_point tw0 = Clock::now();
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
@@ -11165,6 +11186,8 @@ int main(int argc, char **argv) try {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (gm_on) ver.set_token_mask(nullptr, 0);
+                a = strata::core::mask_cut_accepted(outv.data(), a, gm_cut);   // free window: nothing past </think>
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (strata::core::MtpDrafter::top2_env() && !from_sfx && !first_window && a < T_mtp - 1 && a < 8) {

@@ -1,6 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/batch_rows.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/token_mask.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -2136,6 +2137,36 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
+    // ---- 4-1/4-2: serve's token mask (token_mask.hpp), all of the window's mask rows.  The mask is applied to
+    // the head logits BEFORE the request's sampler runs, so every pick reads the masked distribution: plain
+    // sampling and the greedy argmax directly, and the STRATA_SPEC_PROB path through sample_tokens_spec - that
+    // path judges the drafts by rejection sampling against THESE logits, so the same accept rule the free MTP
+    // path uses applies to the masked target automatically (a draft the mask forbids has masked probability 0
+    // and is always rejected; the residual is drawn from the masked distribution).  Host-side for now: D2H the
+    // mask's rows, set the outside tokens to kMaskedLogit, H2D them back - the row-0 dance of mask=1 widened.
+    // tmask_ holds tmask_rows_ rows of tmask_words_ words (the MKN layout); row t is words + t * n_words.
+    const bool tmask_on = tmask_ != nullptr && head_logits_ != nullptr && n_vocab_ > 0;
+    const int tmask_rows = tmask_on ? std::min(tmask_rows_ > 0 ? tmask_rows_ : 1, T) : 0;   // 2-arg call: 1 row
+    if (tmask_on) {
+        const size_t row_bytes = (size_t) n_vocab_ * sizeof(float);
+        const size_t bytes = (size_t) tmask_rows * row_bytes;
+        tmask_row_.resize((size_t) tmask_rows * n_vocab_);
+        if (cudaMemcpyAsync(tmask_row_.data(), head_logits_, bytes, cudaMemcpyDeviceToHost, cs_) != cudaSuccess ||
+            cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "verify: reading the head logits for the token mask failed";
+            return false;
+        }
+        for (int t = 0; t < tmask_rows; ++t)
+            if (mask_apply_row(tmask_row_.data() + (size_t) t * n_vocab_, n_vocab_,
+                               tmask_ + (int64_t) t * tmask_words_, tmask_words_) == 0) {
+                err = "verify: the token mask allows no token (row " + std::to_string(t) + ")";
+                return false;
+            }
+        if (cudaMemcpyAsync(head_logits_, tmask_row_.data(), bytes, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
+            err = "verify: writing the masked head logits failed";
+            return false;
+        }
+    }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
         SamplerParams sp = sampling_;
@@ -2168,6 +2199,39 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             err = "verify: the head sampling failed";
             return false;
         }
+    } // <- head sampling ends here
+    if (tmask_on) {   // 4-2: the mask's rows read the masked logits above.  A sampled/penalized request was
+                      // already picked there; a greedy one (or a window whose head sampling is off) picks here,
+                      // with the request's own sampler - the masked argmax for greedy, exact per row.
+        if (!(head_sampling_ && (sampled || hist_d_ != nullptr))) {
+            SamplerParams msp = sampling_;
+            msp.counter = (uint64_t) pos0;
+            sample_tokens(head_logits_, tmask_rows, (int) n_vocab_, hist_d_, hist_len_, msp, m_out_, cs_);
+            if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+                err = "verify: the masked head sampling failed";
+                return false;
+            }
+        }
+        {   // the sampler's inverse-CDF can fall past the allowed tokens on rounding: never emit a masked one
+            volatile int32_t* o = (volatile int32_t*) h_out_;
+            for (int t = 0; t < tmask_rows; ++t) {
+                if (mask_allows(tmask_ + (int64_t) t * tmask_words_, tmask_words_, o[t])) continue;
+                const int32_t best = mask_argmax(tmask_row_.data() + (size_t) t * n_vocab_, n_vocab_,
+                                                 tmask_ + (int64_t) t * tmask_words_, tmask_words_);
+                static bool said = false;
+                if (!said) { said = true; std::fprintf(stderr, "strata serve: token mask: row %d: the sampler picked %d outside the mask; took %d (the best allowed)\n", t, (int) o[t], (int) best); }
+                o[t] = best;
+            }
+        }
+        // 4-3 (the part Phase 4 may only point at): the host rewrites above land in the MAPPED h_out_ before
+        // run()'s `out[t] = h_out_[t]` copy a few lines below, so the caller - generate.cpp's adoption loop, the
+        // emitted text and the next window's mtp.draft()/chain_launch input, all read after run() returns -
+        // sees the post-mask picks.  The sites that read h_out_/m_out_ WITHOUT this block are pl_finish() (the
+        // pipelined window: no mask block at all - safe today only because generate.cpp forces a masked
+        // request serial, pl_serial(req_mask)) and run_slots/run_slot_rows (the batch path, which never takes
+        // the mask).  If a later change pipelines or batches a masked window, the next window's MTP draft
+        // computation must not read m_out_/head_logits_ before these host writes are ordered - that ordering
+        // guarantee is Phase 5's (t_272c470b), not to be fixed here.
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
