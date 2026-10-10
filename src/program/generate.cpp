@@ -566,6 +566,10 @@ struct Options {
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
+    /// Layer split: the idle stage lends its GPU for one-chunk prompts (the prefill code reads it as the env
+    /// STRATA_PREFILL_HELP); these flags are the official interface. The helped rows round differently, repeatable.
+    bool prefill_help = false;
+    double prefill_help_frac = -1.0;   ///< >= 0: fix the helper's share for every prompt size (env STRATA_PREFILL_HELP_FRAC)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -817,6 +821,11 @@ void usage() {
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
                  "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
+                 "  --prefill-help       layer split: an idle stage streams and computes a share of the prompt's experts\n"
+                 "                       for one-chunk prompts (the env STRATA_PREFILL_HELP=1 does the same); measured\n"
+                 "                       +~30% on ~1.5K-token reads on 2x RTX 3090, off from ~3.3K tokens; the helped\n"
+                 "                       rows round differently (repeatable, not bit-identical)\n"
+                 "  --prefill-help-frac F  fix the helper's share for every prompt size (default: it falls with T)\n"
                  "  --no-pool            skip the CPU expert pool (the GPU-only floor)\n"
                  "  --sync-every-layer   debug: synchronise after every layer\n"
                  "  --ple-gguf PATH      the n-gram/PLE shard.  WITHOUT IT LAYER 1's PLE IS SILENTLY SKIPPED,\n"
@@ -1948,6 +1957,8 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
+        else if (a == "--prefill-help") o.prefill_help = true;
+        else if (a == "--prefill-help-frac") o.prefill_help_frac = std::atof(next("--prefill-help-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-min-gain") o.adapt_min_gain = (float) std::atof(next("--adapt-min-gain"));
@@ -2400,6 +2411,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    // The prompt-path helper (layer split) reads its switch from the environment once, when the first Prefill is
+    // built; --prefill-help* set it here so the flags work wherever the env did.  STRATA_PREFILL_HELP stays honoured.
+    if (o.prefill_help) setenv("STRATA_PREFILL_HELP", "1", 1);
+    if (o.prefill_help_frac >= 0.0 && o.prefill_help_frac <= 1.0) {
+        char fb[32];
+        std::snprintf(fb, sizeof fb, "%g", o.prefill_help_frac);
+        setenv("STRATA_PREFILL_HELP_FRAC", fb, 1);
+    }
+
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
