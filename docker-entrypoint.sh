@@ -26,9 +26,10 @@ PORT="${PORT:-8080}"
 API_KEY="${API_KEY:-}"
 KV="${KV:-}"                    # int8 | q4_0 | k8v4; empty: setup.py's own default (int8)
 GPUS="${GPUS:-}"                # "0,2" or "all": one model across several cards (docs/MULTI_GPU.md)
-GPU="${GPU:-}"                  # one card, numbered as nvidia-smi numbers them
+GPU="${GPU:-}"                  # one card, numbered as nvidia-smi/amd-smi numbers them
 LAYER_SPLIT="${LAYER_SPLIT:-}"  # with GPUS: where each later card's layers start (default: auto)
 LOW_RAM="${LOW_RAM:-auto}"      # on: the experts come from the pack's experts.bin, not from RAM
+BACKEND="${BACKEND:-}"          # cuda | hip | sycl; set to appropriate backend for your GPU
 GGUF_DIR="${GGUF_DIR:-}"        # a mounted folder with GGUF files you already have: no download
 RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"   # UD-Q4_K_XL: GiB of experts kept in RAM (default: setup's pick)
 KV_STREAMING="${KV_STREAMING:-}" # auto | on | off; empty: setup.py's own default (auto)
@@ -80,9 +81,7 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
   if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
   if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
-  if [ -n "$GGUF_DIR" ]; then set -- "$@" --gguf-dir "$GGUF_DIR"; fi
-  if [ -n "$RESIDENT_BUDGET_GIB" ]; then set -- "$@" --resident-budget-gib "$RESIDENT_BUDGET_GIB"; fi
-  if [ -n "$KV_STREAMING" ]; then set -- "$@" --kv-streaming "$KV_STREAMING"; fi
+  if [ -n "$BACKEND" ]; then set -- "$@" --backend "$BACKEND"; fi
   .venv/bin/python setup.py --setup --yes "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
   echo "Config: $cfg (from MODEL $MODEL, just set up)"
@@ -103,4 +102,5 @@ set -- --port "$PORT"
 if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
 if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
 if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
+if [ -n "$BACKEND" ]; then set -- "$@" --backend "$BACKEND"; fi
 exec .venv/bin/python setup.py "$@"
