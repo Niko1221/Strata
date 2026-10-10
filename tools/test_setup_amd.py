@@ -431,11 +431,51 @@ class CalibrationKey(unittest.TestCase):
 
 class WindowsHipVision(unittest.TestCase):
     def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)), \
+                mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
             self.assertEqual(setup.hip_vision("cpu"), "none")
             self.assertEqual(setup.hip_vision("yes"), "none")
         with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
             self.assertEqual(setup.hip_vision("cpu"), "cpu")
+
+    def test_an_encoder_built_by_hand_is_used(self):
+        # #1155: the ready-made Windows AMD engine has no encoder, but one built from tools/vision works
+        for where in ("build-vision/bin", "engine", "engine/.previous"):
+            with self.subTest(where=where), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup, "WIN", True), \
+                    mock.patch.object(setup, "VEXE", "strata-vision.exe"), mock.patch.object(setup, "ok", lambda *a: None):
+                built = Path(d) / where / "strata-vision.exe"
+                built.parent.mkdir(parents=True)
+                built.write_bytes(b"MZ")
+                self.assertEqual(setup.hip_vision("cpu"), "cpu")
+                eng = Path(d) / "engine"
+                eng.mkdir(exist_ok=True)
+                self.assertEqual(setup.place_windows_encoder(eng), "cpu")
+                self.assertEqual((eng / "strata-vision.exe").read_bytes(), b"MZ")      # beside the engine now
+
+    def test_a_vulkan_build_runs_on_the_gpu(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)), \
+                mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "VEXE", "strata-vision.exe"), \
+                mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
+            self.assertEqual(setup.hip_vision("gpu"), "none")                        # no Vulkan build yet
+            vk = Path(d) / "build-vision-vulkan" / "bin" / "strata-vision.exe"
+            vk.parent.mkdir(parents=True)
+            vk.write_bytes(b"MZ-vulkan")
+            self.assertEqual((setup.hip_vision("gpu"), setup.hip_vision("yes"), setup.hip_vision("cpu")),
+                             ("gpu", "gpu", "cpu"))
+            eng = Path(d) / "engine"
+            eng.mkdir()
+            (eng / "strata-vision.exe").write_bytes(b"MZ-cpu")                       # a CPU build is replaced
+            self.assertEqual(setup.place_windows_encoder(eng, "gpu"), "gpu")
+            self.assertEqual((eng / "strata-vision.exe").read_bytes(), b"MZ-vulkan")
+            vk.unlink()                                                              # gone: the CPU path takes over
+            self.assertEqual(setup.place_windows_encoder(eng, "gpu"), "cpu")
+
+    def test_no_encoder_anywhere_leaves_images_off(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "ROOT", Path(d)), \
+                mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
+            (Path(d) / "engine").mkdir()
+            self.assertEqual(setup.place_windows_encoder(Path(d) / "engine"), "none")
 
 
 class HipRuntimeBesideExe(unittest.TestCase):
