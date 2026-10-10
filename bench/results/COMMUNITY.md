@@ -68,6 +68,8 @@ How to read the table:
 | [2026-10-05-community-gfx1151](2026-10-05-community-gfx1151/) | Radeon 8060S (gfx1151), Ryzen AI Max+ 395, 128 GB unified memory | Q2_0, UD-IQ4_XS | 250.9 to 528.9 with the hipBLASLt table (matched synthetic prompts) | 45.6 to 46.8 (shared-expert stream on) | 0.1.39 + #895, #820 | #917 |
 | [2026-10-05-community-arc-b65](2026-10-05-community-arc-b65/) | Intel Arc Pro B65 32 GB (SYCL), Core i5-12600K, 128 GB | IQ2_XS, 8K | 307-359 (512 and 7,000-token tasks) | 36-49 by task; medians of the five tasks 40.4-41.3 / 39.8-40.9 | 0.1.40 source + 6 local patches | #955 |
 
+| [2026-10-09-community-rtx-5060-ti-e5-2680-v4](2026-10-09-community-rtx-5060-ti-e5-2680-v4/) | RTX 5060 Ti 16 GB (PCIe 3.0 x8), Xeon E5-2680 v4, Windows 10 | Coder IQ1_M / abliterated Q2_0, 262K | Coder 1,180 / 1,601 / 1,860; Q2 782 / 1,549 / 1,514 | Coder 47.5 / 51.0 / 49.1; Q2 68.0 / 73.4 / 68.5 | 0.1.41 | - |
+
 Notes:
 
 - #927 ran seven configurations; the table shows the one-card stock and PR sets and the layer split with the PRs (#835 is opt-in in 0.1.40, so those are not the release default), and its README has the helper-mode rows. #917 is 0.1.39 plus then-unmerged #895 and #820, and 0.1.40 turned the shared-expert stream off on HIP (#826). #955's patches 3, 5 and 6 are source changes in 0.1.40.2.
