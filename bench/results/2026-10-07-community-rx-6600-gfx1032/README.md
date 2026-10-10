@@ -54,7 +54,7 @@ I read both as sampling noise, but the sample is small.
 ## Memory on an 8 GB card
 
 - Expert cache auto: 985 slots, 1.62 GiB VRAM; MTP draft layer 835 MiB; draft head 178 MiB
-- 620 MiB VRAM free with everything loaded (KV streaming keeps the last 32K in VRAM, the rest in RAM)
+- 620 MiB VRAM free with everything loaded (KV streaming: a 32K-token VRAM cache of the attention-selected blocks, older ones included; the full KV copy stays in RAM)
 - 39.97 GiB of experts loaded into a pinned RAM arena at about 11 GiB/s; 7 pool workers + host thread
 - KV streaming in normal use: 98.7 to 99.8 % of block reads hit VRAM
 
