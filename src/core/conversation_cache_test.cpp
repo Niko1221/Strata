@@ -558,7 +558,7 @@ int main() {
               "the refusal reports how far the last reading fell short");
 
         // The move out of generate.cpp must not change what the loop decides. Run the loop as it stood before the
-        // move (git show HEAD~1:src/program/generate.cpp) and the helper over the same states: a fresh cache and a
+        // move (git show 3ae6a9ec:src/program/generate.cpp) and the helper over the same states: a fresh cache and a
         // fresh reading program for each, so the two cannot share mutable state.
         auto before_move = [](ConversationCache& c, const size_t additional, const uint64_t floor,
                              auto&& sample) {

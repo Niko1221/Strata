@@ -66,3 +66,5 @@ and why, and the refusal lines now print both resources and the process' own com
 Build notes for this machine: the old `build_cuda`/`build_tests` caches are configured for a
 different path and cannot be re-rooted - configure fresh with
 `-DFETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=.../_deps/strata_llamacpp-src` to avoid a re-download.
+Any `cl` or `cmake --build` of this tree needs `vcvars64.bat` called in the same shell first; without it MSVC
+finds no standard headers and reports `C1083: Cannot open include file: 'algorithm'`, which is not a code error.

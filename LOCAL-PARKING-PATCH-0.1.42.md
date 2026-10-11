@@ -163,7 +163,7 @@ answered. Two things that changed with the move, both deliberate:
   helper re-samples before it can end, so no eviction is ever reported against an older reading than itself.
 
 The move itself was then checked rather than asserted: `conversation_cache_test.cpp` runs the loop exactly as it
-stood in `generate.cpp` before the move (`git show HEAD~1:src/program/generate.cpp` 7817-7851) and
+stood in `generate.cpp` before the move (`git show 3ae6a9ec:src/program/generate.cpp` 7817-7851) and
 `evict_for_admission()` over a twelve-case table of readings (flat, improving, improving-then-fitting, worsening,
 a request above the whole cache, an empty cache, a roomy reading, one entry with one byte needed,
 `additional == 0` twice, and telemetry unavailable twice), each case with its own cache and its own reading
