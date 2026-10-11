@@ -13,6 +13,11 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   its use counts fade.  A PC whose CPU reads the missed experts slowly (DDR3, ~24 GB/s) gains from
                   swapping more: 160 swaps every window measured +7.9% over the default tier on a Xeon E5-2673 v3 (DDR3) with an
                   RTX 4060 Ti on PCIe 3.0 x8 (Q2_0; with the swaps taking effect a window later, #764).
+  STRATA_SH_STREAM (AMD only)
+                  the shared expert on its own stream.  Off by default on HIP (#816: an RX 6800 on Windows and 4x R9700
+                  decode 12-45% faster without it), but the same card family on another PC goes the other way (#1272:
+                  2x RX 6900 XT on Linux, 6-11% faster with it), so it is measured here, per PC, and written into the
+                  config's "env" only when it wins.  The output is identical either way (same token ids).
 The first two are measured through one engine (per-request `strata_tune` keys); the worker count and the adaptive
 tier need a restart per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
 
@@ -40,6 +45,8 @@ SPEC_MIN_PS = (0.3, 0.5, 0.7)
 SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
+# HIP: the shared-expert stream fork, off (the HIP default) against on; an engine environment variable, not an argument
+SH_STREAM = "STRATA_SH_STREAM"
 ADAPT_CANDIDATES = (None, ("1", "80", "0.97"), ("1", "160", "0.97"))
 ADAPT_FLAGS = ("--adapt-every", "--adapt-swaps", "--adapt-decay")
 MAX_NEW = 128
@@ -139,8 +146,10 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     if start_engine is None:
         from serve.server import StrataEngine, child_env
 
-        def start_engine(args):
-            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
+        def start_engine(args, env=None):
+            e = child_env(cfg)
+            e.update(env or {})
+            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=e)
     import strata_tokenizer as ST
     tpath = Path(cfg["tokenizer"])
     vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
@@ -150,7 +159,7 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras())
+    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), hip=cfg.get("backend") == "hip")
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -199,7 +208,7 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
     return out
 
 
-def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=()) -> dict:
+def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), hip: bool = False) -> dict:
     t0 = time.time()
     report: dict = {}
     say("  Loading the model for the measurements ...")
@@ -290,9 +299,34 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         base_rate = statistics.median(by_adapt[a_best])
     elif by_adapt.get("default"):
         base_rate = statistics.median(by_adapt["default"])
+    # 6. HIP: the shared-expert stream fork (a restart each), with everything chosen so far.  Both values are set
+    # explicitly, so a value the config carried before does not decide the baseline.
+    env = {}
+    if hip:
+        tuned = apply(base_args, settings)
+        by_fork = {}
+        for v in ("0", "1"):
+            say(f"  Measuring the shared expert {'on its own stream' if v == '1' else 'on the main stream (the AMD default)'}"
+                " (restarts the engine) ...")
+            e = restart(lambda a: start_engine(a, {SH_STREAM: v}), tuned, f"{SH_STREAM}={v}", say, report)
+            if e is None:
+                continue
+            try:
+                sf = Session(e, ids_list)
+                sf.warm_up(1)
+                by_fork[v] = [sf.rate(), sf.rate()]
+                say(f"    {statistics.median(by_fork[v]):.1f} tok/s")
+            finally:
+                close(e)
+        report["sh_stream"] = by_fork
+        if pick(by_fork, "0") == "1":
+            env[SH_STREAM] = "1"
+            base_rate = statistics.median(by_fork["1"])
+        elif by_fork.get("0"):
+            base_rate = statistics.median(by_fork["0"])
     report["seconds"] = round(time.time() - t0)
     report["tok_s"] = round(base_rate, 1) if base_rate else None
-    return {"settings": settings, "report": report}
+    return {"settings": settings, "env": env, "report": report}
 
 
 def restart(start_engine, args, what, say, report):
@@ -333,6 +367,17 @@ def apply(args: list[str], settings: dict) -> list[str]:
     out = list(args)
     for flag, default in DEFAULTS.items():
         out = with_arg(out, flag, settings.get(flag, default))
+    return out
+
+
+ENV_KEYS = (SH_STREAM,)
+
+
+def apply_env(env: dict | None, calibrated: dict | None) -> dict:
+    """The config's "env" with a calibration's engine variables: the ones it chose are set, the others in ENV_KEYS are
+    removed (back to the engine's default), so an older calibration's choice never lingers."""
+    out = {k: v for k, v in (env or {}).items() if k not in ENV_KEYS}
+    out.update(calibrated or {})
     return out
 
 
