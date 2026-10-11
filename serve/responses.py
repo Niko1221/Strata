@@ -276,8 +276,6 @@ def request_tools(req: dict):
         kind = tool.get("type")
         name = tool.get("name")
         if kind == "tool_search":
-            if name not in (None, CLIENT_TOOL_SEARCH):
-                raise ResponsesError(f"tool_search is declared as {CLIENT_TOOL_SEARCH}", param + ".name")
             name = CLIENT_TOOL_SEARCH                # Codex declares its tool discovery without a name
         if not isinstance(name, str) or not name:
             raise ResponsesError("a tool needs a name", param + ".name")
@@ -310,12 +308,10 @@ def request_tools(req: dict):
         elif kind == "tool_search":
             # Codex's client-side tool discovery (#1917): no host can run it, so the model gets an ordinary function
             # the client answers, and the call goes back as a `tool_search_call`. A search some other host runs is
-            # left out, like the other hosted tools.
+            # left out, like the other hosted tools; a second declaration of the same tool adds nothing.
             if tool.get("execution") not in (None, "client"):
                 skipped.append(kind)
-            elif CLIENT_TOOL_SEARCH in names:
-                raise ResponsesError(f"a tool named {CLIENT_TOOL_SEARCH!r} is already declared", param + ".name")
-            else:
+            elif CLIENT_TOOL_SEARCH not in names:
                 add(tool, param)
         elif kind == "namespace":
             for j, member in enumerate(tool.get("tools") or []):
