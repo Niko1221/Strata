@@ -2805,9 +2805,22 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
-    // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
-    // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
-    // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
+    // A peer context must exist before the large expert arena is registered. On Windows/WDDM, creating it after
+    // cudaHostRegisterPortable has pinned tens of GiB can fail at the peer's first cudaStreamCreate even when that
+    // card has plenty of free VRAM: the new context cannot map the already-registered arena. The helper-cache path
+    // already preflights CUDA1 for the same reason; do it for --peer-device too.
+    if (o.peer_device >= 1) {
+        double free_gib = 0;
+        if (!strata::core::RemoteExperts::preflight(o.peer_device, free_gib, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: peer CUDA%d context ready, %.2f GiB free before expert arena registration\n",
+                     o.peer_device, free_gib);
+    }
+    // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary helper-cache context here, like CUDA1's. Under WSL2
+    // the driver's pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later
+    // loop runs, and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
     const char* early_env = std::getenv("STRATA_EARLY_REMOTE_CONTEXTS");
     const bool early_remote = early_env && early_env[0] == '1';
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && (r == 0 || early_remote)) {
