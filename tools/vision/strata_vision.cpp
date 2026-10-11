@@ -25,6 +25,7 @@
 #include <unistd.h>
 #endif
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -151,16 +152,20 @@ int main(int argc, char** argv) {
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
-    // Warm up at the LARGEST picture before READY: the encoder's GPU work buffers are allocated now, not at the first
+    // Warm up near the picture token limit before READY: the encoder's GPU work buffers are allocated now, not at the first
     // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
     // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
-    // the engine crawl to a standstill.  (A square image well above any cap; mtmd scales it to the token limit.)
+    // the engine crawl to a standstill.  mtmd scales the square to the token limit, rounding its patch grid.
     // On the CPU there is no VRAM to reserve, and the warm-up would only delay the engine's start by one encode
     // (~6 s at 1,024 tokens).
     if (!gpu) std::fprintf(stderr, "strata-vision: on the CPU, %d threads, no warm-up\n", threads);
     else {
         const auto warm_t0 = std::chrono::steady_clock::now();
-        const uint32_t side = 2048;
+        // Qwen's merged image tokens cover 32x32 pixels. The original square covers caps up to 4096;
+        // a larger explicit cap needs a larger square to reserve its work buffers before the engine starts.
+        const uint32_t side = max_tokens > 4096
+            ? 32u * static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(max_tokens))))
+            : 2048u;
         std::vector<unsigned char> rgb((size_t) side * side * 3, 128);
         mtmd_bitmap* bm = mtmd_bitmap_init(side, side, rgb.data());
         mtmd_input_chunks* chunks = mtmd_input_chunks_init();
