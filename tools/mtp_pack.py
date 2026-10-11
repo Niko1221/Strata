@@ -11,8 +11,9 @@ Layout: dense tensors (attention, indexer, hyper-connections, shared expert, rou
 `down_proj` [512, 2560, 640], quantized along the last (input) axis - in one of:
 
     q2_0   64-element blocks, grid {-1, 0, 1, 2} x d. The scale, of either sign, is chosen per block to MINIMIZE
-           squared error over that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
-           model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it unchanged. ~0.71 GB.
+           squared error over that grid (the ggml reference sets d = max|w| and never uses the +2
+           level). Same format as the main model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it
+           unchanged. ~0.71 GB.
     q4_0   ggml reference rounding. ~1.42 GB.       q8_0   ggml reference. ~2.67 GB.
 
 This is round-to-nearest, not GSQ: the plan picks the expert format by MEASURED draft acceptance (P0.3/P6), not
@@ -55,27 +56,40 @@ def load_bf16(path: Path, shape: list[int]) -> np.ndarray:
 
 
 # ------------------------------------------------------------------------------------------------ quantizers
+# Candidate scales as fractions of max|w|: the 17 positive steps of [0.5, 1.0] the search used before (so no block
+# gets a worse scale than it did), plus 29 steps of [0.15, 1.0] in both signs. A negative d mirrors the grid to
+# {+1, 0, -1, -2} x |d|, which fits blocks whose largest weight is negative.
+_Q2_0_WIDE = np.linspace(0.15, 1.0, 29, dtype=np.float32)
+_Q2_0_SCALES = np.concatenate((np.linspace(0.5, 1.0, 17, dtype=np.float32), _Q2_0_WIDE, -_Q2_0_WIDE))
+_FP16_MAX = float(np.finfo(np.float16).max)
+
+
+def _safe_inv(d: np.ndarray) -> np.ndarray:
+    nz = d != 0
+    return np.where(nz, 1.0 / np.where(nz, d, 1.0), 0.0)
+
+
 def q2_0(w: np.ndarray) -> np.ndarray:
-    """[..., n] float32 -> bytes of Q2_0 blocks (fp16 d, 16 bytes of 2-bit codes, code = q + 1, 4 per byte)."""
+    """[..., n] float32 -> bytes of Q2_0 blocks (fp16 d, 16 bytes of 2-bit codes, code = q + 1, 4 per byte).
+
+    Each candidate scale is rounded to fp16 before its error is measured, so the winner is the best STORED scale and
+    the search is never worse than the previous one on any block. A block whose max|w| is above 65504 cannot be
+    stored (d would be inf) and is refused; one below about 3e-8 stores d = 0 and decodes to zeros, as before."""
     x = w.reshape(-1, 64).astype(np.float32)
     amax = np.abs(x).max(axis=1, keepdims=True)
+    if not amax.max(initial=0.0) <= _FP16_MAX:
+        raise ValueError(f"Q2_0 scale does not fit fp16: max|w| = {amax.max()}, limit {_FP16_MAX}")
     best_err = np.full((x.shape[0], 1), np.inf, dtype=np.float32)
     best_d = np.zeros_like(amax)
-    # Candidate scales span 0.15 x amax to amax, in both signs: a negative d mirrors the grid to {+1, 0, -1, -2} x |d|,
-    # which fits blocks whose largest weight is negative. 29 steps keep the step (0.0304) under the old 17-step 0.0313.
-    for sign in (1.0, -1.0):
-        for f in np.linspace(0.15, 1.0, 29, dtype=np.float32):
-            d = amax * (sign * f)
-            inv = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0)
-            q = np.clip(np.rint(x * inv), -1, 2)
-            err = ((q * d - x) ** 2).sum(axis=1, keepdims=True)
-            better = err < best_err
-            best_err = np.where(better, err, best_err)
-            best_d = np.where(better, d, best_d)
+    for f in _Q2_0_SCALES:
+        d = (amax * f).astype(np.float16).astype(np.float32)
+        q = np.clip(np.rint(x * _safe_inv(d)), -1, 2)
+        err = ((q * d - x) ** 2).sum(axis=1, keepdims=True)
+        better = err < best_err
+        best_err = np.where(better, err, best_err)
+        best_d = np.where(better, d, best_d)
     d16 = best_d.astype(np.float16)
-    d = d16.astype(np.float32)                                   # quantize against the STORED scale
-    inv = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0)
-    codes = (np.clip(np.rint(x * inv), -1, 2) + 1).astype(np.uint8)          # 0..3
+    codes = (np.clip(np.rint(x * _safe_inv(best_d)), -1, 2) + 1).astype(np.uint8)          # 0..3
     c = codes.reshape(-1, 16, 4)
     packed = (c[:, :, 0] | (c[:, :, 1] << 2) | (c[:, :, 2] << 4) | (c[:, :, 3] << 6)).astype(np.uint8)
     out = np.empty((x.shape[0], 18), dtype=np.uint8)
