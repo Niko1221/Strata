@@ -60,13 +60,22 @@ class VideoPolicyTests(unittest.TestCase):
         raw["streams"][0]["side_data_list"] = [{"rotation": 90}]
         info = probe_info(raw,policy())
         self.assertEqual((info.width,info.height,info.rotation), (64,128,90))
-        for change in ("vfr", "resolution", "fps", "nan", "rotation"):
+        vfr = copy.deepcopy(probe_data())
+        vfr["frames"][3]["best_effort_timestamp_time"] = "1.6"
+        info = probe_info(vfr, policy())
+        self.assertTrue(info.variable_rate)
+        self.assertEqual((info.source_fps, info.duration_s), (2, 2.5))
+        vfr["streams"][0]["avg_frame_rate"] = "0/0"
+        self.assertTrue(probe_info(vfr, policy()).variable_rate)  # infer rate from bounded PTS
+        for change in ("resolution", "fps", "nan", "rotation", "nonmonotonic"):
             bad = copy.deepcopy(probe_data())
-            if change == "vfr": bad["frames"][3]["best_effort_timestamp_time"] = "1.6"
             if change == "resolution": bad["frames"][3]["width"] = 64
-            if change == "fps": bad["streams"][0]["avg_frame_rate"] = "0/0"
+            if change == "fps":
+                bad["streams"][0]["avg_frame_rate"] = "0/0"
+                bad["frames"] = bad["frames"][:1]
             if change == "nan": bad["frames"][3]["best_effort_timestamp_time"] = "nan"
             if change == "rotation": bad["streams"][0]["side_data_list"] = [{"rotation": 45}]
+            if change == "nonmonotonic": bad["frames"][3]["best_effort_timestamp_time"] = "0.4"
             with self.subTest(change=change), self.assertRaises(VideoError):
                 probe_info(bad,policy())
 

@@ -28,7 +28,7 @@ class VideoLimitError(VideoError):
 FRAME_HEADER = struct.Struct("<4sIIIIdQ")
 FRAME_TIME = struct.Struct("<d")
 VIDEO_PROFILE = "qwen4_exp_16x2x2_2560_v1"
-PREPROCESS_VERSION = 1
+PREPROCESS_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -184,6 +184,7 @@ class ClipInfo:
     resized_width: int
     resized_height: int
     rotation: int = 0
+    variable_rate: bool = False
 
     @property
     def rows(self):
@@ -202,10 +203,11 @@ class ClipInfo:
 
 
 def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
-    """Untrusted ffprobe JSON. First implementation accepts constant-rate video.
+    """Validate untrusted ffprobe metadata and identify VFR for bounded CFR normalization.
 
-    Every decoded frame's PTS/dimensions is checked, not only the format's claims.
-    Audio is ignored. Playlists, variable rates and changing resolution are refused.
+    The VFR normalizer uses FFmpeg at the reported average rate (or a bounded PTS-derived
+    fallback); source PTS are not forwarded to the model. Audio is ignored. Playlists and
+    changing resolution fail closed.
     """
     try:
         streams = data["streams"]
@@ -219,14 +221,18 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
             raise VideoError("video source pixels exceed the configured limit")
         if max(w, h) / min(w, h) > 200:
             raise VideoError("video source aspect ratio exceeds 200")
-        a, b = s["avg_frame_rate"].split("/")
-        fps = int(a) / int(b)
-        if not math.isfinite(fps) or not 0.1 <= fps <= 240:
-            raise VideoError("video source FPS must be finite (0.1..240)")
+        declared_fps = None
+        try:
+            a, b = s["avg_frame_rate"].split("/")
+            candidate = int(a) / int(b)
+            if math.isfinite(candidate) and 0.1 <= candidate <= 240:
+                declared_fps = candidate
+        except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+            pass
         records = data["frames"]
         if not isinstance(records, list) or not 1 <= len(records) <= policy.max_source_frames:
             raise VideoError("video source frame count exceeds the configured limit")
-        times = []
+        times, packet_durations = [], []
         for frame in records:
             if frame.get("width") != w or frame.get("height") != h:
                 raise VideoError("videos with changing resolution are not supported")
@@ -234,11 +240,36 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
             if not math.isfinite(t):
                 raise VideoError("video frame timestamps must be finite")
             times.append(t)
-        # ffprobe prints microseconds. Permit that quantization, not VFR or guessed timestamps.
-        if any(abs((t - times[0]) - i / fps) > 3e-6 for i, t in enumerate(times)):
-            raise VideoError("variable-frame-rate videos are not supported; use a constant-frame-rate clip")
-        duration = len(times) / fps
-        if duration > policy.max_duration_s:
+            try:
+                d = float(frame.get("pkt_duration_time", "nan"))
+            except (TypeError, ValueError, OverflowError):
+                d = math.nan
+            packet_durations.append(d)
+        if any(b <= a for a, b in zip(times, times[1:])):
+            raise VideoError("video frame timestamps must be strictly increasing")
+        intervals = [b - a for a, b in zip(times, times[1:])]
+        if intervals:
+            ordered = sorted(intervals)
+            middle = len(ordered) // 2
+            step = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+            uniform = all(abs(dt - step) <= 3e-6 for dt in intervals)
+            fps = 1 / step
+        else:
+            step, uniform = (1 / declared_fps if declared_fps else 0), True
+            fps = declared_fps or 0
+        if uniform:
+            if not math.isfinite(fps) or not 0.1 <= fps <= 240:
+                raise VideoError("video source FPS must be finite (0.1..240)")
+            duration = len(times) / fps
+        else:
+            fps = declared_fps or (len(times) / (times[-1] - times[0] + step))
+            if not math.isfinite(fps) or not 0.1 <= fps <= 240:
+                raise VideoError("video average FPS must be finite (0.1..240) for CFR normalization")
+            end_duration = packet_durations[-1]
+            if not math.isfinite(end_duration) or end_duration <= 0:
+                end_duration = step
+            duration = times[-1] - times[0] + end_duration
+        if not math.isfinite(duration) or duration <= 0 or duration > policy.max_duration_s:
             raise VideoError("video duration exceeds the configured limit")
         rotation = 0
         for side in s.get("side_data_list", []):
@@ -249,13 +280,18 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
                 rotation = int(r) % 360
         if rotation % 180:
             w, h = h, w
-        indices = sample_indices(len(times), fps, policy.fps)
-        if len(indices) > policy.max_frames:
-            raise VideoError("video sampling exceeds the frame budget; no frames were silently dropped")
-        rh, rw = resize_shape(h, w, len(indices), policy)
-        info = ClipInfo(len(times), fps, w, h, duration, indices, rw, rh, rotation)
-        if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes:
-            raise VideoError("video exceeds its visual token/RGB budget")
+        variable_rate = not uniform
+        if variable_rate:
+            # The decoder determines the normalized count before sampling or resizing.
+            info = ClipInfo(len(times), fps, w, h, duration, (), w, h, rotation, True)
+        else:
+            indices = sample_indices(len(times), fps, policy.fps)
+            if len(indices) > policy.max_frames:
+                raise VideoError("video sampling exceeds the frame budget; no frames were silently dropped")
+            rh, rw = resize_shape(h, w, len(indices), policy)
+            info = ClipInfo(len(times), fps, w, h, duration, indices, rw, rh, rotation)
+            if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes:
+                raise VideoError("video exceeds its visual token/RGB budget")
         return info
     except VideoError:
         raise

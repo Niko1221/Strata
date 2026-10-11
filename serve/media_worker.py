@@ -6,6 +6,7 @@ allows blocked reads and decoder descendants to be stopped without touching Stra
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 import math
@@ -22,7 +23,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from serve.media_process import OwnedMediaProcess
 from serve.video import (FRAME_HEADER, FRAME_TIME, VideoCancelled, VideoError, VideoLimitError,
-                         VideoPolicy, VideoRequestBudget, probe_info)
+                         VideoPolicy, VideoRequestBudget, probe_info, sample_indices, resize_shape)
 
 
 FORMATS = "mov,matroska,webm,avi,gif"
@@ -75,17 +76,58 @@ def decoder_args(exe, source):
             "-format_whitelist", FORMATS, "-max_alloc", str(64 << 20), "-i", source]
 
 
+def _fps_filter(info):
+    rate = format(info.source_fps, ".12g")
+    return f"setpts=PTS-STARTPTS,fps=fps={rate}:round=near"
+
+
+def _normalized_frame_count(source, budget, info):
+    p = budget.policy
+    args = decoder_args(p.ffmpeg, source)
+    args[1:1] = ["-nostdin", "-hwaccel", "none"]
+    args += ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", _fps_filter(info),
+             "-frames:v", str(p.max_source_frames + 1), "-f", "framemd5", "pipe:1"]
+    maximum = min(16 << 20, (p.max_source_frames + 1) * 256 + 65536)
+    with OwnedMediaProcess(args, budget, max_stdout=maximum, inherit_group=True) as process:
+        raw = process.read()
+    try:
+        lines = raw.decode("ascii").splitlines()
+        count = sum(1 for line in lines if line.strip() and not line.lstrip().startswith("#") and
+                    line.split(",", 1)[0].strip() == "0")
+    except (UnicodeError, ValueError):
+        raise VideoError("video CFR normalization returned invalid frame metadata") from None
+    if count < 1:
+        raise VideoError("video CFR normalization produced no frames")
+    if count > p.max_source_frames:
+        raise VideoLimitError("CFR-normalized video exceeds the configured source frame limit")
+    return count
+
+
+def _normalized_info(info, frames, policy):
+    indices = sample_indices(frames, info.source_fps, policy.fps)
+    if len(indices) > policy.max_frames:
+        raise VideoLimitError("video sampling exceeds the frame budget; no frames were silently dropped")
+    rh, rw = resize_shape(info.height, info.width, len(indices), policy)
+    normalized = replace(info, frames=frames, indices=indices, resized_width=rw, resized_height=rh)
+    if normalized.rows > policy.max_tokens or normalized.rgb_bytes > policy.max_rgb_bytes:
+        raise VideoLimitError("video exceeds its visual token/RGB budget after CFR normalization")
+    return normalized
+
+
 def probe(source, budget):
-    # All frame PTS/dimensions: reject variable rates/resolution instead of inventing a time base.
+    # Probe every original frame first; VFR is normalized only after source bounds are checked.
     args = decoder_args(budget.policy.ffprobe, source)
     args[1:1] = ["-select_streams", "v:0", "-show_frames", "-show_streams", "-of", "json", "-show_entries",
-                 "frame=best_effort_timestamp_time,width,height:stream=width,height,avg_frame_rate:stream_side_data=rotation"]
+                 "frame=best_effort_timestamp_time,pkt_duration_time,width,height:stream=width,height,avg_frame_rate:stream_side_data=rotation"]
     with OwnedMediaProcess(args, budget, max_stdout=8 << 20, inherit_group=True) as process:
         raw = process.read()
     try:
-        return probe_info(json.loads(raw), budget.policy)
+        info = probe_info(json.loads(raw), budget.policy)
     except (UnicodeError, json.JSONDecodeError):
         raise VideoError("video probe returned invalid JSON") from None
+    if info.variable_rate:
+        info = _normalized_info(info, _normalized_frame_count(source, budget, info), budget.policy)
+    return info
 
 
 def decode(source, output, budget, info=None):
@@ -96,10 +138,11 @@ def decode(source, output, budget, info=None):
     if info.rgb_bytes > p.max_rgb_bytes or info.packet_bytes > p.max_disk_bytes:
         raise VideoError("video frame spool exceeds its RGB/disk budget")
     wanted = "+".join(f"eq(n\\,{i})" for i in info.indices)
+    filters = ([_fps_filter(info)] if info.variable_rate else []) + ["select=" + wanted]
     args = decoder_args(p.ffmpeg, source)
     # No implicit hardware decoder/device selection, console input, audio, subtitles or data streams.
     args[1:1] = ["-nostdin", "-hwaccel", "none"]
-    args += ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", "select=" + wanted,
+    args += ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", ",".join(filters),
              "-fps_mode", "passthrough", "-frames:v", str(len(info.indices)), "-threads", "1",
              "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]
     original_bytes = info.width * info.height * 4

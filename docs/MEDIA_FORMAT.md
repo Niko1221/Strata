@@ -6,6 +6,19 @@ it only with explicit video opt-in and matching capabilities; native inference r
 Implementations: `serve/media.py` and `include/strata/program/media_embeddings.hpp`, with the C++ definitions in
 `src/program/media_embeddings.cpp`. Neither implementation requires a model, decoder, server or GPU.
 
+## Variable-frame-rate sources
+
+CFR clips are decoded and sampled unchanged. VFR clips are first probed frame by frame for increasing timestamps
+and stable dimensions, then FFmpeg's `fps` filter normalizes them to the stream's reported average frame rate
+(or a rate inferred from bounded PTS when that metadata is absent).
+The normalized frame count and the final Qwen sampling count are both bounded; exceeding either budget rejects the
+request rather than silently dropping extra frames. The decoder applies the same normalization filter again for
+RGB extraction and verifies the expected frame count.
+
+Normalization can drop or duplicate frames, and generated video times use the normalized CFR grid, not original
+per-frame PTS. It therefore approximates VFR timing; it does not preserve source timing exactly. This behavior is
+covered by a CPU decode test against an equivalent CFR transcode. It does not establish native video/model parity.
+
 ## Compatibility
 
 Existing image requests still use their existing `ENC` / `SVE1` / `GENI` path. Nothing in that path has been

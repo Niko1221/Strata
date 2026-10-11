@@ -94,6 +94,57 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual(self.q.used,0)
         self.assertEqual(list(self.root.iterdir()),[self.source])
 
+    def _vfr_source(self):
+        source = self.root / "variable.mkv"
+        subprocess.run([self.p.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=128x64:rate=2",
+                        "-frames:v", "7", "-vf", "setpts='if(gte(N,2),N+1,N)/(2*TB)'", "-fps_mode", "vfr",
+                        "-c:v", "ffv1", "-y", str(source)], check=True, timeout=15,
+                       env={**os.environ, "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""})
+        return source
+
+    def test_vfr_normalizes_to_equivalent_cfr_before_qwen_sampling(self):
+        vfr = self._vfr_source()
+        cfr = self.root / "normalized.mkv"
+        subprocess.run([self.p.ffmpeg, "-v", "error", "-i", str(vfr), "-vf",
+                        "setpts=PTS-STARTPTS,fps=fps=2:round=near", "-fps_mode", "cfr", "-c:v", "ffv1",
+                        "-y", str(cfr)], check=True, timeout=15,
+                       env={**os.environ, "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""})
+
+        def decode(path):
+            b = VideoRequestBudget(self.p)
+            with stage_video(str(path), self.root, self.q, b)[0] as source:
+                packet, info = decode_video(source.path, self.root, self.q, b)
+                with packet:
+                    return packet.path.read_bytes(), info
+
+        vfr_packet, vfr_info = decode(vfr)
+        cfr_packet, cfr_info = decode(cfr)
+        self.assertTrue(vfr_info.variable_rate)
+        self.assertFalse(cfr_info.variable_rate)
+        self.assertEqual((vfr_info.frames, vfr_info.source_fps, vfr_info.duration_s), (8, 2, 4.0))
+        self.assertEqual((vfr_info.frames, vfr_info.indices, vfr_info.resized_width, vfr_info.resized_height),
+                         (cfr_info.frames, cfr_info.indices, cfr_info.resized_width, cfr_info.resized_height))
+        self.assertEqual(vfr_packet, cfr_packet)
+        self.assertEqual(self.q.used, 0)
+
+    def test_vfr_normalization_respects_frame_budget(self):
+        vfr = self._vfr_source()
+        p = replace(self.p, max_frames=7, max_source_frames=8)
+        b = VideoRequestBudget(p)
+        with stage_video(str(vfr), self.root, self.q, b)[0] as source:
+            with self.assertRaisesRegex(VideoError, "frame budget"):
+                decode_video(source.path, self.root, self.q, b)
+        self.assertEqual(self.q.used, 0)
+
+    def test_vfr_normalized_source_frame_limit(self):
+        vfr = self._vfr_source()
+        p = replace(self.p, max_source_frames=7, max_frames=8)
+        b = VideoRequestBudget(p)
+        with stage_video(str(vfr), self.root, self.q, b)[0] as source:
+            with self.assertRaisesRegex(VideoError, "normalized video exceeds"):
+                decode_video(source.path, self.root, self.q, b)
+        self.assertEqual(self.q.used, 0)
+
     def test_corrupt_clip_is_error_not_empty_success(self):
         self.source.write_bytes(b"not a video")
         b=VideoRequestBudget(self.p)
