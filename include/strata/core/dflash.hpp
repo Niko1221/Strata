@@ -44,15 +44,18 @@ struct DFlashGeometry {
     int64_t head_dim = 0;                   ///< dflash.attention.key_length (256)
     int64_t intermediate = 0;               ///< dflash.feed_forward_length (7680)
     int64_t vocab = 0;                      ///< dflash.vocab_size (248320)
-    int64_t block_size = 0;                 ///< trained query count (7): max candidates per pass
+    int64_t block_size = 0;                 ///< trained query count; DFlash2 includes its non-emitted anchor
     int64_t mask_token_id = -1;             ///< dflash.mask_token_id (248077), -1 = unset
     double rope_theta = 0;                  ///< dflash.rope.frequency_base (1e7)
     double rms_eps = 1e-6;                  ///< fixed by the architecture, not stored
     std::vector<int32_t> target_layers;     ///< dflash.target_layers, strictly increasing ([3,15,23,35,43])
-    bool sample_from_anchor = true;         ///< DeepSpec anchor layout; false is refused at load
+    bool sample_from_anchor = true;         ///< DeepSpec=true; DFlash2=false
     bool causal = false;                    ///< block attention causality; true is refused at load
     int64_t markov_rank = 0;                ///< > 0 (DSpark Markov head) is refused at load
-    int64_t selector_top_k = 0;             ///< > 0 (DFlash2 selector) is refused at load
+    int64_t selector_top_k = 0;             ///< > 0 enables the opt-in DFlash2 architecture
+    int64_t selector_rank = 0, conv_kernel_size = 0, conv_group_size = 0;
+    bool target_layer_inputs = false;       ///< llama.cpp GGUF taps are layer inputs
+    bool is_dflash2() const { return selector_top_k > 0; }
     bool confidence_head = false;           ///< true (DSpark confidence gate) is refused at load
     int64_t fusion_in() const { return hidden * (int64_t) target_layers.size(); }
 };
@@ -115,8 +118,8 @@ public:
     const DFlashArtifact& artifact() const { return artifact_; }
     /// Allocated logical draft context capacity (independent of target streaming).
     int64_t capacity() const { return cap_; }
-    /// Maximum candidates this artifact may propose per pass (its trained query count).
-    int max_block() const { return (int) artifact_.geom().block_size; }
+    /// Maximum proposals per pass; DFlash2 excludes its anchor row.
+    int max_block() const { return (int) artifact_.geom().block_size - (artifact_.geom().is_dflash2() ? 1 : 0); }
     bool load_head(const std::string& path, std::string& err);  ///< experimental draft-only head
     /// The device bytes this drafter holds right now: the packed weights, the widened norm vectors,
     /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
@@ -239,6 +242,9 @@ private:
     float *tapf_ = nullptr, *emb_ = nullptr, *h_ = nullptr, *xn_ = nullptr, *ctx_ = nullptr;
     float *q_ = nullptr, *kc_ = nullptr, *vc_ = nullptr, *attn_ = nullptr, *bo_ = nullptr;
     float *gate_ = nullptr, *up_ = nullptr, *logits_ = nullptr;
+    float *conv_dynamic_ = nullptr, *conv_result_ = nullptr, *selector_hidden_ = nullptr;
+    float *selector_unary_ = nullptr;
+    int32_t* selector_ids_ = nullptr;
     uint8_t *arg_scratch_ = nullptr, *top_scratch_ = nullptr, *xq_ = nullptr;
     int32_t* out_ = nullptr;         ///< the block's picks, device alias
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory

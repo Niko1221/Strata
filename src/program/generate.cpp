@@ -5362,7 +5362,7 @@ int main(int argc, char** argv) {
         }
         dflash_capture_layers = dg.target_layers;
         for (auto& l : dflash_capture_layers) {
-            ++l;   // layer output -> next layer's HC-contracted attention input
+            if (!dg.target_layer_inputs) ++l;   // HF output tap -> next attention input; llama GGUF already uses inputs
             if (l >= g.n_layers) {
                 std::fprintf(stderr, "dflash: target feature boundary %d is outside the target's layers\n", l);
                 return 2;

@@ -1,6 +1,9 @@
 // src/core/dflash_runtime.cpp - the DFlashDrafter's device half: weights, K/V pools, the fusion
 // and the block forward (the artifact loader lives in dflash.cpp).  Semantics: docs/DFLASH.md.
 #include "strata/core/dflash.hpp"
+#ifdef STRATA_ENABLE_DFLASH2
+#include "strata/kernels/dflash2.hpp"
+#endif
 #include "strata/core/native_head.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -271,6 +274,8 @@ void DFlashDrafter::release() {
     free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
     free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
     free_dev(gate_); free_dev(up_); free_dev(logits_);
+    free_dev(conv_dynamic_); free_dev(conv_result_); free_dev(selector_hidden_);
+    free_dev(selector_unary_); free_dev(selector_ids_);
     free_dev(proj_float_); free_dev(proj_q8_);
     free_dev(xq_);
     if (scratch_range_) scratch_range_.reset();
@@ -288,6 +293,8 @@ void DFlashDrafter::release() {
     tapf_ = emb_ = h_ = xn_ = ctx_ = nullptr;
     q_ = kc_ = vc_ = attn_ = bo_ = nullptr;
     gate_ = up_ = logits_ = nullptr;
+    conv_dynamic_ = conv_result_ = selector_hidden_ = selector_unary_ = nullptr;
+    selector_ids_ = nullptr;
     xq_ = nullptr;
     attn_scratch_ = nullptr;
     arg_scratch_ = top_scratch_ = nullptr;
@@ -346,7 +353,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
                n.find("q_norm") != std::string::npos || n.find("k_norm") != std::string::npos;
     };
     for (const auto& t : artifact_.tensors()) {
-        if (!is_norm(t.name)) continue;
+        if (!is_norm(t.name) && t.name.find("base_kernel") == std::string::npos &&
+            t.name != "selector.predecessor" && t.name != "selector.successor") continue;
         float* f32d = nullptr;
         if (cudaMalloc(&f32d, (size_t) t.rows * t.cols * 4) != cudaSuccess)
             return bail("dflash: the norm weights do not fit");
@@ -491,6 +499,13 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take(strata::kernels::argmax_rows_scratch_bytes((int) R), (void**) &arg_scratch_) &&
               take(strata::kernels::row_top_prob_scratch_bytes((int) R), (void**) &top_scratch_) &&
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_);
+    if (ok && dg.is_dflash2()) {
+        const int64_t coeffs = 2 * dg.conv_kernel_size * (N / dg.conv_group_size);
+        ok = take(R * coeffs * 4, (void**) &conv_dynamic_) && take(R * N * 4, (void**) &conv_result_) &&
+             take(R * dg.selector_rank * 4, (void**) &selector_hidden_) &&
+             take(R * dg.selector_top_k * 4, (void**) &selector_unary_) &&
+             take(R * dg.selector_top_k * 4, (void**) &selector_ids_);
+    }
     if (ok && elastic_kv) {
         scratch_range_ = std::make_unique<VmmRange>();
         ok = scratch_range_->reserve(scratch_bytes(cap_)) &&
@@ -554,9 +569,13 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
               " rows, less than the artifact's vocabulary " + std::to_string(dg.vocab);
         return false;
     }
+    if (dg.is_dflash2() && (!vocab_path.empty() || owned_head_)) {
+        err = "dflash2: the experimental selector requires the full shared target head"; return false;
+    }
     if (!vocab_path.empty() && head_->type() == 30)
         std::fprintf(stderr, "dflash: original BF16 head uses the full vocabulary; --dflash-vocab is ignored\n");
     if (!vocab_path.empty() && head_->type() != 30) {
+
         switch (head_->type()) {
             case 2: case 6: case 8: case 11: case 12: case 13: case 14: case 20: case 23: case 42: break;
             default: err = "dflash: this head type has no indexed kernel; omit --dflash-vocab"; return false;
@@ -839,17 +858,17 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             if (n == name) return p;
         return nullptr;
     };
-    if (block < 1 || block > max_rows_) { err = "dflash: bad block size"; return false; }
+    const int K = block + (dg.is_dflash2() ? 1 : 0);
+    if (block < 1 || block > max_block() || K > max_rows_) { err = "dflash: bad block size"; return false; }
     if (x < 0 || x >= dg.vocab || mask_ < 0 || mask_ >= dg.vocab) {
         err = "dflash: the anchor or mask token id sits outside the vocabulary";
         return false;
     }
-    if (pos < 0 || pos + block > cap_ || pos + block > scratch_cap_ ||
-        (st_[0].kv_elastic >= 0 && pos + block > qsa_kv_elastic_cells())) {
+    if (pos < 0 || pos + K > cap_ || pos + K > scratch_cap_ ||
+        (st_[0].kv_elastic >= 0 && pos + K > qsa_kv_elastic_cells())) {
         err = "dflash: the context or mapped capacity cannot fit the proposed block";
         return false;
     }
-    const int K = block;
     const int vocab = head_ids_ ? head_rows_ : (int) dg.vocab;
 
     // ---- the query rows: [x, mask x (K-1)]; row 0 = the anchor's own embedding
@@ -901,6 +920,19 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     if (graph_exec_[K] && (graph_chunks_[K] != chunks || graph_cap_[K] != scratch_cap_)) {
         cudaGraphExecDestroy(graph_exec_[K]); graph_exec_[K] = nullptr;
     }
+#ifdef STRATA_ENABLE_DFLASH2
+    auto conv = [&](const std::string& pre, const char* name, float* input, int side) {
+        const std::string cn = pre + "." + name;
+        if (side == 0) {
+            f32_to_bf16_bulk(input, xn16_, (int64_t) K * N, cs_);
+            project(xn16_, wp((cn + ".kernel_projection").c_str()), conv_dynamic_,
+                    (int) N, (int) (2 * dg.conv_kernel_size * (N / dg.conv_group_size)), K, cs_);
+        }
+        dflash2_convolve(input, conv_dynamic_, wf((cn + ".base_kernel").c_str()), conv_result_,
+                         K, (int) N, (int) dg.conv_kernel_size, (int) dg.conv_group_size, side, K, cs_);
+        cudaMemcpyAsync(input, conv_result_, (size_t) K * N * 4, cudaMemcpyDeviceToDevice, cs_);
+    };
+#endif
     auto forward = [&]() -> bool {
         for (int64_t l = 0; l < dg.layers; ++l) {
             const std::string pre = "layers." + std::to_string(l);
@@ -913,6 +945,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                     std::snprintf(name, sizeof name, "xn%d", (int) l);
                     parity_dump(parity_dir_, name, xn_, K * N, cs_);
                 }
+#ifdef STRATA_ENABLE_DFLASH2
+                if (dg.is_dflash2()) conv(pre, "attention_conv", xn_, 0);
+#endif
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
             prepare_projection(xn16_, (int) N, K, cs_);   // Q/K/V reuse one Q8_1 activation
@@ -1025,6 +1060,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 DFlashSection s("L*.o_proj");
                 project(attn16_, wp((pre + ".self_attn.o_proj").c_str()), bo_, Q, N, K, cs_);
             }
+#ifdef STRATA_ENABLE_DFLASH2
+            if (dg.is_dflash2()) conv(pre, "attention_conv", bo_, 1);
+#endif
             if (l == 0 && df_dbg) {
                 std::vector<float> hb(4), ab(4);
                 cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
@@ -1045,6 +1083,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             {
                 DFlashSection s("L*.mlp_norm");
                 native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+#ifdef STRATA_ENABLE_DFLASH2
+                if (dg.is_dflash2()) conv(pre, "mlp_conv", xn_, 0);
+#endif
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
             prepare_projection(xn16_, (int) N, K, cs_);   // gate/up share one Q8_1 activation
@@ -1067,6 +1108,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 DFlashSection s("L*.down_gemv");
                 project(xn16_, wp((pre + ".mlp.down_proj").c_str()), bo_, I, N, K, cs_);
             }
+#ifdef STRATA_ENABLE_DFLASH2
+            if (dg.is_dflash2()) conv(pre, "mlp_conv", bo_, 1);
+#endif
             {
                 DFlashSection section("L*.residual_add");
                 add_inplace(h_, bo_, K * N, cs_);
@@ -1110,6 +1154,17 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             parity_dump(parity_dir_, "head_logits", logits_, K * vocab, cs_);
             if (head_ids_) parity_dump(parity_dir_, "head_ids", (const float*) head_ids_, vocab, cs_);
         }
+#ifdef STRATA_ENABLE_DFLASH2
+        if (dg.is_dflash2()) {
+            f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+            project(xn16_, wp("selector.hidden"), selector_hidden_, (int) N, (int) dg.selector_rank, K, cs_);
+            dflash2_topk(logits_, selector_ids_, selector_unary_, K, vocab, (int) dg.selector_top_k, cs_);
+            dflash2_select(selector_ids_, selector_unary_, selector_hidden_, wf("selector.predecessor"),
+                           wf("selector.successor"), tok_, out_, probs ? (float*) (out_ + max_rows_) : nullptr,
+                           K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_);
+            return true;
+        }
+#endif
         {
             DFlashSection s("out.argmax");
             argmax_rows(logits_, K, vocab, arg_scratch_, out_, cs_);
@@ -1156,8 +1211,11 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     }
     df_timing_drain();
     ++cycle_;
-    std::memcpy(out, h_out_, (size_t) K * 4);
-    if (probabilities) std::memcpy(probabilities, h_out_ + max_rows_, (size_t) K * 4);
+    std::memcpy(out, h_out_, (size_t) block * 4);
+    for (int i = 0; i < block; ++i) {
+        if (out[i] < 0 || out[i] >= dg.vocab) { err = "dflash: non-finite candidate scores"; return false; }
+    }
+    if (probabilities) std::memcpy(probabilities, h_out_ + max_rows_, (size_t) block * 4);
     return true;
 }
 

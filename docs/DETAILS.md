@@ -2259,3 +2259,8 @@ CUDA card, where it measured +1..3 % prompt speed on a Tesla P100 at 30-60K toke
 Options that change answers (other summation order) are separate and explicit: `STRATA_SELECT_SIMT=1|2` (FP32 tiled block scorer,
 KL 0.01 against the warp scorer per #2071), `STRATA_PA_V2T=1` (v2 prompt attention, #2092/#2146), `STRATA_PF_FUSED=1
 STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
+
+## Experimental DFlash2
+
+The optional DFlash2 extension and its validation limits are in [DFLASH2.md](DFLASH2.md).
+Enable it at build time with `STRATA_ENABLE_DFLASH2=ON`; no Flash-Next DFlash2 checkpoint is included.

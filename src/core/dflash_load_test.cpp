@@ -96,12 +96,85 @@ std::vector<fixture::Tensor> tensors_llama() {
     }
     return ts;
 }
+std::vector<fixture::Kv> meta2() {
+    auto kv = meta(false, false, 0, 3);
+    kv.push_back(fixture::u32("dflash.conv_kernel_size", 2));
+    kv.push_back(fixture::u32("dflash.conv_group_size", 8));
+    kv.push_back(fixture::u32("dflash.selector_rank", 4));
+    return kv;
+}
+std::vector<fixture::Tensor> tensors2() {
+    auto ts = tensors_llama();
+    for (int l = 0; l < kL; ++l) {
+        auto pre = "blk." + std::to_string(l) + ".";
+        for (const char* name : {"attn_conv", "ffn_conv"}) {
+            ts.push_back({pre + name + "_base", {kH, 2, 2}, 30, 1});
+            ts.push_back({pre + name + "_proj.weight", {kH, 16}, 30, 2});
+        }
+    }
+    ts.push_back({"selector_predecessor.weight", {4, 64}, 30, 3});
+    ts.push_back({"selector_successor.weight", {4, 64}, 30, 4});
+    ts.push_back({"selector_hidden.weight", {kH, 4}, 30, 5});
+    return ts;
+}
 }  // namespace
 
 int main() {
     fs::path dir = fs::temp_directory_path() / "strata_dflash_load_test";
     fs::create_directories(dir);
 
+    {
+        const auto p = dir / "dflash2.gguf";
+        fixture::write(p, meta2(), tensors2());
+#ifdef STRATA_ENABLE_DFLASH2
+        DFlashArtifact a;
+        std::string err;
+        check(a.open(p.string(), err), "DFlash2 valid GGUF loads");
+        check(a.geom().is_dflash2() && !a.geom().sample_from_anchor && a.geom().target_layer_inputs,
+              "DFlash2 uses llama input boundaries and excludes the anchor");
+        const auto* base = a.tensor("layers.0.attention_conv.base_kernel");
+        check(base && base->rows * base->cols == 4 * kH, "3D conv base keeps both sides");
+        auto optional = meta2();
+        optional.erase(std::remove_if(optional.begin(), optional.end(), [](const auto& kv) {
+            return kv.key == "dflash.sample_from_anchor";
+        }), optional.end());
+        fixture::write(dir / "dflash2_optional.gguf", optional, tensors2());
+        check(a.open((dir / "dflash2_optional.gguf").string(), err) && !a.geom().sample_from_anchor,
+              "DFlash2 missing anchor flag uses the reference fill-in default");
+        auto unsupported = meta2(); unsupported.push_back(fixture::u32("dflash.attention.sliding_window", 2048));
+        fixture::write(dir / "dflash2_sliding.gguf", unsupported, tensors2());
+        check(!a.open((dir / "dflash2_sliding.gguf").string(), err), "unsupported attention metadata refused");
+        const auto saved = a.weight_bytes();
+        auto missing = tensors2(); missing.pop_back();
+        fixture::write(dir / "dflash2_missing.gguf", meta2(), missing);
+        check(!a.open((dir / "dflash2_missing.gguf").string(), err) && a.weight_bytes() == saved && a.loaded(),
+              "failed DFlash2 reopen restores the artifact");
+        for (const auto& item : {std::pair{"dflash.conv_group_size", 3},
+                                std::pair{"dflash.selector_rank", 0},
+                                std::pair{"dflash.block_size", 9},
+                                std::pair{"dflash.selector_top_k", 65}}) {
+            auto bad = meta2();
+            for (auto& kv : bad) if (kv.key == item.first) kv.u = item.second;
+            fixture::write(dir / "dflash2_bad.gguf", bad, tensors2());
+            check(!a.open((dir / "dflash2_bad.gguf").string(), err), "bad DFlash2 metadata refused");
+        }
+        auto quant = tensors2(); quant.back().type = 8;
+        fixture::write(dir / "dflash2_quant.gguf", meta2(), quant);
+        check(!a.open((dir / "dflash2_quant.gguf").string(), err), "quantized extension refused");
+        auto hf = tensors2();
+        for (auto& t : hf) {
+            if (t.name == "selector_predecessor.weight") t.name = "candidate_selector.predecessor_codebook";
+            if (t.name == "selector_successor.weight") t.name = "candidate_selector.successor_codebook.weight";
+            if (t.name == "blk.0.attn_conv_base") t.name = "layers.0.attention_conv.base_kernel";
+        }
+        auto outputs = meta2(); outputs.push_back(fixture::str("dflash.target_layer_inputs", "false"));
+        fixture::write(dir / "dflash2_hf.gguf", outputs, hf);
+        check(a.open((dir / "dflash2_hf.gguf").string(), err) && !a.geom().target_layer_inputs,
+              "HF aliases and explicit output tap boundaries load");
+#else
+        check(refuses(p, "DFlash2 disabled by default"), "DFlash2 requires compile opt-in");
+#endif
+    }
     {   // a valid artifact in llama.cpp's naming family: parsed, all 25 tensors resolved, bytes counted
         const fs::path p = dir / "valid_llama.gguf";
         const auto ts = tensors_llama();
