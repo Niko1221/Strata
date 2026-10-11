@@ -33,6 +33,7 @@ struct PrefillStats {
     double ms_total = 0;
     double ms_experts_host = 0;     ///< host time staging non-resident experts
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
+    uint64_t expert_h2d_bytes = 0;  ///< expert copy payload, including a temporary active-layer cache
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
     int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (STRATA_PREFILL_CPU_SHARE)
@@ -128,6 +129,9 @@ public:
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
 
     const PrefillStats& stats() const { return stats_; }
+    /// Layer-cache scheduling reaches a coherent checkpoint only at a window boundary.
+    bool checkpoint_ready(int64_t done) const { return checkpoint_end_ < 0 || done == checkpoint_end_; }
+
 
     /// multi-GPU: the experts the peer GPU holds are computed THERE for every prompt chunk (up to `cap_rows` routed
     /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
@@ -137,6 +141,8 @@ public:
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
+    /// Check checkpoint_ready(pos0 + T) before snapshotting session state: the experimental layer cache can
+    /// have earlier layers ahead of this callback, until the final chunk of its window.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
@@ -194,6 +200,9 @@ private:
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
     bool drain_pipeline(std::string& err);
+    bool run_layer_cached(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    int64_t checkpoint_end_ = -1;
+
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;

@@ -1,0 +1,7 @@
+{
+  "upstream_commit": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406",
+  "candidate_commit": "eb393ba64cc89e9ed4da108b4fd72718228414eb",
+  "main_engine_sha256": "d75c10f849ace3e7585ce6502e7c24912578e5e88ca16ed6c6a7b87c09d64c4a",
+  "candidate_engine_sha256": "e5ea31b60a8fbdca880368619703045e9caaa11d15a2dec2b34a1b81515c186c",
+  "comparison_scope": "single Tesla P4, three repeats per arm, fixed arm ordering, synthetic 20K workload"
+}
