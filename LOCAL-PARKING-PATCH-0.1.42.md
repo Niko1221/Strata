@@ -140,9 +140,11 @@ Added `ConversationCache::evictable_bytes()` (mirrors `evict_oldest()`'s own fil
 * skips the loop entirely when the park needs no new bytes (`additional == 0`, a park reusing all of its
   K/V): no parked conversation is what the floor is asking for, so the eviction round is pure loss.
 
-The refusal line now names the reason: `no new bytes were requested` / `freeing parked conversations did not
-return memory to the OS` / `freeing every parked byte that could be freed (N MiB) could not have fitted it,
-so nothing was evicted` / `the conversations still parked would leave it short by N MiB`.
+The refusal line now names the reason: `no new bytes were requested, so evicting parked conversations could not
+change the answer` / `freeing parked conversations did not return memory to the OS, so it stopped` / `freeing
+every parked byte that could be freed (N MiB) could not have fitted it` / `the conversations still parked would
+leave it short by N MiB`. No arm claims how many were evicted — the line already prints `evicted %zu, %zu still
+parked`, and an added clause would go stale when the loop evicted and then failed (review point 2).
 
 ### 2. A budget refusal threw away the retained K/V — both `generate.cpp`
 
@@ -176,7 +178,7 @@ prints both, plus this process' own commit and working set:
 skip parking (memory admission; need 1536 MiB plus 4096 MiB floor, 2210 MiB available, source meminfo;
 physical RAM has 19120 MiB free, the system commit (RAM plus page file) has 2210 MiB free;
 this process commits 71512 MiB (72040 peak), working set 58210 MiB; evicted 0, 2 still parked;
-freeing every parked byte that could be freed (4510 MiB) could not have fitted it, so nothing was evicted)
+freeing every parked byte that could be freed (4510 MiB) could not have fitted it)
 ```
 
 That shape — tens of GiB free RAM, a few GiB of commit — is the whole story on two RTX 5060 Ti cards under
@@ -240,7 +242,14 @@ The new regression tests are in `src/core/conversation_cache_test.cpp` (+11 chec
 counts exactly what `evict_oldest()` can free, pinned entries excluded; `put_reuse()` round-trips, refuses an
 over-budget candidate, ignores an empty one) and `src/core/conversation_memory_test.cpp` (+7 checks: the probe
 says nothing for 0 bytes, confirms a size the machine has room for, and its text distinguishes commit
-exhaustion from address-space failure). Both fail without the patch, which is the point of them.
+exhaustion from address-space failure). Both are checked against the patch, not just claimed to need it: compiled
+against the unpatched `v0.1.42` headers they do not even build (`..\project_strata_ivanov\strata_patches\prepatch_compile_042.bat`,
+which puts `git show 61b3fb5d:include/strata/core/*.hpp` on the include path first):
+
+```
+conversation_cache_test.cpp(393) error C2039: 'evictable_bytes' is not a member of ConversationCache  (7 errors, CL_EXIT=2)
+conversation_memory_test.cpp(69) error C3861: 'conversation_memory_probe' identifier not found        (33 errors, CL_EXIT=2)
+```
 
 ## Independent review and the changes it asked for
 
@@ -267,10 +276,40 @@ raised three concrete notes. All three were checked against the code and acted o
    reservation before returning (`VirtualFree` after a failed commit on Windows, `munmap` after a failed
    `mprotect` on Linux). Repeated refusals no longer each keep the probed size of address space.
 
-Two review points needed no change. The reviewer asked whether the SYCL copy's skip-parking wording was as
-precise as the CUDA one; `git grep` on the current tree shows the SYCL text already says "not an allocation",
-names `bad_alloc`, and covers the checkpoint split, so nothing was edited there. The reviewer also confirmed
-the stalled-eviction loop and the hoisted `put_reuse` lifetime are correct as written.
+Two review points needed no change, and both were checked rather than assumed. The reviewer wrote that the SYCL
+inner handler said "after the checkpoint split" where it should say "at the capture"; the blob it reviewed
+(`git show a8db42e6:sycl/src/program/generate.cpp`) already has the same split as the CUDA side - the inner
+handler prints "allocation failed at the capture", the outer `park_current` wrapper prints "after the checkpoint
+split" - and no commit between `a8db42e6` and HEAD touches that file, so the note describes a state that does not
+exist. The reviewer also confirmed the parts most at risk of being wrong: the `evictable_bytes()` bound is
+"correct and free of an off-by-one", hoisting `floor`/`retained`/`additional` above the `try` moves no work in or
+out of the guarded region and reports the same value admission used, the `put_reuse()` hand-back cannot
+double-count or leak, no real allocation failure is masked by the `catch (const std::exception&)` arm
+(`bad_alloc` precedes it in both handlers), and the probe cannot throw. On the diagnosis it agreed in terms of
+the log: with the arena already 100 % committed behind 39.4 GiB of `VirtualLock`, `ullAvailPageFile` sits near
+4 GiB while `ullAvailPhys` still reads free - "so evicting parked conversations cannot restore the short
+resource, which is exactly the stalled case".
+
+### What the reviewer left unproven
+
+These are the reviewer's own stated uncertainties, kept here because they bound what this patch claims:
+
+* It is not proven that the observed 52k-97k refusals were commit-limited rather than heap-metadata or
+  fragmentation exhaustion, nor that they came from the capture rather than the estimate/split region - the new
+  wording is what decides that on the next run.
+* A successful `VirtualAlloc` commit is not identical to a successful CRT `new[]` (heap bookkeeping, the failing
+  call's own transient copies), so "the same size allocates now" is an inference; the message's own "transient or
+  came from elsewhere" wording hedges it.
+* The stalled heuristic's sensitivity to `ullAvailPhys` noise is unquantified.
+* Whether `conversation_snapshot_save` can throw anything that is not `bad_alloc` was not verified; if it cannot,
+  the "not an allocation" arm is dead code rather than triage.
+* `put_reuse()` re-parks K/V that a later `limit_reuse()` or park may reject, so a handed-back candidate holds
+  cache budget between turns. Bounded by `budget_ - bytes_`, the same rule `retain()` follows, but not exercised
+  end-to-end here.
+
+Two further observations needed no action: the probe leaves the reserved region uncommitted on the failure path
+(now fixed anyway, point 3 above), and `if (probe.error)` prints nothing if a step ever fails with
+`GetLastError() == ERROR_SUCCESS`, in which case the four text branches already carry the meaning.
 
 Re-run after these changes (same commands as above):
 
