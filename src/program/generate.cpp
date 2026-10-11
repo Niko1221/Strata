@@ -9359,8 +9359,27 @@ int main(int argc, char** argv) {
                                }
                                return false;
                            }()) {
-                    std::printf("ERR restoring a conversation checkpoint failed\n");
-                    return 1;
+                    // ★★★ 2026-10-11 P21：会话恢复失败【不再退出引擎】。
+                    //   原来这里 printf("ERR ...") + return 1 —— 而这段代码在 main
+                    //   的请求路径里，return 1 就是【整个引擎退出】（server.py 报
+                    //   "the engine exited (code 1) after it reported ..."），之后所有请求都变成
+                    //   400（NoneType object has no attribute stdin）。
+                    //   改成：把状态清零、退回从 0 读——代价只是多读一段，请求照常完成。
+                    std::fprintf(stderr, "strata serve: checkpoint restore failed: found=%d resume=%lld "
+                                         "checks=%zu stages=%zu; reading the prompt from the start\n",
+                                 c != nullptr ? 1 : 0, (long long) resume, checks.size(), stages.size());
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    for (auto& st : stages) {
+                        const strata::core::OnDevice on(st->dev);
+                        strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                        cudaStreamSynchronize(st->stream);
+                    }
+                    live.clear();
+                    live_imgs.clear();
+                    checks.clear();
+                    resume = 0;
+                    from_live = false;
                 }
             }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
