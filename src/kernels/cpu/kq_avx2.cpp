@@ -200,17 +200,29 @@ void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int n
 }  // namespace
 
 void bf16_rows_dot_multi(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
-    // each row is read once for all `nt` (<= 8) tokens: the router (2.6 MB per layer) streams once per prediction
-    for (int r = 0; r < rows; ++r) {
-        const uint16_t* wr = w + (size_t) r * (size_t) cols;
-        __m256 acc[8];
-        for (int t = 0; t < nt; ++t) acc[t] = _mm256_setzero_ps();
-        for (int c = 0; c + 8 <= cols; c += 8) {
-            const __m256 wf = _mm256_castsi256_ps(
-                _mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*) (wr + c))), 16));
-            for (int t = 0; t < nt; ++t) acc[t] = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x + (size_t) t * cols + c), acc[t]);
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int m = nt - t0 < 4 ? nt - t0 : 4;
+        const float* x0 = x + (size_t) t0 * cols;
+        const float* x1 = x0 + cols;
+        const float* x2 = x1 + cols;
+        const float* x3 = x2 + cols;
+        for (int r = 0; r < rows; ++r) {
+            const uint16_t* wr = w + (size_t) r * (size_t) cols;
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps(), a2 = _mm256_setzero_ps(),
+                   a3 = _mm256_setzero_ps();
+            for (int c = 0; c + 8 <= cols; c += 8) {
+                const __m256 wf = _mm256_castsi256_ps(
+                    _mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*) (wr + c))), 16));
+                a0 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x0 + c), a0);
+                if (m > 1) a1 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x1 + c), a1);
+                if (m > 2) a2 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x2 + c), a2);
+                if (m > 3) a3 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x3 + c), a3);
+            }
+            out[(size_t) t0 * rows + r] = hsum_float_8(a0);
+            if (m > 1) out[(size_t) (t0 + 1) * rows + r] = hsum_float_8(a1);
+            if (m > 2) out[(size_t) (t0 + 2) * rows + r] = hsum_float_8(a2);
+            if (m > 3) out[(size_t) (t0 + 3) * rows + r] = hsum_float_8(a3);
         }
-        for (int t = 0; t < nt; ++t) out[(size_t) t * rows + r] = hsum_float_8(acc[t]);   // cols % 8 == 0 (2560)
     }
 }
 
