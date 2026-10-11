@@ -1113,12 +1113,17 @@ class StrataEngine:
                 return line
         return None
 
-    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None):
-        """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
-        says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
-        come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
+    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None, on_done=None,
+                                wait_s: float | None = None):
+        """Stop a slot and free it at BDONE.
+
+        Normally this remains asynchronous so a disconnected client does not hold the request thread for a stalled
+        engine.  A completed request can provide ``on_done`` and ``wait_s``: the short synchronous grace period lets
+        the request account for the BDONE that is already queued after a stop token, while the old background cleanup
+        remains the fallback if the engine needs longer.  ``on_done`` receives the BDONE line, when one is observed.
+        """
         if slot >= len(self.slot_q):                    # the engine restarted with fewer slots: this one is gone
-            return
+            return None
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
@@ -1127,30 +1132,47 @@ class StrataEngine:
         releasing = self.slot_releasing
         releasing.add(slot)
 
-        def wait():
-            end = time.monotonic() + 600.0
-            tail = list(stream or [])
-            while time.monotonic() < end:
+        def finish(tail):
+            held[slot] = tail[:-1] if stream and tail else []
+            with self.slot_cv:
+                busy[slot] = False
+                releasing.discard(slot)
+                self.slot_cv.notify_all()
+
+        def read_until(deadline, tail):
+            while time.monotonic() < deadline:
                 try:
-                    line = q.get(timeout=5.0)
+                    line = q.get(timeout=max(0.1, min(5.0, deadline - time.monotonic())))
                 except queue.Empty:
                     continue
                 if line is None:
-                    tail = []
-                    break
+                    return None, [], True
                 if line.startswith("BT "):
                     try:
                         tail.append(int(line.split()[2]))
                     except (IndexError, ValueError):
                         tail = []
                 if line.startswith("BDONE "):
-                    break
-            held[slot] = tail[:-1] if stream and tail else []
-            with self.slot_cv:
-                busy[slot] = False
-                releasing.discard(slot)
-                self.slot_cv.notify_all()
-        threading.Thread(target=wait, daemon=True).start()
+                    return line, tail, True
+            return None, tail, False
+
+        def background(tail):
+            line, tail, _ = read_until(time.monotonic() + 600.0, tail)
+            finish(tail)
+            if line is not None and on_done is not None:
+                on_done(line)
+
+        if wait_s is None:
+            threading.Thread(target=background, args=(list(stream or []),), daemon=True).start()
+            return None
+        line, tail, complete = read_until(time.monotonic() + wait_s, list(stream or []))
+        if complete:
+            finish(tail)
+            if line is not None and on_done is not None:
+                on_done(line)
+            return line
+        threading.Thread(target=background, args=(tail,), daemon=True).start()
+        return None
 
     ORPHAN_SLOT_S = 3.0   # #1603: a busy flag nobody owns this long is a leak and is given back
 
@@ -1178,6 +1200,7 @@ class StrataEngine:
         return freed
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
+    BATCH_DONE_WAIT_S = 10.0  # a normal stop has BDONE queued; do not expose pre-BDONE timings
 
     def _take_control(self, cancel, plen: int, after_epoch: int | None = None):
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
@@ -1255,6 +1278,42 @@ class StrataEngine:
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
         reused0 = None      # the first read's reused tokens: a continued leg's count includes this request's own output
+        batch_segments = []
+        last_seen = self.last
+        pending_bdones = []
+        pending_bdones_lock = threading.Lock()
+
+        def collect_segment():
+            nonlocal last_seen
+            current = self.last
+            if isinstance(current, dict) and current is not last_seen:
+                batch_segments.append(dict(current))
+                last_seen = current
+
+        def record_bdone(line):
+            nonlocal last_seen
+            f = line.split()
+            if len(f) < 5 or not f[2].lstrip("-").isdigit():
+                return
+            base = self.last if isinstance(self.last, dict) else {}
+            segment = {"generated": int(f[2]), "prompt_ms": 0.0, "decode_ms": float(f[4]), "finish": f[3]}
+            if base.get("prompt_tokens") is not None:
+                segment["prompt_tokens"] = base["prompt_tokens"]
+            batch_segments.append(segment)
+            self.last = {**base, "finish": f[3], "decode_ms": float(f[4]), "generated": int(f[2])}
+            last_seen = self.last
+
+        def remember_bdone(line):
+            with pending_bdones_lock:
+                pending_bdones.append(line)
+
+        def collect_pending_bdones():
+            with pending_bdones_lock:
+                lines = list(pending_bdones)
+                pending_bdones.clear()
+            for line in lines:
+                record_bdone(line)
+
         ok = yield from self._take_control(cancel, len(prompt))
         if not ok:
             return
@@ -1299,6 +1358,7 @@ class StrataEngine:
                                 if reserved is not None:
                                     self._send(f"BYIELD {reserved}")
                             yield None
+                    collect_segment()                         # the solo DONE, before a possible batch promotion
                     phase = "none"                          # its DONE is read
                     while pending:
                         t = pending.pop(0)
@@ -1399,6 +1459,7 @@ class StrataEngine:
                                 self._send(f"BYIELD {slot}")
                                 asked = True
                             yield None
+                    collect_segment()                         # the BGEN admission DONE, before BADM/BDONE
                     cont = bool(self._ctl_result and self._ctl_result[1])
                     phase = "slot" if cont else "none"
                     while pending:
@@ -1444,9 +1505,7 @@ class StrataEngine:
                     elif line.startswith("BDONE "):
                         phase = "none"
                         f = line.split()
-                        if len(f) >= 5 and isinstance(self.last, dict):
-                            self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
-                                         "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                        record_bdone(line)
                         # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
                         self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
                         if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
@@ -1478,8 +1537,10 @@ class StrataEngine:
                 if phase == "solo":
                     self._send("STOP")
                     self._drain_control("DONE", born=born)
+                    collect_segment()
                 elif phase == "admit":
                     line = self._drain_control("BADM", born=born)
+                    collect_segment()
                     if line and line.startswith("BADM ") and line.split()[2:3] == ["1"]:
                         phase = "slot"
             except EngineDied:
@@ -1502,13 +1563,22 @@ class StrataEngine:
                 if phase == "slot":
                     self.slot_held[slot] = []
                     stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
-                    self._release_slot_when_done(slot, stream)    # freed at its BDONE
+                    self._release_slot_when_done(slot, stream, on_done=remember_bdone,
+                                                 wait_s=self.BATCH_DONE_WAIT_S)  # account for a queued BDONE
                     self.slot_claims.discard(slot)                # (the BDONE wait owns it now)
                 else:
                     with self.slot_cv:
                         self.slot_busy[slot] = False
                         self.slot_claims.discard(slot)
                         self.slot_cv.notify_all()
+            collect_pending_bdones()
+            if batch_segments:
+                merged = request_stats(batch_segments, generated=len(out))
+                if reused0 is not None:
+                    merged["reused"] = reused0
+                self.last = merged
+            elif reused0 is not None and isinstance(self.last, dict):
+                self.last = {**self.last, "reused": reused0}
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
@@ -2770,8 +2840,8 @@ class Service:
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
-        self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0,
+        self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "prompt_read": 0,
+                       "reused": 0, "output_tokens": 0, "prompt_ms": 0.0, "decode_ms": 0.0,
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         from serve.prometheus import Latencies
@@ -3266,7 +3336,7 @@ class Service:
         with self.status_lock:
             s, t = dict(self.status), dict(self.totals)
             running = len(self.live_reqs) or int(bool(s.get("busy")))
-        prompt_n = t["prompt_tokens"] - t["reused"]               # what was read, as llama.cpp counts it
+        prompt_n = t.get("prompt_read", t["prompt_tokens"] - t["reused"])  # actual tokens read, including slot reuse
         prompt_s, decode_s = t["prompt_ms"] / 1000, t["decode_ms"] / 1000
         rows = [
             ("llamacpp:prompt_tokens_total", "counter", "Prompt tokens read", prompt_n),
@@ -3966,6 +4036,8 @@ class Service:
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
+                            t["prompt_read"] += (int(last["prompt_read"]) if last.get("prompt_read") is not None
+                                                   else max(0, seen - int(last.get("reused") or 0)))
                             t["reused"] += last.get("reused") or 0
                             t["output_tokens"] += n
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
@@ -4037,13 +4109,22 @@ def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
 
 
 def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | None:
-    """One request's `timings` in llama.cpp's names (what its clients show as speed), from the engine's own clock
-    (StrataEngine.last): prompt_n is what was read, cache_n what the conversation cache already held.  None when the
-    engine keeps no clock (MockEngine)."""
+    """One request's `timings` in llama.cpp's names (what its clients show as speed), from the engine's own clock.
+
+    `prompt_read` is the authoritative count when the engine provides it: a batch slot may already hold almost the
+    whole prompt even when the conversation cache is disabled.  Older engines have no prompt_read and retain the
+    old `reused` fallback.  None when the engine keeps no clock (MockEngine).
+    """
     if last.get("prompt_ms") is None:
         return None
-    cache_n = int(last.get("reused") or 0)
-    prompt_n, prompt_ms, decode_ms = max(0, prompt_tokens - cache_n), float(last["prompt_ms"]), float(last.get("decode_ms") or 0)
+    read = last.get("prompt_read")
+    if read is not None:
+        prompt_n = min(prompt_tokens, max(0, int(read)))
+        cache_n = max(0, prompt_tokens - prompt_n)
+    else:
+        cache_n = int(last.get("reused") or 0)
+        prompt_n = max(0, prompt_tokens - cache_n)
+    prompt_ms, decode_ms = float(last["prompt_ms"]), float(last.get("decode_ms") or 0)
     decoded = int(last.get("generated") or generated)          # the engine's count gives its rate, as /metrics does
     return {"cache_n": cache_n, "prompt_n": prompt_n, "prompt_ms": round(prompt_ms, 1),
             "prompt_per_token_ms": round(prompt_ms / prompt_n, 3) if prompt_n else None,
@@ -4056,8 +4137,13 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
                if last.get("drafts_offered") is not None else {})}
 
 
-def request_stats(segments: list[dict]) -> dict:
-    """Keep input/cache accounting at the original API boundary and total native work across continuations."""
+def request_stats(segments: list[dict], generated: int | None = None) -> dict:
+    """Keep input/cache accounting at the original API boundary and total native work across continuations.
+
+    Batch admission emits a one-token DONE followed by a BDONE whose generated count includes that admission token.
+    Callers that collect those phases pass the number of tokens actually delivered to the API so that generated is not
+    double-counted while prompt/decode clocks and the other cumulative counters are still summed.
+    """
     if not segments:
         return {}
     result = dict(segments[-1])
@@ -4070,6 +4156,8 @@ def request_stats(segments: list[dict]) -> dict:
                 "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb"):
         if any(segment.get(key) is not None for segment in segments):
             result[key] = sum(segment.get(key) or 0 for segment in segments)
+    if generated is not None:
+        result["generated"] = int(generated)
     return result
 
 

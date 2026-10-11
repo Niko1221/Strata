@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
-                          prompt_tokens_seen,
+                          prompt_tokens_seen, request_stats,
                           request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
@@ -3142,6 +3142,21 @@ class UsageAndStatus(unittest.TestCase):
             httpd.server_close()
 
 
+class BatchRequestStats(unittest.TestCase):
+    """Batch admission has a one-token DONE and a cumulative BDONE; they are one API request, not two replies."""
+
+    def test_batch_phases_sum_clocks_but_use_delivered_tokens(self):
+        stats = request_stats([
+            {"prompt_tokens": 100, "prompt_read": 100, "reused": 0, "prompt_ms": 120.0,
+             "decode_ms": 18.0, "generated": 2, "finish": "cancel"},
+            {"prompt_tokens": 101, "prompt_ms": 0.0, "decode_ms": 0.0, "generated": 1, "finish": "length"},
+            {"prompt_tokens": 101, "prompt_ms": 0.0, "decode_ms": 410.0, "generated": 12, "finish": "stop"},
+        ], generated=13)
+        self.assertEqual((stats["prompt_ms"], stats["decode_ms"], stats["generated"]), (120.0, 428.0, 13))
+        self.assertEqual((stats["prompt_tokens"], stats["prompt_read"], stats["reused"], stats["finish"]),
+                         (101, 100, 0, "stop"))
+
+
 class TimingsDrafts(unittest.TestCase):
     """`timings` carries the speculative draft counts (PR #83's fields) only when the engine reported them."""
 
@@ -3152,6 +3167,12 @@ class TimingsDrafts(unittest.TestCase):
         self.assertEqual((t["prompt_n"], t["cache_n"]), (20, 4))
         self.assertNotIn("draft_n", request_timings(24, 20, base))
         self.assertIsNone(request_timings(24, 20, {}))
+
+    def test_prompt_read_wins_over_conversation_cache_fallback(self):
+        t = request_timings(43086, 30, {"prompt_ms": 563.5, "decode_ms": 714.0, "generated": 30,
+                                        "reused": 0, "prompt_read": 1})
+        self.assertEqual((t["prompt_n"], t["cache_n"]), (1, 43085))
+        self.assertAlmostEqual(t["prompt_per_second"], 1.8, places=1)
 
 
 class UnloadableEngine(MockEngine):
