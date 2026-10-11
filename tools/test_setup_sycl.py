@@ -148,6 +148,9 @@ class IntelIds(unittest.TestCase):
     def test_b60_e211_is_named_with_its_vram(self):
         self.assertEqual(self.table()["e211"], ("Arc Pro B60", 24.0))
 
+    def test_b65_e222_is_named_with_its_vram(self):
+        self.assertEqual(self.table()["e222"], ("Arc Pro B65", 32.0))
+
     def test_the_ids_that_were_listed_before_are_kept(self):
         t = self.table()
         self.assertEqual(t["e223"][0], "Arc Pro B70")
