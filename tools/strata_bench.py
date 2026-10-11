@@ -582,7 +582,7 @@ def collect_machine(base: str, key: str, cfg: dict | None) -> dict:
         n_ctx = (d.get("meta") or {}).get("n_ctx") or n_ctx
     n_ctx = n_ctx or (props.get("default_generation_settings") or {}).get("n_ctx")
     return {
-        "gpu": gpu_names, "gpu_vram_mib": vram_mib, "gpu_driver": (local["gpus"][0].get("driver") if local["gpus"] else local.get("rocm_driver")),
+        "gpu": gpu_names, "gpu_vram_mib": vram_mib, "gpu_driver": (local["gpus"][0].get("driver") or local.get("rocm_driver")),
         "cuda": local.get("cuda"), "cpu": static.get("cpu_name") or cpu_name(), "cpu_cores": static.get("cores"),
         "cpu_threads": static.get("threads") or os.cpu_count(), "ram_gib": total_ram_gib(),
         "os": f"{platform.system()} {platform.release()} ({platform.version()})" if os.name == "nt" else f"{platform.system()} {platform.release()}",
