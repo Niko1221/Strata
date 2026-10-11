@@ -104,3 +104,21 @@ budget. The server accepts a 10000-token output allowance, and a modular
 arithmetic request reaches the thinking budget, switches to an answer and ends
 normally with the correct result. The larger context reduces the expert cache
 to 5663 slots (7.59 GiB); the server reports 2944 MiB of VRAM free after loading.
+
+## Checks after rebasing onto current main
+
+On 2026-10-11, the branch was rebased onto upstream main `7695859a` (0.1.43).
+On the MI25 PC above, the rebuilt wave64 intrinsic, BF16/FP16 GEMM and device
+self-tests pass with the same ROCm packages. Setup passes 211 tests across the
+gfx900, AMD, choices, config, older-GPU, dependency-pin, update, ROCm-pin,
+Strix Halo, AMD-startup and GPU-update suites. CMake also configures with
+`STRATA_BUILD_TESTS=OFF`: the wave64 test targets are absent, while the
+installer's `strata-device` probe remains available.
+
+The new main's optional `STRATA_GDN_NOY` prefill path uses an instruction
+unavailable on gfx900. This port uses the FP32 product followed by FP16
+conversion on gfx900, as in that kernel's normal output path. The optional
+path's numerical parity is unvalidated on this card. A gfx906 owner run is
+still needed; this machine has no gfx906 card. The full installer and model
+inference checks above were performed on 0.1.39 and have not been repeated
+with the rebased engine.
