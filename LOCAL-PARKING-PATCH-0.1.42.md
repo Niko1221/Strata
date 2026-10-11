@@ -122,15 +122,16 @@ local commit `0b0ae6be` on branch `fork-0.1.42`.
 
 ### 1. The eviction loop bounds itself by what cannot be freed — `conversation_cache.hpp`, `generate.cpp`
 
-Upstream's loop (`v0.1.42` only - `git show v0.1.42:src/program/generate.cpp` line 7802; v0.1.40 has no such
+Upstream's loop (`v0.1.42` only - `git show v0.1.42:src/program/generate.cpp` lines 7794-7803; v0.1.40 has no such
 loop, which is why the 0.1.40 log above shows no evictions at all) is bounded by `conversations.slots()` and
 gated on `conversations.size() > 0`, and it calls `evict_oldest()` unconditionally. Two categories of memory
 are charged in `bytes()` but are **not** `evict_oldest()` material: the retained K/V (`reuse_`, see
 `conversation_cache.hpp` line 207, `bytes() { return bytes_ + reuse_.bytes(); }`) and entries holding a pinned
 shared prefix (`evict_oldest()` skips them, line 284). So a park asking for more than the evictable total
-spends conversations one at a time, evicts everything it can, and still refuses at the end - the 0.1.40.1 fork
-log that this analysis started from shows `evicted 3, 0 still parked` for exactly such a refusal. This
-(defect B in `strata_fork_main/CONVERSATION_PARKING_ROOT_CAUSE.md`) is upstream's code, not the port's.
+spends conversations one at a time, evicts everything it can, and still refuses. That last claim is read off the
+code, not off the log - the 0.1.40 log cannot show it, because that engine never ran the loop. Section 1b runs
+both loops against one state and prints the difference. This is defect B in
+`strata_fork_main/CONVERSATION_PARKING_ROOT_CAUSE.md`, and it is upstream's code, not the port's.
 
 Added `ConversationCache::evictable_bytes()` (mirrors `evict_oldest()`'s own filter), and the loop now:
 
@@ -143,8 +144,48 @@ Added `ConversationCache::evictable_bytes()` (mirrors `evict_oldest()`'s own fil
 The refusal line now names the reason: `no new bytes were requested, so evicting parked conversations could not
 change the answer` / `freeing parked conversations did not return memory to the OS, so it stopped` / `freeing
 every parked byte that could be freed (N MiB) could not have fitted it` / `the conversations still parked would
-leave it short by N MiB`. No arm claims how many were evicted — the line already prints `evicted %zu, %zu still
+leave it short by N MiB`. No arm claims how many were evicted - the line already prints `evicted %zu, %zu still
 parked`, and an added clause would go stale when the loop evicted and then failed (review point 2).
+
+The rules are not inline in the caller any more. `evict_for_admission()` (new, `conversation_memory.hpp`,
+templated on the cache so the real `ConversationCache` can be driven without a model) runs the round and returns
+`{admitted, evicted, hopeless, stalled, freeable, short_by}`; `src/program/generate.cpp` only prints what it
+answered. Two things that changed with the move, both deliberate:
+
+* the answer is always taken from a reading, never from the arithmetic alone - `evict_for_admission()` samples
+  first and reports `admitted`, where the first cut of this patch decided `hopeless` and `additional == 0`
+  without sampling, so a refusal line could have been printed for a park the machine would have taken;
+* `short_by` and `freeable` come from the same round that refused, so the text cannot describe a different
+  attempt than the one being reported.
+
+The order of the guards inside the round is the one thing a reader should not infer from the prose: when nothing
+is left to evict, the evictability guard ends the round before the flat-reading test, so that corner case reports
+the shortfall rather than a stall. The first cut of this patch, with the loop inline in `generate.cpp`, tested the
+flat reading at the top of the iteration and reported the same case as a stall; upstream v0.1.42 reports neither,
+having no stall or evictability test at all.
+
+The SYCL copy (`sycl/src/program/generate.cpp` line 7500) has **no eviction loop** - it calls
+`conversation_memory_admit(available_host_bytes(), ...)` once and refuses. So item 1's loop rules apply to the
+CUDA path only; what both copies share is `evictable_bytes()`, `put_reuse()` and the named-cause failure lines.
+
+### 1b. What the two loops do to the same cache - the regression test
+
+`src/core/conversation_cache_test.cpp` parks three 8 MiB conversations, retains a K/V candidate, and runs both
+loops against that one state with a reading that never changes (the Windows case: commit stays charged while
+parked entries are dropped). Measured output of the test:
+
+```
+old loop (upstream v0.1.42, size()/slots() bound): admitted=0 evicted=3 still_parked=0
+new loop (evict_for_admission):                    admitted=0 evicted=1 stalled=1  2 still parked
+```
+
+The first line is the failure this fix was written against, now measured rather than argued from the source: the
+old loop spends every conversation it can and still refuses, and the log cannot show it because the 0.1.40 engine
+that produced the log had no loop. `evict_for_admission()` is additionally tested for: the flat reading stopping
+after one eviction and asking the machine twice rather than once per entry; a request above the freeable total
+being refused with nothing spent and `freeable != bytes()` (retained K/V is charged but is not freeable);
+evictions that *do* return memory being accepted and the round stopping at the first reading that fits; and a
+park that requests no new bytes leaving the cache untouched while still honouring the floor.
 
 ### 2. A budget refusal threw away the retained K/V — both `generate.cpp`
 
@@ -172,7 +213,8 @@ stage. Now:
 ### 4. Refusals did not say which resource was short — `generate.cpp`, `ram_note()`
 
 On Windows the guard takes the smaller of free RAM and free commit. The line printed only the minimum. It now
-prints both, plus this process' own commit and working set:
+prints both, plus this process' own commit and working set. The line below is that shape written out by hand, not
+a log excerpt - the new engine has not been run end-to-end (see Limitations):
 
 ```
 skip parking (memory admission; need 1536 MiB plus 4096 MiB floor, 2210 MiB available, source meminfo;
@@ -193,8 +235,10 @@ the commit limit, not against RAM.
 * `serve/` Monitor conversation-id column and the run-config files from the old branch. They do not apply
   cleanly to 0.1.42 (`serve/server.py`, `test_server.py`, `app.js`, `index.html` all moved); if wanted they
   need re-authoring against the new files, not a cherry-pick.
-* `AGENTS.md`: the uncommitted local block is stashed (`git stash list` → `agents-md-before-042`) because
-  0.1.42 added its own section at the same spot. Pop it and keep both sections.
+* `AGENTS.md`: 0.1.42 added its own section where the local block sat, so the local block was re-added after
+  it rather than replacing it - kept short, pointing here for detail. My own commit had written that block as
+  UTF-8 with a BOM and two mojibake em-dashes; `f9f48a8f` removed the BOM, used plain `-`, and spaced the
+  heading. The file is now ASCII with the repository's CRLF endings.
 
 ## Build and run
 
@@ -221,12 +265,18 @@ The model files stay in `project_strata_temp`; this tree is the source and build
 
 ```
 ctest --test-dir build_tests                        -> 100% tests passed out of 43   (2 skipped: CPU-only build)
-build_tests\conversation_cache_test.exe             -> conversation_cache_test: 4225 checks passed
+build_tests\conversation_cache_test.exe             -> conversation_cache_test: 4243 checks passed
 build_tests\conversation_memory_test.exe            -> conversation_memory_test: 32 checks passed
 build_tests\conversation_split_failure_test.exe     -> stages 3: allocation-failure cases preserved: 16
 syntax_042.bat  (cl /Zs, CUDA park path)            -> CL_EXIT=0
+syntax_sycl_042.bat                                 -> SYCL_EXIT=9009 (no oneAPI toolchain on this machine)
 build_cuda_042.bat (full CUDA engine)               -> [263/263] BUILD_EXIT=0, build_cuda_new\strata.exe -> "strata 0.1.42"
 ```
+
+Run again after the `evict_for_admission()` move, same commands: `ctest` 43/43, `conversation_cache_test` 4243
+checks (18 of them the loop-level cases of 1b), `syntax_042.bat CL_EXIT=0`, and `build_cuda_042.bat` rebuilt to
+`BUILD_EXIT=0` with `strata 0.1.42` and the same string table below. The 4225 -> 4243 difference is the loop
+test: 4225 was the count with the loop rules still inline in `generate.cpp` and no way to drive them.
 
 Verified in the built binary, against the running 0.1.40.1 one:
 
@@ -238,18 +288,23 @@ Verified in the built binary, against the running 0.1.40.1 one:
 | `memory admission` | present | absent |
 | `commit is exhausted` | present | absent |
 
-The new regression tests are in `src/core/conversation_cache_test.cpp` (+11 checks: `evictable_bytes()`
-counts exactly what `evict_oldest()` can free, pinned entries excluded; `put_reuse()` round-trips, refuses an
-over-budget candidate, ignores an empty one) and `src/core/conversation_memory_test.cpp` (+7 checks: the probe
+The new regression tests are in `src/core/conversation_cache_test.cpp` (+29 checks: `evictable_bytes()` counts
+exactly what `evict_oldest()` can free, pinned entries excluded; `put_reuse()` round-trips, refuses an
+over-budget candidate, ignores an empty one; the 18 loop-level cases of 1b) and
+`src/core/conversation_memory_test.cpp` (+7 checks: the probe
 says nothing for 0 bytes, confirms a size the machine has room for, and its text distinguishes commit
 exhaustion from address-space failure). Both are checked against the patch, not just claimed to need it: compiled
 against the unpatched `v0.1.42` headers they do not even build (`..\project_strata_ivanov\strata_patches\prepatch_compile_042.bat`,
 which puts `git show 61b3fb5d:include/strata/core/*.hpp` on the include path first):
 
 ```
-conversation_cache_test.cpp(393) error C2039: 'evictable_bytes' is not a member of ConversationCache  (7 errors, CL_EXIT=2)
-conversation_memory_test.cpp(69) error C3861: 'conversation_memory_probe' identifier not found        (33 errors, CL_EXIT=2)
+conversation_cache_test.cpp(394) error C2039: 'evictable_bytes' is not a member of ConversationCache   (49 errors, CACHE_CL_EXIT=2)
+conversation_memory_test.cpp(69) error C3861: 'conversation_memory_probe' identifier not found         (33 errors, MEMORY_CL_EXIT=2)
 ```
+
+The cache test fails on `evictable_bytes`/`put_reuse`, which only the patch adds - the count went from 7 to 49
+when the loop test of 1b arrived, because that test calls `evictable_bytes()` directly. Line numbers move with
+the test file; the member errors do not.
 
 ## Independent review and the changes it asked for
 

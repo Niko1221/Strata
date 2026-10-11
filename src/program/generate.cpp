@@ -7929,65 +7929,36 @@ int main(int argc, char** argv) {
                 // above only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
                 // away the whole prompt read that produced this snapshot (measured: 270k tokens, 96 s).
-                // Evict the least recently active parked conversations until it fits, or until none are
-                // left.  Each ConversationBuffer is a list of 16 MiB segments, each segment its own
-                // allocation, so an evicted entry is back with the kernel before the next check reads
-                // /proc/meminfo; no waiting is needed.  slots() bounds the loop, and the two lines
-                // below say what it did either way.  The reading is the guard's (MemAvailable, the cgroup
-                // limits above the engine, --memory-limit-mib); `mem` keeps the last one for the refusal line.
-                size_t evicted = 0;
+                // Each ConversationBuffer is a list of 16 MiB segments, each segment its own allocation, so an
+                // evicted entry is back with the kernel before the next reading; no waiting is needed. The
+                // reading is the guard's (MemAvailable, the cgroup limits above the engine, --memory-limit-mib);
+                // `mem` keeps the last one for the refusal line. The stopping rules live in
+                // evict_for_admission() so they can be tested against the real cache without a model.
                 std::optional<strata::core::HostMemoryReading> mem;
-                auto admit = [&] {
-                    mem = strata::core::sample_host_memory();
-                    return strata::core::conversation_memory_admit(
-                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
-                };
-                // Three bounds the entry count alone does not give. Only the entries evict_oldest() can take are
-                // payment: the retained K/V and any pinned shared prefix sit in the cache but cannot be spent, so
-                // bounding the loop by bytes() spends what cannot help and still refuses. A park that reuses its
-                // K/V asks for no new bytes at all, and there no parked conversation is what the floor wants. And
-                // if freeing one entry did not make the short resource larger, the rest will not either.
-                const size_t freeable = conversations.evictable_bytes();
-                const bool hopeless = additional != 0 && additional > freeable;
-                uint64_t best = 0;
-                uint64_t short_by = 0;
-                bool stalled = false;
-                if (!hopeless && additional != 0) {
-                    while (!admit()) {
-                        // The sample just taken is after the previous eviction, so comparing it with the one
-                        // before that says whether freeing a conversation gave the resource back. On Windows a
-                        // pinned working set and WDDM device allocations keep commit charged even with free RAM,
-                        // so it can stay flat while parked conversations are dropped.
-                        if (evicted != 0 && mem && mem->available <= best) {
-                            stalled = true;
-                            break;
-                        }
-                        if (mem) short_by = additional + floor - mem->available;
-                        const size_t evictable_now = conversations.evictable_bytes();
-                        if (evictable_now == 0 || additional > evictable_now || !conversations.evict_oldest()) break;
-                        ++evicted;
-                        if (mem) best = mem->available;
-                    }
-                }
-                if (!admit()) {
+                const auto round = strata::core::evict_for_admission(
+                    conversations, additional, floor, [&]() -> std::optional<uint64_t> {
+                        mem = strata::core::sample_host_memory();
+                        return mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
+                    });
+                if (!round.admitted) {
                     std::string why;
                     if (additional == 0)
                         why = "; no new bytes were requested, so evicting parked conversations could not change the answer";
-                    else if (stalled)
+                    else if (round.stalled)
                         why = "; freeing parked conversations did not return memory to the OS, so it stopped";
-                    else if (hopeless)
-                        why = "; freeing every parked byte that could be freed (" + std::to_string(freeable >> 20) +
+                    else if (round.hopeless)
+                        why = "; freeing every parked byte that could be freed (" + std::to_string(round.freeable >> 20) +
                               " MiB) could not have fitted it";
-                    else if (short_by)
-                        why = "; the conversations still parked would leave it short by " + std::to_string(short_by >> 20) + " MiB";
+                    else if (round.short_by)
+                        why = "; the conversations still parked would leave it short by " + std::to_string(round.short_by >> 20) + " MiB";
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (memory admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                 evicted, conversations.size(), why.c_str());
+                                 round.evicted, conversations.size(), why.c_str());
                     return true;
                 }
-                if (evicted)
+                if (round.evicted)
                     std::fprintf(stderr, "strata serve: conversation cache: evicted %zu parked conversation%s to admit this snapshot (%zu MiB plus %lld MiB floor)\n",
-                                 evicted, evicted == 1 ? "" : "s", additional >> 20,
+                                 round.evicted, round.evicted == 1 ? "" : "s", additional >> 20,
                                  (long long) o.conversation_cache_min_free_mib);
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
