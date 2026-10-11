@@ -462,13 +462,12 @@ int main() {
         // bounded by size()/slots(), it calls evict_oldest() unconditionally, so it drops every conversation and
         // still refuses. That is the "evicted 3, 0 still parked" line in the report this fix came from.
         {
+            // Nothing retained here on purpose: the upstream loop reads neither the retained K/V nor
+            // evictable_bytes(), and evict_oldest() never touches reuse_, so a retained candidate would change
+            // nothing about what that loop does. The retained-K/V cases are the ones above.
             ConversationCache upstream(1u << 30, 4);
             check(park(upstream, 8u << 20) && park(upstream, 8u << 20) && park(upstream, 8u << 20),
                   "the same three conversations park in the copy the old loop is run against");
-            ConversationKv kept; kept.k.resize(2u << 20, 5);
-            ConversationKvReuse keep; keep.kv = {kept};
-            keep.captured_tokens = keep.unchanged_tokens = 4096;
-            upstream.put_reuse(std::move(keep));
             uint64_t reading = 20u << 20;
             size_t spent = 0;
             while (!conversation_memory_admit(reading, need, floor) && upstream.size() > 0 &&
@@ -540,6 +539,126 @@ int main() {
             return 64u << 20;
         });
         check(enough.admitted && enough.evicted == 0, "the same park is admitted once the floor is free");
+
+        // Every reading better than the last, and still short at the end: that is the arm that reports how far
+        // short, not a stall and not a hopeless request.
+        ConversationCache drains(1u << 30, 4);
+        check(park(drains, 8u << 20) && park(drains, 8u << 20), "two conversations park");
+        uint64_t trickle = 10u << 20, last = 0;
+        auto better = [&]() -> std::optional<uint64_t> {
+            last = trickle;
+            trickle += 2u << 20;              // each drop helps, never enough
+            return last;
+        };
+        EvictionRound short_round = evict_for_admission(drains, need, floor, better);
+        check(!short_round.admitted && !short_round.stalled && !short_round.hopeless &&
+              short_round.evicted == 2 && drains.size() == 0,
+              "improving readings are spent to the last entry without being called a stall");
+        check(short_round.short_by == need + floor - last,
+              "the refusal reports how far the last reading fell short");
+
+        // The move out of generate.cpp must not change what the loop decides. Run the loop as it stood before the
+        // move (git show HEAD~1:src/program/generate.cpp) and the helper over the same states: a fresh cache and a
+        // fresh reading program for each, so the two cannot share mutable state.
+        auto before_move = [](ConversationCache& c, const size_t additional, const uint64_t floor,
+                             auto&& sample) {
+            size_t evicted = 0;
+            std::optional<uint64_t> mem;
+            auto admit = [&] { mem = sample(); return conversation_memory_admit(mem, additional, floor); };
+            const bool hopeless = additional != 0 && additional > c.evictable_bytes();
+            const size_t freeable = c.evictable_bytes();
+            uint64_t best = 0, short_by = 0;
+            bool stalled = false;
+            if (!hopeless && additional != 0) {
+                while (!admit()) {
+                    if (evicted != 0 && mem && *mem <= best) { stalled = true; break; }
+                    if (mem) short_by = additional + floor - *mem;
+                    const size_t evictable_now = c.evictable_bytes();
+                    if (evictable_now == 0 || additional > evictable_now || !c.evict_oldest()) break;
+                    ++evicted;
+                    if (mem) best = *mem;
+                }
+            }
+            // One reading more decides what the old code printed, exactly as its trailing `if (!admit())` did.
+            return std::tuple<bool, size_t, bool, uint64_t, size_t>{
+                admit(), evicted, stalled, short_by, freeable};
+        };
+        // A reading program, so both loops are shown the same numbers; each side gets its own copy.
+        struct Program { uint64_t first, step; bool unknown; };
+        auto readings = [](Program p) {
+            return [state = p]() mutable -> std::optional<uint64_t> {
+                if (state.unknown) return std::nullopt;
+                const uint64_t reported = state.first;
+                state.first += state.step;
+                return reported;
+            };
+        };
+        struct Case { const char* what; size_t entries; size_t additional; Program program; bool short_by_shared; };
+        const Case cases[] = {
+            {"flat reading, three entries", 3, need, {20u << 20, 0, false}, true},
+            {"improving, never fits", 2, need, {10u << 20, 2u << 20, false}, true},
+            {"improving, fits after one", 2, need, {12u << 20, 20u << 20, false}, true},
+            {"worse after the first", 2, need, {20u << 20, 0 - (4u << 20), false}, true},
+            {"request above the whole cache", 2, 512u << 20, {20u << 20, 0, false}, false},
+            {"empty cache, short reading", 0, need, {20u << 20, 0, false}, false},
+            {"roomy reading", 3, need, {64u << 20, 0, false}, true},
+            {"one entry, a byte needed", 1, 1, {20u << 20, 0, false}, true},
+            {"nothing new requested, short reading", 3, 0, {10u << 20, 0, false}, false},
+            {"nothing new requested, roomy", 3, 0, {64u << 20, 0, false}, true},
+            {"no telemetry at all", 3, need, {0, 0, true}, true},
+            {"no telemetry, nothing new", 3, 0, {0, 0, true}, true},
+        };
+        for (const Case& c : cases) {
+            ConversationCache left(1u << 30, 4), right(1u << 30, 4);
+            bool parked = true;
+            for (size_t i = 0; i < c.entries; ++i) parked = park(left, 8u << 20) && park(right, 8u << 20);
+            if (!parked) { check(false, "every conversation in the equivalence table parks"); continue; }
+            const auto [admitted, evicted, stalled, short_by, freeable] =
+                before_move(left, c.additional, floor, readings(c.program));
+            const EvictionRound moved = evict_for_admission(right, c.additional, floor, readings(c.program));
+            check(admitted == moved.admitted && evicted == moved.evicted && stalled == moved.stalled &&
+                  left.size() == right.size(),
+                  (std::string("the moved loop decides the same as before: ") + c.what).c_str());
+            // A refusal's freeable total is the entry snapshot of both rounds. An admitted round returns before
+            // the helper takes it, so there is nothing to compare there - no refusal line is printed for it.
+            if (!moved.admitted)
+                check(freeable == moved.freeable,
+                      (std::string("a refusal reports the same freeable total: ") + c.what).c_str());
+            if (c.short_by_shared)
+                check(short_by == moved.short_by,
+                      (std::string("the same shortfall is reported: ") + c.what).c_str());
+            else
+                check(short_by == 0 && moved.short_by != 0,
+                      (std::string("only the helper reports a shortfall here: ") + c.what).c_str());
+        }
+        // A pinned shared prefix is charged in bytes() but is not evict_oldest() material. A request larger than
+        // what can be spent is refused with the unpinned entries intact, and a request that only the pinned
+        // entries could cover is refused without spending the one entry that could pay for part of it.
+        {
+            ConversationCache mixed(1u << 30, 4);
+            auto with_pin = [&](bool pin, std::initializer_list<int32_t> ids) {
+                SavedConversation s = image(ids);
+                ConversationCheckpoint c;
+                c.ids = ids;
+                c.pinned = pin;
+                c.gdn.resize(8u << 20, 1);
+                s.checkpoints = {c};
+                return s;
+            };
+            check(mixed.put(with_pin(false, {1, 2})) && mixed.put(with_pin(true, {3, 4})),
+                  "an evictable conversation and a pinned one park");
+            const size_t freeable = mixed.evictable_bytes(), charged = mixed.bytes();
+            check(charged > freeable, "the pinned entry is charged but cannot be spent");
+            const size_t before = mixed.size();
+            EvictionRound round = evict_for_admission(mixed, charged, floor,
+                                                      []() -> std::optional<uint64_t> { return 1u << 20; });
+            check(round.hopeless && !round.admitted && round.evicted == 0 && mixed.size() == before,
+                  "a request only the pinned entry could cover spends nothing, including the one that could pay");
+            round = evict_for_admission(mixed, freeable, floor, []() -> std::optional<uint64_t> { return 1u << 20; });
+            check(!round.admitted && round.evicted == 1 && mixed.size() == 1 &&
+                  mixed.evictable_bytes() == 0 && mixed.bytes() > 0,
+                  "a request the freeable entries can just cover spends only the unpinned one, the pin stays");
+        }
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

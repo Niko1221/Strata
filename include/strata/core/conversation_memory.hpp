@@ -111,8 +111,8 @@ struct EvictionRound {
 /// while parked conversations are dropped. Templated on the cache so the decision is testable against the real
 /// one without a model.
 template <typename Cache, typename Sample>
-inline EvictionRound evict_for_admission(Cache& conversations, const size_t additional,
-                                         const uint64_t floor, Sample&& sample) {
+inline EvictionRound evict_for_admission(Cache& conversations, size_t additional,
+                                         uint64_t floor, Sample&& sample) {
     EvictionRound round;
     std::optional<uint64_t> available = sample();
     if (conversation_memory_admit(available, additional, floor)) { round.admitted = true; return round; }
@@ -123,6 +123,9 @@ inline EvictionRound evict_for_admission(Cache& conversations, const size_t addi
     uint64_t best = available ? *available : 0;
     for (;;) {
         const size_t evictable_now = conversations.evictable_bytes();
+        // For ConversationCache the last test cannot be what ends the round - evictable_bytes() > 0 means an
+        // unpinned entry exists and evict_oldest() takes exactly such an entry. It is what terminates the round
+        // for a cache type whose two predicates disagree, which is why it stays.
         if (evictable_now == 0 || additional > evictable_now || !conversations.evict_oldest()) break;
         ++round.evicted;
         available = sample();
