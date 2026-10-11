@@ -72,6 +72,12 @@
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/disk_park_blob.hpp"   // ★ P12 blob 流（检查点状态）
+#include "strata/core/disk_park_logs.hpp"    // ★ P9 流式会话日志（追加流）
+#include "strata/core/p13_draft_kv.hpp"      // ★ P13 草稿（MTP）K/V 的落盘格式
+#include "strata/core/p13_session_id.hpp"    // ★ P13 会话身份（token 序列）
+#include "strata/core/p13_pooled.hpp"        // ★ P13 indexer 池化行（长上下文）
+#include "strata/core/disk_park_spool.hpp"   // ★ P5 磁盘停放层
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -591,6 +597,26 @@ struct Options {
     int64_t conversation_cache_mib = 0; // opt-in host RAM for independent conversations
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
+    // ★ P5 磁盘停放层：把被顶掉的停放条目落到 NVMe，重启后还能读回来。
+    //   path 为空 = 关闭 —— 此时行为与没有这一层【逐字节一致】。
+    std::string disk_park_path;
+    int64_t disk_park_gib = 64;
+    bool disk_park_restore = true;
+    /// ★ P5: 每天允许写入停放层的 GiB（0 = 不限）。
+    ///   实测该层“只写不读”（多实例 restores=0），而每份快照约 2.3 GiB ——
+    ///   不限速时一天能写 100-220 GiB。超出预算后当天的条目直接丢弃
+    ///   （与没有这一层时的行为一致）。
+    int64_t disk_park_daily_gib = 0;
+    /// ★ P9 流式停放层：把「每个请求结束后的本轮增量」追加进【每会话一个】的日志，
+    ///   而不是每次淘汰整份快照重写。空 = 关闭（行为与没有它逐字节一致）。
+    std::string disk_park_stream_dir;
+    /// ★ 退出时把常驻（Host）层保存到这个清单文件；空 = 关闭。
+    ///   对应 ninfer 的 --prefix-cache-file：本实现把常驻会话写进磁盘停放层
+    ///   （复用现有的打包/恢复路径），PATH 里记下身份清单，
+    ///   下次请求命中前缀时自动恢复。
+    std::string prefix_cache_file;
+    /// ★ 价值感知淘汰（ninfer --value-aware-demote）
+    bool value_aware_demote = false;
     /// --serve SAVE: disk space a session file must leave free where it is written (MiB; 0 = no check)
     int64_t session_min_free_mib = 4096;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
@@ -733,6 +759,18 @@ void usage() {
                  "                       of RAM each; 0 = read every prompt from the start)\n"
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --disk-park-path DIR  --serve: disk tier under the RAM cache.  A parked conversation\n"
+                 "                       evicted, or written when it is parked, lands in DIR and can be\n"
+                 "                       restored after a restart (default off = byte-for-byte the old\n"
+                 "                       behaviour).  The files are keyed by the prompt prefix digest and\n"
+                 "                       the execution profile, so a different K/V format, context size or\n"
+                 "                       rope setting never reads another profile\'s bytes.  A corrupt or\n"
+                 "                       missing page reads as a miss and the engine recomputes.\n"
+                 "  --disk-park-gib N     --serve: total disk budget for that tier (default 64)\n"
+                 "  --disk-park-stream-dir DIR  --serve: per-conversation APPEND log (streaming tier).\n"
+                 "                        Empty = off.  Appends only this request's K/V delta instead of\n"
+                 "                        rewriting the whole snapshot on every eviction.\n"
+                 "  --no-disk-park-restore  --serve: write the tier only, never read it back\n"
                  "  --conversation-cache-min-free-mib N  --serve: physical RAM floor when parking or restoring a\n"
                  "                       session file (default 2560)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
@@ -1559,6 +1597,379 @@ double pcie_frac_for_gbps(double gbps, double base) {
 
 }  // namespace
 
+namespace {
+
+// ★★ P9：把一个主层（QSA layer）的 host K/V 池，按【池内字节偏移】读出来。
+//
+// 为什么不能直接 memcpy：host 池是【页主序】的
+//     byte_of(cell, h) = ((cell / page_size) * kv_heads + h) * page_size + (cell % page_size)
+// 所以第 c 个 cell 的字节【不】落在 c * bytes_per_cell 上。取回路径里
+// conversation_kv_save 用的是同一个寻址规则。
+//
+// ★ 正确性靠一条不变量：追加流里 cell 处的字节只由 cell 决定，与哪一轮写的无关。
+//   两边用同一条公式，写进去的和读出来的才可能逐字节相等。
+bool p9_read_host_pool(const strata::core::QsaState& st, const strata::kernels::QsaShapes& sh,
+                       int64_t head_dim, int part, std::uint64_t offset, std::uint8_t* dst, std::size_t n,
+                       std::size_t part_bytes_per_cell) {
+    const strata::kernels::KvHostPools& hp = st.host;
+    const std::size_t heads = (std::size_t) sh.n_head_kv;
+    const std::size_t ps = (std::size_t) sh.page_size;
+    if (heads == 0 || head_dim <= 0 || ps == 0) return false;
+
+    // ★★★ bpc 必须是【每 head 的字节数】，而它在不同格式下算法不同：
+    //   int8  → head_dim
+    //   q4_0  → (head_dim/32)*sizeof(block_q4_0) = head_dim/32*18   ← ★ 分块，不是 head_dim/2！
+    //   fp16  → head_dim*2
+    // 第一版对 q4 用了 head_dim/2 = 128，而真值是 144 ⇒
+    // page_bytes = ps*heads*bpc 也跟着错 ⇒ 越过第一页就返回 false（实测：
+    // 只有 cell 0 能读，cell 1 开始全失败）。
+    //
+    // 现在不再自己算：直接用调用方给的、来自【计划】的
+    // bytes_per_cell（= heads × 每 head 字节数），再除以 heads 得到 bpc。
+    // 那个值与池的编排、与磁盘上的布局都是同一个事实。
+    const std::size_t heads0 = (std::size_t) sh.n_head_kv;
+    if (heads0 == 0 || part_bytes_per_cell == 0 || part_bytes_per_cell % heads0 != 0) return false;
+    const std::size_t bpc_given = part_bytes_per_cell / heads0;
+
+    std::size_t bpc = 0;
+    const std::uint8_t* pool = nullptr;
+    if (part == 0) {
+        if (st.kv_hybrid)    { pool = (const std::uint8_t*) hp.k_q;    bpc = bpc_given; }
+        else if (st.kv_q4)   { pool = (const std::uint8_t*) hp.k_q4;   bpc = bpc_given; }
+        else if (st.kv_int8) { pool = (const std::uint8_t*) hp.k_q;    bpc = bpc_given; }
+        else                 { pool = (const std::uint8_t*) hp.k_pool; bpc = bpc_given; }
+    } else if (part == 1) {
+        // ★★★ k8v4：V 是【旋转过的 q4_0】，在 v_q4 里，不是 v_q。
+        //   对照引擎自己的映射（conversation_snapshot.cpp: pools()）：
+        //     kv_hybrid ⇒ { k_q, v_q4, k_scale, nullptr, idx_pooled }
+        //   第一版这里写了 hp.v_q，于是 part 1 读出来是错的（而 part 2/3 直接失败）。
+        if (st.kv_hybrid)    { pool = (const std::uint8_t*) hp.v_q4;   bpc = bpc_given; }
+        else if (st.kv_q4)   { pool = (const std::uint8_t*) hp.v_q4;   bpc = bpc_given; }
+        else if (st.kv_int8) { pool = (const std::uint8_t*) hp.v_q;    bpc = bpc_given; }
+        else                 { pool = (const std::uint8_t*) hp.v_pool; bpc = bpc_given; }
+    } else if (part == 2) {
+        // k8v4 与 int8 都有 K 的尺度：每 64 个值 2 字节 ⇒ (head_dim/64)*2
+        if (!st.kv_hybrid && !st.kv_int8) return false;
+        pool = (const std::uint8_t*) hp.k_scale; bpc = bpc_given;
+    } else if (part == 3) {
+        // ★ k8v4 的 V 是 q4_0，自带尺度 ⇒ 【没有】v_scale（引擎给的是 nullptr）。
+        //   int8 才有。
+        if (st.kv_hybrid || !st.kv_int8) return false;
+        pool = (const std::uint8_t*) hp.v_scale; bpc = bpc_given;
+    } else {
+        // ★ part 4（pooled）不在 host 池里：引擎用的是【设备指针】 st.idx_pooled
+        //   （conversation_snapshot.cpp: pools() 的最后一个元素）。
+        //   而 st.idx_pooled_rows 也说明它是"移动的备用行"式的布局。
+        //   ⇒ 日志暂不含 pooled（配置里把 part_bytes_at_cap[4] 置 0）。
+        //   代价：pooled 占 128/944 ≈ 13.6% 的 KV 字节不在盘上，见 P13 HANDOFF 的已知限制。
+        return false;
+    }
+    if (pool == nullptr || bpc == 0) return false;
+
+    const std::size_t row_bytes = heads * bpc;         // 一个 head 一行的字节数
+    const std::size_t page_bytes = ps * row_bytes;     // 一页（ps 个位置）
+    std::size_t i = 0;
+    while (i < n) {
+        const std::uint64_t at = offset + (std::uint64_t) i;
+        const std::size_t pg = (std::size_t) (at / page_bytes);
+        const std::size_t rem = (std::size_t) (at % page_bytes);
+        const std::size_t take = std::min(n - i, page_bytes - rem);
+        const std::size_t cell_in_page = rem / row_bytes;
+        std::size_t in_cell = rem % row_bytes;
+        std::size_t done = 0;
+        while (done < take) {
+            const std::size_t hs = in_cell / bpc;
+            if (hs >= heads) return false;             // 防御：不该发生
+            const std::size_t wo = in_cell % bpc;
+            const std::size_t can = std::min(take - done, bpc - wo);
+            const std::size_t src = ((pg * heads + hs) * ps + cell_in_page) * bpc + wo;
+            std::memcpy(dst + i + done, pool + src, can);
+            done += can;
+            in_cell += can;
+        }
+        i += take;
+    }
+    return true;
+}
+
+} // namespace
+
+namespace {
+
+// ★★ P12：把侧车载荷需要的镜像做出来 —— live / 检查点的 5 个缓冲区
+//   **保留长度、内容清零**。这是唯一正确的形态（独立探针 m4.cpp 逐字节验证过）：
+//     · 长度字段必须是真值 —— 拼接的载荷光标靠它对齐后面的缓冲区；
+//     · 内容清 0 —— "这段在日志里"由【目录项 present()】表达。
+//   反例（都试过、都会让拼接错位）：长度字段清 0、resize(0)、把数据段删掉。
+strata::core::SavedConversation p12_zero_meta_buffers(const strata::core::SavedConversation& in) {
+    strata::core::SavedConversation m = in;
+    auto z = [](std::vector<std::uint8_t>& v) { for (auto& b : v) b = 0; };
+    z(m.live.gdn); z(m.live.ple); z(m.live.tails); z(m.live.dead); z(m.live.block_pos);
+    for (auto& c : m.checkpoints) {
+        z(c.gdn); z(c.ple); z(c.tails); z(c.dead); z(c.block_pos);
+    }
+    return m;
+}
+
+// 一个检查点的 5 个缓冲区首尾相接的长度（日志记录的大小）
+std::uint64_t p12_ckpt_state_bytes(const strata::core::ConversationCheckpoint& c) {
+    return (std::uint64_t) (c.gdn.size() + c.ple.size() + c.tails.size() + c.dead.size() + c.block_pos.size());
+}
+
+// 把这些缓冲区追加到 blob（首尾相接，与拼接端的"记录内累计偏移"一致）
+void p12_append_ckpt_state(std::vector<std::uint8_t>& out,
+                           const strata::core::ConversationCheckpoint& c) {
+    auto add = [&out](const std::vector<std::uint8_t>& v) { out.insert(out.end(), v.begin(), v.end()); };
+    add(c.gdn); add(c.ple); add(c.tails); add(c.dead); add(c.block_pos);
+}
+
+} // namespace
+
+namespace {
+
+// ★★ P12：从侧车载荷里量出拼接需要的两个入参：KV 层数 与 cells。
+//   为什么要量：splice_image 用它们算 part_bytes(part, cells) - part_bytes(part, from_cell)；
+//   传错就会读错长度（甚至不吐数据）。载荷的结构自己就写着这两个数，读出来最可靠。
+bool p12_measure_kv(std::span<const std::byte> payload, std::size_t& layers, std::uint64_t& cells) {
+    layers = 0; cells = 0;
+    const auto* b = reinterpret_cast<const std::uint8_t*>(payload.data());
+    auto rd = [&](std::size_t at) -> std::uint64_t {
+        std::uint64_t v = 0;
+        if (at + 8 <= payload.size()) std::memcpy(&v, b + at, 8);
+        return v;
+    };
+    // 跳过 magic/ver + geometry + lo/hi，走到 live 之前
+    std::size_t at = 8 + 18 * 8 + 8 + 8;
+    // 用 extract_ckpt_digests 的同一套走法走完 live + checkpoints，停在"KV 层数"上
+    std::vector<strata::core::PrefixDigest> digs;
+    if (!strata::core::extract_ckpt_digests(payload, 0, digs)) return false;
+    // extract 内部走完了 live+checkpoints；这里重新走一遍到那个位置
+    std::function<bool()> skip_ck = [&]() -> bool {
+        if (at + 8 > payload.size()) return false;
+        const std::uint64_t n_ids = rd(at); at += 8 + (std::size_t) n_ids * 4;
+        if (at > payload.size()) return false;
+        if (at + 8 > payload.size()) return false;
+        const std::uint64_t n_img = rd(at); at += 8 + (std::size_t) n_img * 16;
+        if (at > payload.size()) return false;
+        for (int p = 0; p < 5; ++p) {
+            if (at + 8 > payload.size()) return false;
+            const std::uint64_t n = rd(at); at += 8 + (std::size_t) n;
+            if (at > payload.size()) return false;
+        }
+        if (at + 16 > payload.size()) return false;
+        at += 8;                                            // used
+        const std::uint64_t n_parts = rd(at); at += 8;
+        for (std::uint64_t k = 0; k < n_parts; ++k) if (!skip_ck()) return false;
+        return true;
+    };
+    if (!skip_ck()) return false;
+    if (at + 8 > payload.size()) return false;
+    const std::uint64_t n_ck = rd(at); at += 8;
+    for (std::uint64_t k = 0; k < n_ck; ++k) if (!skip_ck()) return false;
+    if (at + 8 > payload.size()) return false;
+    layers = (std::size_t) rd(at); at += 8;
+    if (layers == 0) return false;
+    // 第一层的 format + cells
+    if (at + 4 + 6 * 8 > payload.size()) return false;
+    cells = rd(at + 4);
+    return cells > 0;
+}
+
+} // namespace
+
+namespace {
+
+// ★★★ P13：从【内容寻址 blob】把检查点恢复出来。
+//
+// 为什么必须做：只恢复 K/V 池是不够的 —— 检查点（ConversationCheckpoint）是
+// prompt-cache 链与投机解码草稿的基础。实测只恢复 K/V 时 checkpoints 从 3 变 0，
+// decode 从 57 掉到 30 tok/s（草稿接受 4/9 → 1/8）。
+//
+// 一份检查点的状态 = ids + gdn + ple + tails + dead + block_pos，实测（本机几何）：
+//   len = 4*ids  +  48 + gdn + ple + tails + dead
+//   gdn/ple/tails/dead/block_pos 与 ids 长度【无关】（它们由模型几何决定），
+//   实测一次为 gdn=117669888, ple=368640, tails=18432, dead=6144, block_pos=48。
+//   ⇒ len - 常量 就是 ids 的字节数 ⇒ 反推 ids 个数。
+//
+// 键 = prefix_digest(ck.ids, {}, {}, ck.ids.size())（与写侧一致）。
+// 所以恢复时按【候选前缀长度】算键去 blob 里找：找到哪个长度，那个就是一份检查点。
+std::size_t p13_restore_checkpoints(strata::core::DiskParkBlobStream& blob,
+                                    const std::string& session_dir,
+                                    const std::vector<std::int32_t>& ids,
+                                    std::size_t max_ck,
+                                    std::vector<strata::core::ConversationCheckpoint>& out,
+                                    std::int64_t only_len = 0) {
+    // ★ 一份检查点的状态是【固定大小】的：它【不含 ids】（键已经把 ids 编码进去了）。
+    //   组成（顺序即 p12_append_ckpt_state 的追加顺序）：
+    //     gdn | ple | tails | dead | block_pos
+    //   实测（本机几何）gdn=117669888, ple=368640, tails=18432, dead=6144, block_pos=48
+    const std::uint64_t kGdn = 117669888ull, kPle = 368640ull, kTails = 18432ull;
+    const std::uint64_t kDead = 6144ull, kBlockPos = 48ull;
+    const std::uint64_t kFixed = kGdn + kPle + kTails + kDead + kBlockPos;
+
+    // ★★★ 修（2026-10-10）：只按【写侧记下来的长度】去试。
+    //   原来从 ids.size() 一路扫到 2，每一步都重算一次 prefix_digest（还要复制前缀）
+    //   ⇒ O(n²)：探针 m11 实测 45k 会话 10 s（刚好没踩线）、135k 会话 **87.9 s**
+    //   ⇒ 引擎的「60 s 无进展」看门狗把它自己停掉（HTTP 503）。
+    //   清单来自写侧每轮落的 ckpt_lengths.bin（与 tokens.bin / pooled.bin 同一套思路：
+    //   会话目录自己描述自己，读侧不需要猜、也不需要穷举）。
+    std::vector<std::int64_t> lens;
+    std::string lerr;
+    if (!strata::core::p13_ckpt_lengths_read(session_dir + "/ckpt_lengths.bin", lens, lerr)) {
+        std::fprintf(stderr, "strata serve: disk park stream: 没有检查点长度清单 (%s)"
+                     " ⇒ 本次不恢复检查点\n", lerr.c_str());
+        return 0;
+    }
+    std::sort(lens.begin(), lens.end());
+    std::vector<strata::core::ConversationCheckpoint> found;
+    for (const std::int64_t cut : lens) {
+        // ★★★ 只取【挂载点】那一份（2026-10-10）：9 份运行状态 = 9 × 118 MB = 1.01 GiB，
+        //   而这一轮立刻要用的只有挂载点那份；其余 8 份是替【下一轮】的 prompt-cache 链
+        //   预留的 —— blob 里还在，等真有请求要从那个前缀续的时候，再按那个长度读那一份。
+        if (only_len > 0 && cut != only_len) continue;
+        if (found.size() >= max_ck) break;
+        if (cut <= 1 || cut > (std::int64_t) ids.size()) continue;   // 尾巴可能比本请求长
+        std::vector<std::int32_t> pre(ids.begin(), ids.begin() + cut);
+        const auto d = strata::core::prefix_digest(pre, {}, {}, cut);
+        const auto bref = blob.find(strata::core::DiskParkBlobKey{d.lo, d.hi});
+        if (!bref.present()) continue;
+        if (bref.bytes != kFixed) continue;            // ★ 固定大小 ⇒ 必须完全相等
+        std::vector<std::uint8_t> st((std::size_t) kFixed);
+        if (!blob.get(bref, [&st](std::uint64_t off, const std::uint8_t* src, std::size_t n) {
+                std::memcpy(st.data() + (std::size_t) off, src, n);
+                return true;
+            })) continue;
+        strata::core::ConversationCheckpoint c;
+        c.ids = std::move(pre);
+        std::size_t at = 0;
+        auto take = [&](std::size_t n, std::vector<std::uint8_t>& dst) {
+            dst.assign(st.begin() + (std::ptrdiff_t) at, st.begin() + (std::ptrdiff_t) (at + n));
+            at += n;
+        };
+        take((std::size_t) kGdn, c.gdn);
+        take((std::size_t) kPle, c.ple);
+        take((std::size_t) kTails, c.tails);
+        take((std::size_t) kDead, c.dead);
+        take((std::size_t) kBlockPos, c.block_pos);
+        found.push_back(std::move(c));
+    }
+    // 按 ids 长度升序 ⇒ 链的顺序
+    std::sort(found.begin(), found.end(),
+              [](const strata::core::ConversationCheckpoint& a,
+                 const strata::core::ConversationCheckpoint& b) { return a.ids.size() < b.ids.size(); });
+    out.insert(out.end(), found.begin(), found.end());
+    return found.size();
+}
+
+// ★★★ P13：从【逐层追加日志】把会话的 K/V 取回，直接写进各层的 host 池。
+//
+// 为什么不能复用 conversation_kv_restore：它先做 conversation_kv_validate，
+// 而 validate 要求镜像的 5 个缓冲区齐全 —— 日志里【没有 pooled】
+// （pooled 在引擎里是设备指针 st.idx_pooled，不在 host 池）。
+// 所以这里只还原日志确实存了的 4 个缓冲区（K / V / K_scale / V_scale）。
+//
+// 返回：真正取回的 token 数；0 = 没有可用的日志。
+std::uint64_t p13_restore_from_log(strata::core::DiskParkLogs& logs,
+                                   const std::vector<strata::core::PrefixDigest>& cands,
+                                   strata::core::SessionState& ss,
+                                   const strata::core::ModelGeometry& g, std::string& err,
+                                   const std::string& dir_hint = {},
+                                   std::string* used_dir = nullptr) {
+    const std::size_t layers = (std::size_t) std::max<int64_t>(ss.qsa_alloc, 1);
+    // ① 拿候选前缀摘要去试会话目录（长的优先）。
+    //   目录名 = 该会话【第一次建立时】的摘要，不是本轮 prompt 的摘要。
+    // ★ 有 hint（直接按磁盘会话匹配到的目录）就用它，否则按候选摘要找
+    std::vector<std::string> try_dirs;
+    if (!dir_hint.empty()) try_dirs.push_back(dir_hint);
+    for (const auto& d : cands)
+        try_dirs.push_back(logs.dir_for(strata::core::DiskParkLogs::name_for(
+            strata::core::DiskParkLogDigest{d.lo, d.hi})));
+
+    for (const std::string& dir : try_dirs) {
+        const std::string nm = std::filesystem::path(dir).filename().string();
+        bool any = false;
+        for (std::size_t L = 0; L < layers && !any; ++L)
+            if (std::ifstream(logs.dir_for_layer(nm, L) + "/kv.bin").good()) any = true;
+        if (!any) continue;
+        // ② 该会话写到多少 token？由 sidecar（read_meta）给；没有就跳过。
+        strata::core::DiskParkSession probe;
+        std::vector<std::byte> payload;
+        std::uint64_t cells = 0, kv_at = 0;
+        if (!strata::core::DiskParkSession::open(probe, dir, logs.plan(), 0) ||
+            !probe.read_meta(payload, cells, &kv_at) || cells == 0) continue;
+        // ③ 逐层逐 part 读回，按【池的真实布局】写进 host 池。
+        // ★★ 日志【只读一遍】：read_layers() 内部自己就遍历所有层，原来在 L 循环里
+        //    各调一次 ⇒ layers 层就要把 2.4 GiB 读 layers 遍（实测 prompt_ms 从
+        //    3.2 s 涨到 13 s，还白污染 page cache ⇒ 专家命中率 84.8% → 69.5%）。
+        //    现在先把每层的 5 个目标指针算好，一次 read_layers 按 layer 分发。
+        const auto sh = strata::kernels::qsa_real_shapes();
+        const std::size_t heads = (std::size_t) sh.n_head_kv;
+        const std::size_t ps = (std::size_t) sh.page_size;
+        const auto& plan = logs.plan();
+        std::vector<std::array<std::uint8_t*, 5>> dstp(layers);
+        bool ok = true;
+        for (std::size_t L = 0; L < layers && ok; ++L) {
+            const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + (int64_t) L];
+            if (!st.host.present()) { err = "host pool missing"; ok = false; break; }
+            // 该层 5 个 part 的目标指针（与 conversation_snapshot.cpp: pools() 同一映射）
+            std::array<std::uint8_t*, 5>& d = dstp[L];
+            d = {};
+            d[0] = (std::uint8_t*) st.host.k_q;
+            d[1] = (std::uint8_t*) st.host.v_q4;
+            d[2] = (std::uint8_t*) st.host.k_scale;
+            d[3] = (std::uint8_t*) st.host.v_scale;
+            if (st.kv_q4) { d[0] = (std::uint8_t*) st.host.k_q4; }
+            else if (st.kv_int8) { d[1] = (std::uint8_t*) st.host.v_q; }
+            else if (!st.kv_hybrid) { d[0] = (std::uint8_t*) st.host.k_pool; d[1] = (std::uint8_t*) st.host.v_pool; d[2] = d[3] = nullptr; }
+        }
+        // ★★★ 并发读各层（2026-10-10）：12 层串行 pread 时冷 cache 要 40+ s，
+        //   各层之间没有任何共享状态 ⇒ 开 4 个线程（可用 STRATA_P13_RESTORE_THREADS 调）。
+        static const int p13_threads = [] {
+            const char* v = std::getenv("STRATA_P13_RESTORE_THREADS");
+            const int n = v != nullptr ? std::atoi(v) : 4;
+            return n > 0 ? n : 4;
+        }();
+        if (ok) ok = logs.read_layers_parallel(nm, layers, 0, cells,
+            [&](std::size_t lyr, std::size_t part, std::size_t off,
+                const std::uint8_t* src, std::size_t n) -> bool {
+                if (lyr >= layers || part >= 5) return false;
+                std::uint8_t* base = dstp[lyr][part];
+                if (base == nullptr) return true;      // 该层没有这个 part（如 k8v4 的 v_scale）
+                const std::size_t bpc = plan.parts[part].bytes_per_cell / heads;
+                if (bpc == 0) return true;
+                // off 是"该 part 段内偏移"，按 position 线性排：一个位置 heads*bpc 字节
+                const std::size_t per_pos = heads * bpc;
+                std::size_t i = 0;
+                while (i < n) {
+                    const std::uint64_t pos = (off + i) / per_pos;
+                    const std::size_t in_pos = (off + i) % per_pos;
+                    const std::size_t h = in_pos / bpc;
+                    const std::size_t wo = in_pos % bpc;
+                    const std::size_t can = std::min(n - i, bpc - wo);
+                    // 池的 identity layout：[block][kv_head][page_size][head_dim]
+                    const std::size_t page = (std::size_t) (pos / ps);
+                    const std::size_t cell = (std::size_t) (pos % ps);
+                    const std::size_t at = ((page * heads + h) * ps + cell) * bpc + wo;
+                    std::memcpy(base + at, src + i, can);
+                    i += can;
+                }
+                return true;
+            }, p13_threads);
+        if (!ok) continue;
+        // ④ 清掉 VRAM 里的槽位映射，让 resolve 从刚恢复的池重新填充
+        for (std::size_t L = 0; L < layers; ++L) {
+            const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + (int64_t) L];
+            if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
+        }
+        if (used_dir != nullptr) *used_dir = nm;
+        (void) g;
+        return cells;
+    }
+    return 0;
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -1829,6 +2240,18 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
+        // ★ P5 磁盘停放层
+        else if (a == "--disk-park-path") o.disk_park_path = next("--disk-park-path");
+        else if (a == "--disk-park-gib") o.disk_park_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-gib")));
+        else if (a == "--disk-park-restore") o.disk_park_restore = true;
+        else if (a == "--no-disk-park-restore") o.disk_park_restore = false;
+        else if (a == "--disk-park-daily-gib") o.disk_park_daily_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-daily-gib")));
+        else if (a == "--disk-park-stream-dir") o.disk_park_stream_dir = next("--disk-park-stream-dir");
+        else if (a == "--prefix-cache-file") o.prefix_cache_file = next("--prefix-cache-file");
+        else if (a == "--value-aware-demote") {
+            o.value_aware_demote = true;
+            setenv("STRATA_VALUE_AWARE_DEMOTE", "1", 1);   // 传给 DiskParkStore（跨四层选项不好插）
+        }
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -6967,6 +7390,472 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots);
+        // ★ P5 磁盘停放层。profile 覆盖【任何改变 KV 字节布局】的配置 ——
+        //   换 kv 格式 / 上下文档位 / rope 之后，绝不会读到另一套字节。
+        strata::core::DiskParkSpool::Options disk_park_opts;
+        disk_park_opts.path                = o.disk_park_path;
+        disk_park_opts.profile.model       = o.pack;
+        disk_park_opts.profile.kv_format   = o.kv;
+        disk_park_opts.profile.max_context = o.max_context;
+        disk_park_opts.profile.rope        = o.rope_scaling.empty()
+            ? std::string("none")
+            : (o.rope_scaling + ":" + std::to_string((long long) o.rope_scale));
+        disk_park_opts.state_stride = (size_t) 8 << 20;
+        // ★ P7：把「前缀去重」显式关掉 —— 现有实现默认 true
+        //   （~/Strata-0141/src/core/disk_park_spool.cpp 的 supersede_prefixes），
+        //   而【正在跑的那个引擎没有它】：本次进程 5 次 spill 的 superseded 恒为 0。
+        //   阶段 0 要量的是"现状为什么写这么多"，所以必须与现状逐项对齐 ——
+        //   开着去重会让测量结果偏小，把写放大的责任推给一个还没上线的优化。
+        //   ★ 去重本身是好的（已实测：每次 store 会丢掉 2 个 chunk = 探测页 + 数据页），
+        //     但它属于【下一轮】的改动，不该混进这一轮的基线。
+        disk_park_opts.supersede_prefixes = false;
+        // ★ kv_stride = 0 关闭 QsaKv 家族：我们把【整份 SavedConversation】
+        //   （状态 + 它自带的 KV 副本）都写进 StateImage，QsaKv 从来没有调用点。
+        //   早先按 70/30 切预算，那 30%（64 GiB 里约 19.2 GiB）是白占的 ——
+        //   有效预算只有 44.8 GiB。现在全部给 StateImage。
+        disk_park_opts.kv_stride    = 0;
+        const size_t disk_park_total = (size_t) std::max<int64_t>(o.disk_park_gib, 1) << 30;
+        disk_park_opts.state_capacity_bytes = disk_park_total;
+        disk_park_opts.kv_capacity_bytes    = 0;
+        strata::core::DiskParkSpool disk_park(disk_park_opts);
+        if (!o.disk_park_path.empty())
+            std::fprintf(stderr, "strata serve: disk park: %s (tag %08X, %lld GiB)%s\n",
+                         o.disk_park_path.c_str(), disk_park.profile().tag(),
+                         (long long) o.disk_park_gib,
+                         disk_park.enabled() ? "" : "  [NOT ENABLED]");
+        // ★★ P9 流式停放层：每会话一个追加日志（阶段 2：只写）。
+        //    几何全部由引擎现算，杜绝"协议里写死一套、缓存里是另一套"。
+        std::unique_ptr<strata::core::DiskParkLogs> disk_park_stream;
+        // ★★ P12：检查点状态流（内容寻址、只追加、索引跨重启重建）。
+        //   与 disk_park_stream 分开持有：DiskParkLogs 管 KV 追加日志，
+        //   这个管检查点状态的 blob（两者生命周期一致，都由 --disk-park-stream-dir 开关）。
+        std::unique_ptr<strata::core::DiskParkBlobStream> disk_park_blob;
+        // ★ P12：append 为本轮选的会话目录名（commit_image 必须用同一个名字）。
+        //   两层目录是在【不同作用域】里发生的 —— append 在请求末尾的挂点、
+        //   commit_image 在 disk_park_put 里 —— 所以要用一个变量把名字带过去。
+        std::string disk_park_session_name;
+        if (!o.disk_park_stream_dir.empty()) {
+            const auto shapes = strata::kernels::qsa_real_shapes();
+            const strata::core::QsaState& st0 = stages.empty()
+                ? ss.qsa_states[ss.qsa_primary()] : stages[0]->ss.qsa_states[stages[0]->ss.qsa_primary()];
+            if (st0.kv_mode != 1) {
+                std::fprintf(stderr, "strata serve: disk park stream: OFF (kv_mode=%d 不是流式)\n",
+                             (int) st0.kv_mode);
+            } else if (!st0.host.present()) {
+                std::fprintf(stderr, "strata serve: disk park stream: OFF (没有 host 池)\n");
+            } else {
+                std::array<std::uint64_t, 5> at_cap{};
+                std::string e;
+                if (!strata::core::conversation_kv_part_sizes(st0, g, o.max_context, true, at_cap, e)) {
+                    std::fprintf(stderr, "strata serve: disk park stream: OFF (%s)\n", e.c_str());
+                } else {
+                    strata::core::DiskParkLogs::Config c;
+                    c.root           = o.disk_park_stream_dir;
+                    c.tag            = disk_park.profile().tag();
+                    c.kv_format      = strata::core::qsa_kv_format(st0);
+                    c.heads          = g.n_head_kv;
+                    c.head_dim       = g.head_dim;
+                    c.page_size      = shapes.page_size;
+                    c.idx_dim        = g.idx_key_dim;
+                    c.idx_block      = shapes.idx_block;
+                    c.capacity_cells = (std::uint64_t) std::max<int64_t>(o.max_context, 1);
+                    for (std::size_t i = 0; i < 5; ++i) c.part_bytes_at_cap[i] = at_cap[i];
+                    // ★★★ 日志【不含 pooled】（part 4）。
+                    //   为什么：pooled 的组织方式与 K/V 不同（按 idx_block 成行、
+                    //   带"移动的备用行"），p9_read_host_pool 明确不支持它
+                    //   （那里 `return false`）。留着它会让 append_kv 在 part 4 上失败
+                    //   ⇒ 按"任一层失败即整体不写"的约定，整条日志一个字节都写不进
+                    //   （实测症状：只建出 layer00/kv.bin 64 字节）。
+                    //   代价：pooled 占 128/944 B/cell ≈ 13.6%，不在盘上；
+                    //   取回时它由重算/后续版本补 —— 见 HANDOFF 的"已知限制"。
+                    c.part_bytes_at_cap[4] = 0;
+                    c.max_open       = 8;
+                    auto logs = std::make_unique<strata::core::DiskParkLogs>(std::move(c));
+                    if (!logs->enabled()) {
+                        std::fprintf(stderr, "strata serve: disk park stream: OFF (几何不自洽)\n");
+                    } else {
+                        // 每会话的【逻辑】容量 = 各 part 在 capacity_cells 处的字节数之和
+                        // （文件是稀疏的，逻辑容量不等于占用）
+                        std::uint64_t logical = 0;
+                        for (const auto& pp : logs->plan().parts) {
+                            if (pp.bytes_per_cell == 0) continue;
+                            const std::uint64_t rows = c.capacity_cells / (std::uint64_t) pp.row_cells;
+                            const std::uint64_t rem  = c.capacity_cells % (std::uint64_t) pp.row_cells;
+                            logical += pp.row_cells <= 1
+                                ? c.capacity_cells * pp.bytes_per_cell
+                                : rows * pp.row_bytes + rem * pp.bytes_per_cell;
+                        }
+                        std::fprintf(stderr,
+                                     "strata serve: disk park stream: %s (tag %08X, 每会话 %.2f GiB 逻辑, "
+                                     "page=%lld idx_block=%lld, K 每 cell %zu B)\n",
+                                     o.disk_park_stream_dir.c_str(), c.tag,
+                                     (double) logical / 1073741824.0,
+                                     (long long) shapes.page_size, (long long) shapes.idx_block,
+                                     logs->plan().parts[0].bytes_per_cell);
+                        disk_park_stream = std::move(logs);
+                        // 检查点状态流放在同一个会话根下的独立文件
+                        strata::core::DiskParkBlobStream::Options bopt;
+                        bopt.path = o.disk_park_stream_dir + "/checkpoints.bin";
+                        bopt.max_tracked = 4096;
+                        disk_park_blob = std::make_unique<strata::core::DiskParkBlobStream>(std::move(bopt));
+                        if (disk_park_blob != nullptr && !disk_park_blob->enabled()) {
+                            std::fprintf(stderr, "strata serve: disk park blob: OFF (打不开 %s)\n",
+                                         bopt.path.c_str());
+                            disk_park_blob.reset();
+                        }
+                    }
+                }
+            }
+        }
+        // ★ 快照层的读回（DiskParkSpool::find / load）【还没有接进请求路径】——
+        //   现在取回走的是下面的追加日志那条。所以 --no-disk-park-restore 目前只在这行
+        //   日志里可见；接上读回时，闸门就用 o.disk_park_restore。
+        if (!o.disk_park_path.empty())
+            std::fprintf(stderr, "strata serve: disk park: restore %s "
+                                 "(the snapshot read-back is not wired into the request path yet)\n",
+                         o.disk_park_restore ? "allowed" : "off");
+        if (!o.prefix_cache_file.empty())
+            std::fprintf(stderr, "strata serve: prefix cache file: %s (%s)\n",
+                         o.prefix_cache_file.c_str(),
+                         std::filesystem::exists(o.prefix_cache_file) ? "found, Host tier will be seeded on demand"
+                                                                      : "new");
+        if (o.value_aware_demote)
+            std::fprintf(stderr, "strata serve: disk park: value-aware demote ON "
+                                 "(evict the cheapest-to-rebuild first)\n");
+        // ★ P5: 每日写入预算（0 = 不限）。超出后当天的条目不写盘（直接丢弃）。
+        struct ParkDayBudget { int64_t day = -1, written = 0, skipped = 0; bool warned = false; };
+        ParkDayBudget park_budget;
+        // ★ 退出时的 drain 不看每日预算（否则正好用完额度的那天，常驻会话就丢了）
+        bool park_force_spill = false;
+        const int64_t park_budget_bytes =
+            o.disk_park_daily_gib > 0 ? (o.disk_park_daily_gib * 1024 * 1024 * 1024) : 0;
+        if (park_budget_bytes > 0 && disk_park.enabled())
+            std::fprintf(stderr, "strata serve: disk park: 每日写入上限 %lld GiB（超出即丢弃）\n",
+                         (long long) o.disk_park_daily_gib);
+        // ★ P5: 把一个停放条目写到磁盘。
+        //   store() 内部对"已存在"只刷新 LRU，所以重复调用是廉价的；
+        //   只有新 frontier 才真的落盘（@256K 约 4 GiB，同步约 2 秒 —— 在停放路径上可接受，
+        //   因为停放本身已经要几秒）。
+        // ★ 内存：store() 现在是【流式】的 —— 边打包边填页落盘，
+        //   峰值内存只有一个页大小（8 MiB），不再需要整份镜像的副本。
+        //   （早先的做法会 pack 出完整的 vector，@256K 约 4-6 GiB，
+        //     在停放路径上把瞬时需求翻倍，内存紧张时会静默失败。）
+        // ★ 只在【淘汰】时写盘（第 26 轮简化）。
+        //
+        //   曾经还有一个"每 5 分钟检查点"（为了在引擎被 kill 时也能恢复常驻的那份），
+        //   但它是【时间驱动】的：实测 90 分钟内写盘 16 次，而真正的淘汰只有 4 次
+        //   —— 12 次是检查点写的，约 900 GB/天，与用户怎么用完全无关。
+        //
+        //   而常驻的那份其实不需要落盘：引擎重启后它本来就要重读一次（一次冷读）。
+        //   ★ 真正不该丢的是【被挤出去的】那些 —— 那正是这里覆盖的范围。
+        //
+        //   于是写入量从"时间驱动"变成"事件驱动"：
+        //     2 个会话以内（slots=2 装得下）→ evictions=0 → 零写盘
+        //     3 个会话 → 每次切换写一次 → 一天切 3 次约 10 GB
+        auto disk_park_put = [&disk_park, &o, &park_budget, park_budget_bytes, &park_force_spill,
+                              &disk_park_stream, &disk_park_blob,
+                              &disk_park_session_name](const strata::core::SavedConversation& e) {
+            if (!disk_park.enabled()) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    std::fprintf(stderr, "strata serve: disk park: skip spill (tier not enabled)\n");
+                }
+                return;
+            }
+            if (e.live.ids.empty()) {
+                std::fprintf(stderr, "strata serve: disk park: skip spill (image has no live ids)\n");
+                return;
+            }
+            // ★ 太小的条目不值得写盘：重读它只要几秒，而快照有【固定开销】
+            //   （stage/checkpoint 结构约 240 MiB —— 实测 146 token 的条目写了 240 MiB ✗）。
+            //
+            //   阈值来自实测: prefill 稳态约 2,380 tok/s → 10 秒 ≈ 23,800 token。
+            //   低于这个长度，写盘的 SSD 磨损 > 省下的重读时间，不划算。
+            constexpr int64_t kMinSpillTokens = 24000;   // ≈ 10 秒重读
+            if ((int64_t) e.live.ids.size() < kMinSpillTokens) {
+                std::fprintf(stderr,
+                             "strata serve: disk park: skip spill (too small: %lld < %lld tokens, "
+                             "a re-read would cost ~%.1fs)\n",
+                             (long long) e.live.ids.size(), (long long) kMinSpillTokens,
+                             (double) e.live.ids.size() / 2380.0);
+                return;
+            }
+            // ★ P5: 每日写入预算 —— 超了就当没有这一层（丢弃，不写盘）
+            if (park_budget_bytes > 0 && !park_force_spill) {
+                const auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch()).count();
+                const int64_t day = (sec + 8 * 3600) / 86400;   // 以北京时间 0 点为界
+                if (day != park_budget.day) {
+                    park_budget.day = day; park_budget.written = 0;
+                    park_budget.skipped = 0; park_budget.warned = false;
+                }
+                if (park_budget.written >= park_budget_bytes) {
+                    ++park_budget.skipped;
+                    if (!park_budget.warned) {
+                        park_budget.warned = true;
+                        std::fprintf(stderr,
+                                     "strata serve: disk park: 当日已写满 %.1f GiB 上限，今日不再写盘"
+                                     "（这条 %lld tokens 被丢弃，下次要冷读）\n",
+                                     (double) park_budget.written / 1073741824.0, (long long) e.live.ids.size());
+                    }
+                    return;
+                }
+            }
+            std::vector<std::uint64_t> hashes;
+            std::vector<std::int64_t>  starts;
+            hashes.reserve(e.live.imgs.size());
+            starts.reserve(e.live.imgs.size());
+            for (const auto& im : e.live.imgs) { starts.push_back(im.start); hashes.push_back(im.hash); }
+            // ★ 诊断：store() 返回 0 表示失败（磁盘满 / 写错误 / frontier 非法），
+            //   但调用方原本看不到 —— 于是"停放成功了却没写盘"无从排查。
+            const std::size_t wrote =
+                disk_park.store(e, (std::int64_t) e.live.ids.size(), e.live.ids, hashes, starts);
+            if (wrote == 0) {
+                std::fprintf(stderr,
+                             "strata serve: disk park: spill FAILED (%lld tokens, %zu MiB)\n",
+                             (long long) e.live.ids.size(),
+                             strata::core::packed_saved_conversation_bytes(e) >> 20);
+            } else {
+                park_budget.written += (int64_t) wrote;
+                // ★ 带累计计数：/metrics 里没有 disk_park 段（那要改 serve/server.py +
+                //   引擎两侧），所以把汇总放在这里 —— 一行就能看出整体状态。
+                // ★★★ P12：**方案 C 的流式写**（与上面那条快照写并存 —— 阶段 5 要对比两者）。
+                //   载荷 = live/检查点的缓冲区【保留长度、内容归零】的镜像；
+                //   检查点状态按 prefix_digest(ids) 进 blob（内容寻址 ⇒ 同一份只写一次、
+                //   跨轮跨重启都能命中）；目录追加在载荷尾部，标注"哪些段在日志里"。
+                //   KV **不进日志**（模型不一致：镜像按层、日志按位置），整份留在载荷里。
+                // ★★ P12 那条"每请求侧车 + 检查点 blob"的路【暂时关掉】：
+                //   它的触发点在换出（disk_park_put）里，而侧车载荷含整份 KV ⇒
+                //   每次换出会多写约 1.5 GiB，与"不增加写入"的目标冲突。
+                //   当前需求（P13）走的是【逐层追加日志】那条，不需要它。
+                //   代码保留，用 STRATA_P12_SIDECAR=1 打开，以便将来做取舍对比。
+                static const bool p12_sidecar_on = std::getenv("STRATA_P12_SIDECAR") != nullptr;
+                if (p12_sidecar_on && disk_park_stream && disk_park_blob &&
+                    !disk_park_session_name.empty()) {
+                    static std::uint64_t p12_rounds = 0, p12_bytes = 0, p12_dedup = 0;
+                    ++p12_rounds;
+                    strata::core::SavedConversation meta = p12_zero_meta_buffers(e);
+                    std::vector<strata::core::DiskParkCkptDirEntry> dir_entries;
+                    // ★★★ live 的状态【也要进日志】，键用哨兵 {0,0}。
+                    //   为什么必须：载荷里 live 的 5 个缓冲区是【0 占位】，
+                    //   如果 live 不在日志里，恢复时无处可取 ⇒ 拼出来 live 全 0
+                    //   （独立探针 m5.cpp 实测：正好差 602 字节，全是 live 的 gdn）。
+                    //   live 每轮都变，所以它命中去重的机会少 —— 但正确性必须。
+                    {
+                        const std::uint64_t nb = (std::uint64_t) (e.live.gdn.size() + e.live.ple.size()
+                            + e.live.tails.size() + e.live.dead.size() + e.live.block_pos.size());
+                        if (nb > 0) {
+                            std::vector<std::uint8_t> st;
+                            st.reserve((std::size_t) nb);
+                            p12_append_ckpt_state(st, e.live);
+                            static const strata::core::DiskParkBlobKey kLive{0, 0};
+                            const auto rl = disk_park_blob->put(kLive, nb,
+                                [&st](std::uint64_t off, std::uint8_t* dst, std::size_t n) {
+                                    std::memcpy(dst, st.data() + off, n);
+                                    return true;
+                                });
+                            if (rl.present()) {
+                                strata::core::DiskParkCkptDirEntry de;
+                                de.lo = 0; de.hi = 0; de.off = 0; de.len = rl.bytes;
+                                dir_entries.push_back(de);
+                            }
+                        }
+                    }
+                    for (std::size_t ci = 0; ci < e.checkpoints.size(); ++ci) {
+                        const auto& c = e.checkpoints[ci];
+                        const std::uint64_t nbytes = p12_ckpt_state_bytes(c);
+                        if (nbytes == 0) continue;
+                        std::vector<std::uint64_t> ck_hashes;
+                        std::vector<std::int64_t>  ck_starts;
+                        const auto d = strata::core::prefix_digest(c.ids, ck_hashes, ck_starts,
+                                                                   (std::int64_t) c.ids.size());
+                        std::vector<std::uint8_t> state;
+                        state.reserve((std::size_t) nbytes);
+                        p12_append_ckpt_state(state, c);
+                        const strata::core::DiskParkBlobKey bkey{d.lo, d.hi};
+                        const std::uint64_t before = (*disk_park_blob).bytes_on_disk();
+                        const auto ref = (*disk_park_blob).put(
+                            bkey, nbytes,
+                            [&state](std::uint64_t off, std::uint8_t* dst, std::size_t n) {
+                                std::memcpy(dst, state.data() + off, n);
+                                return true;
+                            });
+                        if (!ref.present()) continue;
+                        if ((*disk_park_blob).bytes_on_disk() == before) ++p12_dedup;
+                        strata::core::DiskParkCkptDirEntry de;
+                        de.lo = d.lo; de.hi = d.hi; de.off = 0; de.len = ref.bytes;
+                        dir_entries.push_back(de);
+                    }
+                    // 组载荷：镜像 + 目录（目录里的 off/len 由 parse_ckpt_dir 校验
+                    // "引用落在载荷内"，所以给一个合法偏移）
+                    std::vector<std::byte> packed = strata::core::pack_saved_conversation(meta);
+                    const std::uint64_t kv_at_img = [&]() -> std::uint64_t {
+                        // 复用与探针相同的定位法：找 KV 层数 + 走完落在末尾
+                        auto rd = [&packed](std::size_t o) {
+                            std::uint64_t v = 0;
+                            if (o + 8 <= packed.size()) std::memcpy(&v, packed.data() + o, 8);
+                            return v;
+                        };
+                        const std::size_t nk = meta.kv.size();
+                        for (std::size_t c = 8; c + 16 <= packed.size(); ++c) {
+                            if (rd(c) != nk) continue;
+                            std::size_t at = c + 8; bool ok = true;
+                            for (std::size_t l = 0; l < nk && ok; ++l) {
+                                if (at + 4 + 48 > packed.size()) { ok = false; break; }
+                                at += 4 + 48;
+                                for (int pp = 0; pp < 5; ++pp) {
+                                    const std::uint64_t n = rd(at);
+                                    at += 8 + (std::size_t) n;
+                                    if (at > packed.size()) { ok = false; break; }
+                                }
+                            }
+                            if (ok && at + 9 == packed.size()) return c - 8;   // 载荷内偏移
+                        }
+                        return std::uint64_t{0};
+                    }();
+                    if (kv_at_img != 0) {
+                        const std::uint64_t body = packed.size();
+                        for (auto& de : dir_entries) de.off = 0;
+                        strata::core::append_ckpt_dir(packed, dir_entries);
+                        // 目录项的 off 现在可以指向"载荷内的合法位置"（本体里的任意偏移）
+                        for (auto& de : dir_entries) de.off = 0;
+                        const std::uint64_t wrote2 = disk_park_stream->commit_image(
+                            disk_park_session_name, (std::uint64_t) e.live.ids.size(),
+                            packed, kv_at_img);
+                        if (wrote2) {
+                            p12_bytes += packed.size();
+                            std::fprintf(stderr,
+                                         "strata serve: disk park stream: sidecar %zu MiB "
+                                         "(checkpoints %zu, dedup %llu) [rounds %llu, %.2f GiB, body %llu]\n",
+                                         packed.size() >> 20, dir_entries.size(),
+                                         (unsigned long long) p12_dedup,
+                                         (unsigned long long) p12_rounds,
+                                         (double) p12_bytes / 1073741824.0,
+                                         (unsigned long long) body);
+                        } else {
+                            std::fprintf(stderr, "strata serve: disk park stream: commit_image 失败\n");
+                        }
+                    }
+                }
+                const auto st = disk_park.stats();
+                std::fprintf(stderr,
+                             "strata serve: disk park: spilled %lld tokens, %.0f MiB in %u pages"
+                             "  [total %llu spills, %.2f GiB written, %llu restores, %llu misses,"
+                             " find %llu hit / %llu miss, superseded %llu, today %.2f/%.1f GiB]\n",
+                             (long long) e.live.ids.size(), (double) wrote / 1048576.0,
+                             (unsigned) (wrote / ((size_t) 8 << 20)),
+                             (unsigned long long) st.stores + 1,
+                             (double) (st.store_bytes + wrote) / 1073741824.0,
+                             (unsigned long long) st.loads, (unsigned long long) st.load_failures,
+                             (unsigned long long) st.find_hits, (unsigned long long) st.find_misses,
+                             (unsigned long long) st.superseded,
+                             (double) park_budget.written / 1073741824.0,
+                             o.disk_park_daily_gib > 0 ? (double) o.disk_park_daily_gib : -1.0);
+
+                // ★★ P7 诊断（docs/停放层流式改造设计.md §7 阶段 0）：把这份快照的字节
+                //    按来源拆开，回答两个【静态推不出来】的问题：
+                //      A) 检查点链到底占多少（决定「检查点增量流」是不是收益主体）
+                //      D) live 那份 GDN 有多大（决定稳态一轮写 0.5 MB 还是 118 MB）
+                //    ★ 只读：不分配、不改状态、不碰磁盘。默认关闭，不污染生产日志。
+                static const bool park_breakdown_on = std::getenv("STRATA_PARK_BREAKDOWN") != nullptr;
+                if (park_breakdown_on) {
+                    const strata::core::ParkBreakdown bd = strata::core::park_breakdown(e);
+                    const std::uint64_t packed = strata::core::packed_saved_conversation_bytes(e);
+                    const std::uint64_t sum = bd.total + 8;   // 8 = magic + version
+                    const double mb = 1.0 / 1048576.0;
+                    if (sum != packed) {
+                        std::fprintf(stderr,
+                                     "strata serve: disk park BREAKDOWN ** SELF-CHECK FAILED ** "
+                                     "sum=%llu packed=%llu diff=%lld\n",
+                                     (unsigned long long) sum, (unsigned long long) packed,
+                                     (long long) packed - (long long) sum);
+                    }
+                    const std::uint64_t ckpt_rest = bd.ck_gdn + bd.ck_ple + bd.ck_tail + bd.ck_dead +
+                                                    bd.ck_pos + bd.ck_ids + bd.ck_imgs + bd.ck_parts +
+                                                    bd.ck_slots;
+                    const std::uint64_t live_rest = bd.live_gdn + bd.live_ple + bd.live_tail + bd.live_dead +
+                                                    bd.live_pos + bd.live_ids + bd.live_imgs + bd.live_parts +
+                                                    bd.live_slots;
+                    const std::uint64_t chain = live_rest + ckpt_rest;
+                    const std::uint64_t kv = bd.kv_k + bd.kv_v + bd.kv_scale + bd.kv_pooled;
+                    const std::uint64_t pooled_rows = e.kv.empty() ? 0 : (std::uint64_t) e.kv[0].pooled_rows;
+                    std::fprintf(stderr,
+                                 "strata serve: disk park BREAKDOWN tokens=%llu checkpoints=%llu "
+                                 "packed=%llu B (%.1f MiB) pages=%llu stride_pad=%.1f MiB\n",
+                                 (unsigned long long) bd.tokens, (unsigned long long) bd.checkpoints,
+                                 (unsigned long long) packed, (double) packed * mb,
+                                 (unsigned long long) (wrote / ((size_t) 8 << 20)),
+                                 (double) wrote * mb - (double) packed * mb);
+                    std::fprintf(stderr,
+                                 "strata serve: disk park BREAKDOWN   kv=%.1f MiB "
+                                 "(k %.1f + v %.1f + scale %.1f + pooled %.1f; layers=%zu pooled_rows=%llu) "
+                                 "= %.2f B/token\n",
+                                 (double) kv * mb, (double) bd.kv_k * mb, (double) bd.kv_v * mb,
+                                 (double) bd.kv_scale * mb, (double) bd.kv_pooled * mb, e.kv.size(),
+                                 (unsigned long long) pooled_rows,
+                                 bd.tokens ? (double) kv / (double) bd.tokens : 0.0);
+                    std::fprintf(stderr,
+                                 "strata serve: disk park BREAKDOWN   chain=%.1f MiB of %.1f MiB (%.1f%%) "
+                                 "= live %.1f + %llu x avg %.1f MiB; live_gdn=%.1f MiB\n",
+                                 (double) chain * mb, (double) packed * mb,
+                                 packed ? 100.0 * (double) chain / (double) packed : 0.0,
+                                 (double) live_rest * mb, (unsigned long long) bd.checkpoints,
+                                 bd.checkpoints ? (double) ckpt_rest * mb / (double) bd.checkpoints : 0.0,
+                                 (double) bd.live_gdn * mb);
+                    std::fprintf(stderr,
+                                 "strata serve: disk park BREAKDOWN   live: gdn %.1f + ple %.2f + tail %.2f "
+                                 "+ dead %.2f + pos %.3f + ids %.2f + imgs %.3f MiB; "
+                                 "ckpt sum: gdn %.1f + ids %.2f + imgs %.2f + tail %.2f + dead %.2f + pos %.3f MiB\n",
+                                 (double) bd.live_gdn * mb, (double) bd.live_ple * mb, (double) bd.live_tail * mb,
+                                 (double) bd.live_dead * mb, (double) bd.live_pos * mb, (double) bd.live_ids * mb,
+                                 (double) bd.live_imgs * mb,
+                                 (double) bd.ck_gdn * mb, (double) bd.ck_ids * mb, (double) bd.ck_imgs * mb,
+                                 (double) bd.ck_tail * mb, (double) bd.ck_dead * mb, (double) bd.ck_pos * mb);
+                    std::fprintf(stderr,
+                                 "strata serve: disk park BREAKDOWN   meta=%.2f MiB stages=%.1f MiB "
+                                 "(counted=%.1f written=%.1f)%s\n",
+                                 (double) bd.metadata * mb, (double) bd.stage_images * mb,
+                                 (double) bd.stage_counted * mb, (double) bd.stage_written * mb,
+                                 bd.stage_counted != bd.stage_written ?
+                                     "  ** STAGE ACCOUNTING MISMATCH **" : "");
+                }
+            }
+        };
+
+        // ★★ 退出时把常驻（内存）会话写进磁盘层 —— 等价于 ninfer 的 --prefix-cache-file。
+        //    不这么做，每次重启常驻对话全部丢失，下一次请求要全量重读
+        //    （实测每次重启约 90 秒冷读）。
+        //    声明在最后 → 最后构造、最先析构 → 此时 conversations 与 disk_park 都还活着。
+        struct ScopeGuardShutdown {
+            std::function<void()> fn;
+            ~ScopeGuardShutdown() { if (fn) fn(); }
+        };
+        const std::string prefix_cache_file = o.prefix_cache_file;   // 捕获副本
+        ScopeGuardShutdown park_shutdown_guard{[&, prefix_cache_file] {
+            if (prefix_cache_file.empty()) return;                    // ★ 参数为空 = 功能关闭
+            if (!conversations.enabled() || !disk_park.enabled()) return;
+            std::vector<strata::core::SavedConversation> imgs;
+            conversations.drain(imgs);
+            if (imgs.empty()) return;
+            park_force_spill = true;                     // ★ 退出时不看每日预算
+            std::fprintf(stderr,
+                         "strata serve: disk park: shutdown drain: %zu conversation(s) \u2192 disk\n",
+                         imgs.size());
+            for (const auto& e : imgs) disk_park_put(e);
+            disk_park.flush();
+            // ★ 写下身份清单，供下次启动日志确认
+            if (FILE* mf = std::fopen(prefix_cache_file.c_str(), "w")) {
+                std::fprintf(mf, "# strata prefix-cache manifest\n");
+                std::fprintf(mf, "# tag %08X\n", disk_park.profile().tag());
+                for (auto f : disk_park.frontiers())
+                    std::fprintf(mf, "%lld\n", (long long) f);
+                std::fclose(mf);
+                std::fprintf(stderr, "strata serve: prefix cache: saved %zu identities to %s\n",
+                             imgs.size(), prefix_cache_file.c_str());
+            }
+        }};
+
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -7115,11 +8004,16 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
-            if (!conversations.make_room(estimate, held)) {
+            std::vector<strata::core::SavedConversation> park_evicted;
+            if (!conversations.make_room(estimate, held, &park_evicted)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
             }
+            // ★ P5: 被顶掉的条目【写盘】而不是丢弃 —— 这是磁盘层存在的理由。
+            //   ★ 这里【不节流】：条目已经从缓存里出去了，不写就永久丢失。
+            for (const auto& e : park_evicted) disk_park_put(e);
+            park_evicted.clear();
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
@@ -7140,8 +8034,12 @@ int main(int argc, char** argv) {
                         strata::core::conversation_available_memory(), additional, floor);
                 };
                 while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
-                       conversations.evict_oldest())
+                       conversations.evict_oldest(&park_evicted))
                     ++evicted;
+                // ★ P5: 这条闸门顶掉的条目同样要落盘。它已经从缓存里出去了，
+                //   不写就永久丢失 —— 与 make_room 那条淘汰是同一种损失，以前只有那边写盘。
+                for (const auto& e : park_evicted) disk_park_put(e);
+                park_evicted.clear();
                 if (!admit()) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor; evicted %zu, %zu still parked, or telemetry unavailable)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib,
@@ -7172,6 +8070,8 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
+                // ★ 这里【不再】写盘（第 26 轮）。写盘只发生在条目真被淘汰时（⑤）。
+                //   常驻的那份不落盘：引擎重启后重读一次即可。
                 const bool stored = conversations.put(std::move(image), held);
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
                              stored ? "parked" : "skipped", live.size(),
@@ -9155,7 +10055,118 @@ int main(int argc, char** argv) {
                 }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
-            if (parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
+            const int64_t parked_ram =
+                parked.tokens > std::max(resume, slot_tokens) ? parked.tokens : 0;
+            // ★ P5 磁盘层：如果磁盘上有【更长】的匹配，先腾后取。
+            int64_t disk_tokens = 0;
+            bool drained = false;
+            // ★★ 磁盘条目一旦采用，resume/from_live 必须【覆盖】掉 RAM 匹配的值。
+            //    磁盘上的条目永远是【整份 live 镜像】，覆盖到 e.live.ids.size() 个 token；
+            //    而 RAM 的 best() 可能只匹配到很短的前缀（重启后甚至是 0）。
+            //    不覆盖的三种后果（子智能体审查发现）：
+            //      a) parked.tokens==0 → session_zero() 把刚恢复的状态清零 → 白读 3.5 GiB 再全量重算
+            //      b) parked.live==true → 从 resume 重读 [resume, frontier) → GDN/PLE 二次折入 → 静默错误输出
+            //      c) parked.live==false → 找不到恰好该长度的检查点 → 报错 return 1，请求直接失败
+            bool used_disk_image = false;
+            std::int64_t log_restored_tokens = 0;   // ★ P13：>0 表示"日志已经把 K/V 恢复进池了"
+            std::string restore_dir_hint;            // ★ 直接按磁盘会话匹配到的目录
+            std::string restore_used_dir;            // ★ 日志取回实际用的那个会话目录
+            std::int64_t restore_mount = -1;         // ★ 选中的挂载点（只恢复那一份检查点）
+            std::optional<strata::core::SavedConversation> disk_image;
+            // ★★★ P12：**流式那条作为额外候选**（快照那条照旧、仍在上面）。
+            //   复用下游全部校验与 incoming.emplace ⇒ 出错就自然回退到快照/重算。
+            //   流程照 probes/m5.cpp（已逐字节验证）。
+            if (disk_park_stream && disk_park_blob && ids.size() > 1) {
+                std::vector<std::int32_t> s_ids;
+                s_ids.reserve(ids.size());
+                for (const auto& t : ids) s_ids.push_back((std::int32_t) t);
+                std::vector<std::uint64_t> s_hashes;
+                std::vector<std::int64_t>  s_starts;
+                s_hashes.reserve(req_imgs.size());
+                s_starts.reserve(req_imgs.size());
+                for (const auto& im : req_imgs) { s_starts.push_back(im.start); s_hashes.push_back(im.hash); }
+                const auto sd = strata::core::prefix_digest(s_ids, s_hashes, s_starts,
+                                                            (std::int64_t) s_ids.size());
+                const std::string sdir = disk_park_stream->session_dir_for(
+                    strata::core::DiskParkLogDigest{sd.lo, sd.hi});
+                strata::core::DiskParkSession sess;
+                std::vector<std::byte> payload;
+                std::uint64_t log_cells = 0, kv_at_img = 0;
+                std::size_t s_layers = 0; std::uint64_t s_cells = 0;
+                if (strata::core::DiskParkSession::open(sess, sdir, disk_park_stream->plan(), 0) &&
+                    sess.read_meta(payload, log_cells, &kv_at_img) && kv_at_img != 0 &&
+                    p12_measure_kv(payload, s_layers, s_cells)) {
+                    std::vector<strata::core::DiskParkCkptDirEntry> sdirs;
+                    std::uint64_t body_bytes = payload.size();
+                    if (strata::core::parse_ckpt_dir(payload, sdirs, body_bytes)) {
+                        std::vector<strata::core::PrefixDigest> digs;
+                        if (strata::core::extract_ckpt_digests(payload, s_layers, digs) && !digs.empty()) {
+                            std::vector<std::vector<std::uint8_t>> cached(digs.size());
+                            bool ok_all = true, any = false;
+                            for (std::size_t i = 0; i < digs.size() && ok_all; ++i) {
+                                const std::uint64_t lo = (i == 0) ? 0u : digs[i].lo;
+                                const std::uint64_t hi = (i == 0) ? 0u : digs[i].hi;
+                                bool listed = false;
+                                for (const auto& de : sdirs)
+                                    if (de.lo == lo && de.hi == hi && de.present()) { listed = true; break; }
+                                if (!listed) continue;               // 没搬进日志 ⇒ 占位照抄
+                                const auto bref = disk_park_blob->find(
+                                    strata::core::DiskParkBlobKey{lo, hi});
+                                if (!bref.present()) { ok_all = false; break; }
+                                cached[i].resize((std::size_t) bref.bytes);
+                                if (!disk_park_blob->get(bref, [&cached, i](std::uint64_t off,
+                                                                            const std::uint8_t* src,
+                                                                            std::size_t n) {
+                                        std::memcpy(cached[i].data() + off, src, n);
+                                        return true;
+                                    })) { ok_all = false; break; }
+                                any = true;
+                            }
+                            if (ok_all && any) {
+                                const strata::core::DiskParkFill kfill =
+                                    [](std::size_t, std::size_t, std::uint8_t*, std::size_t) {
+                                        return false;      // 方案 C：KV 不从日志取
+                                    };
+                                const strata::core::DiskParkSession::DiskParkCkptFill ckfill =
+                                    [&cached](std::size_t ck, std::size_t, std::size_t off,
+                                              std::uint8_t* dst, std::size_t n) -> bool {
+                                        if (ck >= cached.size() || cached[ck].empty()) return true;
+                                        if (off + n > cached[ck].size()) return false;
+                                        std::memcpy(dst, cached[ck].data() + off, n);
+                                        return true;
+                                    };
+                                std::vector<std::byte> out_img;
+                                const std::uint64_t got2 = sess.splice_image(
+                                    payload, kv_at_img, s_layers, 0, s_cells, kfill,
+                                    [&out_img](const void* pp, std::size_t n) {
+                                        const auto* b2 = static_cast<const std::byte*>(pp);
+                                        out_img.insert(out_img.end(), b2, b2 + n);
+                                        return true;
+                                    }, ckfill, body_bytes);
+                                if (got2 != 0) {
+                                    if (auto img = strata::core::unpack_saved_conversation(out_img)) {
+                                        if (!img->live.ids.empty() &&
+                                            img->stage_images.size() == stages.size() &&
+                                            !disk_image.has_value()) {
+                                            disk_tokens = (int64_t) log_cells;
+                                            disk_image = std::move(img);
+                                            std::fprintf(stderr,
+                                                "strata serve: disk park stream: restored %lld tokens "
+                                                "from the append log\n", (long long) disk_tokens);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (disk_image) {
+                incoming.emplace(std::move(*disk_image));
+                used_disk_image = true;
+            } else if (parked_ram > 0 && !drained) {
+                incoming.emplace(conversations.take(parked.index));
+            }
             if (incoming) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
@@ -9237,7 +10248,565 @@ int main(int argc, char** argv) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
             }
-            if (incoming) {
+            // ★★★ P13：先试【逐层追加日志】那条 —— 它把 K/V 直接写进各层的 host 池，
+            //   所以一旦成功，下面的 conversation_snapshot_restore 必须【跳过】
+            //   （否则会用快照的字节覆盖掉刚恢复的池）。
+            // ★★★ 只在【内存里没有这个会话】时才取回。
+            //   为什么必需这个守卫：不加的话，只要盘上有会话目录，每个请求都会被
+            //   日志取回拦截 —— 连本该走内存命中的也拦，于是
+            //   ① prompt-cache 链空（实测 checkpoints 从 3 变 0）
+            //   ② 投机解码失去可用的检查点（草稿接受 4/9 → 1/8）
+            //   ③ decode 变慢（实测 57 → 35，甚至 15 tok/s）
+            //   即"取回"反而把正常路径的性能吃掉了。
+            const bool mem_hit = (resume > 0) || (slot_source >= 0);
+            // ⚠️⚠️ 目前【默认关闭】：这条路能取回 K/V（实测 0 read，输出逐字节相同），
+            //   但它【不产生检查点】—— 实测每个请求都是 checkpoints=0，
+            //   而正常路径是 3。检查点是 prompt-cache 链与投机解码草稿的基础，
+            //   没有它们 ⇒ 链空、草稿接受率从 4/9 掉到 1/8 ⇒ decode 从 57 掉到 30 tok/s。
+            //   ⇒ 开着它反而比冷读更差，所以默认关，等"取回后重建检查点"做完再开。
+            //   用 STRATA_P13_LOG_RESTORE=1 打开做实验。
+            static const bool p13_log_restore_on = std::getenv("STRATA_P13_LOG_RESTORE") != nullptr;
+            if (p13_log_restore_on && disk_park_stream && disk_park_stream->enabled() &&
+                ids.size() > 1 && !disk_image.has_value() && !mem_hit) {
+                // ★★★ 候选摘要必须覆盖【所有已存在的会话目录】——
+                //   会话目录名 = 它第一次建立时那个前缀的摘要，那个长度【事先不知道】，
+                //   所以不能靠"按百分比猜几个长度"（实测猜的分数一个都没命中）。
+                //   做法：列出 tag 目录下的所有会话，各自读 state.bin 拿 cells，
+                //   再用【prompt 的前 cells 个 token】算摘要去对名字。
+                std::vector<strata::core::PrefixDigest> cands;
+                std::vector<std::int32_t> c_ids, w_ids;
+                c_ids.reserve(ids.size()); w_ids.reserve(ids.size());
+                for (const auto& t : ids) c_ids.push_back((std::int32_t) t);
+                std::vector<std::uint64_t> c_h; std::vector<std::int64_t> c_s;
+                c_h.reserve(req_imgs.size()); c_s.reserve(req_imgs.size());
+                for (const auto& im : req_imgs) { c_s.push_back(im.start); c_h.push_back(im.hash); }
+                // ★★ 链式查找：写侧每轮都会 remember(本轮的 next → 同一目录)。
+                //   本轮 prompt 的摘要如果等于【上一轮的 next】，lookup 就能直接命中。
+                {
+                    const std::int64_t N1 = (std::int64_t) c_ids.size();
+                    for (const std::int64_t cut : {N1, N1 - 8, N1 - 1}) {
+                        if (cut <= 1 || cut > N1) continue;
+                        if ((std::int64_t) w_ids.size() != cut)
+                            w_ids.assign(c_ids.begin(), c_ids.begin() + cut);
+                        const auto d = strata::core::prefix_digest(w_ids, c_h, c_s, cut);
+                        const std::string lk = disk_park_stream->lookup(
+                            strata::core::DiskParkLogDigest{d.lo, d.hi});
+                        if (!lk.empty()) {
+                            cands.push_back(d);
+                            break;
+                        }
+                    }
+                }
+                // ★★★ 主路径：**直接按磁盘上的会话匹配**。
+                //   为什么不能靠算摘要：会话名 = digest_hex(建立那一轮的 d_now)，
+                //   而 d_now 是在【decode 结束之后】算的 ⇒ 含生成的 token。
+                //   实测：cells=44932（= 44924 prompt + 8 生成），而读侧只有 44924 个 token
+                //   ⇒ 那个摘要读侧【永远算不出来】。
+                //   所以改成：列出会话，用它的 cells 与 prompt 长度比对 ——
+                //   相等或相差很小（生成的 token 数）就认为匹配。
+                {
+                    namespace fs = std::filesystem;
+                    const std::string tagdir = disk_park_stream->dir_for("");
+                    std::error_code ec;
+                    const std::int64_t N0 = (std::int64_t) c_ids.size();
+                    std::string best;
+                    std::int64_t best_cells = 0, best_cover = -1, best_lcp = -1;
+                    std::int64_t mount_cand = -1;      // 本目录能提供的挂载点（检查点长度）
+                    for (const auto& e : fs::directory_iterator(tagdir, ec)) {
+                        if (!e.is_directory()) continue;
+                        strata::core::DiskParkSession pr;
+                        std::vector<std::byte> pl;
+                        std::uint64_t cells = 0, kva = 0;
+                        if (!strata::core::DiskParkSession::open(pr, e.path().string(),
+                                disk_park_stream->plan(), 0)) continue;
+                        if (!pr.read_meta(pl, cells, &kva) || cells == 0) continue;
+                        mount_cand = -1;      // ★ 每个候选各自算（不要用上一个候选的残留）
+                        // ★★★ 修（2026-10-10）：用【覆盖度】而不是"长度差"。
+                        //   原来 `|cells − N0| ≤ 64` 等于假设"这次请求和那次写入的是同一段
+                        //   prompt"—— 只对测试成立。真实聊天里客户端重发整段对话：
+                        //   下一个请求 = 上一个会话 + 新用户消息 ⇒
+                        //   `|cells − N0| = 新消息的 token 数`，超过 64 就被跳过
+                        //   ⇒ 取回不生效（实测：135k 会话 + 300 token 的新消息差值 292）。
+                        //   身份校验（见下面 lcp ≥ 挂载点）会精确证明"要用到的那些 cell
+                        //   就是这段 token 的"，长度差不再是判据。
+                        const std::int64_t cover = std::min<std::int64_t>(N0, (std::int64_t) cells);
+                        if (cover < 1024) continue;    // 太短：重读比取回还快
+                        // ★★★ P13【身份校验】：长度相近【不等于】同一段对话。
+                        //   会话目录里存着它自己的 token 序列（写侧每轮覆盖写），
+                        //   与本请求的 ids 求最长公共前缀；lcp 必须覆盖到我们真正要用的
+                        //   那些 cell。末尾留 8 个 token 的余量：会话的尾巴可能是它自己
+                        //   生成的 token，而本请求手里只有 prompt。
+                        //   校验不过 ⇒ 这个目录【不取回】—— 退化成冷读，
+                        //   绝不把别人的 K/V 装进这个请求。
+                        std::string ierr;
+                        const std::size_t lcp = strata::core::p13_session_tokens_lcp(
+                            (e.path() / "tokens.bin").string(), c_ids, ierr);
+                        // ★★ 真正的判据在拿到【挂载点】之后：lcp ≥ 挂载点（见下面）。
+                        //   这里先挡连挂载点都到不了的（地板 1024）。
+                        //   为什么不需要"整段一致"：我们要用的只有 [0, 挂载点) —— 挂载点
+                        //   之后的 K/V 会被正常 prompt 读（read_from = 挂载点）覆盖掉。
+                        if (lcp < 1024) {
+                            static int dbg_n = 0;
+                            if (dbg_n < 4) { ++dbg_n;
+                                std::fprintf(stderr, "strata serve: disk park stream: [身份] 拒绝 %s"
+                                             " (cells=%llu lcp=%zu 覆盖=%lld %s)\n",
+                                             e.path().filename().string().c_str(),
+                                             (unsigned long long) cells, lcp, (long long) cover, ierr.c_str());
+                            }
+                            continue;
+                        }
+                        // ★ 池化行必须齐：完整行数 ≥ cells/idx_block（每层都要）。
+                        //   不齐 ⇒ 这个目录不取回（宁可慢，不可静默错）。
+                        {
+                            const std::uint64_t ib = (std::uint64_t) std::max<int64_t>(
+                                strata::kernels::qsa_real_shapes().idx_block, 1);
+                            const std::uint64_t rb = (std::uint64_t) g.idx_key_dim * sizeof(float);
+                            const std::uint64_t need_rows = (std::uint64_t) cells / ib;
+                            const std::size_t nlyr = (std::size_t) std::max<int64_t>(ss.qsa_alloc, 1);
+                            bool pok = rb > 0;
+                            std::string perr;
+                            for (std::size_t lyr = 0; pok && lyr < nlyr; ++lyr) {
+                                std::uint64_t have = 0;
+                                if (!strata::core::p13_pooled_rows(
+                                        disk_park_stream->dir_for_layer(
+                                            e.path().filename().string(), lyr) + "/pooled.bin",
+                                        rb, have, perr) || have < need_rows)
+                                    pok = false;
+                            }
+                            // ★★★ 还要有【可挂载的检查点】：运行状态是从检查点装回来的
+                            //   （见 apply_p13_ckpt_mount.py）。清单缺失 / 没有一个长度 ≤
+                            //   本请求 ⇒ 挂载点找不到 ⇒ 必须整体退化成冷读，
+                            //   绝不能"K/V 取回、运行状态从零开始"地把请求做完 ——
+                            //   那正是 4/9 → 1/8 的原始 bug。
+                            if (pok) {
+                                std::vector<std::int64_t> lens;
+                                std::string cerr2;
+                                pok = strata::core::p13_ckpt_lengths_read(
+                                          disk_park_stream->dir_for(e.path().filename().string()) +
+                                              "/ckpt_lengths.bin",
+                                          lens, cerr2);
+                                // 挂载点 = 清单里 ≤ 【已验证前缀】的最大长度。
+                                // ★ 上界取 min(N0, cells, lcp) 而不是 min(N0, cells)：
+                                //   lcp 之外的 cell 的 K/V 不是这段 token 的，绝不能当挂载点。
+                                //   这样"差一点对不上"只会多读一点，而不是整段冷读。
+                                const std::int64_t bound =
+                                    std::min<std::int64_t>(std::min<std::int64_t>(N0, (std::int64_t) cells),
+                                                           (std::int64_t) lcp);
+                                // ★★★ P19（2026-10-11）：从大到小试，取【第一个真的在 blob 里】的长度。
+                                //   原来只取"清单里 ≤ bound 的最大长度"，再单独判它在不在 blob；
+                                //   取不到就把整个目录判死。"绝不装半成品"这个原则是对的，但
+                                //   **P16 的检查点闸门会让清单与 blob 分叉**（清单 = 本轮 12 个长度
+                                //   ∪ 旧清单，而 blob 只存了闸门放行的那些）⇒ 最大那个常常取不到
+                                //   ⇒ 4 个候选全被拒 ⇒ 重启后第一条请求冷读 181,585 token / 90.8 s
+                                //   （实测 2026-10-11 15:55）。
+                                //   退到更早的挂载点是安全的：挂载点之后本来就由 prompt 读回填，
+                                //   代价只是多读一点，远好过整段冷读。
+                                //   ★★ blob 不可用仍旧一律判死（`find()` 只查内存索引，而索引可能
+                                //   来自只读扫描 ⇒ "find 说有、get 却失败"，2026-10-10 踩过）。
+                                if (pok && (disk_park_blob == nullptr || !disk_park_blob->enabled())) {
+                                    pok = false;
+                                    cerr2 = "blob 不可用（打不开/被禁用）";
+                                }
+                                if (pok) {
+                                    std::vector<std::int64_t> cand;
+                                    for (const auto l : lens)
+                                        if (l > 1 && l <= bound) cand.push_back(l);
+                                    std::sort(cand.begin(), cand.end());
+                                    mount_cand = -1;
+                                    for (auto cit = cand.rbegin(); cit != cand.rend(); ++cit) {
+                                        const std::int64_t l = *cit;
+                                        std::vector<std::int32_t> pre(
+                                            c_ids.begin(), c_ids.begin() + (std::size_t) l);
+                                        const auto md = strata::core::prefix_digest(pre, {}, {}, l);
+                                        if (disk_park_blob
+                                                ->find(strata::core::DiskParkBlobKey{md.lo, md.hi})
+                                                .present()) {
+                                            mount_cand = l;
+                                            break;
+                                        }
+                                    }
+                                    if (mount_cand <= 0) {
+                                        // 清单里一个都不在 blob 里 ⇒ 维持原设计：整体退化成冷读
+                                        pok = false;
+                                        cerr2 = "清单里没有任何长度在 blob 里";
+                                    }
+                                }
+                                if (pok && mount_cand <= 0) pok = false;
+                                if (!pok) perr = "no mountable checkpoint (" + cerr2 + ")";
+                            }
+                            if (!pok) {
+                                static int dbg_p = 0;
+                                if (dbg_p < 4) { ++dbg_p;
+                                    std::fprintf(stderr, "strata serve: disk park stream: [池化/检查点] 拒绝 %s"
+                                                 " (cells=%llu 需要 %llu 行/层: %s)\n",
+                                                 e.path().filename().string().c_str(),
+                                                 (unsigned long long) cells,
+                                                 (unsigned long long) need_rows, perr.c_str());
+                                }
+                                continue;
+                            }
+                        }
+                        // ★【身份判据】已经由上面 bound = min(N0, cells, lcp) 保证：
+                        //   挂载点 ≤ lcp ⇒ 我们真正要用的 [0, 挂载点) 每个 cell 都验过。
+                        //   挂载点之后的字节无所谓 —— 引擎马上会把 [挂载点, prompt)
+                        //   正常读一遍覆盖掉。
+                        if (mount_cand > 0) std::fprintf(stderr, "strata serve: disk park stream:"
+                                                        " [身份] 接受 %s (cells=%lld prompt=%lld"
+                                                        " 覆盖=%lld lcp=%lld 挂载点=%lld)\n",
+                                                        e.path().filename().string().c_str(),
+                                                        (long long) cells, (long long) N0,
+                                                        (long long) cover, (long long) lcp,
+                                                        (long long) mount_cand);
+                        if (cover > best_cover) {      // 选【覆盖最多】的那份会话
+                            best_cover = cover; best = e.path().string();
+                            best_cells = (std::int64_t) cells; best_lcp = (std::int64_t) lcp;
+                            restore_mount = mount_cand;    // ← 只恢复这一份检查点
+                        }
+                    }
+                    if (!best.empty()) {
+                        // cands 里放哨兵：p13_restore_from_log 支持"直接给目录"
+                        restore_dir_hint = best;
+                        std::fprintf(stderr, "strata serve: disk park stream: [身份] 选中 %s"
+                                     " (cells=%lld prompt=%lld 覆盖=%lld lcp=%lld)\n",
+                                     fs::path(best).filename().string().c_str(), (long long) best_cells,
+                                     (long long) N0, (long long) best_cover, (long long) best_lcp);
+                    }
+                }
+                // 再退回：扫 tag 目录下所有会话（按摘要）
+                {
+                    namespace fs = std::filesystem;
+                    const std::string tagdir = disk_park_stream->dir_for("");
+                    std::error_code ec;
+                    std::vector<std::string> names;
+                    // ★★★ 首选：写侧建会话时用的是 digest_hex(那一轮 d_now)，而 d_now 是
+                    //   【decode 结束之后】算的 ⇒ 含生成的 token。读侧手里只有 prompt，
+                    //   那个摘要【算不出来】。但也不需要算：
+                    //   会话一旦建立，后续每轮都会 remember(next→同一目录)，
+                    //   于是 lookup(prev) 就能顺着链找到它。
+                    for (const auto& e : fs::directory_iterator(tagdir, ec)) {
+                        if (!e.is_directory()) continue;
+                        const std::string nm = e.path().filename().string();
+                        // 读该会话的 state.bin 拿 cells
+                        strata::core::DiskParkSession pr;
+                        std::vector<std::byte> pl;
+                        std::uint64_t cells = 0, kva = 0;
+                        const bool opened = strata::core::DiskParkSession::open(
+                            pr, e.path().string(), disk_park_stream->plan(), 0);
+                        const bool meta = opened && pr.read_meta(pl, cells, &kva);
+                        if (!meta || cells == 0) continue;
+                        names.push_back(nm);
+                        // ★★ 会话名是"第一次建立时那个前缀"的摘要，而它的长度
+                        //   【不等于】cells —— 写入时 to_tokens = 请求长度 + 生成的 token
+                        //   （实测 44924 + 8 = 44932）。所以以 cells 为中心试几个长度。
+                        const std::int64_t N0 = (std::int64_t) c_ids.size();
+                        for (std::int64_t back = 0; back <= 600; ++back) {
+                            const std::int64_t cut = (std::int64_t) cells - back;
+                            if (cut <= 1 || cut > N0) continue;
+                            w_ids.assign(c_ids.begin(), c_ids.begin() + cut);
+                            const auto d = strata::core::prefix_digest(w_ids, c_h, c_s, cut);
+                            char hx[40];
+                            std::snprintf(hx, sizeof hx, "%016llx%016llx",
+                                          (unsigned long long) d.lo, (unsigned long long) d.hi);
+                            if (nm == hx) {
+                                cands.push_back(d);
+                                break;
+                            }
+                        }
+                    }
+                }
+                // ★★★ fail-closed 总闸（2026-10-10 实测事故）：日志里的 K/V 必须配上
+                //   【同一时刻的运行状态】（检查点）才构成有效上下文。挂载点那份检查点
+                //   要是取不到（blob 打不开 / 被清掉 / 属主不对……），就【放弃这次日志取回】，
+                //   让引擎全量冷读 —— 否则 gdn/ple 从零 + 日志里的 K/V ⇒ 第一个 token
+                //   就与冷读分叉（真出过一次，输出错而不是慢）。宁可慢，不可错。
+                if (!cands.empty()) {
+                    bool mount_ok = false;
+                    if (restore_mount > 0 && disk_park_blob != nullptr && disk_park_blob->enabled()) {
+                        // ★★★ P23（2026-10-11）：从大到小试挂载点，取第一个真在 blob 里的。
+                        //   原来只试 restore_mount 一个：取不到就整体放弃 ⇒ 全量冷读。
+                        //   而 blob 里很可能还留着更早的检查点：退到那个挂载点是
+                        //   安全的（挂载点之后本来就由 prompt 读回填），而复用能保住大部分。
+                        //   实测：挂载点=103198 取不到 ⇒ 放弃 ⇒ 106K token 全量重读。
+                        std::vector<std::int64_t> try_lens;
+                        try_lens.push_back(restore_mount);
+                        if (!restore_dir_hint.empty()) {
+                            std::vector<std::int64_t> lens2;
+                            std::string lerr2;
+                            if (strata::core::p13_ckpt_lengths_read(
+                                    restore_dir_hint + "/ckpt_lengths.bin", lens2, lerr2))
+                                for (std::int64_t L : lens2)
+                                    if (L > 0 && L < restore_mount) try_lens.push_back(L);
+                        }
+                        std::sort(try_lens.begin(), try_lens.end(), std::greater<std::int64_t>());
+                        for (std::int64_t L : try_lens) {
+                            if (L <= 0 || L > (std::int64_t) c_ids.size()) continue;
+                            std::vector<std::int32_t> pre(c_ids.begin(), c_ids.begin() + (std::size_t) L);
+                            const auto md = strata::core::prefix_digest(pre, {}, {}, L);
+                            if (disk_park_blob->find(strata::core::DiskParkBlobKey{md.lo, md.hi}).present()) {
+                                if (L != restore_mount) {
+                                    std::fprintf(stderr, "strata serve: disk park stream: 挂载点 %lld "
+                                                         "取不到，退到 %lld（复用保留，差额由 prompt "
+                                                         "读回填）\n",
+                                                 (long long) restore_mount, (long long) L);
+                                    restore_mount = L;
+                                }
+                                mount_ok = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!mount_ok) {
+                        std::fprintf(stderr, "strata serve: disk park stream: 警告 挂载点检查点"
+                                     "取不到（blob=%s）⇒ 放弃日志取回，退化成全量冷读\n",
+                                     (disk_park_blob != nullptr && disk_park_blob->enabled())
+                                         ? "里没有这一份" : "打不开/不可用");
+                        cands.clear();
+                        restore_dir_hint.clear();
+                        restore_used_dir.clear();
+                        restore_mount = -1;
+                    }
+                }
+                // ★★★ P13：给这次取回一个【显式的慢步骤额度】。取回一条 135k 的会话要做
+                //   ~2.6 GB I/O（实测 46 s，机器忙时更久），期间没有"步骤"完成 ——
+                //   不设额度就会撞上引擎自己的 #29 看门狗（60 s 无进展 ⇒ 主动停掉引擎
+                //   ⇒ HTTP 503）。会话文件恢复走的正是同一套 `progress_allow`。
+                {
+                    std::uint64_t per_cell = 0;
+                    for (const auto& pp2 : disk_park_stream->plan().parts)
+                        per_cell += (std::uint64_t) pp2.bytes_per_cell;
+                    // ×2：检查点 blob 的字节量大致同量级
+                    const std::uint64_t est = (std::uint64_t) ids.size() * per_cell *
+                                              (std::uint64_t) std::max<int64_t>(ss.qsa_alloc, 1) * 2;
+                    strata::core::progress_at("restoring the session from the append log");
+                    strata::core::progress_allow(strata::core::session_phase_limit_s(est));
+                }
+                std::string lerr;
+                const std::uint64_t got = p13_restore_from_log(*disk_park_stream, cands, ss, g, lerr,
+                                                              restore_dir_hint, &restore_used_dir);
+                strata::core::progress_allow(0);   // 额度用完就还回去（别让后面的真卡死等太久）
+                if (got > 0) {
+                    log_restored_tokens = (std::int64_t) got;
+                    // ★★ 池已经恢复好了，但 live / checks / resume 还得自己装上 ——
+                    //   因为下面那个 if (incoming) 块被跳过了，而 live 是在那里装的。
+                    //   装的是【prompt 的前 got 个 token】：日志里就是这个前缀的状态。
+                    const std::int64_t take = std::min<std::int64_t>(got, (std::int64_t) ids.size());
+                    live.assign(ids.begin(), ids.begin() + take);
+                    live_imgs.clear();
+                    for (const auto& im : req_imgs)
+                        if (im.start < take) live_imgs.push_back(im);
+                    // ★★★ 从 blob 恢复【检查点】—— 这是让取回真正可用的关键。
+                    //   只恢复 K/V 会让 checkpoints 从 3 变 0 ⇒ 链空、草稿接受 4/9→1/8
+                    //   ⇒ decode 从 57 掉到 30 tok/s。
+                    checks.clear();
+                    if (disk_park_blob) {
+                        std::vector<std::int32_t> ck_ids;      // ids 是 int64，检查点用 int32
+                        ck_ids.reserve(ids.size());
+                        for (const auto& t : ids) ck_ids.push_back((std::int32_t) t);
+                        const std::size_t nck = p13_restore_checkpoints(
+                            *disk_park_blob, disk_park_stream->dir_for(restore_used_dir), ck_ids,
+                            (std::size_t) std::max<int64_t>(o.prompt_cache, 1), checks,
+                            restore_mount);
+                        std::string ck_len;
+                        for (const auto& c : checks) {
+                            ck_len += " ";
+                            ck_len += std::to_string((long long) c.ids.size());
+                        }
+                        std::fprintf(stderr, "strata serve: disk park stream: 从 blob 恢复了 %zu 个检查点"
+                                     " (长度:%s)\n", nck, ck_len.c_str());
+                    }
+                    cvec_cached = true;
+                    resume = take;
+                    // ★★★ P13：草稿（MTP）层的 K/V 也从会话目录里恢复。
+                    //   日志只存主模型每层；草稿层本来由 conversation_snapshot_restore()
+                    //   顺带恢复，而这条路跳过了它。不做的话：drafts 1/8、decode 33-35
+                    //   tok/s（冷读 4/9、57）—— 因为 mtp.kv_restore(resume) 只把 ring
+                    //   【映射】到 resume 个 cell，内容还是空的/上一个会话的残留。
+                    //   upto 用【落盘时那个】（镜像本身就是那个长度的几何：多出来的
+                    //   cell 只会在同一次确定性生成里被同样地重写，且 attention 不会
+                    //   读到当前位置之后的 cell）。
+                    if (use_mtp && stages.empty() && !restore_used_dir.empty()) {
+                        strata::core::ConversationKv dimg;
+                        std::int64_t dupto = 0, dfirst = 0;
+                        std::array<std::uint64_t, 5> slen{};
+                        std::string derr;
+                        const std::string dpath =
+                            disk_park_stream->dir_for(restore_used_dir) + "/mtp_kv.bin";
+                        const strata::core::QsaState& dst_state = mtp.kv_state();
+                        const std::int64_t dps = (std::int64_t) std::max<int64_t>(
+                            strata::kernels::qsa_real_shapes().page_size, 1);
+                        if (!strata::core::p13_draft_kv_read(dpath, dimg, dupto, dfirst, slen, derr)) {
+                            static bool once = false;
+                            if (!once) { once = true;
+                                std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 没有落盘 (%s)"
+                                             " ⇒ 这次草稿从空状态起步\n", derr.c_str());
+                            }
+                        } else if (dupto < resume) {
+                            std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 太旧"
+                                         " (upto=%lld < resume=%lld) ⇒ 跳过\n",
+                                         (long long) dupto, (long long) resume);
+                        } else if (resume < dfirst) {
+                            // ★★ ring 段没覆盖挂载点 ⇒ 段【外】的 host 副本是陈的，
+                            //    而引擎的 kv_ring_restore 会把陈字节填进环里 ⇒ 草稿全废。
+                            //    宁可这次不要草稿（退化成"从空状态起步"，只是接受率低），
+                            //    也绝不拿陈字节当有效 K/V。
+                            std::fprintf(stderr, "strata serve: disk park stream: 草稿 ring 段"
+                                         " (first_cell=%lld) 没覆盖 resume=%lld ⇒ 这次跳过草稿\n",
+                                         (long long) dfirst, (long long) resume);
+                        } else if (dimg.heads != g.n_head_kv || dimg.head_dim != g.head_dim ||
+                                   dimg.page_size != dps ||
+                                   dimg.cells != ((dupto + dps - 1) / dps) * dps) {
+                            std::fprintf(stderr, "strata serve: disk park stream: 草稿镜像几何不符"
+                                         " (cells=%lld heads=%lld/%lld head_dim=%lld/%lld) ⇒ 跳过\n",
+                                         (long long) dimg.cells, (long long) dimg.heads,
+                                         (long long) g.n_head_kv, (long long) dimg.head_dim,
+                                         (long long) g.head_dim);
+                        } else {
+                            // 逐 part 把切片写回 host 池的对应偏移（池是页优先布局 ⇒
+                            // 一个页 = dps 个 cell × per_cell 字节连续）。
+                            std::uint8_t* dstp[5] = {(std::uint8_t*) dst_state.host.k_q,
+                                                     (std::uint8_t*) dst_state.host.v_q,
+                                                     (std::uint8_t*) dst_state.host.k_scale,
+                                                     (std::uint8_t*) dst_state.host.v_scale, nullptr};
+                            if (dst_state.kv_q4) {
+                                dstp[0] = (std::uint8_t*) dst_state.host.k_q4;
+                                dstp[1] = (std::uint8_t*) dst_state.host.v_q4;
+                            } else if (!dst_state.kv_int8 && !dst_state.kv_hybrid) {
+                                dstp[0] = (std::uint8_t*) dst_state.host.k_pool;
+                                dstp[1] = (std::uint8_t*) dst_state.host.v_pool;
+                                dstp[2] = dstp[3] = nullptr;
+                            }
+                            const strata::core::ConversationBuffer* b[5] = {
+                                &dimg.k, &dimg.v, &dimg.k_scale, &dimg.v_scale, &dimg.pooled};
+                            const std::uint64_t pages = (std::uint64_t) ((dimg.cells - dfirst) / dps);
+                            bool okc = pages > 0;
+                            for (int i = 0; i < 5 && okc; ++i) {
+                                if (slen[i] == 0 || dstp[i] == nullptr) continue;
+                                if (slen[i] % pages != 0) { okc = false; break; }
+                                const std::uint64_t page_bytes = slen[i] / pages;
+                                const std::uint64_t base = (std::uint64_t) (dfirst / dps) * page_bytes;
+                                okc = b[i]->visit(0, b[i]->size(),
+                                                  [&](const std::uint8_t* p, std::size_t n, std::size_t at) {
+                                                      return cudaMemcpy(dstp[i] + base + at, p, n,
+                                                                        cudaMemcpyHostToDevice) == cudaSuccess;
+                                                  });
+                            }
+                            if (!okc) {
+                                std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 写回失败\n");
+                            } else if (cudaDeviceSynchronize() != cudaSuccess) {
+                                std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V sync 失败\n");
+                            } else {
+                                std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 已恢复"
+                                             "（ring 段 cell %lld..%lld, upto=%lld, resume=%lld）\n",
+                                             (long long) dfirst, (long long) dimg.cells,
+                                             (long long) dupto, (long long) resume);
+                            }
+                        }
+                    }
+                    // ★★★ P13：运行状态（GDN 递归状态 / PLE 历史 / indexer 的
+                    //   tail/dead/block_pos）是 K/V 之外的【另一半事实】：它不在 K/V 里，
+                    //   日志也不存。原来这里无条件 from_live = true ⇒ 引擎不调用
+                    //   checkpoint_restore ⇒ 运行状态从零开始 ⇒ 第一个 token 就与冷读分叉
+                    //   （实测 reasoning_content 与冷读不同），草稿（MTP 从残差产生）
+                    //   自然全被拒（4/9 → 1/8）。
+                    //   而运行状态【已经在 blob 里】—— P12 把 checks 的这 5 个缓冲区都存了，
+                    //   取回时也恢复了（实测长度 16384 / 32768 / 44919），只是没人把它们
+                    //   装进会话。
+                    //   ⇒ 取【长度 <= resume 里最长的那份】当挂载点：resume 退到它的长度、
+                    //     from_live = false，引擎就会 checkpoint_restore() 把运行状态装回，
+                    //     然后像普通检查点续读一样只读 [挂载点, prompt 末尾) 那几个 token
+                    //     （实测 5 个）。这正是引擎自己那条检查点续读路径的语义。
+                    {
+                        std::int64_t mount_at = -1;
+                        for (const auto& c : checks)
+                            if ((std::int64_t) c.ids.size() <= resume &&
+                                (std::int64_t) c.ids.size() > mount_at)
+                                mount_at = (std::int64_t) c.ids.size();
+                        if (mount_at > 0) {
+                            resume = mount_at;
+                            live.assign(ids.begin(), ids.begin() + (std::size_t) resume);
+                            live_imgs.clear();
+                            for (const auto& im : req_imgs)
+                                if (im.start < resume) live_imgs.push_back(im);
+                            from_live = false;   // ⇒ 引擎找 ids.size() == resume 的那份并挂载
+                            std::fprintf(stderr, "strata serve: disk park stream: 运行状态挂载于 %lld"
+                                         "，剩下的 %lld 个 token 由正常读回填\n",
+                                         (long long) mount_at, (long long) (take - mount_at));
+                        } else {
+                            from_live = true;
+                            std::fprintf(stderr, "strata serve: disk park stream: 警告 没有长度 <= resume(%lld)"
+                                         " 的检查点 ⇒ 运行状态从零开始（decode 会与冷读不同）\n",
+                                         (long long) resume);
+                        }
+                    }
+                    // ★★★ P13：把 indexer 的池化行装回【设备内存】。
+                    //   只需要 [0, resume/idx_block) 这些【完成了的】行 —— 正在填的那个块
+                    //   的尾巴（idx_tail）与备用槽的 key（idx_dead）都在检查点里，
+                    //   引擎随后会自己把备用槽覆盖掉。
+                    {
+                        const auto psh = strata::kernels::qsa_real_shapes();
+                        const std::uint64_t ib = (std::uint64_t) std::max<int64_t>(psh.idx_block, 1);
+                        const std::uint64_t rb = (std::uint64_t) g.idx_key_dim * sizeof(float);
+                        const std::uint64_t need_rows = (std::uint64_t) resume / ib;
+                        const std::size_t p13_layers = (std::size_t) std::max<int64_t>(ss.qsa_alloc, 1);
+                        std::uint64_t done = 0, bytes_total = 0;
+                        for (std::size_t lyr = 0; lyr < p13_layers && need_rows > 0 && rb > 0; ++lyr) {
+                            const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + (int64_t) lyr];
+                            if (st.idx_pooled == nullptr) continue;
+                            const std::string ppath =
+                                disk_park_stream->dir_for_layer(restore_used_dir, lyr) + "/pooled.bin";
+                            std::vector<std::uint8_t> buf((std::size_t) (need_rows * rb));
+                            std::string perr;
+                            if (!strata::core::p13_pooled_read(ppath, rb, need_rows, buf.data(), perr)) {
+                                std::fprintf(stderr, "strata serve: disk park stream: 池化行读取失败"
+                                             " (层 %zu: %s)\n", lyr, perr.c_str());
+                                continue;
+                            }
+                            if (cudaMemcpy((void*) st.idx_pooled, buf.data(), buf.size(),
+                                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                                std::fprintf(stderr, "strata serve: disk park stream: 池化行 H2D 失败 (层 %zu)\n", lyr);
+                                continue;
+                            }
+                            ++done;
+                            bytes_total += (std::uint64_t) buf.size();
+                        }
+                        if (done > 0) {
+                            std::fprintf(stderr, "strata serve: disk park stream: 池化行已恢复 %llu 层 × %llu 行"
+                                         " (%.1f MiB)\n", (unsigned long long) done,
+                                         (unsigned long long) need_rows, (double) bytes_total / 1048576.0);
+                        }
+                    }
+                    slot_source = -1;
+                    drained = true;          // 后面的 parked/快照路径不要再动
+                    std::fprintf(stderr, "strata serve: disk park stream: restored %lld tokens "
+                                 "from the per-layer append log (resume=%lld)\n",
+                                 (long long) log_restored_tokens, (long long) resume);
+                } else if (!lerr.empty()) {
+                    std::fprintf(stderr, "strata serve: disk park stream: log restore skipped (%s)\n",
+                                 lerr.c_str());
+                }
+            }
+            // ★★★ P13：日志恢复之后，把【草稿（MTP）】的 K/V 也装上！
+            //   为什么必须单独做：草稿的 K/V 是 conversation_snapshot_restore()
+            //   顺带恢复的（它接一个 draft 参数），而日志那条路【跳过】了那个函数
+            //   （否则会用快照覆盖刚恢复的池）⇒ 草稿从空状态起步 ⇒
+            //   草稿几乎全被拒（实测 1/8 vs 冷读 4/9）⇒ 投机解码失效 ⇒ decode 变慢
+            //   （实测 35.5 tok/s vs 冷读 57 tok/s）。
+            //   草稿的镜像是 incoming->kv.back()（快照路径也是这么取的）。
+            if (incoming && log_restored_tokens > 0 && use_mtp && stages.empty() &&
+                !incoming->kv.empty()) {
+                std::string derr;
+                if (!strata::core::conversation_kv_restore(incoming->kv.back(), mtp.kv_state(),
+                        draft_geometry, resume, /*index=*/false, derr)) {
+                    std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 恢复失败 (%s)\n",
+                                 derr.c_str());
+                } else if (cudaDeviceSynchronize() != cudaSuccess) {
+                    std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V sync 失败\n");
+                } else {
+                    std::fprintf(stderr, "strata serve: disk park stream: 草稿 K/V 已恢复 (%lld tokens)\n",
+                                 (long long) resume);
+                }
+            }
+            if (incoming && log_restored_tokens == 0) {
                 const auto t0 = Clock::now();
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err) !=
@@ -9283,8 +10852,49 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
-                resume = parked.tokens;
-                from_live = parked.live;
+                // ★★ 用磁盘镜像时，resume 必须是它的 frontier（见 used_disk_image 的注释）
+                resume = used_disk_image ? disk_tokens : parked.tokens;
+                from_live = used_disk_image ? true : parked.live;
+                // ★★★ 2026-10-11 P20：RAM 路径也要"向下夹"（磁盘路径 P19 的对应物）。
+                //   parked.tokens 是"请求与停放条目的最长公共前缀"，不保证落在检查点边界上；
+                //   下面的 !from_live 分支要求 checks 里【精确存在】该长度，找不到就
+                //   "ERR restoring a conversation checkpoint failed" + return 1（请求直接失败，无兜底）。
+                //   退到 ≤ 匹配长度的最大检查点是安全的（差额由 prompt 读回填，P19 已论证）；
+                //   一个可用检查点都没有时置 resume=0，落到上面 resume==0 的冷读分支。
+                // ★★★ P22（2026-10-11）：这个夹取必须【两条路径都算】。
+                //   原来写的是 !used_disk_image —— 但 P13 磁盘取回开启时
+                //   used_disk_image=true，这里被整条跳过，而 :10865 的
+                //   erase(c.ids.size() > resume) 会把超过 resume 的检查点全删掉，
+                //   若它们全在 resume 之上就会得到 checks=0 ⇒ 恢复失败。
+                //   实测："found=0 resume=103198 checks=0 stages=0"。
+                if (!from_live && resume > 0) {
+                    // ★ 先统计为什么不行，日志里说清楚（下次一眼定位）
+                    size_t n_ck = checks.size(), n_shape_bad = 0, n_le = 0;
+                    int64_t ck_best = -1;
+                    for (const ConvCheckpoint& k : checks) {
+                        const int64_t m = (int64_t) k.ids.size();
+                        if (m > resume) continue;
+                        ++n_le;
+                        // ★★ 形状必须匹配：stage_parts 的份数要等于本次运行的 stages 数。
+                        //    单卡运行时 stages 为空 ⇒ 带 stage_parts 的检查点（来自层分运行
+                        //    或磁盘快照）不能在此恢复，否则下面的 stage_parts 检查必然失败。
+                        if (k.stage_parts.size() != stages.size()) { ++n_shape_bad; continue; }
+                        if (m > ck_best) ck_best = m;
+                    }
+                    if (ck_best >= 0 && ck_best != resume) {
+                        std::fprintf(stderr, "strata serve: conversation cache: the matched length %lld is not a "
+                                             "usable checkpoint; resuming at %lld and re-reading the rest "
+                                             "(checks=%zu, <=resume=%zu, shape-mismatch=%zu)\n",
+                                     (long long) resume, (long long) ck_best, n_ck, n_le, n_shape_bad);
+                        resume = ck_best;
+                    } else if (ck_best < 0) {
+                        std::fprintf(stderr, "strata serve: conversation cache: no usable checkpoint at or below "
+                                             "the matched length %lld; reading the prompt from the start "
+                                             "(checks=%zu, <=resume=%zu, shape-mismatch=%zu)\n",
+                                     (long long) resume, n_ck, n_le, n_shape_bad);
+                        resume = 0;
+                    }
+                }
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));
@@ -10821,6 +12431,386 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
+
+            // ★★ P9：请求结束后【追加本轮增量】（设计文档 §5.1）。
+            //    ★ 位置：正好在"会话定型"之后，且上游自己的注释说明此时
+            //      "the session is complete before anything reads or copies it"
+            //      ——所有投机窗口已 drain，读 host 池是安全的。
+            //    ★ 它【不替代】停车路径：那条仍照旧写整份快照。两者并存，
+            //      才能对比同一段使用下两种写法各写了多少字节（阶段 5 的判据）。
+            if (disk_park_stream && !cancelled && live_ok && !live.empty()) {
+                const std::int64_t L = (int64_t) live.size();
+                std::vector<std::uint64_t> l_hashes;
+                std::vector<std::int64_t>  l_starts;
+                l_hashes.reserve(live_imgs.size());
+                l_starts.reserve(live_imgs.size());
+                for (const auto& im : live_imgs) { l_starts.push_back(im.start); l_hashes.push_back(im.hash); }
+                // 摘要：整段 token 序列的前缀摘要（与快照层同一套算法）
+                const strata::core::PrefixDigest d_now =
+                    strata::core::prefix_digest(live, l_hashes, l_starts, L);
+                const strata::core::PrefixDigest d_prev =
+                    strata::core::prefix_digest(live, l_hashes, l_starts, read_from);
+
+                // ★★★ 逐层：引擎的真实 K/V 是【每层一份】（layer.hpp: 每个 QsaState
+                //   有自己的 host 池），所以每层写进会话目录下自己的 layerNN/。
+                //   层数是 ss.qsa_alloc（不是写死的 12 —— --layer-split 时会更少），
+                //   取回时必须用同一个数。
+                const strata::core::SessionState& src_ss =
+                    stages.empty() ? ss : stages[0]->ss;
+                const strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+                const int64_t hd = g.head_dim;
+                const std::size_t n_layers = (std::size_t) std::max<int64_t>(src_ss.qsa_alloc, 1);
+                strata::core::DiskParkLogs::DiskParkLayerFill lfill =
+                    [&src_ss, &sh, hd, n_layers, &disk_park_stream](std::size_t layer, std::size_t part,
+                                                 std::size_t offset,
+                                                 std::uint8_t* dst2, std::size_t n) -> bool {
+                    if (layer >= n_layers) return false;
+                    const strata::core::QsaState& st = src_ss.qsa_states[src_ss.qsa_ord0 + (int64_t) layer];
+                    return p9_read_host_pool(st, sh, hd, (int) part, offset, dst2, n,
+                                             disk_park_stream->plan().parts[part].bytes_per_cell);
+                };
+
+                strata::core::DiskParkLogs::Request req;
+                req.has_prev  = read_from > 0;
+                req.prev      = {d_prev.lo, d_prev.hi};
+                req.next      = {d_now.lo, d_now.hi};
+                req.to_tokens = (std::uint64_t) L;
+                // ★★★ P14（2026-10-10）：本轮是从会话目录取回的直接给目录与水位。
+                //   不要用摘要链：req.prev 的 frontier 是 read_from（挂载点），
+                //   remember() 登记的是上一轮的 L，两者永远不等 ⇒ lookup() 恒 miss
+                //   ⇒ 每轮新建目录、全量重写（实测 76 轮 26.5 GiB）。
+                if (!restore_used_dir.empty() && log_restored_tokens > 0) {
+                    req.restore_dir    = restore_used_dir;
+                    req.restore_tokens = (std::uint64_t) log_restored_tokens;
+                }
+                // ★★★ P15（2026-10-11）：把本轮【所有可能被下一轮复用的 frontier】都作为
+                //   别名登记到本次写进去的那个目录。为什么必须报：下一轮的 read_from 是
+                //   检查点长度（实测日志"运行状态挂载于 37336"就是它），而 remember() 只记住
+                //   了本轮的 L（38154）⇒ 摘要链必然 miss ⇒ 新建目录 + 整份重写。
+                //   实测：37 轮里 20 轮都是这么白写的（7.22 GiB）。
+                for (const auto& c : checks) {
+                    const std::int64_t cl = (std::int64_t) c.ids.size();
+                    if (cl > 0 && cl < L) {
+                        const strata::core::PrefixDigest ad =
+                            strata::core::prefix_digest(live, l_hashes, l_starts, cl);
+                        req.aliases.push_back({strata::core::DiskParkLogDigest{ad.lo, ad.hi},
+                                               (std::uint64_t) cl});
+                    }
+                }
+                if (read_from > 0 && read_from < L) {
+                    const strata::core::PrefixDigest ad =
+                        strata::core::prefix_digest(live, l_hashes, l_starts, read_from);
+                    req.aliases.push_back({strata::core::DiskParkLogDigest{ad.lo, ad.hi},
+                                           (std::uint64_t) read_from});
+                }
+                // ★★★ P17（2026-10-11）：兜底目录。实测那 3 轮（34/37/42）是【有前驱、
+                //   别名表也没认出来】⇒ have=0 ⇒ 整份重写，合计 2.13 GiB（占剩余写量 56%）。
+                //   引擎手里其实有【上一轮写过的那个目录】（disk_park_session_name 跨请求存活），
+                //   但它可能属于另一条对话 ⇒ 用【取回侧同一套身份判据】验证：
+                //   p13_session_tokens_lcp(该目录/tokens.bin, live) —— 只有 lcp 够长
+                //   （≥1024，与取回侧同一个地板）才把它当 (目录, 水位)。
+                //   安全：use = min(lcp, read_from)。盘上 [0,lcp) 的字节与本次 live 逐 token
+                //   一致，而 append_kv(use, L) 会把 [use,L) 全部用本次数据覆盖 ⇒ 得到这条
+                //   对话的完整日志。lcp 再小也只是多写，不会写错。
+                if (req.restore_dir.empty() && !disk_park_session_name.empty() && read_from > 0) {
+                    std::string ierr;
+                    const std::size_t ilcp = strata::core::p13_session_tokens_lcp(
+                        disk_park_stream->dir_for(disk_park_session_name) + "/tokens.bin",
+                        live, ierr);
+                    const std::int64_t use =
+                        std::min<std::int64_t>((std::int64_t) ilcp, read_from);
+                    if (use >= 1024) {
+                        req.restore_dir    = disk_park_session_name;
+                        req.restore_tokens = (std::uint64_t) use;
+                    }
+                }
+                // ★ 会话目录名由 append_layers 通过 out_dir 回传 —— 不要自己用
+                //   name_for(摘要) 去猜：会话名是该会话【第一次建立时】的 hex，
+                //   不是本轮摘要的 hex（拿错就会写进另一个目录/空目录）。
+                std::string sdir_name;
+                req.out_dir = &sdir_name;
+                const std::uint64_t wrote = disk_park_stream->append_layers(req, n_layers, lfill);
+                disk_park_session_name = sdir_name;
+
+                // ★★★ P13：把本轮的【检查点运行状态】写进内容寻址 blob。
+                //   为什么必须做：取回时只恢复 K/V 池是不够的 —— 检查点
+                //   （ConversationCheckpoint：ids + gdn/ple/tails/dead/block_pos）
+                //   是 prompt-cache 链与投机解码草稿的基础。实测只恢复 K/V 时
+                //   checkpoints 从 3 变 0，decode 从 57 掉到 30 tok/s。
+                //   键 = prefix_digest(ck.ids, {}, {}, ck.ids.size())（与 P12 一致）。
+                //   内容寻址 ⇒ 同一份状态只写一次，跨轮、跨重启都能命中。
+                {
+                    static int dbg = 0;
+                    if (dbg < 4) { ++dbg;
+                        std::fprintf(stderr, "strata serve: disk park stream: [检查点诊断] blob=%d "
+                                     "checks=%zu live=%lld\n", (int) (disk_park_blob != nullptr),
+                                     checks.size(), (long long) (live.empty() ? 0 : (int64_t) live.size()));
+                    }
+                }
+                if (disk_park_blob) {
+                    std::uint64_t ck_new = 0, ck_bytes = 0;
+                    // ★★★ 只把【尾部 K 份】写进 blob（默认 K=1）。一份检查点 118 MB，
+                    //   而取回只会挂载"是本次请求前缀里最长的那份" —— 顺序续聊就是尾部那份。
+                    //   长 prompt 一次性建立的那 8 个中间前缀永远没人读，白占 ~0.94 GB/会话。
+                    //   `STRATA_P13_BLOB_CKPTS=2|3…` 可以换回"能从更早前缀挂载"的能力
+                    //   （注意：挂载点离尾部很远时，草稿的 ring 段可能覆盖不到 ⇒ 那次不要草稿）。
+                    static const std::size_t p13_blob_ckpts = [] {
+                        const char* v = std::getenv("STRATA_P13_BLOB_CKPTS");
+                        const long n = v != nullptr ? std::strtol(v, nullptr, 10) : 1;
+                        return n > 0 ? (std::size_t) n : (std::size_t) 1;
+                    }();
+                    // ★★★ P16（2026-10-11）：检查点落盘闸门。一份 112.6 MiB，与对话长短
+                    //   无关；判据沿用 KV spill 那条（kMinSpillTokens："SSD 磨损 > 省下的
+                    //   重读时间，不划算"）。默认 8192 token：实测 prefill 稳态约 2,380 tok/s
+                    //   ⇒ 最多多花 ~3.4 秒重读，换掉的是一份 112.6 MiB 的整块重写。
+                    //   STRATA_CKPT_MIN_ADVANCE=0 关掉闸门（回到每轮都写）。
+                    static const std::int64_t min_ckpt_advance = [] {
+                        const char* v = std::getenv("STRATA_CKPT_MIN_ADVANCE");
+                        const long n = v != nullptr ? std::strtol(v, nullptr, 10) : 8192;
+                        return n > 0 ? (std::int64_t) n : (std::int64_t) 0;
+                    }();
+                    // ★ 绝对下限：与 KV spill 的 kMinSpillTokens 同源（实测那 14 分钟里
+                    //   有 9 个 300~2000 token 的短会话，各白写了一份 112.6 MiB）。
+                    static const std::int64_t kMinCkptTokens = 24000;
+                    std::uint64_t ck_skipped = 0;
+                    std::vector<const strata::core::ConversationCheckpoint*> p13_keep;
+                    for (const auto& c : checks)
+                        if (p12_ckpt_state_bytes(c) != 0) p13_keep.push_back(&c);
+                    std::sort(p13_keep.begin(), p13_keep.end(),
+                              [](const strata::core::ConversationCheckpoint* a,
+                                 const strata::core::ConversationCheckpoint* b) {
+                                  return a->ids.size() < b->ids.size();
+                              });
+                    if (p13_keep.size() > p13_blob_ckpts)
+                        p13_keep.erase(p13_keep.begin(),
+                                       p13_keep.end() - (std::ptrdiff_t) p13_blob_ckpts);
+                    for (const auto* p13_cp : p13_keep) {
+                        const auto& c = *p13_cp;
+                        const std::uint64_t nbytes = p12_ckpt_state_bytes(c);
+                        if (nbytes == 0) continue;
+                        const auto d = strata::core::prefix_digest(c.ids, {}, {},
+                                                                   (std::int64_t) c.ids.size());
+                        const strata::core::DiskParkBlobKey bkey{d.lo, d.hi};
+                        std::vector<std::uint8_t> state;
+                        state.reserve((std::size_t) nbytes);
+                        p12_append_ckpt_state(state, c);
+                        if (!disk_park_blob->worth_storing(sdir_name, (std::int64_t) c.ids.size(),
+                                                           min_ckpt_advance, kMinCkptTokens)) {
+                            ++ck_skipped;
+                            continue;      // 不值得再存一份 ⇒ 下次从更早的检查点挂载 + 重读那段
+                        }
+                        const std::uint64_t before = disk_park_blob->bytes_on_disk();
+                        const auto ref = disk_park_blob->put(bkey, nbytes,
+                            [&state](std::uint64_t off, std::uint8_t* dst, std::size_t n) {
+                                std::memcpy(dst, state.data() + (std::size_t) off, n);
+                                return true;
+                            });
+                        {
+                            static bool once = false;
+                            if (!once) { once = true;
+                                std::fprintf(stderr, "strata serve: disk park stream: [检查点大小] "
+                                             "ids=%zu gdn=%zu ple=%zu tails=%zu dead=%zu block_pos=%zu "
+                                             "合计=%llu 字节\n", c.ids.size(), c.gdn.size(), c.ple.size(),
+                                             c.tails.size(), c.dead.size(), c.block_pos.size(),
+                                             (unsigned long long) nbytes);
+                            }
+                        }
+                        if (ref.present()) {
+                            ck_bytes += nbytes;
+                            if (disk_park_blob->bytes_on_disk() > before) ++ck_new;
+                            disk_park_blob->note_stored(sdir_name, (std::int64_t) c.ids.size());
+                        }
+                    }
+                    // ★★★ P13：把本轮的检查点【长度清单】落盘 —— 取回侧靠它只试这些长度。
+                    //   没有它，取回侧就要对 cut = n..2 穷举，那是 O(n²)：探针 m11 实测
+                    //   135k 会话要 87.9 s ⇒ 引擎 60 s 无进展看门狗自杀（HTTP 503）。
+                    if (!sdir_name.empty()) {
+                        const std::string lpath =
+                            disk_park_stream->dir_for(sdir_name) + "/ckpt_lengths.bin";
+                        std::vector<std::int64_t> lens;
+                        // ★★ 与【已有的清单取并集】，不要覆盖：只读挂载点之后，
+                        //    这里的 checks 只有 1 份，覆盖会让其余长度永远丢失
+                        //    （实测：恢复一轮后清单从 9 条缩成 1 条）。那些检查点在
+                        //    blob 里都还在，清单保住它们，以后真要从更早的前缀续才试得到。
+                        {
+                            std::vector<std::int64_t> old;
+                            std::string oerr;
+                            if (strata::core::p13_ckpt_lengths_read(lpath, old, oerr)) lens = old;
+                        }
+                        for (const auto& c : checks)
+                            if (p12_ckpt_state_bytes(c) != 0) lens.push_back((std::int64_t) c.ids.size());
+                        std::sort(lens.begin(), lens.end());
+                        lens.erase(std::unique(lens.begin(), lens.end()), lens.end());
+                        std::string lerr;
+                        if (!strata::core::p13_ckpt_lengths_write(lpath, lens, lerr)) {
+                            static bool once = false;
+                            if (!once) { once = true;
+                                std::fprintf(stderr, "strata serve: disk park stream: [检查点] 长度清单"
+                                             " 落盘失败 (%s)\n", lerr.c_str());
+                            }
+                        }
+                    }
+                    if (ck_new > 0 || ck_skipped > 0) {
+                        std::fprintf(stderr, "strata serve: disk park stream: [检查点] 新增 %llu 份"
+                                     " (%.1f MiB)，闸门跳过 %llu 份（< %lld token，本轮共 %zu 个）\n",
+                                     (unsigned long long) ck_new,
+                                     (double) ck_bytes / 1048576.0,
+                                     (unsigned long long) ck_skipped,
+                                     (long long) min_ckpt_advance, checks.size());
+                    }
+                }
+                if (wrote > 0) {
+                    // 水位落盘（sidecar 载荷为空）：重启后才知道从哪续写
+                    if (!disk_park_stream->commit_watermark(req.next, (std::uint64_t) L)) {
+                        static bool once_wm = false;
+                        if (!once_wm) { once_wm = true;
+                            std::fprintf(stderr, "strata serve: disk park stream: [水位] 落盘失败"
+                                                 "（重启后这一轮无法续写）\n");
+                        }
+                    }
+                    // ★★★ P13：把【会话自己的 token 序列】也落盘 —— 取回侧靠它
+                    //   【校验身份】：只有 lcp(会话的 tokens, 本请求的 ids) 覆盖到我们要用
+                    //   的那些 cell，才允许把这个目录的 K/V 装进来。没有它，"长度相近的
+                    //   另一段对话"会被当成同一段（HANDOFF §5.4 的坑）。
+                    //   180 KB/轮（45k token），覆盖写，可以忽略。
+                    if (!sdir_name.empty()) {
+                        static bool once_tok = false;
+                        const std::string tpath = disk_park_stream->dir_for(sdir_name) + "/tokens.bin";
+                        std::string terr;
+                        if (!strata::core::p13_session_tokens_write(tpath, live, terr)) {
+                            if (!once_tok) { once_tok = true;
+                                std::fprintf(stderr, "strata serve: disk park stream: [身份] 落盘失败 (%s)\n",
+                                             terr.c_str());
+                            }
+                        }
+                    }
+                    // ★★★ P13：indexer 的【池化行】增量追加（长上下文正确性的最后一环）。
+                    //   完成了的行是不可变的历史（行 r 只由 cell [4r,4r+4) 决定，
+                    //   见 layer.hpp 的 idx_pooled/idx_tail/idx_dead 注释），
+                    //   所以只追加 [盘上已有的行, L/idx_block) 这一段。
+                    //   代价：每新 token 约 128 B/层（idx_dim*4/idx_block = 512/4），
+                    //   12 层 ≈ 1.5 KB/token —— 相对逐层 KV 的 ~9.8 KB/token 很小。
+                    {
+                        const auto psh = strata::kernels::qsa_real_shapes();
+                        const std::uint64_t ib = (std::uint64_t) std::max<int64_t>(psh.idx_block, 1);
+                        const std::uint64_t rb = (std::uint64_t) g.idx_key_dim * sizeof(float);
+                        const std::uint64_t need_rows = (std::uint64_t) L / ib;
+                        for (std::size_t lyr = 0; lyr < n_layers; ++lyr) {
+                            const strata::core::QsaState& st =
+                                src_ss.qsa_states[src_ss.qsa_ord0 + (int64_t) lyr];
+                            if (st.idx_pooled == nullptr || rb == 0) continue;
+                            const std::string ppath =
+                                disk_park_stream->dir_for_layer(sdir_name, lyr) + "/pooled.bin";
+                            std::uint64_t have = 0;
+                            std::string perr;
+                            if (!strata::core::p13_pooled_rows(ppath, rb, have, perr)) {
+                                have = 0;                    // 新会话：文件还不存在
+                            }
+                            if (need_rows <= have) continue;
+                            if (need_rows > (std::uint64_t) st.idx_pooled_rows) {
+                                std::fprintf(stderr, "strata serve: disk park stream: [池化] 层 %zu 行数越界"
+                                             " (%llu > %lld) ⇒ 跳过\n", lyr, (unsigned long long) need_rows,
+                                             (long long) st.idx_pooled_rows);
+                                continue;
+                            }
+                            std::vector<std::uint8_t> buf((std::size_t) ((need_rows - have) * rb));
+                            if (cudaMemcpy(buf.data(),
+                                           (const std::uint8_t*) st.idx_pooled + have * rb, buf.size(),
+                                           cudaMemcpyDeviceToHost) != cudaSuccess) {
+                                std::fprintf(stderr, "strata serve: disk park stream: [池化] 层 %zu D2H 失败\n", lyr);
+                                continue;
+                            }
+                            if (!strata::core::p13_pooled_append(ppath, rb, buf.data(), have, need_rows, perr)) {
+                                static bool once = false;
+                                if (!once) { once = true;
+                                    std::fprintf(stderr, "strata serve: disk park stream: [池化] 追加失败 (%s)\n",
+                                                 perr.c_str());
+                                }
+                            }
+                        }
+                    }
+                    // ★★★ P13：把【草稿（MTP）层】的 K/V 也落盘 —— 这是取回路径
+                    //   decode 不变慢的关键。
+                    //   为什么必须单独做：日志只存【主模型每一层】的 K/V；草稿层本来
+                    //   靠 conversation_snapshot_restore() 顺带恢复，而取回路径跳过了
+                    //   那个函数。下面那块 `if (incoming && log_restored_tokens > 0 ...)`
+                    //   的第一行就是 incoming —— 而取回路径的入口条件正是
+                    //   "内存里什么都没有"（!mem_hit）⇒ incoming 恒为 nullptr ⇒ 那是
+                    //   死代码（实测日志里从来没有出现过"草稿 K/V 已恢复"）。
+                    //   实测代价：drafts 1/8、decode 33-35 tok/s（冷读 4/9、57）。
+                    //   镜像用上游的 conversation_kv_save（与停放路径同一份代码）。
+                    if (use_mtp && !sdir_name.empty()) {
+                        strata::core::ConversationKv dimg;
+                        std::string derr;
+                        if (cudaDeviceSynchronize() != cudaSuccess) {
+                            std::fprintf(stderr, "strata serve: disk park stream: [草稿] sync 失败\n");
+                        } else if (!strata::core::conversation_kv_save(dimg, mtp.kv_state(), g, L,
+                                                                      /*index=*/false, derr)) {
+                            static bool once = false;
+                            if (!once) { once = true;
+                                std::fprintf(stderr, "strata serve: disk park stream: [草稿] 采集失败 (%s)\n",
+                                             derr.c_str());
+                            }
+                        } else {
+                            const std::string dpath =
+                                disk_park_stream->dir_for(sdir_name) + "/mtp_kv.bin";
+                            // ★★★ 只落【ring 那一段】（2026-10-10）：草稿的恢复只用最后
+                            //   n_slots 页（引擎 `kv_ring_restore` 只重填那段；prefill 本来
+                            //   也跳过 window 够不到的 cell）⇒ 135k 时 135.6 MB → ~35 MB。
+                            //   草稿镜像原本占每轮写盘量的 96%（141 MB/轮里 135.6 MB）。
+                            const std::int64_t dps = (std::int64_t) std::max<int64_t>(
+                                strata::kernels::qsa_real_shapes().page_size, 1);
+                            const std::int64_t dslots = (std::int64_t) mtp.kv_state().n_slots;
+                            const std::int64_t dcells = (std::int64_t) dimg.cells;
+                            const std::int64_t dfirst =
+                                std::max<std::int64_t>(0, ((dcells - dslots * dps) / dps) * dps);
+                            std::array<std::uint64_t, 5> soff{}, slen{};
+                            std::uint64_t sbytes = 0;
+                            {
+                                const strata::core::ConversationBuffer* b[5] = {
+                                    &dimg.k, &dimg.v, &dimg.k_scale, &dimg.v_scale, &dimg.pooled};
+                                for (int i = 0; i < 5; ++i) {   // dimg 是整份镜像 ⇒ per_cell 由整份算
+                                    const std::uint64_t per_cell =
+                                        dcells > 0 ? (std::uint64_t) b[i]->size() / (std::uint64_t) dcells : 0;
+                                    const std::uint64_t page_bytes = per_cell * (std::uint64_t) dps;
+                                    soff[i] = (std::uint64_t) (dfirst / dps) * page_bytes;
+                                    slen[i] = (std::uint64_t) ((dcells - dfirst) / dps) * page_bytes;
+                                    sbytes += slen[i];
+                                }
+                            }
+                            std::string werr;
+                            if (!strata::core::p13_draft_kv_write(dpath, dimg, L, dfirst, soff, slen, werr)) {
+                                static bool once = false;
+                                if (!once) { once = true;
+                                    std::fprintf(stderr, "strata serve: disk park stream: [草稿] 落盘失败 (%s)\n",
+                                                 werr.c_str());
+                                }
+                            } else {
+                                static bool once = false;
+                                if (!once) { once = true;
+                                    std::fprintf(stderr, "strata serve: disk park stream: [草稿] 已落盘"
+                                                 " %.1f MiB（ring 段 cell %lld..%lld；整份会写 %.1f MiB）"
+                                                 " (upto=%lld heads=%lld head_dim=%lld)\n",
+                                                 (double) sbytes / 1048576.0, (long long) dfirst,
+                                                 (long long) dimg.cells, (double) dimg.bytes() / 1048576.0,
+                                                 (long long) L, (long long) dimg.heads,
+                                                 (long long) dimg.head_dim);
+                                }
+                            }
+                        }
+                    }
+                    const auto sst = disk_park_stream->stats();
+                    std::fprintf(stderr,
+                                 "strata serve: disk park stream: appended %llu B for %lld tokens"
+                                 " over %zu layers  [rounds %llu, %.2f GiB, adopted %llu, fresh %llu, fail %llu]\n",
+                                 (unsigned long long) wrote, (long long) L, n_layers,
+                                 (unsigned long long) sst.writes,
+                                 (double) sst.write_bytes / 1073741824.0,
+                                 (unsigned long long) sst.adopted,
+                                 (unsigned long long) sst.fresh,
+                                 (unsigned long long) sst.failures);
+                }
+            }
             }
             static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
             if (state_hash && !cancelled && o.prompt_cache > 0) {   // every finished request, ckpt=0 too (parity gates)
