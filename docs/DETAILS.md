@@ -1383,6 +1383,18 @@ the speculative decoding checks at once, exactly as if it decoded one token at a
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
 
+**Logprobs.** `/v1/chat/completions` takes OpenAI's `"logprobs": true` (with `"top_logprobs": 0..20`), streamed or
+not, on a CUDA/HIP engine that has them (the engine gets `logprobs=K` on its GEN line and writes an `LP` line after
+each token; an older engine ignores the key and the reply has no `logprobs`). `choices[0].logprobs.content` lists
+each token with `token`, `logprob`, `bytes` and `top_logprobs`, from the model's distribution before penalties,
+temperature and sampling, as the SYCL port does ([INTEL.md](INTEL.md)); the stop token is not listed. A token's
+`token` is the text it completes, so a character split across tokens is in the token that finishes it and the
+tokens, joined, spell the reply. With thinking on, the thinking's tokens are under `reasoning_content`. With
+`response_format` `json_schema`, the answer is returned as the model wrote it (validated as usual) when its tokens
+spell it, the JSON inside a ```` ```json ```` fence included; otherwise the canonical JSON without `logprobs`.
+Measured on a Radeon 8060S (Windows, UD-IQ4_XS, `--spec 4 --mtp`, a greedy 255-token answer): the same text with
+and without `logprobs`, 38.2 and 38.4 tok/s.
+
 **Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
 
 **Token biases (opt-in).** The chat API supports request-scoped `logit_bias` objects and token/bias pair lists on supporting CUDA/HIP engines without continuous batching. A value of -100 (or `false` in a pair list) excludes a token. Unsupported engines return an error. See [LOGIT_BIAS.md](LOGIT_BIAS.md) for formats, limits and validation.

@@ -65,6 +65,7 @@ from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
+from serve.structured import _extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
@@ -1196,6 +1197,9 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        k = top_logprobs(sampling)
+        if k is not None:                       # an LP line after each T line (an engine without them ignores the key)
+            keys += f" logprobs={k}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -1933,6 +1937,11 @@ class StrataEngine:
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
+        # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same flush), read
+        # here before the token is yielded, so whoever takes the token finds its line in lp_lines
+        want_lp = top_logprobs(sampling or {}) is not None
+        self.lp_lines = collections.deque()
+        carry = NO_LINE
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
@@ -1960,7 +1969,10 @@ class StrataEngine:
                         raise self._silent(f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
                                            "the request")
                 try:
-                    line = self.lines.get(timeout=min(wait, 0.5))
+                    if carry is not NO_LINE:              # the line read after a token for its LP line
+                        line, carry = carry, NO_LINE
+                    else:
+                        line = self.lines.get(timeout=min(wait, 0.5))
                 except queue.Empty:
                     if cancel.is_set():
                         return
@@ -1987,7 +1999,16 @@ class StrataEngine:
                     allow = silence
                     if cancel.is_set():
                         return
-                    yield int(line[2:])
+                    t = int(line[2:])
+                    if want_lp:
+                        try:
+                            carry = self.lines.get(timeout=0.5)
+                        except queue.Empty:
+                            carry = NO_LINE
+                        if isinstance(carry, str) and carry.startswith("LP "):
+                            self.lp_lines.append((t, carry))
+                            carry = NO_LINE
+                    yield t
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -2030,9 +2051,12 @@ class StrataEngine:
                 while True:
                     left = allow - (time.monotonic() - heard) if allow > 0 else None
                     try:
-                        if left is not None and left <= 0:
+                        if carry is not NO_LINE:          # read already, after the last token
+                            line, carry = carry, NO_LINE
+                        elif left is not None and left <= 0:
                             raise queue.Empty
-                        line = self.lines.get(timeout=left)
+                        else:
+                            line = self.lines.get(timeout=left)
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
@@ -3002,6 +3026,7 @@ class Detokenizer:
 
 
 OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
+NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
 
 
 def stop_strings(req: dict) -> list[str]:
@@ -4856,6 +4881,93 @@ def prompt_progress(svc: Service):
             "time_ms": int(getattr(engine, "progress_ms", 0) or 0)}
 
 
+def top_logprobs(req: dict):
+    """The K for the engine's logprobs=K, or None when the request did not ask (OpenAI: "logprobs": true, with
+    "top_logprobs" 0..20; the legacy completions form, "logprobs": N, is taken as N)."""
+    lp = req.get("logprobs")
+    if lp is True:
+        k = req.get("top_logprobs")
+        return max(0, min(20, k)) if isinstance(k, int) and not isinstance(k, bool) else 0
+    if isinstance(lp, int) and not isinstance(lp, bool) and lp >= 0:
+        return min(20, lp)
+    return None
+
+
+class LogprobEntries:
+    """The engine's LP lines as OpenAI's logprobs.content entries.  Each token's "token" is the text it completes
+    (an incremental UTF-8 decode, as the reply's text is made), so a character split across tokens is in the token
+    that finishes it and the tokens, joined, spell the text; "bytes" are the token's own bytes.  The stop token
+    ends the reply and is not listed (OpenAI does not list it either).  Tokens that make no text of the reply (the
+    `</think>` tag and the newlines after it) are left out: spell() gives each piece of text the tokens that spell it."""
+
+    def __init__(self, svc):
+        self.tok, self.stop_ids = svc.tok, svc.stop_ids
+        self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.pending = []                          # entries read but not yet given to a piece of text
+
+    def spell(self, eng, text: str) -> list:
+        """The entries whose tokens spell `text`, the next piece of the reply: the tokens before it made no text
+        (they are dropped), the ones after it belong to the next piece.  If no run of tokens spells it (a piece the
+        server changed), all the entries read so far."""
+        self.pending += self.take(eng)
+        at = [0]
+        for e in self.pending:
+            at.append(at[-1] + len(e["token"]))
+        joined = "".join(e["token"] for e in self.pending)
+        i = joined.find(text)
+        while i >= 0 and text:
+            if i in at:
+                a = at.index(i)                    # the first token there: a "" before it starts a split character
+                end = i + len(text)
+                b = next((j for j in range(a + 1, len(at)) if at[j] == end), None)
+                if b is not None:
+                    out, self.pending = self.pending[a:b], self.pending[b:]
+                    return out
+            i = joined.find(text, i + 1)
+        out, self.pending = self.pending, []
+        return out
+
+    def raw(self, t):
+        if hasattr(self.tok, "token_bytes"):
+            return self.tok.token_bytes(t)
+        return self.tok.decode([t]).encode("utf-8")
+
+    def take(self, eng) -> list:
+        lines, out = getattr(eng, "lp_lines", None), []
+        while lines:
+            t, line = lines.popleft()
+            f = line.split()
+            if t in self.stop_ids or len(f) < 2 or f[1] == "nan":
+                continue
+            b = self.raw(t)
+            e = {"token": self.inc.decode(b), "logprob": float(f[1]), "bytes": list(b), "top_logprobs": []}
+            for x in f[2:]:
+                i, _, v = x.partition(":")
+                alt = self.raw(int(i))
+                e["top_logprobs"].append({"token": alt.decode("utf-8", "replace"), "logprob": float(v),
+                                          "bytes": list(alt)})
+            out.append(e)
+        return out
+
+
+def logprob_span(text: str, part: str, entries: list):
+    """The entries whose tokens spell `part`, a piece of `text` (the JSON inside a fenced answer), or None when the
+    tokens do not spell `text` or no token boundary falls at both ends of `part`."""
+    if "".join(e["token"] for e in entries) != text:
+        return None
+    start = text.find(part)
+    if start < 0:
+        return None
+    at, first = 0, None
+    for i, e in enumerate(entries):
+        if at == start and first is None:
+            first = i
+        if at == start + len(part) and first is not None:
+            return entries[first:i]
+        at += len(e["token"])
+    return entries[first:] if first is not None and at == start + len(part) else None
+
+
 def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, force=None):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become chunks with
     an empty delta and a `strata_mcp` field, which only the web app reads.  `force`: see Service.run."""
@@ -4870,6 +4982,13 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
     yield chunk({"role": "assistant", "content": ""})
+    lp = LogprobEntries(svc) if top_logprobs(req) is not None else None
+
+    def with_lp(c, key):
+        got = lp.spell(svc.engine, c["choices"][0]["delta"][key]) if lp is not None else None
+        if got:
+            c["choices"][0]["logprobs"] = {key: got}
+        return c
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
@@ -4886,9 +5005,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         elif kind == "event":
             ev: Event = x
             if ev.kind == "reasoning" and ev.text:
-                yield chunk({"reasoning_content": ev.text})
+                yield with_lp(chunk({"reasoning_content": ev.text}), "reasoning_content")
             elif ev.kind == "content" and ev.text:
-                yield chunk({"content": ev.text})
+                yield with_lp(chunk({"content": ev.text}), "content")
             elif ev.kind == "tool_start":
                 streamed[ev.call.id] = calls
                 calls += 1
@@ -4928,11 +5047,14 @@ def _is_json(text: str) -> bool:
 
 def openai_collect(chunks) -> dict:
     content, reasoning, by_index, last, mcp = [], [], {}, None, []
+    lps = {}                                       # "content" / "reasoning_content" -> logprob entries
     for c in chunks:
         if c is None:                              # a heartbeat
             continue
         if c.get("strata_mcp"):
             mcp.append(c["strata_mcp"])
+        for k, v in (c["choices"][0].get("logprobs") or {}).items():
+            lps.setdefault(k, []).extend(v)
         d = c["choices"][0]["delta"]
         content.append(d.get("content") or "")
         reasoning.append(d.get("reasoning_content") or "")
@@ -4957,6 +5079,9 @@ def openai_collect(chunks) -> dict:
     out = {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
            "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
            "usage": last["usage"]}
+    if lps:
+        out["choices"][0]["logprobs"] = {"content": lps.get("content", []), "refusal": None, **(
+            {"reasoning_content": lps["reasoning_content"]} if lps.get("reasoning_content") else {})}
     if last.get("timings"):
         out["timings"] = last["timings"]
     return out
@@ -4977,12 +5102,31 @@ def structured_chunks(chunks, validator):
         result = openai_collect(buffered)
         choice = result["choices"][0]
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
+        logprobs = None
+        lps = choice.get("logprobs")
+        if lps and lps.get("content"):
+            # logprobs asked for: the JSON as the model wrote it (validated above, the same value as the canonical
+            # form) when token boundaries fall at both its ends, so the tokens spell the content; else the canonical
+            # form without logprobs, which its tokens would not spell
+            raw = choice["message"]["content"] or ""
+            part = _extract_json(raw)
+            span = logprob_span(raw, part, lps["content"])
+            if span is not None:
+                content, logprobs = part, {"content": span}
+            if lps.get("reasoning_content"):
+                logprobs = {**(logprobs or {}), "reasoning_content": lps["reasoning_content"]}
         yield buffered[0]
         delta = {"content": content}
         if choice["message"].get("reasoning_content"):
             delta["reasoning_content"] = choice["message"]["reasoning_content"]
-        yield {**buffered[0], "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
-        yield buffered[-1]
+        piece = {"index": 0, "delta": delta, "finish_reason": None}
+        if logprobs:
+            piece["logprobs"] = logprobs
+        yield {**buffered[0], "choices": [piece]}
+        end = buffered[-1]
+        if end["choices"][0].get("logprobs"):           # its entries are in the piece above (or left out with it)
+            end = {**end, "choices": [{k: v for k, v in end["choices"][0].items() if k != "logprobs"}]}
+        yield end
     finally:
         chunks.close()
 
