@@ -1,0 +1,473 @@
+[strata] 2026-10-11 23:06:54 engine started: <strata>\engine\strata.exe --serve --pack <strata>\packs\iq2_xs --native <strata>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf <strata>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile <strata>\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata>\mtp\rt --max-context 32768 --kv int8 --mmap-experts --vision --vram-reserve-mib 300
+strata generate: memory guard: limit 31.9 GiB (source: meminfo), current 7.4 GiB, reclaimable cache credited 0.0 GiB; available 24.6 GiB (MemAvailable 24.6 GiB), floor 2560 MiB
+strata generate: expert cache auto: 2.24 GiB free, 300 MiB reserved (+143 MiB for the draft head) -> 1285 slots
+strata generate: only 222 MiB free once the slots are written (reserve 300 MiB); shrinking the expert cache
+strata generate: expert cache 1231 slots, 1.67 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 1231 resident experts, decided on the device
+strata serve: Windows commit: 45.5 GiB left of a 67.9 GiB limit (RAM + page file)
+strata: the CPU prefill share is not armed by default: the experts it would read are 31.4 GiB of file pages and only 22.2 GiB of RAM is free to keep them. STRATA_PREFILL_CPU_SHARE=auto turns it on anyway
+strata serve: prompt chunk auto: 2560 tokens, a 96-slot ring
+strata serve: 0 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 812 to the config's args (or lower --max-context)
+strata serve: prompt 83 tokens = 0 reused + 83 read in 40161 ms (2.1 tok/s), 175 generated in 16793 ms (10.4 tok/s), drafts accepted 91 of 154, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.3% (48566 hits / 96618 lookups)
+strata serve: expert tiers: GPU 48566 hits this request; since the start RAM 0 blobs, files 0 blobs 70134.7 MB read
+strata serve: prompt 28 tokens = 0 reused + 28 read in 4550 ms (6.2 tok/s), 47 generated in 5056 ms (9.3 tok/s), drafts accepted 21 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.7% (10751 hits / 23511 lookups)
+strata serve: expert tiers: GPU 10751 hits this request; since the start RAM 0 blobs, files 0 blobs 92631.8 MB read
+strata serve: prompt 25 tokens = 0 reused + 25 read in 1734 ms (14.4 tok/s), 68 generated in 4916 ms (13.8 tok/s), drafts accepted 30 of 51, 1 checkpoints
+strata serve: decode expert cache hit rate: 62.2% (23029 hits / 37011 lookups)
+strata serve: expert tiers: GPU 23029 hits this request; since the start RAM 0 blobs, files 0 blobs 115970.1 MB read
+strata serve: prompt 62 tokens = 0 reused + 62 read in 4951 ms (12.5 tok/s), 225 generated in 16244 ms (13.9 tok/s), drafts accepted 145 of 180, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.8% (56777 hits / 105506 lookups)
+strata serve: expert tiers: GPU 56777 hits this request; since the start RAM 0 blobs, files 0 blobs 183660.3 MB read
+strata serve: prompt 90 tokens = 0 reused + 90 read in 4892 ms (18.4 tok/s), 340 generated in 14993 ms (22.7 tok/s), drafts accepted 230 of 291, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.2% (84050 hits / 164140 lookups)
+strata serve: expert tiers: GPU 84050 hits this request; since the start RAM 0 blobs, files 0 blobs 284142.9 MB read
+strata serve: prompt 60 tokens = 0 reused + 60 read in 1647 ms (36.4 tok/s), 456 generated in 18064 ms (25.2 tok/s), drafts accepted 311 of 369, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.6% (105296 hits / 208235 lookups)
+strata serve: expert tiers: GPU 105296 hits this request; since the start RAM 0 blobs, files 0 blobs 410799.0 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 4197 ms (24.3 tok/s), 345 generated in 20629 ms (16.7 tok/s), drafts accepted 193 of 250, 1 checkpoints
+strata serve: decode expert cache hit rate: 48.1% (76591 hits / 159318 lookups)
+strata serve: expert tiers: GPU 76591 hits this request; since the start RAM 0 blobs, files 0 blobs 520898.7 MB read
+strata serve: prompt 137 tokens = 0 reused + 137 read in 10247 ms (13.4 tok/s), 39 generated in 3158 ms (12.3 tok/s), drafts accepted 25 of 26, 1 checkpoints
+strata serve: decode expert cache hit rate: 23.0% (3502 hits / 15248 lookups)
+strata serve: expert tiers: GPU 3502 hits this request; since the start RAM 0 blobs, files 0 blobs 550355.7 MB read
+strata serve: prompt 145 tokens = 0 reused + 145 read in 8197 ms (17.7 tok/s), 18 generated in 1330 ms (13.5 tok/s), drafts accepted 12 of 13, 1 checkpoints
+strata serve: decode expert cache hit rate: 38.6% (3026 hits / 7849 lookups)
+strata serve: expert tiers: GPU 3026 hits this request; since the start RAM 0 blobs, files 0 blobs 572135.5 MB read
+strata serve: prompt 272 tokens = 0 reused + 272 read in 31756 ms (8.6 tok/s), 28 generated in 2641 ms (10.6 tok/s), drafts accepted 22 of 22, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.9% (4839 hits / 12134 lookups)
+strata serve: expert tiers: GPU 4839 hits this request; since the start RAM 0 blobs, files 0 blobs 603793.1 MB read
+strata serve: prompt 341 tokens = 302 reused + 39 read in 2461 ms (15.8 tok/s), 16 generated in 1341 ms (11.9 tok/s), drafts accepted 12 of 13, 2 checkpoints
+strata serve: decode expert cache hit rate: 47.1% (3799 hits / 8071 lookups)
+strata serve: expert tiers: GPU 3799 hits this request; since the start RAM 0 blobs, files 0 blobs 615661.0 MB read
+strata serve: prompt 29 tokens = 0 reused + 29 read in 2150 ms (13.5 tok/s), 30 generated in 2045 ms (14.7 tok/s), drafts accepted 21 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 38.2% (5043 hits / 13210 lookups)
+strata serve: expert tiers: GPU 5043 hits this request; since the start RAM 0 blobs, files 0 blobs 629544.9 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 2148 ms (12.6 tok/s), 32 generated in 3698 ms (8.7 tok/s), drafts accepted 16 of 20, 1 checkpoints
+strata serve: decode expert cache hit rate: 35.6% (5329 hits / 14956 lookups)
+strata serve: expert tiers: GPU 5329 hits this request; since the start RAM 0 blobs, files 0 blobs 646530.6 MB read
+strata serve: prompt 76 tokens = 0 reused + 76 read in 7897 ms (9.6 tok/s), 357 generated in 20990 ms (17.0 tok/s), drafts accepted 243 of 296, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.2% (84581 hits / 165239 lookups)
+strata serve: expert tiers: GPU 84581 hits this request; since the start RAM 0 blobs, files 0 blobs 748835.5 MB read
+strata serve: prompt 57 tokens = 0 reused + 57 read in 2933 ms (19.4 tok/s), 54 generated in 2909 ms (18.6 tok/s), drafts accepted 38 of 44, 1 checkpoints
+strata serve: decode expert cache hit rate: 33.4% (8053 hits / 24136 lookups)
+strata serve: expert tiers: GPU 8053 hits this request; since the start RAM 0 blobs, files 0 blobs 780093.7 MB read
+strata serve: prompt 320 tokens = 0 reused + 320 read in 19980 ms (16.0 tok/s), 53 generated in 9367 ms (5.7 tok/s), drafts accepted 35 of 44, 1 checkpoints
+strata serve: decode expert cache hit rate: 32.0% (8164 hits / 25516 lookups)
+strata serve: expert tiers: GPU 8164 hits this request; since the start RAM 0 blobs, files 0 blobs 818105.9 MB read
+strata serve: prompt 320 tokens = 0 reused + 320 read in 12352 ms (25.9 tok/s), 75 generated in 4767 ms (15.7 tok/s), drafts accepted 44 of 59, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.0% (18495 hits / 36959 lookups)
+strata serve: expert tiers: GPU 18495 hits this request; since the start RAM 0 blobs, files 0 blobs 859004.8 MB read
+strata serve: prompt 82 tokens = 0 reused + 82 read in 8673 ms (9.5 tok/s), 188 generated in 14014 ms (13.4 tok/s), drafts accepted 92 of 152, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.3% (50479 hits / 100279 lookups)
+strata serve: expert tiers: GPU 50479 hits this request; since the start RAM 0 blobs, files 0 blobs 931288.0 MB read
+strata serve: prompt 83 tokens = 0 reused + 83 read in 5505 ms (15.1 tok/s), 186 generated in 8975 ms (20.7 tok/s), drafts accepted 92 of 165, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.2% (58732 hits / 106327 lookups)
+strata serve: expert tiers: GPU 58732 hits this request; since the start RAM 0 blobs, files 0 blobs 1000548.3 MB read
+strata serve: prompt 83 tokens = 0 reused + 83 read in 3066 ms (27.1 tok/s), 158 generated in 6547 ms (24.1 tok/s), drafts accepted 80 of 141, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.0% (50446 hits / 90143 lookups)
+strata serve: expert tiers: GPU 50446 hits this request; since the start RAM 0 blobs, files 0 blobs 1061265.5 MB read
+strata serve: prompt 9721 tokens = 0 reused + 9721 read in 272205 ms (35.7 tok/s), 256 generated in 81296 ms (3.1 tok/s), drafts accepted 146 of 216, 1 checkpoints
+strata serve: decode expert cache hit rate: 42.1% (54829 hits / 130114 lookups)
+strata serve: expert tiers: GPU 54829 hits this request; since the start RAM 0 blobs, files 0 blobs 1287189.9 MB read
+strata serve: no progress for 60 s during a request (reading the prompt (batched), done up to token 9714) - stopping the engine so the server starts it again (issue #29)
+strata serve: stall report (engine 0.1.42): stage "reading the prompt (batched), done up to token 9714" for 61 s; 0 layers served since the last finished step (0 = stopped, more = slow)
+  memory: 27519 MiB resident, 10075 MiB committed, 357 MiB RAM available; 39609421 page faults so far
+  memory: 27517 MiB resident, 10075 MiB committed, 359 MiB RAM available; 39614219 page faults so far
+[strata] 2026-10-11 23:26:42 engine started: <strata>\engine\strata.exe --serve --pack <strata>\packs\iq2_xs --native <strata>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf <strata>\models\IQ2_XS\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile <strata>\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata>\mtp\rt --max-context 32768 --kv int8 --mmap-experts --vision --vram-reserve-mib 300
+strata generate: memory guard: limit 31.9 GiB (source: meminfo), current 5.0 GiB, reclaimable cache credited 0.0 GiB; available 27.0 GiB (MemAvailable 27.0 GiB), floor 2560 MiB
+strata generate: expert cache auto: 2.24 GiB free, 300 MiB reserved (+143 MiB for the draft head) -> 1285 slots
+strata generate: only 215 MiB free once the slots are written (reserve 300 MiB); shrinking the expert cache
+strata generate: expert cache 1226 slots, 1.66 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 1226 resident experts, decided on the device
+strata serve: Windows commit: 45.0 GiB left of a 67.9 GiB limit (RAM + page file)
+strata: the CPU prefill share is not armed by default: the experts it would read are 31.4 GiB of file pages and only 24.8 GiB of RAM is free to keep them. STRATA_PREFILL_CPU_SHARE=auto turns it on anyway
+strata serve: prompt chunk auto: 2560 tokens, a 96-slot ring
+strata serve: 9 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 803 to the config's args (or lower --max-context)
+strata serve: prompt 9721 tokens = 0 reused + 9721 read in 311049 ms (31.3 tok/s), 256 generated in 33550 ms (7.6 tok/s), drafts accepted 148 of 236, 1 checkpoints
+strata serve: decode expert cache hit rate: 46.9% (65089 hits / 138693 lookups)
+strata serve: expert tiers: GPU 65089 hits this request; since the start RAM 0 blobs, files 0 blobs 227453.3 MB read
+strata serve: prompt 4479 tokens = 0 reused + 4479 read in 135568 ms (33.0 tok/s), 64 generated in 9863 ms (6.5 tok/s), drafts accepted 40 of 47, 1 checkpoints
+strata serve: decode expert cache hit rate: 37.4% (10508 hits / 28092 lookups)
+strata serve: expert tiers: GPU 10508 hits this request; since the start RAM 0 blobs, files 0 blobs 319645.2 MB read
+strata serve: prompt 4479 tokens = 4472 reused + 7 read in 567 ms (12.3 tok/s), 64 generated in 4669 ms (13.7 tok/s), drafts accepted 40 of 49, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.8% (14903 hits / 29358 lookups)
+strata serve: expert tiers: GPU 14903 hits this request; since the start RAM 0 blobs, files 0 blobs 337864.7 MB read
+strata serve: prompt 6920 tokens = 0 reused + 6920 read in 174353 ms (39.7 tok/s), 9 generated in 1692 ms (5.3 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 17.3% (603 hits / 3476 lookups)
+strata serve: expert tiers: GPU 603 hits this request; since the start RAM 0 blobs, files 0 blobs 448889.8 MB read
+strata serve: prompt 6920 tokens = 0 reused + 6920 read in 219168 ms (31.6 tok/s), 9 generated in 1340 ms (6.7 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 29.3% (1019 hits / 3478 lookups)
+strata serve: expert tiers: GPU 1019 hits this request; since the start RAM 0 blobs, files 0 blobs 559288.2 MB read
+strata serve: prompt 6921 tokens = 0 reused + 6921 read in 186434 ms (37.1 tok/s), 10 generated in 1888 ms (5.3 tok/s), drafts accepted 9 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 33.1% (1679 hits / 5070 lookups)
+strata serve: expert tiers: GPU 1679 hits this request; since the start RAM 0 blobs, files 0 blobs 670827.0 MB read
+strata serve: prompt 28178 tokens = 0 reused + 28178 read in 760956 ms (37.0 tok/s), 10 generated in 2298 ms (4.4 tok/s), drafts accepted 9 of 9, 2 checkpoints
+strata serve: decode expert cache hit rate: 42.4% (2163 hits / 5101 lookups)
+strata serve: expert tiers: GPU 2163 hits this request; since the start RAM 0 blobs, files 0 blobs 1066754.3 MB read
+strata serve: prompt 28176 tokens = 0 reused + 28176 read in 620105 ms (45.4 tok/s), 9 generated in 1882 ms (4.8 tok/s), drafts accepted 8 of 8, 2 checkpoints
+strata serve: decode expert cache hit rate: 48.5% (2317 hits / 4777 lookups)
+strata serve: expert tiers: GPU 2317 hits this request; since the start RAM 0 blobs, files 0 blobs 1461873.0 MB read
+strata serve: prompt 28176 tokens = 0 reused + 28176 read in 559563 ms (50.4 tok/s), 9 generated in 2478 ms (3.6 tok/s), drafts accepted 7 of 9, 2 checkpoints
+strata serve: decode expert cache hit rate: 50.3% (2824 hits / 5612 lookups)
+strata serve: expert tiers: GPU 2824 hits this request; since the start RAM 0 blobs, files 0 blobs 1857198.1 MB read
+strata serve: prompt 223 tokens = 0 reused + 223 read in 29369 ms (7.6 tok/s), 351 generated in 31817 ms (11.0 tok/s), drafts accepted 181 of 256, 1 checkpoints
+strata serve: decode expert cache hit rate: 40.9% (67881 hits / 165841 lookups)
+strata serve: expert tiers: GPU 67881 hits this request; since the start RAM 0 blobs, files 0 blobs 1993604.1 MB read
+strata serve: prompt 762 tokens = 0 reused + 762 read in 20089 ms (37.9 tok/s), 555 generated in 40525 ms (13.7 tok/s), drafts accepted 270 of 424, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.4% (157604 hits / 289454 lookups)
+strata serve: expert tiers: GPU 157604 hits this request; since the start RAM 0 blobs, files 0 blobs 2175110.2 MB read
+strata serve: prompt 125 tokens = 0 reused + 125 read in 8563 ms (14.6 tok/s), 309 generated in 16014 ms (19.3 tok/s), drafts accepted 195 of 232, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.6% (62206 hits / 136451 lookups)
+strata serve: expert tiers: GPU 62206 hits this request; since the start RAM 0 blobs, files 0 blobs 2277227.1 MB read
+strata serve: prompt 31 tokens = 0 reused + 31 read in 3392 ms (9.1 tok/s), 46 generated in 2301 ms (20.0 tok/s), drafts accepted 28 of 33, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.3% (8102 hits / 20623 lookups)
+strata serve: expert tiers: GPU 8102 hits this request; since the start RAM 0 blobs, files 0 blobs 2297980.5 MB read
+strata serve: prompt 31 tokens = 0 reused + 31 read in 828 ms (37.4 tok/s), 34 generated in 1524 ms (22.3 tok/s), drafts accepted 20 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.6% (9735 hits / 18174 lookups)
+strata serve: expert tiers: GPU 9735 hits this request; since the start RAM 0 blobs, files 0 blobs 2313842.1 MB read
+strata serve: prompt 29 tokens = 0 reused + 29 read in 871 ms (33.3 tok/s), 44 generated in 3218 ms (13.7 tok/s), drafts accepted 23 of 34, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.6% (12319 hits / 22556 lookups)
+strata serve: expert tiers: GPU 12319 hits this request; since the start RAM 0 blobs, files 0 blobs 2331671.9 MB read
+strata serve: prompt 32 tokens = 0 reused + 32 read in 1895 ms (16.9 tok/s), 37 generated in 2973 ms (12.4 tok/s), drafts accepted 19 of 22, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.7% (9932 hits / 16911 lookups)
+strata serve: expert tiers: GPU 9932 hits this request; since the start RAM 0 blobs, files 0 blobs 2346840.3 MB read
+strata serve: prompt 32 tokens = 0 reused + 32 read in 1219 ms (26.2 tok/s), 36 generated in 1672 ms (21.5 tok/s), drafts accepted 18 of 18, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.7% (8764 hits / 14921 lookups)
+strata serve: expert tiers: GPU 8764 hits this request; since the start RAM 0 blobs, files 0 blobs 2360540.3 MB read
+strata serve: prompt 31 tokens = 0 reused + 31 read in 984 ms (31.5 tok/s), 46 generated in 2132 ms (21.6 tok/s), drafts accepted 20 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 52.5% (10640 hits / 20251 lookups)
+strata serve: expert tiers: GPU 10640 hits this request; since the start RAM 0 blobs, files 0 blobs 2378405.0 MB read
+strata serve: prompt 31 tokens = 0 reused + 31 read in 913 ms (34.0 tok/s), 40 generated in 1982 ms (20.2 tok/s), drafts accepted 22 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.5% (10524 hits / 19688 lookups)
+strata serve: expert tiers: GPU 10524 hits this request; since the start RAM 0 blobs, files 0 blobs 2395307.7 MB read
+strata serve: prompt 33 tokens = 0 reused + 33 read in 1423 ms (23.2 tok/s), 41 generated in 2269 ms (18.1 tok/s), drafts accepted 23 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.2% (9513 hits / 18959 lookups)
+strata serve: expert tiers: GPU 9513 hits this request; since the start RAM 0 blobs, files 0 blobs 2412625.4 MB read
+strata serve: prompt 34 tokens = 0 reused + 34 read in 987 ms (34.5 tok/s), 41 generated in 1823 ms (22.5 tok/s), drafts accepted 23 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.1% (9607 hits / 17433 lookups)
+strata serve: expert tiers: GPU 9607 hits this request; since the start RAM 0 blobs, files 0 blobs 2428371.4 MB read
+strata serve: prompt 33 tokens = 0 reused + 33 read in 1053 ms (31.4 tok/s), 41 generated in 2068 ms (19.8 tok/s), drafts accepted 26 of 33, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.4% (11226 hits / 20277 lookups)
+strata serve: expert tiers: GPU 11226 hits this request; since the start RAM 0 blobs, files 0 blobs 2444768.4 MB read
+strata serve: prompt 31 tokens = 0 reused + 31 read in 864 ms (35.9 tok/s), 33 generated in 1468 ms (22.5 tok/s), drafts accepted 16 of 22, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.1% (9398 hits / 16164 lookups)
+strata serve: expert tiers: GPU 9398 hits this request; since the start RAM 0 blobs, files 0 blobs 2458993.8 MB read
+strata serve: prompt 30 tokens = 0 reused + 30 read in 1080 ms (27.8 tok/s), 42 generated in 2264 ms (18.5 tok/s), drafts accepted 19 of 25, 1 checkpoints
+strata serve: decode expert cache hit rate: 52.9% (10146 hits / 19193 lookups)
+strata serve: expert tiers: GPU 10146 hits this request; since the start RAM 0 blobs, files 0 blobs 2475931.2 MB read
+strata serve: prompt 32 tokens = 0 reused + 32 read in 822 ms (38.9 tok/s), 40 generated in 1635 ms (24.5 tok/s), drafts accepted 23 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.8% (10476 hits / 19463 lookups)
+strata serve: expert tiers: GPU 10476 hits this request; since the start RAM 0 blobs, files 0 blobs 2492367.4 MB read
+strata serve: prompt 32 tokens = 0 reused + 32 read in 802 ms (39.9 tok/s), 48 generated in 1734 ms (27.7 tok/s), drafts accepted 22 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.9% (12380 hits / 22147 lookups)
+strata serve: expert tiers: GPU 12380 hits this request; since the start RAM 0 blobs, files 0 blobs 2510129.6 MB read
+strata serve: prompt 30 tokens = 0 reused + 30 read in 737 ms (40.7 tok/s), 41 generated in 1649 ms (24.9 tok/s), drafts accepted 19 of 32, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.2% (10816 hits / 21525 lookups)
+strata serve: expert tiers: GPU 10816 hits this request; since the start RAM 0 blobs, files 0 blobs 2529486.1 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 5422 ms (18.8 tok/s), 42 generated in 1243 ms (33.8 tok/s), drafts accepted 26 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.7% (9981 hits / 17916 lookups)
+strata serve: expert tiers: GPU 9981 hits this request; since the start RAM 0 blobs, files 0 blobs 2551437.4 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 2686 ms (38.0 tok/s), 44 generated in 1549 ms (28.4 tok/s), drafts accepted 22 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 57.7% (12120 hits / 20991 lookups)
+strata serve: expert tiers: GPU 12120 hits this request; since the start RAM 0 blobs, files 0 blobs 2575255.6 MB read
+strata serve: prompt 100 tokens = 0 reused + 100 read in 2545 ms (39.3 tok/s), 46 generated in 1504 ms (30.6 tok/s), drafts accepted 25 of 34, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.6% (12829 hits / 22679 lookups)
+strata serve: expert tiers: GPU 12829 hits this request; since the start RAM 0 blobs, files 0 blobs 2599589.8 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 2439 ms (42.2 tok/s), 41 generated in 1566 ms (26.2 tok/s), drafts accepted 20 of 31, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.3% (13054 hits / 22024 lookups)
+strata serve: expert tiers: GPU 13054 hits this request; since the start RAM 0 blobs, files 0 blobs 2623254.0 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 2367 ms (43.5 tok/s), 36 generated in 1017 ms (35.4 tok/s), drafts accepted 19 of 20, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.2% (9324 hits / 15479 lookups)
+strata serve: expert tiers: GPU 9324 hits this request; since the start RAM 0 blobs, files 0 blobs 2643962.7 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 2407 ms (42.4 tok/s), 48 generated in 1733 ms (27.7 tok/s), drafts accepted 22 of 25, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.6% (11322 hits / 21111 lookups)
+strata serve: expert tiers: GPU 11322 hits this request; since the start RAM 0 blobs, files 0 blobs 2669414.7 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 2411 ms (42.3 tok/s), 40 generated in 1534 ms (26.1 tok/s), drafts accepted 21 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.4% (10741 hits / 19757 lookups)
+strata serve: expert tiers: GPU 10741 hits this request; since the start RAM 0 blobs, files 0 blobs 2692933.0 MB read
+strata serve: prompt 104 tokens = 0 reused + 104 read in 2470 ms (42.1 tok/s), 42 generated in 1484 ms (28.3 tok/s), drafts accepted 25 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.1% (9258 hits / 18125 lookups)
+strata serve: expert tiers: GPU 9258 hits this request; since the start RAM 0 blobs, files 0 blobs 2716444.2 MB read
+strata serve: prompt 105 tokens = 0 reused + 105 read in 2457 ms (42.7 tok/s), 39 generated in 1347 ms (28.9 tok/s), drafts accepted 21 of 22, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.0% (9894 hits / 17055 lookups)
+strata serve: expert tiers: GPU 9894 hits this request; since the start RAM 0 blobs, files 0 blobs 2738215.0 MB read
+strata serve: prompt 104 tokens = 0 reused + 104 read in 2436 ms (42.7 tok/s), 58 generated in 2792 ms (20.8 tok/s), drafts accepted 38 of 46, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.7% (13939 hits / 26952 lookups)
+strata serve: expert tiers: GPU 13939 hits this request; since the start RAM 0 blobs, files 0 blobs 2765527.1 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 2387 ms (42.7 tok/s), 40 generated in 1511 ms (26.5 tok/s), drafts accepted 18 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.5% (11885 hits / 20331 lookups)
+strata serve: expert tiers: GPU 11885 hits this request; since the start RAM 0 blobs, files 0 blobs 2788943.4 MB read
+strata serve: prompt 101 tokens = 0 reused + 101 read in 2357 ms (42.8 tok/s), 46 generated in 1830 ms (25.1 tok/s), drafts accepted 22 of 35, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.3% (13265 hits / 23975 lookups)
+strata serve: expert tiers: GPU 13265 hits this request; since the start RAM 0 blobs, files 0 blobs 2814413.7 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 2397 ms (43.0 tok/s), 35 generated in 1434 ms (24.4 tok/s), drafts accepted 20 of 27, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.2% (9676 hits / 18197 lookups)
+strata serve: expert tiers: GPU 9676 hits this request; since the start RAM 0 blobs, files 0 blobs 2837644.6 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 2397 ms (43.0 tok/s), 50 generated in 1711 ms (29.2 tok/s), drafts accepted 25 of 32, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.0% (13739 hits / 23681 lookups)
+strata serve: expert tiers: GPU 13739 hits this request; since the start RAM 0 blobs, files 0 blobs 2862853.2 MB read
+strata serve: prompt 101 tokens = 0 reused + 101 read in 2343 ms (43.1 tok/s), 40 generated in 1743 ms (22.9 tok/s), drafts accepted 17 of 27, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.1% (10565 hits / 19914 lookups)
+strata serve: expert tiers: GPU 10565 hits this request; since the start RAM 0 blobs, files 0 blobs 2888033.7 MB read
+strata serve: prompt 89 tokens = 0 reused + 89 read in 2958 ms (30.1 tok/s), 50 generated in 2402 ms (20.8 tok/s), drafts accepted 33 of 44, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.2% (11490 hits / 25440 lookups)
+strata serve: expert tiers: GPU 11490 hits this request; since the start RAM 0 blobs, files 0 blobs 2916925.5 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 146 ms (48.1 tok/s), 50 generated in 1581 ms (31.6 tok/s), drafts accepted 33 of 44, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.7% (15520 hits / 25997 lookups)
+strata serve: expert tiers: GPU 15520 hits this request; since the start RAM 0 blobs, files 0 blobs 2930306.3 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 166 ms (42.1 tok/s), 50 generated in 1479 ms (33.8 tok/s), drafts accepted 33 of 42, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.5% (15247 hits / 25187 lookups)
+strata serve: expert tiers: GPU 15247 hits this request; since the start RAM 0 blobs, files 0 blobs 2943253.1 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 148 ms (47.4 tok/s), 50 generated in 1535 ms (32.6 tok/s), drafts accepted 32 of 40, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.7% (15053 hits / 24797 lookups)
+strata serve: expert tiers: GPU 15053 hits this request; since the start RAM 0 blobs, files 0 blobs 2955935.7 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 148 ms (47.3 tok/s), 50 generated in 1463 ms (34.2 tok/s), drafts accepted 33 of 41, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.4% (14972 hits / 24780 lookups)
+strata serve: expert tiers: GPU 14972 hits this request; since the start RAM 0 blobs, files 0 blobs 2968695.0 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 152 ms (46.1 tok/s), 50 generated in 1554 ms (32.2 tok/s), drafts accepted 33 of 42, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.6% (15274 hits / 25214 lookups)
+strata serve: expert tiers: GPU 15274 hits this request; since the start RAM 0 blobs, files 0 blobs 2981646.5 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 235 ms (29.7 tok/s), 50 generated in 1640 ms (30.5 tok/s), drafts accepted 33 of 42, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.7% (15301 hits / 25225 lookups)
+strata serve: expert tiers: GPU 15301 hits this request; since the start RAM 0 blobs, files 0 blobs 2994486.8 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 153 ms (45.7 tok/s), 50 generated in 1428 ms (35.0 tok/s), drafts accepted 33 of 42, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.7% (15290 hits / 25207 lookups)
+strata serve: expert tiers: GPU 15290 hits this request; since the start RAM 0 blobs, files 0 blobs 3007336.0 MB read
+strata serve: prompt 89 tokens = 82 reused + 7 read in 149 ms (47.0 tok/s), 50 generated in 1440 ms (34.7 tok/s), drafts accepted 33 of 42, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.7% (15287 hits / 25174 lookups)
+strata serve: expert tiers: GPU 15287 hits this request; since the start RAM 0 blobs, files 0 blobs 3020212.5 MB read
+strata serve: prompt 125 tokens = 0 reused + 125 read in 3057 ms (40.9 tok/s), 375 generated in 14241 ms (26.3 tok/s), drafts accepted 231 of 286, 1 checkpoints
+strata serve: decode expert cache hit rate: 49.4% (84133 hits / 170233 lookups)
+strata serve: expert tiers: GPU 84133 hits this request; since the start RAM 0 blobs, files 0 blobs 3137968.1 MB read
+strata serve: prompt 125 tokens = 120 reused + 5 read in 133 ms (37.6 tok/s), 400 generated in 15725 ms (25.4 tok/s), drafts accepted 241 of 307, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.7% (95873 hits / 185283 lookups)
+strata serve: expert tiers: GPU 95873 hits this request; since the start RAM 0 blobs, files 0 blobs 3247570.6 MB read
+strata serve: prompt 125 tokens = 120 reused + 5 read in 129 ms (38.6 tok/s), 374 generated in 12417 ms (30.1 tok/s), drafts accepted 240 of 283, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.5% (83616 hits / 165502 lookups)
+strata serve: expert tiers: GPU 83616 hits this request; since the start RAM 0 blobs, files 0 blobs 3345926.7 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 1254 ms (21.5 tok/s), 68 generated in 3663 ms (18.6 tok/s), drafts accepted 29 of 48, 1 checkpoints
+strata serve: decode expert cache hit rate: 49.6% (17625 hits / 35515 lookups)
+strata serve: expert tiers: GPU 17625 hits this request; since the start RAM 0 blobs, files 0 blobs 3373717.2 MB read
+strata serve: prompt 2693 tokens = 0 reused + 2693 read in 68701 ms (39.2 tok/s), 279 generated in 29096 ms (9.6 tok/s), drafts accepted 164 of 239, 1 checkpoints
+strata serve: decode expert cache hit rate: 40.5% (57051 hits / 140884 lookups)
+strata serve: expert tiers: GPU 57051 hits this request; since the start RAM 0 blobs, files 0 blobs 3518647.4 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 10834 ms (9.4 tok/s), 40 generated in 4811 ms (8.3 tok/s), drafts accepted 19 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 26.5% (5234 hits / 19739 lookups)
+strata serve: expert tiers: GPU 5234 hits this request; since the start RAM 0 blobs, files 0 blobs 3548024.8 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2417 ms (10.8 tok/s), 84 generated in 5222 ms (16.1 tok/s), drafts accepted 29 of 40, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.4% (21788 hits / 38617 lookups)
+strata serve: expert tiers: GPU 21788 hits this request; since the start RAM 0 blobs, files 0 blobs 3576410.9 MB read
+strata serve: prompt 2576 tokens = 0 reused + 2576 read in 83102 ms (31.0 tok/s), 300 generated in 37991 ms (7.9 tok/s), drafts accepted 184 of 237, 1 checkpoints
+strata serve: decode expert cache hit rate: 43.5% (61148 hits / 140623 lookups)
+strata serve: expert tiers: GPU 61148 hits this request; since the start RAM 0 blobs, files 0 blobs 3707535.7 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 16810 ms (6.1 tok/s), 42 generated in 5425 ms (7.7 tok/s), drafts accepted 20 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 25.5% (4883 hits / 19113 lookups)
+strata serve: expert tiers: GPU 4883 hits this request; since the start RAM 0 blobs, files 0 blobs 3737101.3 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2324 ms (11.2 tok/s), 65 generated in 5563 ms (11.7 tok/s), drafts accepted 28 of 46, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.5% (20756 hits / 34317 lookups)
+strata serve: expert tiers: GPU 20756 hits this request; since the start RAM 0 blobs, files 0 blobs 3759869.4 MB read
+strata serve: prompt 2142 tokens = 0 reused + 2142 read in 65680 ms (32.6 tok/s), 259 generated in 33654 ms (7.7 tok/s), drafts accepted 148 of 216, 1 checkpoints
+strata serve: decode expert cache hit rate: 41.8% (54224 hits / 129741 lookups)
+strata serve: expert tiers: GPU 54224 hits this request; since the start RAM 0 blobs, files 0 blobs 3883679.2 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 11785 ms (8.7 tok/s), 36 generated in 3774 ms (9.5 tok/s), drafts accepted 19 of 19, 1 checkpoints
+strata serve: decode expert cache hit rate: 22.6% (3167 hits / 13993 lookups)
+strata serve: expert tiers: GPU 3167 hits this request; since the start RAM 0 blobs, files 0 blobs 3909723.4 MB read
+strata serve: prompt 2308 tokens = 0 reused + 2308 read in 63582 ms (36.3 tok/s), 25 generated in 4502 ms (5.6 tok/s), drafts accepted 13 of 21, 1 checkpoints
+strata serve: decode expert cache hit rate: 28.6% (3687 hits / 12870 lookups)
+strata serve: expert tiers: GPU 3687 hits this request; since the start RAM 0 blobs, files 0 blobs 3957081.2 MB read
+strata serve: prompt 2288 tokens = 0 reused + 2288 read in 98282 ms (23.3 tok/s), 187 generated in 37016 ms (5.1 tok/s), drafts accepted 110 of 146, 1 checkpoints
+strata serve: decode expert cache hit rate: 42.7% (38541 hits / 90269 lookups)
+strata serve: expert tiers: GPU 38541 hits this request; since the start RAM 0 blobs, files 0 blobs 4051910.2 MB read
+strata serve: prompt 105 tokens = 0 reused + 105 read in 14602 ms (7.2 tok/s), 33 generated in 4112 ms (8.0 tok/s), drafts accepted 18 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 19.1% (2982 hits / 15640 lookups)
+strata serve: expert tiers: GPU 2982 hits this request; since the start RAM 0 blobs, files 0 blobs 4079518.3 MB read
+strata serve: prompt 25 tokens = 0 reused + 25 read in 2140 ms (11.7 tok/s), 73 generated in 6276 ms (11.6 tok/s), drafts accepted 37 of 46, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.5% (16744 hits / 32531 lookups)
+strata serve: expert tiers: GPU 16744 hits this request; since the start RAM 0 blobs, files 0 blobs 4104589.3 MB read
+strata serve: prompt 2531 tokens = 0 reused + 2531 read in 71949 ms (35.2 tok/s), 289 generated in 51641 ms (5.6 tok/s), drafts accepted 176 of 250, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.0% (56525 hits / 144789 lookups)
+strata serve: expert tiers: GPU 56525 hits this request; since the start RAM 0 blobs, files 0 blobs 4241353.6 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 12269 ms (8.4 tok/s), 36 generated in 3769 ms (9.6 tok/s), drafts accepted 19 of 20, 1 checkpoints
+strata serve: decode expert cache hit rate: 21.7% (3131 hits / 14410 lookups)
+strata serve: expert tiers: GPU 3131 hits this request; since the start RAM 0 blobs, files 0 blobs 4267875.2 MB read
+strata serve: prompt 28 tokens = 0 reused + 28 read in 2550 ms (11.0 tok/s), 70 generated in 6718 ms (10.4 tok/s), drafts accepted 28 of 55, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.7% (20532 hits / 39740 lookups)
+strata serve: expert tiers: GPU 20532 hits this request; since the start RAM 0 blobs, files 0 blobs 4297559.0 MB read
+strata serve: prompt 2596 tokens = 0 reused + 2596 read in 77188 ms (33.6 tok/s), 229 generated in 26368 ms (8.7 tok/s), drafts accepted 140 of 175, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.0% (41052 hits / 105377 lookups)
+strata serve: expert tiers: GPU 41052 hits this request; since the start RAM 0 blobs, files 0 blobs 4414837.6 MB read
+strata serve: prompt 104 tokens = 0 reused + 104 read in 10761 ms (9.7 tok/s), 42 generated in 4322 ms (9.7 tok/s), drafts accepted 25 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 23.0% (3971 hits / 17277 lookups)
+strata serve: expert tiers: GPU 3971 hits this request; since the start RAM 0 blobs, files 0 blobs 4443123.9 MB read
+strata serve: prompt 24 tokens = 0 reused + 24 read in 1869 ms (12.8 tok/s), 65 generated in 5188 ms (12.5 tok/s), drafts accepted 29 of 46, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.2% (17223 hits / 33649 lookups)
+strata serve: expert tiers: GPU 17223 hits this request; since the start RAM 0 blobs, files 0 blobs 4468515.7 MB read
+strata serve: prompt 2137 tokens = 0 reused + 2137 read in 51129 ms (41.8 tok/s), 25 generated in 4766 ms (5.2 tok/s), drafts accepted 14 of 23, 1 checkpoints
+strata serve: decode expert cache hit rate: 14.1% (1849 hits / 13090 lookups)
+strata serve: expert tiers: GPU 1849 hits this request; since the start RAM 0 blobs, files 0 blobs 4517237.6 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 12993 ms (7.9 tok/s), 50 generated in 5328 ms (9.4 tok/s), drafts accepted 25 of 31, 1 checkpoints
+strata serve: decode expert cache hit rate: 50.8% (11666 hits / 22949 lookups)
+strata serve: expert tiers: GPU 11666 hits this request; since the start RAM 0 blobs, files 0 blobs 4543978.1 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2257 ms (11.5 tok/s), 75 generated in 9048 ms (8.3 tok/s), drafts accepted 23 of 36, 1 checkpoints
+strata serve: decode expert cache hit rate: 62.1% (22239 hits / 35808 lookups)
+strata serve: expert tiers: GPU 22239 hits this request; since the start RAM 0 blobs, files 0 blobs 4567600.7 MB read
+strata serve: prompt 2156 tokens = 0 reused + 2156 read in 75024 ms (28.7 tok/s), 241 generated in 55461 ms (4.3 tok/s), drafts accepted 132 of 200, 1 checkpoints
+strata serve: decode expert cache hit rate: 42.4% (52534 hits / 123940 lookups)
+strata serve: expert tiers: GPU 52534 hits this request; since the start RAM 0 blobs, files 0 blobs 4685634.4 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 18936 ms (5.4 tok/s), 42 generated in 7733 ms (5.4 tok/s), drafts accepted 26 of 31, 1 checkpoints
+strata serve: decode expert cache hit rate: 18.5% (3347 hits / 18127 lookups)
+strata serve: expert tiers: GPU 3347 hits this request; since the start RAM 0 blobs, files 0 blobs 4713911.9 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 4060 ms (6.4 tok/s), 79 generated in 10237 ms (7.7 tok/s), drafts accepted 26 of 50, 1 checkpoints
+strata serve: decode expert cache hit rate: 57.5% (23930 hits / 41619 lookups)
+strata serve: expert tiers: GPU 23930 hits this request; since the start RAM 0 blobs, files 0 blobs 4742994.7 MB read
+strata serve: prompt 2996 tokens = 0 reused + 2996 read in 126684 ms (23.6 tok/s), 300 generated in 29648 ms (10.1 tok/s), drafts accepted 168 of 228, 1 checkpoints
+strata serve: decode expert cache hit rate: 41.5% (59376 hits / 142969 lookups)
+strata serve: expert tiers: GPU 59376 hits this request; since the start RAM 0 blobs, files 0 blobs 4897234.6 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 12845 ms (7.9 tok/s), 42 generated in 11732 ms (3.6 tok/s), drafts accepted 24 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 22.8% (4128 hits / 18078 lookups)
+strata serve: expert tiers: GPU 4128 hits this request; since the start RAM 0 blobs, files 0 blobs 4925841.4 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 3204 ms (8.1 tok/s), 82 generated in 6986 ms (11.7 tok/s), drafts accepted 27 of 41, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.8% (22747 hits / 40020 lookups)
+strata serve: expert tiers: GPU 22747 hits this request; since the start RAM 0 blobs, files 0 blobs 4954023.6 MB read
+strata serve: prompt 1995 tokens = 0 reused + 1995 read in 71983 ms (27.7 tok/s), 269 generated in 31631 ms (8.5 tok/s), drafts accepted 137 of 226, 1 checkpoints
+strata serve: decode expert cache hit rate: 44.0% (63566 hits / 144506 lookups)
+strata serve: expert tiers: GPU 63566 hits this request; since the start RAM 0 blobs, files 0 blobs 5083929.4 MB read
+strata serve: prompt 2408 tokens = 0 reused + 2408 read in 57244 ms (42.1 tok/s), 25 generated in 15525 ms (1.6 tok/s), drafts accepted 14 of 23, 1 checkpoints
+strata serve: decode expert cache hit rate: 26.5% (3571 hits / 13493 lookups)
+strata serve: expert tiers: GPU 3571 hits this request; since the start RAM 0 blobs, files 0 blobs 5131471.1 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 3589 ms (7.5 tok/s), 68 generated in 8604 ms (7.9 tok/s), drafts accepted 29 of 49, 1 checkpoints
+strata serve: decode expert cache hit rate: 43.4% (15348 hits / 35398 lookups)
+strata serve: expert tiers: GPU 15348 hits this request; since the start RAM 0 blobs, files 0 blobs 5161708.9 MB read
+strata serve: prompt 2101 tokens = 0 reused + 2101 read in 61447 ms (34.2 tok/s), 298 generated in 40448 ms (7.4 tok/s), drafts accepted 176 of 258, 1 checkpoints
+strata serve: decode expert cache hit rate: 40.4% (60713 hits / 150331 lookups)
+strata serve: expert tiers: GPU 60713 hits this request; since the start RAM 0 blobs, files 0 blobs 5301004.3 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 11368 ms (9.0 tok/s), 52 generated in 5789 ms (9.0 tok/s), drafts accepted 23 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 30.2% (6574 hits / 21770 lookups)
+strata serve: expert tiers: GPU 6574 hits this request; since the start RAM 0 blobs, files 0 blobs 5331964.1 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 2516 ms (10.7 tok/s), 58 generated in 4564 ms (12.7 tok/s), drafts accepted 29 of 40, 1 checkpoints
+strata serve: decode expert cache hit rate: 49.4% (14125 hits / 28568 lookups)
+strata serve: expert tiers: GPU 14125 hits this request; since the start RAM 0 blobs, files 0 blobs 5354761.8 MB read
+strata serve: prompt 2400 tokens = 0 reused + 2400 read in 54632 ms (43.9 tok/s), 226 generated in 31451 ms (7.2 tok/s), drafts accepted 126 of 208, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.2% (48469 hits / 123657 lookups)
+strata serve: expert tiers: GPU 48469 hits this request; since the start RAM 0 blobs, files 0 blobs 5475681.7 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 11201 ms (9.1 tok/s), 41 generated in 4189 ms (9.8 tok/s), drafts accepted 23 of 27, 1 checkpoints
+strata serve: decode expert cache hit rate: 24.3% (4173 hits / 17140 lookups)
+strata serve: expert tiers: GPU 4173 hits this request; since the start RAM 0 blobs, files 0 blobs 5503631.7 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2572 ms (10.1 tok/s), 83 generated in 7648 ms (10.9 tok/s), drafts accepted 32 of 44, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.5% (22407 hits / 39661 lookups)
+strata serve: expert tiers: GPU 22407 hits this request; since the start RAM 0 blobs, files 0 blobs 5531250.5 MB read
+strata serve: prompt 2584 tokens = 0 reused + 2584 read in 81836 ms (31.6 tok/s), 278 generated in 36779 ms (7.6 tok/s), drafts accepted 174 of 230, 1 checkpoints
+strata serve: decode expert cache hit rate: 40.7% (54103 hits / 133054 lookups)
+strata serve: expert tiers: GPU 54103 hits this request; since the start RAM 0 blobs, files 0 blobs 5662446.3 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 11451 ms (8.9 tok/s), 42 generated in 5177 ms (8.1 tok/s), drafts accepted 24 of 29, 1 checkpoints
+strata serve: decode expert cache hit rate: 20.4% (3672 hits / 17957 lookups)
+strata serve: expert tiers: GPU 3672 hits this request; since the start RAM 0 blobs, files 0 blobs 5691159.3 MB read
+strata serve: prompt 2532 tokens = 0 reused + 2532 read in 69011 ms (36.7 tok/s), 26 generated in 11805 ms (2.2 tok/s), drafts accepted 14 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 29.7% (4180 hits / 14077 lookups)
+strata serve: expert tiers: GPU 4180 hits this request; since the start RAM 0 blobs, files 0 blobs 5739486.5 MB read
+strata serve: prompt 2406 tokens = 0 reused + 2406 read in 91921 ms (26.2 tok/s), 239 generated in 30944 ms (7.7 tok/s), drafts accepted 127 of 199, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.8% (57438 hits / 125465 lookups)
+strata serve: expert tiers: GPU 57438 hits this request; since the start RAM 0 blobs, files 0 blobs 5854660.7 MB read
+strata serve: prompt 104 tokens = 0 reused + 104 read in 10637 ms (9.8 tok/s), 42 generated in 4831 ms (8.7 tok/s), drafts accepted 24 of 27, 1 checkpoints
+strata serve: decode expert cache hit rate: 20.9% (3595 hits / 17235 lookups)
+strata serve: expert tiers: GPU 3595 hits this request; since the start RAM 0 blobs, files 0 blobs 5882827.4 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2117 ms (12.3 tok/s), 76 generated in 5871 ms (12.9 tok/s), drafts accepted 34 of 53, 1 checkpoints
+strata serve: decode expert cache hit rate: 53.1% (20633 hits / 38847 lookups)
+strata serve: expert tiers: GPU 20633 hits this request; since the start RAM 0 blobs, files 0 blobs 5910833.0 MB read
+strata serve: prompt 2258 tokens = 0 reused + 2258 read in 50649 ms (44.6 tok/s), 293 generated in 35405 ms (8.3 tok/s), drafts accepted 167 of 231, 1 checkpoints
+strata serve: decode expert cache hit rate: 40.5% (57733 hits / 142642 lookups)
+strata serve: expert tiers: GPU 57733 hits this request; since the start RAM 0 blobs, files 0 blobs 6045077.4 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 10593 ms (9.7 tok/s), 47 generated in 5087 ms (9.2 tok/s), drafts accepted 22 of 31, 1 checkpoints
+strata serve: decode expert cache hit rate: 30.5% (6858 hits / 22495 lookups)
+strata serve: expert tiers: GPU 6858 hits this request; since the start RAM 0 blobs, files 0 blobs 6075796.0 MB read
+strata serve: prompt 25 tokens = 0 reused + 25 read in 2232 ms (11.2 tok/s), 87 generated in 6375 ms (13.6 tok/s), drafts accepted 32 of 48, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.2% (25027 hits / 42304 lookups)
+strata serve: expert tiers: GPU 25027 hits this request; since the start RAM 0 blobs, files 0 blobs 6103392.5 MB read
+strata serve: prompt 2508 tokens = 0 reused + 2508 read in 58729 ms (42.7 tok/s), 265 generated in 34981 ms (7.6 tok/s), drafts accepted 154 of 208, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.3% (49711 hits / 126608 lookups)
+strata serve: expert tiers: GPU 49711 hits this request; since the start RAM 0 blobs, files 0 blobs 6227494.0 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 11368 ms (9.0 tok/s), 41 generated in 4169 ms (9.8 tok/s), drafts accepted 24 of 25, 1 checkpoints
+strata serve: decode expert cache hit rate: 22.8% (3652 hits / 16041 lookups)
+strata serve: expert tiers: GPU 3652 hits this request; since the start RAM 0 blobs, files 0 blobs 6254384.1 MB read
+strata serve: prompt 23 tokens = 0 reused + 23 read in 2095 ms (11.0 tok/s), 71 generated in 5198 ms (13.7 tok/s), drafts accepted 29 of 50, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.8% (19499 hits / 37618 lookups)
+strata serve: expert tiers: GPU 19499 hits this request; since the start RAM 0 blobs, files 0 blobs 6281449.4 MB read
+strata serve: prompt 2323 tokens = 0 reused + 2323 read in 59215 ms (39.2 tok/s), 25 generated in 12802 ms (2.0 tok/s), drafts accepted 15 of 26, 1 checkpoints
+strata serve: decode expert cache hit rate: 13.1% (1840 hits / 14023 lookups)
+strata serve: expert tiers: GPU 1840 hits this request; since the start RAM 0 blobs, files 0 blobs 6330453.5 MB read
+strata serve: prompt 101 tokens = 0 reused + 101 read in 18917 ms (5.3 tok/s), 45 generated in 8680 ms (5.2 tok/s), drafts accepted 18 of 31, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.8% (12795 hits / 23341 lookups)
+strata serve: expert tiers: GPU 12795 hits this request; since the start RAM 0 blobs, files 0 blobs 6357069.3 MB read
+strata serve: prompt 23 tokens = 0 reused + 23 read in 2370 ms (9.7 tok/s), 67 generated in 7605 ms (8.8 tok/s), drafts accepted 24 of 47, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.3% (22540 hits / 37997 lookups)
+strata serve: expert tiers: GPU 22540 hits this request; since the start RAM 0 blobs, files 0 blobs 6381261.9 MB read
+strata serve: prompt 2162 tokens = 0 reused + 2162 read in 61492 ms (35.2 tok/s), 269 generated in 33453 ms (8.0 tok/s), drafts accepted 139 of 211, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.7% (62391 hits / 136534 lookups)
+strata serve: expert tiers: GPU 62391 hits this request; since the start RAM 0 blobs, files 0 blobs 6505040.9 MB read
+strata serve: prompt 103 tokens = 0 reused + 103 read in 11527 ms (8.9 tok/s), 36 generated in 4109 ms (8.8 tok/s), drafts accepted 19 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 23.1% (3811 hits / 16512 lookups)
+strata serve: expert tiers: GPU 3811 hits this request; since the start RAM 0 blobs, files 0 blobs 6532394.0 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 2582 ms (10.5 tok/s), 66 generated in 5806 ms (11.4 tok/s), drafts accepted 28 of 49, 1 checkpoints
+strata serve: decode expert cache hit rate: 52.4% (18775 hits / 35854 lookups)
+strata serve: expert tiers: GPU 18775 hits this request; since the start RAM 0 blobs, files 0 blobs 6559328.1 MB read
+strata serve: prompt 2526 tokens = 0 reused + 2526 read in 52697 ms (47.9 tok/s), 276 generated in 38541 ms (7.2 tok/s), drafts accepted 166 of 248, 1 checkpoints
+strata serve: decode expert cache hit rate: 39.6% (56693 hits / 143078 lookups)
+strata serve: expert tiers: GPU 56693 hits this request; since the start RAM 0 blobs, files 0 blobs 6693378.6 MB read
+strata serve: prompt 101 tokens = 0 reused + 101 read in 10219 ms (9.9 tok/s), 46 generated in 6105 ms (7.5 tok/s), drafts accepted 21 of 34, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.7% (7235 hits / 22824 lookups)
+strata serve: expert tiers: GPU 7235 hits this request; since the start RAM 0 blobs, files 0 blobs 6724478.4 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 2556 ms (10.6 tok/s), 66 generated in 4824 ms (13.7 tok/s), drafts accepted 28 of 49, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.2% (19995 hits / 36204 lookups)
+strata serve: expert tiers: GPU 19995 hits this request; since the start RAM 0 blobs, files 0 blobs 6750330.3 MB read
+strata serve: prompt 2273 tokens = 0 reused + 2273 read in 68405 ms (33.2 tok/s), 249 generated in 36388 ms (6.8 tok/s), drafts accepted 126 of 208, 1 checkpoints
+strata serve: decode expert cache hit rate: 41.3% (54576 hits / 132098 lookups)
+strata serve: expert tiers: GPU 54576 hits this request; since the start RAM 0 blobs, files 0 blobs 6875878.3 MB read
+strata serve: prompt 2085 tokens = 0 reused + 2085 read in 51670 ms (40.4 tok/s), 24 generated in 4503 ms (5.3 tok/s), drafts accepted 12 of 16, 1 checkpoints
+strata serve: decode expert cache hit rate: 25.7% (2783 hits / 10845 lookups)
+strata serve: expert tiers: GPU 2783 hits this request; since the start RAM 0 blobs, files 0 blobs 6922331.9 MB read
+strata serve: prompt 27 tokens = 0 reused + 27 read in 4212 ms (6.4 tok/s), 74 generated in 9061 ms (8.2 tok/s), drafts accepted 31 of 56, 1 checkpoints
+strata serve: decode expert cache hit rate: 45.6% (18255 hits / 40005 lookups)
+strata serve: expert tiers: GPU 18255 hits this request; since the start RAM 0 blobs, files 0 blobs 6954536.2 MB read
+strata serve: prompt 2328 tokens = 0 reused + 2328 read in 49912 ms (46.6 tok/s), 275 generated in 34179 ms (8.0 tok/s), drafts accepted 157 of 231, 1 checkpoints
+strata serve: decode expert cache hit rate: 42.8% (59222 hits / 138353 lookups)
+strata serve: expert tiers: GPU 59222 hits this request; since the start RAM 0 blobs, files 0 blobs 7083390.2 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 10177 ms (10.0 tok/s), 40 generated in 4436 ms (9.0 tok/s), drafts accepted 19 of 28, 1 checkpoints
+strata serve: decode expert cache hit rate: 25.0% (4778 hits / 19086 lookups)
+strata serve: expert tiers: GPU 4778 hits this request; since the start RAM 0 blobs, files 0 blobs 7112990.8 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2450 ms (10.6 tok/s), 118 generated in 8672 ms (13.6 tok/s), drafts accepted 39 of 77, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.1% (38496 hits / 64011 lookups)
+strata serve: expert tiers: GPU 38496 hits this request; since the start RAM 0 blobs, files 0 blobs 7152003.0 MB read
+strata serve: prompt 3030 tokens = 0 reused + 3030 read in 98379 ms (30.8 tok/s), 230 generated in 25545 ms (9.0 tok/s), drafts accepted 122 of 172, 1 checkpoints
+strata serve: decode expert cache hit rate: 38.3% (42869 hits / 111801 lookups)
+strata serve: expert tiers: GPU 42869 hits this request; since the start RAM 0 blobs, files 0 blobs 7290174.0 MB read
+strata serve: prompt 101 tokens = 0 reused + 101 read in 12232 ms (8.3 tok/s), 43 generated in 4571 ms (9.4 tok/s), drafts accepted 15 of 27, 1 checkpoints
+strata serve: decode expert cache hit rate: 32.1% (6730 hits / 20962 lookups)
+strata serve: expert tiers: GPU 6730 hits this request; since the start RAM 0 blobs, files 0 blobs 7321546.1 MB read
+strata serve: prompt 26 tokens = 0 reused + 26 read in 2461 ms (10.6 tok/s), 74 generated in 10616 ms (7.0 tok/s), drafts accepted 25 of 37, 1 checkpoints
+strata serve: decode expert cache hit rate: 56.3% (19716 hits / 34990 lookups)
+strata serve: expert tiers: GPU 19716 hits this request; since the start RAM 0 blobs, files 0 blobs 7347439.2 MB read
+strata serve: prompt 2490 tokens = 0 reused + 2490 read in 84060 ms (29.6 tok/s), 265 generated in 44989 ms (5.9 tok/s), drafts accepted 140 of 223, 1 checkpoints
+strata serve: decode expert cache hit rate: 41.6% (57999 hits / 139455 lookups)
+strata serve: expert tiers: GPU 57999 hits this request; since the start RAM 0 blobs, files 0 blobs 7477169.7 MB read
+strata serve: prompt 102 tokens = 0 reused + 102 read in 12185 ms (8.4 tok/s), 40 generated in 5413 ms (7.4 tok/s), drafts accepted 21 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 25.5% (4769 hits / 18713 lookups)
+strata serve: expert tiers: GPU 4769 hits this request; since the start RAM 0 blobs, files 0 blobs 7506025.7 MB read
+strata serve: prompt 2525 tokens = 0 reused + 2525 read in 63207 ms (39.9 tok/s), 22 generated in 11031 ms (2.0 tok/s), drafts accepted 11 of 21, 1 checkpoints
+strata serve: decode expert cache hit rate: 25.6% (3207 hits / 12537 lookups)
+strata serve: expert tiers: GPU 3207 hits this request; since the start RAM 0 blobs, files 0 blobs 7553425.6 MB read
+strata serve: prompt 2071 tokens = 0 reused + 2071 read in 86623 ms (23.9 tok/s), 300 generated in 36894 ms (8.1 tok/s), drafts accepted 161 of 263, 1 checkpoints
+strata serve: decode expert cache hit rate: 47.6% (77066 hits / 161894 lookups)
+strata serve: expert tiers: GPU 77066 hits this request; since the start RAM 0 blobs, files 0 blobs 7687571.0 MB read
+strata serve: prompt 105 tokens = 0 reused + 105 read in 13084 ms (8.0 tok/s), 33 generated in 4663 ms (7.1 tok/s), drafts accepted 18 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 20.6% (3231 hits / 15688 lookups)
+strata serve: expert tiers: GPU 3231 hits this request; since the start RAM 0 blobs, files 0 blobs 7715079.2 MB read
+strata serve: prompt 25 tokens = 0 reused + 25 read in 2367 ms (10.6 tok/s), 67 generated in 6003 ms (11.2 tok/s), drafts accepted 25 of 40, 1 checkpoints
+strata serve: decode expert cache hit rate: 51.0% (17032 hits / 33414 lookups)
+strata serve: expert tiers: GPU 17032 hits this request; since the start RAM 0 blobs, files 0 blobs 7741085.4 MB read
+strata serve: prompt 2238 tokens = 0 reused + 2238 read in 67628 ms (33.1 tok/s), 300 generated in 41052 ms (7.3 tok/s), drafts accepted 160 of 255, 1 checkpoints
+strata serve: decode expert cache hit rate: 42.6% (67152 hits / 157533 lookups)
+strata serve: expert tiers: GPU 67152 hits this request; since the start RAM 0 blobs, files 0 blobs 7882466.3 MB read

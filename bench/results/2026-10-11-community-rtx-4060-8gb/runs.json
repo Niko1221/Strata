@@ -1,0 +1,604 @@
+{
+ "fields": {
+  "prefill_tok_s / decode_tok_s": "engine timing output (timings.prompt_per_second / predicted_per_second), tokens per second",
+  "ttft_s / total_s / wall_s / seconds": "client-side seconds, from sending the request; model loading never included",
+  "prompt_tokens / cached": "prompt tokens and tokens reused from the conversation cache, from the API usage block",
+  "draft_n / draft_accepted": "MTP draft tokens proposed / accepted",
+  "peak_ram_gib": "system RAM in use (GiB, psutil), peak while waiting for /health",
+  "peak_vram_mib": "nvidia-smi memory.used peak (MiB), includes ~700 MiB used by the desktop",
+  "ttft_s = -1": "request failed (engine stall, restarted by the watchdog)"
+ },
+ "coder_iq1_m": {
+  "startup": [
+   {
+    "tag": "coder",
+    "loaded_s": 153.1,
+    "peak_ram_gib": 28.18,
+    "peak_vram_mib": 7473.0
+   },
+   {
+    "tag": "coder_cold",
+    "loaded_s": 29.8,
+    "peak_ram_gib": 27.84,
+    "peak_vram_mib": 7482.0
+   },
+   {
+    "tag": "coder_h6",
+    "loaded_s": 29.4,
+    "peak_ram_gib": 26.45,
+    "peak_vram_mib": 7415.0
+   }
+  ],
+  "reasoning_effort": [
+   {
+    "effort": "none",
+    "ok": true,
+    "completion_tokens": 207,
+    "reasoning_chars": 0,
+    "total_s": 16.862608671188354,
+    "engine_decode_tok_s": 15.3
+   },
+   {
+    "effort": "low",
+    "ok": true,
+    "completion_tokens": 407,
+    "reasoning_chars": 539,
+    "total_s": 28.312401294708252,
+    "engine_decode_tok_s": 19.8
+   },
+   {
+    "effort": "medium",
+    "ok": true,
+    "completion_tokens": 504,
+    "reasoning_chars": 752,
+    "total_s": 26.473469734191895,
+    "engine_decode_tok_s": 20.9
+   },
+   {
+    "effort": "high",
+    "ok": true,
+    "completion_tokens": 581,
+    "reasoning_chars": 1645,
+    "total_s": 33.68939161300659,
+    "engine_decode_tok_s": 19.2
+   }
+  ],
+  "vision_cpu": [
+   {
+    "api": "openai",
+    "ok": true,
+    "wall_s": 22.5,
+    "engine_timings": {
+     "cache_n": 0,
+     "prompt_n": 320,
+     "prompt_ms": 5793.2,
+     "prompt_per_token_ms": 18.104,
+     "prompt_per_second": 55.2,
+     "predicted_n": 27,
+     "predicted_ms": 1621.4,
+     "predicted_per_token_ms": 60.052,
+     "predicted_per_second": 16.7,
+     "draft_n": 24,
+     "draft_n_accepted": 16
+    }
+   },
+   {
+    "api": "anthropic",
+    "ok": true,
+    "wall_s": 8.6,
+    "engine_timings": null
+   }
+  ],
+  "speed_short": [
+   {
+    "i": 0,
+    "prompt_tokens": 81,
+    "cached": 0,
+    "out_tokens": 204,
+    "prefill_tok_s": 22.6,
+    "decode_tok_s": 15.4,
+    "draft_n": 163,
+    "draft_accepted": 91,
+    "ttft_s": 3.95,
+    "total_s": 16.9
+   },
+   {
+    "i": 1,
+    "prompt_tokens": 83,
+    "cached": 0,
+    "out_tokens": 204,
+    "prefill_tok_s": 20.5,
+    "decode_tok_s": 15.5,
+    "draft_n": 157,
+    "draft_accepted": 96,
+    "ttft_s": 4.28,
+    "total_s": 17.2
+   },
+   {
+    "i": 2,
+    "prompt_tokens": 83,
+    "cached": 0,
+    "out_tokens": 214,
+    "prefill_tok_s": 24.8,
+    "decode_tok_s": 15.8,
+    "draft_n": 182,
+    "draft_accepted": 90,
+    "ttft_s": 3.57,
+    "total_s": 16.9
+   }
+  ],
+  "speed_long": [
+   {
+    "i": 0,
+    "prompt_tokens": 9720,
+    "cached": 0,
+    "out_tokens": 256,
+    "prefill_tok_s": 130.9,
+    "decode_tok_s": 16.8,
+    "draft_n": 213,
+    "draft_accepted": 134,
+    "ttft_s": 74.78,
+    "total_s": 89.8
+   },
+   {
+    "i": 1,
+    "prompt_tokens": 9721,
+    "cached": 0,
+    "out_tokens": 256,
+    "prefill_tok_s": 134.9,
+    "decode_tok_s": 14.6,
+    "draft_n": 229,
+    "draft_accepted": 134,
+    "ttft_s": 72.68,
+    "total_s": 89.9
+   },
+   {
+    "i": 2,
+    "prompt_tokens": 9721,
+    "cached": 0,
+    "out_tokens": 256,
+    "prefill_tok_s": 135.5,
+    "decode_tok_s": 18.2,
+    "draft_n": 215,
+    "draft_accepted": 142,
+    "ttft_s": 72.07,
+    "total_s": 85.9
+   }
+  ],
+  "conversation_cache_reuse": [
+   {
+    "ttft_s": 34.5,
+    "prompt_tokens": 4479,
+    "cached": 0
+   },
+   {
+    "ttft_s": 0.53,
+    "prompt_tokens": 4479,
+    "cached": 4472
+   }
+  ],
+  "functional_checks": {
+   "passed": 23,
+   "total": 23,
+   "failed": []
+  },
+  "peak_vram_mib": 7645.0,
+  "peak_system_ram_gib": 31.77,
+  "needles": [
+   {
+    "length": "8k",
+    "depth": 10,
+    "prompt_tokens": 6920,
+    "seconds": 54.3,
+    "found": true,
+    "word": "meadow-copper-504",
+    "answer": "meadow-copper-504"
+   },
+   {
+    "length": "8k",
+    "depth": 50,
+    "prompt_tokens": 6920,
+    "seconds": 52.9,
+    "found": true,
+    "word": "falcon-quartz-940",
+    "answer": "falcon-quartz-940"
+   },
+   {
+    "length": "8k",
+    "depth": 90,
+    "prompt_tokens": 6921,
+    "seconds": 52.8,
+    "found": true,
+    "word": "willow-cobalt-696",
+    "answer": "willow-cobalt-696"
+   },
+   {
+    "length": "32k",
+    "depth": 10,
+    "error": "HTTP Error 400: Bad Request"
+   },
+   {
+    "length": "32k",
+    "depth": 50,
+    "error": "HTTP Error 400: Bad Request"
+   },
+   {
+    "length": "32k",
+    "depth": 90,
+    "error": "HTTP Error 400: Bad Request"
+   },
+   {
+    "length": "28k",
+    "depth": 10,
+    "prompt_tokens": 28177,
+    "seconds": 214.7,
+    "found": true,
+    "word": "meadow-copper-504",
+    "answer": "meadow-copper-504"
+   },
+   {
+    "length": "28k",
+    "depth": 50,
+    "prompt_tokens": 28177,
+    "seconds": 212.3,
+    "found": true,
+    "word": "falcon-quartz-940",
+    "answer": "falcon-quartz-940"
+   },
+   {
+    "length": "28k",
+    "depth": 90,
+    "prompt_tokens": 28178,
+    "seconds": 212.7,
+    "found": true,
+    "word": "willow-cobalt-696",
+    "answer": "willow-cobalt-696"
+   }
+  ],
+  "soak_60min": {
+   "tag": "coder_h6",
+   "minutes": 60.8,
+   "requests": 179,
+   "ok": 168,
+   "http_5xx": 11,
+   "decode_tok_s_median_first10": 17.1,
+   "decode_tok_s_median_last10": 16.7,
+   "decode_drift_pct": -2.3,
+   "server_rss_mb_first_quarter_to_last_quarter_delta": 171.1,
+   "server_rss_mb_min_max": [
+    25630,
+    27136
+   ],
+   "ram_used_gib_min_max": [
+    30.3,
+    31.6
+   ],
+   "gpu_temp_max_c": 63.0,
+   "vram_mib_max": 7565.0,
+   "pass": false
+  },
+  "second_session_prompt_chunk_256": {
+   "speed_short": [
+    {
+     "i": 0,
+     "prompt_tokens": 83,
+     "cached": 0,
+     "out_tokens": 192,
+     "prefill_tok_s": 11.8,
+     "decode_tok_s": 13.1,
+     "draft_n": 146,
+     "draft_accepted": 82,
+     "ttft_s": 7.34,
+     "total_s": 21.7
+    },
+    {
+     "i": 1,
+     "prompt_tokens": 83,
+     "cached": 0,
+     "out_tokens": 200,
+     "prefill_tok_s": 24.4,
+     "decode_tok_s": 16.9,
+     "draft_n": 161,
+     "draft_accepted": 95,
+     "ttft_s": 3.64,
+     "total_s": 15.3
+    },
+    {
+     "i": 2,
+     "prompt_tokens": 83,
+     "cached": 0,
+     "out_tokens": 199,
+     "prefill_tok_s": 27.2,
+     "decode_tok_s": 16.8,
+     "draft_n": 159,
+     "draft_accepted": 83,
+     "ttft_s": 3.24,
+     "total_s": 14.9
+    }
+   ],
+   "speed_long": [
+    {
+     "i": 0,
+     "prompt_tokens": 9721,
+     "cached": 0,
+     "out_tokens": 256,
+     "prefill_tok_s": 75.7,
+     "decode_tok_s": 17.7,
+     "draft_n": 213,
+     "draft_accepted": 139,
+     "ttft_s": 128.64,
+     "total_s": 142.8
+    },
+    {
+     "i": 1,
+     "prompt_tokens": 9721,
+     "cached": 0,
+     "out_tokens": 256,
+     "prefill_tok_s": 77.2,
+     "decode_tok_s": 19.4,
+     "draft_n": 206,
+     "draft_accepted": 148,
+     "ttft_s": 126.1,
+     "total_s": 139.1
+    },
+    {
+     "i": 2,
+     "prompt_tokens": 9721,
+     "cached": 0,
+     "out_tokens": 256,
+     "prefill_tok_s": 77.5,
+     "decode_tok_s": 17.6,
+     "draft_n": 226,
+     "draft_accepted": 138,
+     "ttft_s": 125.84,
+     "total_s": 140.0
+    }
+   ]
+  }
+ },
+ "flash_next_iq2_xs": {
+  "startup": [
+   {
+    "tag": "qwen",
+    "loaded_s": 20.8,
+    "peak_ram_gib": 10.12,
+    "peak_vram_mib": 7353.0
+   }
+  ],
+  "reasoning_effort": [
+   {
+    "effort": "none",
+    "ok": true,
+    "completion_tokens": 225,
+    "reasoning_chars": 0,
+    "total_s": 21.191530227661133,
+    "engine_decode_tok_s": 13.9
+   },
+   {
+    "effort": "low",
+    "ok": true,
+    "completion_tokens": 340,
+    "reasoning_chars": 500,
+    "total_s": 19.885023593902588,
+    "engine_decode_tok_s": 22.7
+   },
+   {
+    "effort": "medium",
+    "ok": true,
+    "completion_tokens": 456,
+    "reasoning_chars": 673,
+    "total_s": 19.716710329055786,
+    "engine_decode_tok_s": 25.2
+   },
+   {
+    "effort": "high",
+    "ok": true,
+    "completion_tokens": 345,
+    "reasoning_chars": 1019,
+    "total_s": 24.890713930130005,
+    "engine_decode_tok_s": 16.7
+   }
+  ],
+  "vision_cpu": [
+   {
+    "api": "openai",
+    "ok": true,
+    "wall_s": 52.9,
+    "engine_timings": {
+     "cache_n": 0,
+     "prompt_n": 320,
+     "prompt_ms": 19980.1,
+     "prompt_per_token_ms": 62.438,
+     "prompt_per_second": 16.0,
+     "predicted_n": 53,
+     "predicted_ms": 9367.5,
+     "predicted_per_token_ms": 176.745,
+     "predicted_per_second": 5.7,
+     "draft_n": 44,
+     "draft_n_accepted": 35
+    }
+   },
+   {
+    "api": "anthropic",
+    "ok": true,
+    "wall_s": 17.3,
+    "engine_timings": null
+   }
+  ],
+  "speed_short": [
+   {
+    "i": 0,
+    "prompt_tokens": 82,
+    "cached": 0,
+    "out_tokens": 188,
+    "prefill_tok_s": 9.5,
+    "decode_tok_s": 13.4,
+    "draft_n": 152,
+    "draft_accepted": 92,
+    "ttft_s": 9.16,
+    "total_s": 22.7
+   },
+   {
+    "i": 1,
+    "prompt_tokens": 83,
+    "cached": 0,
+    "out_tokens": 186,
+    "prefill_tok_s": 15.1,
+    "decode_tok_s": 20.7,
+    "draft_n": 165,
+    "draft_accepted": 92,
+    "ttft_s": 5.77,
+    "total_s": 14.5
+   },
+   {
+    "i": 2,
+    "prompt_tokens": 83,
+    "cached": 0,
+    "out_tokens": 158,
+    "prefill_tok_s": 27.1,
+    "decode_tok_s": 24.1,
+    "draft_n": 141,
+    "draft_accepted": 80,
+    "ttft_s": 3.27,
+    "total_s": 9.7
+   }
+  ],
+  "speed_long": [
+   {
+    "i": 0,
+    "prompt_tokens": 9721,
+    "cached": 0,
+    "out_tokens": 256,
+    "prefill_tok_s": 35.7,
+    "decode_tok_s": 3.1,
+    "draft_n": 216,
+    "draft_accepted": 146,
+    "ttft_s": 276.3,
+    "total_s": 354.0
+   },
+   {
+    "i": 1,
+    "prompt_tokens": null,
+    "cached": null,
+    "out_tokens": null,
+    "prefill_tok_s": null,
+    "decode_tok_s": null,
+    "draft_n": null,
+    "draft_accepted": null,
+    "ttft_s": -1,
+    "total_s": 433.2
+   },
+   {
+    "i": 2,
+    "prompt_tokens": 9721,
+    "cached": 0,
+    "out_tokens": 256,
+    "prefill_tok_s": 31.3,
+    "decode_tok_s": 7.6,
+    "draft_n": 236,
+    "draft_accepted": 148,
+    "ttft_s": 334.78,
+    "total_s": 367.5
+   }
+  ],
+  "conversation_cache_reuse": [
+   {
+    "ttft_s": 137.25,
+    "prompt_tokens": 4479,
+    "cached": 0
+   },
+   {
+    "ttft_s": 0.94,
+    "prompt_tokens": 4479,
+    "cached": 4472
+   }
+  ],
+  "functional_checks": {
+   "passed": 22,
+   "total": 23,
+   "failed": [
+    "speed_long"
+   ]
+  },
+  "peak_vram_mib": 7769.0,
+  "peak_system_ram_gib": 31.81,
+  "needles": [
+   {
+    "length": "8k",
+    "depth": 10,
+    "prompt_tokens": 6920,
+    "seconds": 177.3,
+    "found": true,
+    "word": "meadow-copper-504",
+    "answer": "meadow-copper-504"
+   },
+   {
+    "length": "8k",
+    "depth": 50,
+    "prompt_tokens": 6920,
+    "seconds": 220.7,
+    "found": true,
+    "word": "falcon-quartz-940",
+    "answer": "falcon-quartz-940"
+   },
+   {
+    "length": "8k",
+    "depth": 90,
+    "prompt_tokens": 6921,
+    "seconds": 188.5,
+    "found": true,
+    "word": "willow-cobalt-696",
+    "answer": "willow-cobalt-696"
+   },
+   {
+    "length": "28k",
+    "depth": 10,
+    "prompt_tokens": 28178,
+    "seconds": 764.6,
+    "found": true,
+    "word": "falcon-saffron-138",
+    "answer": "falcon-saffron-138"
+   },
+   {
+    "length": "28k",
+    "depth": 50,
+    "prompt_tokens": 28176,
+    "seconds": 622.9,
+    "found": true,
+    "word": "quartz-tundra-528",
+    "answer": "quartz-tundra-528"
+   },
+   {
+    "length": "28k",
+    "depth": 90,
+    "prompt_tokens": 28176,
+    "seconds": 563.6,
+    "found": true,
+    "word": "quartz-glacier-192",
+    "answer": "quartz-glacier-192"
+   }
+  ],
+  "soak_60min": {
+   "tag": "qwen",
+   "minutes": 60.6,
+   "requests": 74,
+   "ok": 74,
+   "http_5xx": 0,
+   "decode_tok_s_median_first10": 8.15,
+   "decode_tok_s_median_last10": 7.35,
+   "decode_drift_pct": -9.8,
+   "server_rss_mb_first_quarter_to_last_quarter_delta": -63.6,
+   "server_rss_mb_min_max": [
+    27059,
+    27708
+   ],
+   "ram_used_gib_min_max": [
+    31.5,
+    31.8
+   ],
+   "gpu_temp_max_c": 63.0,
+   "vram_mib_max": 7777.0,
+   "pass": true
+  }
+ }
+}
