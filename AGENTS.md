@@ -1,4 +1,4 @@
-﻿# AGENTS.md
+# AGENTS.md
 
 Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5 and Unsloth variants) on a
 normal PC: one NVIDIA or AMD graphics card plus system RAM, on Windows or Linux. It has a C++/CUDA/HIP engine
@@ -48,14 +48,15 @@ attempted. Routine edits, searches, and anything a few tool calls settle do not 
 
 When it triggers, stop: no more edits or retries, do not report the task complete,
 leave the tree as it is, and say what was already changed. Then produce the
-`ESCALATION REQUIRED` block from the `escalate` skill вЂ” objective, current state, exact
-problem, real evidence with `file:line`, attempts made, and what is being asked вЂ” with a
+`ESCALATION REQUIRED` block from the `escalate` skill - objective, current state, exact
+problem, real evidence with `file:line`, attempts made, and what is being asked - with a
 copy-ready prompt, and wait for the answer.
 
 Real error text, real paths, real numbers; never an invented result. No secrets or
 credentials in the prompt. On the answer, check its APIs, paths and commands against
 this repository before applying it, continue from the current state without repeating
 finished investigation, and escalate again only for a genuinely new blocker.
+
 ## Parking on Windows (local finding, 0.1.42)
 The engine on this PC runs out of the system commit limit, not physical RAM: the locked expert
 arena and the WDDM device allocations are charged against commit. `conversation_memory.cpp`
