@@ -1156,7 +1156,7 @@ All items below are proposed work, not completed fixes.
 
 The project owner calls the intended PC **Jerry**. Jerry is connected to the current PC through a LAN cable. The owner wants to improve this project and customize it for Jerry.
 
-The inventory below was supplied by the owner on October 11, 2026. It has not been independently verified through a remote hardware inspection.
+The owner supplied the inventory on October 11, 2026. Read-only SSH inspection and the repository's `python3 setup.py --check --gpus 0,1` subsequently confirmed the OS, CPU, both GPUs, RAM, storage and driver. No model inference benchmark has been run.
 
 ### Jerry Hardware Inventory
 
@@ -1178,24 +1178,25 @@ Available RAM, free disk space and swap usage are point-in-time observations and
 
 | Item | Status or next check |
 |---|---|
-| CPU instruction set | Verify the effective CPU flags on Jerry before selecting a build |
-| NVIDIA driver and CUDA compatibility | Driver version and supported runtime not supplied |
-| GPU topology and PCIe links | Verify enumeration, link widths and inter-card transfer behavior |
-| Model host versus client roles | Still to be confirmed; hardware inventory does not establish the roles |
-| LAN addressing and reachable hostname | Not verified |
-| Storage type and sustained read speed | Not supplied or measured |
-| Model variant and context size | Select after compatibility and per-card/system-memory budgeting |
-| Backend | Evaluate the repository's NVIDIA/CUDA path after CPU and driver checks |
+| CPU instruction set | Verified AVX and SSE4.2; no AVX2. Setup selects the experimental AVX build |
+| NVIDIA driver and CUDA compatibility | Driver 595.99.02; CUDA compiler 13.1.115 present. Native build compatibility still needs validation |
+| GPU topology and PCIe links | Both GPUs report x16 links with board-limited PCIe Gen2 capability; inter-GPU topology PHB. Measure transfer speed under load |
+| Model host versus client roles | Confirmed: this PC hosts Harry, the Hermes agent; Jerry hosts model inference over LAN |
+| LAN addressing and reachable hostname | Existing SSH alias `jerry` works; Ethernet reports 1 Gb/s. Actual inference endpoint remains to be configured |
+| Storage type and sustained read speed | Main filesystem is on a Samsung 860 EVO SATA SSD. Sustained read speed not benchmarked |
+| Model variant and context size | Setup check selects Coder IQ1_M in low-RAM mode; context and per-card split remain benchmark decisions |
+| Backend | CUDA, compute capability 8.6 on both cards; experimental CPU-compatible source build required |
 
-The repository's [installation guide](../INSTALL.md#older-cpus-experimental) says its ready-made engine requires AVX2 and describes an experimental locally compiled path for older CPUs. Its [Docker entrypoint](../../docker-entrypoint.sh) also warns about AVX2 requirements. Jerry's instruction flags have not been verified in this session, so CPU compatibility is a prerequisite, not a completed check. The GPUs do not remove the engine's CPU requirements.
+The repository's [installation guide](../INSTALL.md#older-cpus-experimental) says its ready-made engine requires AVX2 and describes an experimental locally compiled path for older CPUs. Its [Docker entrypoint](../../docker-entrypoint.sh) also warns about AVX2 requirements. Jerry's flags and setup check now confirm that AVX2 is absent. Setup explicitly selects `STRATA_ISA_FLOOR=avx` and requires a source build. The GPUs do not remove the engine's CPU requirements.
 
 The [multi-GPU guide](../MULTI_GPU.md) describes layer splitting across cards. We should validate Jerry's actual topology and budget each 12 GiB card separately before choosing split settings. No throughput, model-fit or stability claim is made for Jerry.
 
-No remote connection, installation, performance measurement, firewall change, or service configuration on Jerry has been performed. If Jerry is confirmed as the model host, the current PC can use its compatible API over the LAN after authentication and ingress controls are verified.
+Read-only SSH inspection and a hardware-only setup check have been performed. A checkout of this fork at the reviewed commit is prepared on Jerry. No model download, engine build, inference measurement, firewall change, or service configuration has been performed. The confirmed topology is **Harry/Hermes on this PC → Jerry's model API over LAN**. The priority is balanced coding/tool quality and speed. See the [Jerry performance plan](../JERRY_PERFORMANCE_PLAN.md) for the candidate profile and benchmark criteria.
 
 ### Acceptance Criteria for LAN Readiness
 
-- [ ] Confirm the host/client roles and document the effective endpoint.
+- [x] Confirm host/client roles: Harry/Hermes runs on this PC; Jerry hosts inference.
+- [ ] Configure and verify the effective authenticated inference endpoint.
 - [ ] Resolve the review findings or document specific enforced mitigations with validation evidence.
 - [ ] Verify unauthorized API calls are rejected and authorized inference succeeds.
 - [ ] Restrict network reachability to the intended LAN peers; record the effective firewall or ingress configuration.
