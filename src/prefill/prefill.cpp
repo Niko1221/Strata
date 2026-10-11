@@ -38,6 +38,7 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/stream_drain.hpp"
 
 #include <cuda_runtime.h>
 
@@ -2413,19 +2414,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // step named below, a step that took over 250 ms is logged, and a stall's report names the step it is in.
         // Slower (a sync per step); the bytes are the same.
         static const bool step_sync = [] { const char* e = std::getenv("STRATA_PF_STEP_SYNC"); return e && e[0] == '1'; }();
-        auto pf_step = [&](const char* what, int64_t layer) {
-            if (!step_sync) return;
+        auto pf_step = [&](const char* what, int64_t layer) -> bool {
+            if (!step_sync) return true;
             core::progress_at(what, layer, p0);
             const auto ts = Clock::now();
-            const cudaError_t a = cudaStreamSynchronize(m.cs), b = cudaStreamSynchronize(m.copy);
+            const auto drained = checked_stream_drain([&](int stream) {
+                const cudaStream_t streams[] = {m.cs, m.copy, m.kv_copy};
+                return cudaStreamSynchronize(streams[stream]);
+            }, m.kv_copy ? 3 : 2);
+            const cudaError_t status = static_cast<cudaError_t>(drained.error);
             const double ms = ms_since(ts);
-            if (ms > 250.0 || a != cudaSuccess || b != cudaSuccess)
-                std::fprintf(stderr, "strata pf-step: chunk from token %lld, layer %lld: %s took %.0f ms (%s / %s)\n",
-                             (long long) p0, (long long) layer, what, ms, cudaGetErrorString(a), cudaGetErrorString(b));
+            if (ms > 250.0 || status != cudaSuccess)
+                std::fprintf(stderr, "strata pf-step: chunk from token %lld, layer %lld: %s took %.0f ms "
+                                     "(stream %d: %s)\n", (long long) p0, (long long) layer, what, ms,
+                             drained.stream, cudaGetErrorString(status));
+            if (status != cudaSuccess) {
+                err = std::string("prefill step sync: ") + what + ": " +
+                      cudaGetErrorString(status);
+                return false;   // never enqueue more work after a failed drain
+            }
+            return true;
         };
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
-            if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
+            if (l > LB && !pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1)) return false;
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
             if (l == std::max<int64_t>(LB, 1) && !ple_land()) return false;   // the PLE rows, read from layer 1 on
@@ -2612,7 +2624,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                             core::qsa_kv_format(st),
                                                             (p0 + s.page_size - 1) / s.page_size, s, m.cs);
                         pt.mark(kPfQsa, cs);
-                        pf_step("reading the prompt (batched, step sync): the K/V staged from RAM at layer", l);
+                        if (!pf_step("reading the prompt (batched, step sync): the K/V staged from RAM at layer", l)) return false;
                     }
                     // #579 #613 (HIP, opt-in A/B, STRATA_KV_HOST_DMA=1): the append writes the staging pool and the
                     // resident slots only, and one DMA copies the chunk's blocks from the staging pool to the host copy
@@ -2656,7 +2668,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
-                    if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
+                    if (staged && !pf_step("reading the prompt (batched, step sync): the K/V append at layer", l)) return false;
                     split_q(m.Qf, m.q, T, m.cs);
                     rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
                     rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), m.cs);
@@ -4043,8 +4055,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         bad(ss.gdn_state, 64 * 1024);
         std::fprintf(stderr, "\n");
     }
-    if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
-        err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
+    if (const cudaError_t status = cudaStreamSynchronize(m.cs); status != cudaSuccess) {
+        err = std::string("prefill: compute stream: ") + cudaGetErrorString(status);
         return false;
     }
     // (PR #121) an expert copy that failed on the copy stream surfaces here, not in the next request

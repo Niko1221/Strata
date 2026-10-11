@@ -273,6 +273,7 @@ public:
     std::string profile_report();
 
 private:
+    bool drain_copies(std::string& err);
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)

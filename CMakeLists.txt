@@ -271,6 +271,18 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  add_executable(stream_drain_test tests/prefill/stream_drain_test.cpp)
+  target_include_directories(stream_drain_test PRIVATE include)
+  add_test(NAME stream_drain_test COMMAND stream_drain_test)
+
+  add_executable(hip_stability_test tests/program/hip_stability_test.cpp)
+  target_include_directories(hip_stability_test PRIVATE include)
+  add_test(NAME hip_stability_test COMMAND hip_stability_test)
+
+  add_executable(hip_verify_policy_test tests/program/hip_verify_policy_test.cpp)
+  target_include_directories(hip_verify_policy_test PRIVATE include)
+  add_test(NAME hip_verify_policy_test COMMAND hip_verify_policy_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)

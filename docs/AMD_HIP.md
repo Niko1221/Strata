@@ -259,6 +259,38 @@ runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`: `MemoryHi
 `--mmap-experts` reads from, and a 16K prompt stalled in `pread` for 8 minutes under it. In a report, give the runtime and
 kernel versions, whether reclaim coincides with KFD queue eviction, and paired timings.
 
+## Experimental conservative mode for whole-system resets (#872)
+
+Set `STRATA_HIP_STABLE=2` in the server JSON `env` and restart the engine. This is an experimental mitigation,
+not a confirmed fix for PCIe Completion Timeout or a diagnosis of the power supply. It applies only to the HIP
+engine; ordinary launches keep their settings.
+
+The mode reserves its own prompt buffers instead of borrowing and refilling expert-cache slots, caps batched
+prompt chunks at 2048 tokens, keeps resident experts pageable and computes expert misses on the CPU (`pcie_frac 0`).
+It defaults to the generic prompt path instead of MMQ/fused experts, checks compute/copy/KV-prefetch completion
+at prompt steps, enables the coherent verify/doorbell workarounds, and disables the shared-expert stream fork.
+The host KV append uses the runtime copy path where supported, instead of a kernel writing mapped host memory.
+It sets `HSA_USERPTR_FOR_PAGED_MEM=0` and `HSA_ENABLE_SDMA=0` before the first runtime query; ROCr uses the latter
+to select copy kernels instead of SDMA. Those runtime switches may differ in effect by OS and runtime version.
+It also sets `GPU_PINNED_MIN_XFER_SIZE=1048576` (the #920 runtime-staging workaround), keeps expert stage buffers
+unpinned and makes borrowed-slot refill blocking for paths that still need it.
+
+This trades throughput and expert-cache capacity for smaller prompt workloads and fewer overlapping host-memory
+operations. The generic prompt arithmetic can produce different tokens from MMQ, so compare answer correctness,
+not just token identity. Context size, MTP/speculation and model selection are preserved.
+
+Mode 2 additionally reserves the full KV cache in VRAM (`kv_resident 0`, elastic KV growth off) and disables
+adaptive expert swaps. This removes the large mapped host KV mirror and avoids runtime remapping of the GPU cache
+into KV pages. The automatic expert cache becomes smaller, and full context must fit the card alongside the owned
+prompt buffers. If allocation fails, lower the context explicitly; the mode never silently truncates it.
+`STRATA_HIP_STABLE=1` retains the requested KV residency and adaptation while applying the conservative transfer
+and prefill settings. Both modes default to synchronous verify commits (`STRATA_COMMIT_SYNC=1`).
+
+Explicit environment settings win and are printed as overrides, so a single component can be tested at a time.
+The command-line chunk cap, owned buffers, resident pinning and `pcie_frac 0` are enforced while the mode is active.
+`STRATA_TRACE=1` is enabled by the profile; phase lines include monotonic timestamps and are flushed to stderr.
+To roll back, remove `STRATA_HIP_STABLE` and any separate overrides, then restart.
+
 ## RDNA4 (gfx1201)
 
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per

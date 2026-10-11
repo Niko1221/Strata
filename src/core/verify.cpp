@@ -1,6 +1,8 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/batch_rows.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/hip_verify_policy.hpp"
+#include "strata/core/hip_stability.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -156,10 +158,6 @@ bool env_on(const char* name) {
     const char* e = std::getenv(name);
     return e != nullptr && e[0] != 0 && e[0] != '0';
 }
-#if defined(STRATA_USE_HIP)
-const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
-const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
-#endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
@@ -223,7 +221,7 @@ bool one_token_self_commit() {
 
 bool mapped(size_t bytes, void** h, void** d) {
 #if defined(STRATA_USE_HIP)
-    if (g_coherent) {
+    if (hip_verify_policy::coherent()) {
         if (hipHostMalloc(h, bytes, hipHostMallocMapped | hipHostMallocCoherent |
                                         (peer_portable() ? hipHostMallocPortable : 0)) != hipSuccess)
             return false;
@@ -470,6 +468,14 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
 
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
+#if defined(STRATA_USE_HIP)
+    if (hip_stability_requested()) {
+        std::fprintf(stderr, "strata hip-stable: effective verifier policy: coherent words %s, doorbell %s\n",
+                     hip_verify_policy::coherent() ? "explicit" : "default",
+                     hip_verify_policy::doorbell_store() ? "stored" : "incremented");
+        std::fflush(stderr);
+    }
+#endif
     g_diag_verifier.store(this);
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
@@ -629,8 +635,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
 #if defined(STRATA_USE_HIP)
         std::fprintf(stderr, "strata verify trace (#649): on; coherent words %s, doorbell %s, HIP_HOST_COHERENT=%s "
-                             "HSA_ENABLE_SDMA=%s GPU_MAX_HW_QUEUES=%s\n", g_coherent ? "explicit" : "default",
-                     g_doorbell_store ? "stored" : "incremented", std::getenv("HIP_HOST_COHERENT") ? std::getenv("HIP_HOST_COHERENT") : "-",
+                             "HSA_ENABLE_SDMA=%s GPU_MAX_HW_QUEUES=%s\n", hip_verify_policy::coherent() ? "explicit" : "default",
+                     hip_verify_policy::doorbell_store() ? "stored" : "incremented", std::getenv("HIP_HOST_COHERENT") ? std::getenv("HIP_HOST_COHERENT") : "-",
                      std::getenv("HSA_ENABLE_SDMA") ? std::getenv("HSA_ENABLE_SDMA") : "-",
                      std::getenv("GPU_MAX_HW_QUEUES") ? std::getenv("GPU_MAX_HW_QUEUES") : "-");
 #else
@@ -1401,7 +1407,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                               plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
                               (uint32_t) ((l - lb_) * G + grp + 1), cs);
 #if defined(STRATA_USE_HIP)
-            if (g_doorbell_store)   // #649 A/B: the step's ring stored, not incremented over PCIe
+            if (hip_verify_policy::doorbell_store())   // #649 A/B: the step's ring stored, not incremented over PCIe
                 doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                        m_ids_ + tb * K, m_w_ + tb * K, m_seq_, (uint32_t) ((l - lb_) * G + grp + 1), cs);
             else
@@ -1969,6 +1975,21 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
     ++prof_windows_;
 }
 
+bool Verifier::drain_copies(std::string& err) {
+    const cudaError_t status = cudaStreamSynchronize(copy_);
+    if (status != cudaSuccess) {
+        // An old host callback may still own a handshake word. Never start the
+        // next window after an unproven drain, even if compute completed.
+        released_.store(true);
+        err = std::string("verify: expert copy stream: ") + cudaGetErrorString(status);
+        trace_ev("COPY-DRAIN-ERROR", -1, -1, (int64_t) status);
+        if (g_trace) trace_dump(stderr);
+        return false;
+    }
+    copy_used_ = false;
+    return true;
+}
+
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
     using namespace strata::kernels;
@@ -2124,8 +2145,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     commit_pending_ = false;
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
-        cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
-        copy_used_ = false;
+        if (!drain_copies(err)) return false;   // no old callback may raise flag B in the next window
     }
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
@@ -2697,7 +2717,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         }
         const cudaError_t se = cudaStreamSynchronize(cs_);
         if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-        cudaStreamSynchronize(copy_);
+        if (!drain_copies(err)) return false;
         if (prof_on_) collect_profile();
         ++windows;
         if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
@@ -2760,7 +2780,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-    cudaStreamSynchronize(copy_);
+    if (!drain_copies(err)) return false;
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);

@@ -17,6 +17,7 @@
 
 #include "strata/platform/memory.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/hip_stability.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -1694,6 +1695,9 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
+#if defined(STRATA_USE_HIP)
+    if (!strata::core::configure_hip_stability()) return 2;
+#endif
 #if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
     // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
     // pages in place (a GPU userptr), and keeps them - so every expert the VRAM fill copied from the mapped
@@ -2190,6 +2194,30 @@ int main(int argc, char** argv) {
     // prompt path (each stage's prompt path has its own buffers).
     // --pcie-frac given: that one share is every stage's (the stages' own link probes are skipped), so a split over
     // a fast and a slow link cannot set the two apart from the command line (#485)
+#if defined(STRATA_USE_HIP)
+    if (strata::core::hip_stability_requested()) {
+        o.no_prefill_borrow = true;
+        o.prefill_chunk = strata::core::hip_stability_chunk(o.prefill_chunk, o.prefill_auto);
+        o.prefill_auto = false;
+        o.resident_pin = false;
+        o.pcie_frac = 0.0;
+        if (strata::core::hip_stability_full_kv()) {
+            // Avoid the large mapped host KV mirror and kernels issuing PCIe
+            // reads/writes to it. Preserve the configured context and format;
+            // pay for the KV in VRAM by reducing the automatic expert cache.
+            o.kv_resident = 0;
+            o.kv_grow = false;
+            o.adapt_every = 0;
+            o.adapt_async = 0;
+            std::fprintf(stderr, "strata hip-stable: mode 2: full KV reserved in VRAM, elastic KV remapping and adaptive swaps disabled; "
+                                 "context and KV format unchanged\n");
+        }
+        std::fprintf(stderr, "strata hip-stable: experimental #872 mitigation; own prompt buffers, "
+                             "chunk %lld, pageable resident experts, CPU expert misses (pcie_frac 0); "
+                             "slower and not a confirmed reboot fix\n", (long long) o.prefill_chunk);
+        std::fflush(stderr);
+    }
+#endif
     const bool pcie_given = o.pcie_frac >= 0.0;
     std::vector<int64_t> split_at;
     std::vector<int> split_devs;
@@ -8701,7 +8729,8 @@ int main(int argc, char** argv) {
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
             if (!trace) return;
-            std::fprintf(stderr, "strata trace: %s %lld %lld\n", what, a, b);
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+            std::fprintf(stderr, "strata trace: %s %lld %lld (monotonic_ms=%lld)\n", what, a, b, (long long) ms);
             std::fflush(stderr);
         };
         {
@@ -10806,6 +10835,7 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
                                  (long long) message_at, (long long) (turn_at - message_at));
             }
+            tr("prompt GPU work done; beginning slot refill");
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                 return 1;
