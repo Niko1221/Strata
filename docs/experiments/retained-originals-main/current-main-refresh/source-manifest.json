@@ -1,0 +1,46 @@
+{
+  "source_head": "e55607b036dd5346dceaabadc44bafd8f38d522e",
+  "source_archive_sha256": "c482590f4026b2ccd71be60932ae45f46bcda98ced9becd570ac13d96fece8b5",
+  "completed_case_labels": [
+    "1340-default-main",
+    "1340-default-new",
+    "current-retained-default-mtp",
+    "current-retained-lifecycle-t1",
+    "current-retained-lifecycle-t4",
+    "current-retained-i32768-t1-arm0",
+    "current-retained-i32768-t1-arm1",
+    "current-retained-i32768-t4-arm0",
+    "current-retained-i32768-t4-arm1",
+    "current-retained-i131072-t1-arm0",
+    "current-retained-i131072-t1-arm1",
+    "current-retained-i131072-t4-arm0",
+    "current-retained-i131072-t4-arm1",
+    "current-retained-long-lifecycle-t1",
+    "current-retained-long-lifecycle-t4"
+  ],
+  "source_files": {
+    "CMakeLists.txt": "0af0ff71d611c31f5f7d7428eabfc107516f06342968060cb4caa82abc167c90",
+    "src/core/verify.cpp": "ccd3482b93a64ec1f87d7a143f1eafb4f4da86ca9f3f5ba73b4254ad15ec37ca",
+    "src/program/generate.cpp": "07507e08364be481f3be68863cd2bf6ee9397cc9a4480620017337d62cd070c4",
+    "src/core/expert_source.cpp": "51b2358e14df7bcf5db2eed70f0529849690844081d859424382810a7cf97cbb",
+    "include/strata/core/exchange_storage.hpp": "d88c287fa86184eb9ee7f5dda108176d77b9128b67444901d2ced6818e50c4fd",
+    "include/strata/core/expert_source.hpp": "cf78f06f085866562a80670ac84c749e30651629d3fc29535aec4968cbefdd73",
+    "include/strata/core/verify.hpp": "ba6718b4d67cb9d3e897b4035d5fe3f403c1112f1c528846f81b5b4fc6451813",
+    "tests/core/retained_exchange_storage_test.cpp": "6763a6c5a561bccf3a936b20b523c5b0ec2ec25c618ddd78af86aef9d1e37305"
+  },
+  "main_engine_sha256": "7cad18d61b63fe8bc8077a36842eb7709de52209c703b67590697a4da17c46e1",
+  "cuda_cmake_cache": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "CMAKE_CUDA_ARCHITECTURES": "120",
+    "CMAKE_CUDA_COMPILER": "/usr/local/cuda/bin/nvcc",
+    "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+    "STRATA_BUILD_TESTS": "ON",
+    "STRATA_ENABLE_CUDA": "ON",
+    "STRATA_ENABLE_HIP": "OFF",
+    "STRATA_GGML_DIR": "<HOME>/rope-yarn4-20261009/core/build/_deps/strata_llamacpp-src",
+    "STRATA_NATIVE_EXPERTS": "ON"
+  },
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 595.91.07, 12.0",
+  "main_source_head": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406"
+}

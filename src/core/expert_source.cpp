@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -3171,12 +3172,40 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
                                     [blob](uint64_t b) { return b == blob; });
     const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ &&
                           complement_host_ && complement_device_ && complement_bytes_ > 0;
-    const size_t total = (size_t) n * (size_t) blob;
+    size_t retained = 0;
+    if (const char* text = std::getenv("STRATA_EXCHANGE_RETAIN_GIB"); text && *text) {
+        char* end = nullptr;
+        const double gib = std::strtod(text, &end);
+        if (!end || *end || !std::isfinite(gib) || gib < 0 || gib > 8) {
+            err = "STRATA_EXCHANGE_RETAIN_GIB must be between 0 and 8"; return false;
+        }
+        if (gib > 0) {
+            if (!eligible || complement_lent_slots_ != 0) {
+                err = "retained copies require rotation, uniform mapped/pinned RAM, and no lent resident slots";
+                return false;
+            }
+            retained = (size_t)(gib * 1073741824.0) / (size_t)blob;
+            if (!retained) { err = "retained RAM budget is smaller than one expert"; return false; }
+        }
+    }
+    if (retained > std::numeric_limits<size_t>::max() / (size_t)blob - (size_t)n) {
+        err = "FileExpertSource: retained exchange allocation overflow"; return false;
+    }
+    const size_t total = ((size_t)n + retained) * (size_t)blob;
+    if (retained) {
+        uint64_t available = 0;
+        constexpr uint64_t reserve = uint64_t{4} << 30;
+        if (!available_memory_bytes(available) || available < reserve || total > available - reserve) {
+            err = "retained RAM copies would leave less than 4 GiB available within the host/cgroup limit";
+            return false;
+        }
+    }
     void* p = nullptr;
     if (cudaHostAlloc(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
         xstage_pinned_ = true;
     } else {
         (void) cudaGetLastError();
+        if (retained) { err = "cannot pin the requested retained-copy buffers"; return false; }
         p = std::malloc(total);
         xstage_pinned_ = false;
         if (p == nullptr) { err = "FileExpertSource: cannot allocate the exchange buffers"; return false; }
@@ -3190,9 +3219,12 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
         if (eligible && xstage_pinned_ && cudaHostGetDevicePointer(&device, p, 0) == cudaSuccess && device) {
             try {
                 if (exchange_storage_.initialize(complement_offsets_, (uint8_t*)complement_host_, complement_device_,
-                        complement_bytes_, xstage_, (const uint8_t*)device, (size_t)n, (size_t)blob, reason)) {
+                        complement_bytes_, xstage_, (const uint8_t*)device, (size_t)n, (size_t)blob, reason, retained)) {
                     std::fprintf(stderr, "FileExpertSource: exchange buffer rotation enabled: %lld buffers, %llu bytes each; no host commit memcpy\n",
                                  (long long)n, (unsigned long long)blob);
+                    if (retained)
+                        std::fprintf(stderr, "FileExpertSource: retained RAM copies enabled: %zu experts, %.3f GiB extra; FIFO, unchanged GPU placement\n",
+                                     retained, (double)(retained * (size_t)blob) / 1073741824.0);
                 }
             } catch (const std::bad_alloc&) { reason = "buffer metadata allocation failed"; }
         } else if (eligible) {
@@ -3201,7 +3233,59 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
         }
         if (!exchange_storage_.active())
             std::fprintf(stderr, "FileExpertSource: exchange rotation unavailable; retaining copy path: %s\n", reason.c_str());
+        if (retained && !exchange_storage_.active()) { err = reason; return false; }
     }
+    return true;
+}
+
+bool FileExpertSource::seed_exchange_profile_tail(ExpertCache& cache,
+        const std::vector<std::pair<int32_t,int32_t>>& profile, std::string& err) {
+    const size_t capacity = exchange_storage_.retained_capacity();
+    if (!capacity || !exchange_storage_.active() || profile.empty() || exchange_storage_.exchanges()) {
+        err = "profile-tail seeding requires unused retained exchange storage and an expert profile";
+        return false;
+    }
+    std::vector<size_t> ids;
+    std::vector<int32_t> slots;
+    for (auto it = profile.rbegin(); it != profile.rend() && ids.size() < capacity; ++it) {
+        const auto [layer, expert] = *it;
+        const int32_t slot = cache.slot_of(layer, expert);
+        if (slot < 0) continue;
+        if (has_resident(layer, expert)) {
+            err = "profile-tail seed already has a RAM copy"; return false;
+        }
+        ids.push_back((size_t)layer * (size_t)n_expert_ + (size_t)expert);
+        slots.push_back(slot);
+    }
+    if (ids.empty()) { err = "profile-tail seed found no GPU experts"; return false; }
+    const auto start = std::chrono::steady_clock::now();
+    if (cudaDeviceSynchronize() != cudaSuccess) { err = "profile-tail seed initial GPU drain failed"; return false; }
+    cudaStream_t stream = nullptr;
+    if (cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess) {
+        err = "profile-tail seed stream creation failed"; return false;
+    }
+    bool ok = true;
+    for (size_t q = 0; q < ids.size(); ++q) {
+        const auto target = exchange_storage_.seed_buffer(q);
+        if (!target.host || cudaMemcpyAsync(target.host, cache.device_slot(slots[q]), (size_t)xstage_blob_,
+                                            cudaMemcpyDeviceToHost, stream) != cudaSuccess) {
+            ok = false; break;
+        }
+    }
+    if (cudaStreamSynchronize(stream) != cudaSuccess) ok = false;
+    cudaStreamDestroy(stream);
+    if (!ok) { err = "profile-tail seed copy failed before publication"; return false; }
+    // This experimental startup gate checks every copied byte. It is excluded
+    // from request timing and retained in the reported startup cost.
+    for (size_t q = 0; q < ids.size(); ++q)
+        if (!cache.verify_slot(slots[q], exchange_storage_.seed_buffer(q).host, err, (int64_t)xstage_blob_))
+            return false;
+    if (!exchange_storage_.publish_seeded(ids) || !exchange_storage_.consistent()) {
+        err = "profile-tail seed ownership publication failed"; return false;
+    }
+    std::fprintf(stderr, "FileExpertSource: profile-tail RAM seeds ready: %zu experts, %llu verified bytes, %.3f seconds; fixed keys, unchanged GPU placement\n",
+                 ids.size(), (unsigned long long)(ids.size() * (size_t)xstage_blob_),
+                 std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
     return true;
 }
 
@@ -3212,7 +3296,8 @@ uint8_t* FileExpertSource::exchange_buffer(int64_t q) const {
 }
 
 bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q) {
-    if (out < 0 || out >= n_expert_ || !has_resident(layer, in) || has_resident(layer, out) ||
+    if (out < 0 || out >= n_expert_ || !has_resident(layer, in) ||
+        (!retained_exchange_capacity() && has_resident(layer, out)) ||
         exchange_buffer(q) == nullptr) return false;
     const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
     const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
@@ -3220,14 +3305,26 @@ bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, in
     if (override_[i_out] != nullptr) return false;
     for (const Exchange& x : staged_)
         if (x.in == i_in || x.q == q) return false;
-    override_[i_out] = exchange_buffer(q);
+    const uint8_t* held = retained_exchange_capacity() ? resident_blob(i_out) : nullptr;
+    override_[i_out] = held ? held : exchange_buffer(q);
     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
     return true;
 }
 
 int64_t FileExpertSource::commit_exchanges() {
     int64_t n = 0;
-    for (const Exchange& x : staged_) {
+    if (retained_exchange_capacity() && !staged_.empty()) {
+        std::vector<detail::ExchangeStorage::Change> batch;
+        batch.reserve(staged_.size());
+        for (const Exchange& x : staged_)
+            batch.push_back({x.in, x.out, (size_t)x.q, override_[x.out], (size_t)x.bytes});
+        if (!exchange_storage_.commit_retained(batch)) {
+            std::fprintf(stderr, "FileExpertSource: invalid retained-copy ownership commit\n");
+            std::abort();
+        }
+        n = (int64_t)staged_.size();
+        for (const Exchange& x : staged_) override_[x.out] = nullptr;
+    } else for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];
         if (exchange_storage_.active()) {
             if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
@@ -3264,6 +3361,7 @@ void FileExpertSource::commit_copies() {
 }
 
 int64_t FileExpertSource::commit_flip() {
+    if (exchange_storage_.active()) return commit_exchanges();
     int64_t n = 0;
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];

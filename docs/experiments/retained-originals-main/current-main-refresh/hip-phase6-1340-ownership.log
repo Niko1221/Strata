@@ -1,0 +1,10 @@
+Internal ctest changing into directory: <HOME>/pr-refresh-20261011/1340-hip-phase6/build
+Test project <HOME>/pr-refresh-20261011/1340-hip-phase6/build
+    Start  10: exchange_storage_test
+1/2 Test  #10: exchange_storage_test ............   Passed    0.65 sec
+    Start 101: retained_exchange_storage_test
+2/2 Test #101: retained_exchange_storage_test ...   Passed    3.48 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   4.13 sec

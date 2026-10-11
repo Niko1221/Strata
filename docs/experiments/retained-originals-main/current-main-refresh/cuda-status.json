@@ -1,0 +1,33 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1340-extract",
+      "exit_code": 0,
+      "machine_seconds": 0.157
+    },
+    {
+      "label": "1340-source",
+      "archive_sha256": "c482590f4026b2ccd71be60932ae45f46bcda98ced9becd570ac13d96fece8b5"
+    },
+    {
+      "label": "1340-configure",
+      "exit_code": 0,
+      "machine_seconds": 2.059
+    },
+    {
+      "label": "1340-build",
+      "exit_code": 0,
+      "machine_seconds": 82.648
+    },
+    {
+      "label": "1340-ownership",
+      "exit_code": 0,
+      "machine_seconds": 2.194
+    },
+    {
+      "label": "1340-binary",
+      "sha256": "e9fce20667af2b7e53499bb3a34942faf4652574f5f201fddbd9612ce7784b87"
+    }
+  ]
+}

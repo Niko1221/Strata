@@ -1,0 +1,38 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1340-extract",
+      "exit_code": 0,
+      "machine_seconds": 0.148
+    },
+    {
+      "label": "1340-source",
+      "archive_sha256": "c482590f4026b2ccd71be60932ae45f46bcda98ced9becd570ac13d96fece8b5"
+    },
+    {
+      "label": "1340-configure",
+      "exit_code": 0,
+      "machine_seconds": 13.276
+    },
+    {
+      "label": "1340-build",
+      "exit_code": 0,
+      "machine_seconds": 174.229
+    },
+    {
+      "label": "1340-sanitizer-build",
+      "exit_code": 0,
+      "machine_seconds": 3.676
+    },
+    {
+      "label": "1340-sanitizer-test",
+      "exit_code": 0,
+      "machine_seconds": 6.592
+    },
+    {
+      "label": "1340-binary",
+      "sha256": "a981f6f29a9492ec48792e4c9070cb0a7b1b3161f3eff8875b704a608c0fe9dc"
+    }
+  ]
+}

@@ -591,11 +591,15 @@ public:
     bool has_resident(int64_t layer, int64_t expert) const;
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
     bool reserve_exchanges(int64_t n, std::string& err);
+    /// Startup only: retain profile-tail GPU bytes in already allocated extra
+    /// RAM, with unchanged placement. Publish only after all copies are checked.
+    bool seed_exchange_profile_tail(ExpertCache& cache,
+                                   const std::vector<std::pair<int32_t,int32_t>>& profile, std::string& err);
     int64_t exchange_capacity() const { return xstage_cap_; }
     /// The exchange buffers are page-locked (cudaHostAlloc): copies to and from them are asynchronous.
     bool exchange_pinned() const { return xstage_pinned_; }
     uint8_t* exchange_buffer(int64_t q) const;
-    /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
+    /// Requires resident `in`; `out` is in the completed exchange buffer or an immutable retained RAM copy.
     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
     /// --pipeline-windows: size the exchange table now, so a `stage_exchange` on the adaptive tier's thread never
     /// reallocates it under a concurrent `blob` (the pool reads it while windows are in flight).
@@ -614,6 +618,10 @@ public:
     bool exchange_rotation() const { return exchange_storage_.active(); }
     uint64_t rotated_exchanges() const { return exchange_storage_.exchanges(); }
     uint64_t avoided_exchange_copy_bytes() const { return exchange_storage_.avoided_bytes(); }
+    size_t retained_exchange_capacity() const { return exchange_storage_.retained_capacity(); }
+    size_t retained_exchange_count() const { return exchange_storage_.retained_count(); }
+    bool fixed_exchange_seeds() const { return exchange_storage_.fixed_seeds(); }
+    uint64_t avoided_eviction_bytes() const { return exchange_storage_.avoided_d2h_bytes(); }
     /// With the compact copy ready: blobs read from the mapped file since (what the plain mmap mode may read from
     /// the SSD).  0 in a steady resident mode; lend-region experts that did not fit the RAM count here.
     int64_t file_reads() const { return file_reads_.load(std::memory_order_relaxed); }

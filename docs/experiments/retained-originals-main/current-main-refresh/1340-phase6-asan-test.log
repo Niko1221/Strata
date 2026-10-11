@@ -1,0 +1,1 @@
+retained_exchange_storage_test: PASS (55392 exchanges, default/FIFO/fixed seeds, guards, aliases, ownership, immutable bytes)

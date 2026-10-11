@@ -1,0 +1,10 @@
+Internal ctest changing into directory: <HOME>/pr-refresh-20261011/1340-cuda-phase6/build
+Test project <HOME>/pr-refresh-20261011/1340-cuda-phase6/build
+    Start  12: exchange_storage_test
+1/2 Test  #12: exchange_storage_test ............   Passed    0.30 sec
+    Start 109: retained_exchange_storage_test
+2/2 Test #109: retained_exchange_storage_test ...   Passed    1.88 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   2.18 sec

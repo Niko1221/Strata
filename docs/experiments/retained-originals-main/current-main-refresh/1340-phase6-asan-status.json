@@ -1,0 +1,15 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "build",
+      "exit_code": 0,
+      "machine_seconds": 2.254951630020514
+    },
+    {
+      "label": "test",
+      "exit_code": 0,
+      "machine_seconds": 6.000335750053637
+    }
+  ]
+}
