@@ -10,7 +10,10 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
+#include <iterator>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -453,6 +456,93 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
     }
 }
 
+PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                         uint64_t max_pinned_bytes, const std::string& shared_file,
+                         uint64_t shared_pack_hash) : capacity(bytes) {
+    by_need = true;
+    if (bytes == 0) return;
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
+    if (base == nullptr) return;
+    // Register BEFORE any page is touched (see the first constructor).  Same caps as there: the engine's
+    // `max_pinned_bytes`, else STRATA_ARENA_PIN_GIB=N (> 0); "auto" (-2) is the sliced pin's and does not apply.
+    const int env_gib = arena_pin_cap_gib();
+    uint64_t cap = max_pinned_bytes;
+    if (cap == 0 && env_gib > 0) cap = (uint64_t) env_gib << 30;
+#ifdef _WIN32
+    // WDDM: the pin must leave margin (the budget is ~RAM/2 and later cudaMallocs need room).  Unset: 29 GiB;
+    // "auto" (-2): the sliced pin's shared-memory-budget limit (29 GiB when it cannot be worked out);
+    // STRATA_ARENA_PIN_GIB=0 ("the whole arena"): no cap, up to the driver's refusal.
+    if (cap == 0 && env_gib != 0) {
+        uint64_t lim = 0;
+        std::string why;
+        cap = env_gib == -2 && sliced_pin_limit(lim, why) && lim > 0 ? lim : (29ull << 30);
+    }
+#endif
+    constexpr uint64_t kPage = 4096;
+    std::map<uint64_t, uint64_t> done;   // registered [start, end), by start: ranges never overlap
+    uint64_t total = 0;
+    int refused = 0;
+    bool capped = false;
+    for (const auto& rg : ranges) {
+        if (rg.second == 0 || rg.first >= bytes) continue;
+        // INWARD: a registered page holds no byte of an unpinned neighbour blob (a copy that STARTS in a registered page
+        // and runs past the registration is rejected by CUDA); the boundary pages stay unregistered
+        uint64_t a = (rg.first + kPage - 1) & ~(kPage - 1);
+        uint64_t b = std::min<uint64_t>(rg.first + rg.second, bytes) & ~(kPage - 1);
+        // a page shared with a range registered before (blobs smaller than a page, or odd offsets) is already
+        // registered: registering it twice is an error, so trim to what is left; a range inside one is skipped
+        auto it = done.upper_bound(a);
+        if (it != done.begin()) {
+            auto p = std::prev(it);
+            if (p->second > a) a = p->second;
+        }
+        if (it != done.end() && it->first < b) b = it->first;
+        if (a >= b) continue;
+        if (cap > 0 && total + (b - a) > cap) { capped = true; break; }
+        if (cudaHostRegister((uint8_t*) base + a, (size_t) (b - a), cudaHostRegisterPortable | cudaHostRegisterMapped) !=
+            cudaSuccess) {
+            (void) cudaGetLastError();
+            refused = 1;
+            break;
+        }
+        done[a] = b;
+        total += b - a;
+    }
+    for (const auto& d : done) pin_ranges.emplace_back(d.first, d.second - d.first);
+    registered_bytes = total;
+    registered_slices = (int) pin_ranges.size();
+    // the holes stay resident through the working-set lock, as the sliced fallback does for its tail
+    std::vector<std::pair<void*, uint64_t>> holes;
+    uint64_t cur = 0, hole_bytes = 0;
+    for (const auto& r : pin_ranges) {
+        if (r.first > cur) { locked_ranges.emplace_back(cur, r.first - cur); hole_bytes += r.first - cur; }
+        cur = r.first + r.second;
+    }
+    if (cur < bytes) { locked_ranges.emplace_back(cur, bytes - cur); hole_bytes += bytes - cur; }
+    note = "pin by need: " + std::to_string(pin_ranges.size()) + " ranges registered (" + std::to_string(total >> 20) +
+           " MiB)" + (refused ? ", the driver refused the next one" : capped ? ", the cap was reached" : "") +
+           "; " + note;
+    const char* env = std::getenv("STRATA_ARENA_LOCK");
+    if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
+        note = "large pages are resident without a lock; " + note;
+        locked_ranges.clear();
+    } else if (env != nullptr && std::string(env) == "0") {
+        note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+        locked_ranges.clear();
+    } else {
+        for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
+        const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
+        locked_bytes = lr.locked_bytes;
+        note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
+        // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
+        // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
+    }
+}
+
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
@@ -496,6 +586,15 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
 }
 
 PinnedArena::~PinnedArena() {
+    if (base && by_need) {
+        for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);
+        for (const auto& r : pin_ranges) cudaHostUnregister((uint8_t*) base + r.first);
+        release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
+        base = nullptr;
+        mapping_base = nullptr;
+        mapping_bytes = 0;
+        return;
+    }
     if (base) {
         if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
         if (slice_bytes) {
@@ -663,7 +762,7 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
-                              const std::atomic<int>* ready) {
+                              const std::atomic<int>* ready, const PadMap* pad) {
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
@@ -732,7 +831,17 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                     return;
                 }
                 const auto t_copy = std::chrono::steady_clock::now();
-                std::memcpy(dst + off + pos, buf.data(), (size_t) n);
+                if (pad == nullptr) {
+                    std::memcpy(dst + off + pos, buf.data(), (size_t) n);
+                } else {   // the padded layout: a chunk may span blobs, each lands at its own page-aligned start
+                    const uint64_t B = pad->blob[(size_t) L], S = pad->stride[(size_t) L];
+                    for (uint64_t q = 0; q < n;) {
+                        const uint64_t p = pos + q, bi = p / B, in = p % B;
+                        const uint64_t m = std::min<uint64_t>(n - q, B - in);
+                        std::memcpy(dst + pad->dst_off[(size_t) L] + bi * S + in, buf.data() + q, (size_t) m);
+                        q += m;
+                    }
+                }
                 h = fnv1a64(buf.data(), n, h);
                 copy_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
                                std::chrono::steady_clock::now() - t_copy).count();
