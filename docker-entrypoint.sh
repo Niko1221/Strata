@@ -6,6 +6,20 @@
 set -e
 cd /opt/strata || exit 1
 
+export CUDA_MAJOR_VERSION=`${CUDA_VERSION%%.*}`
+export STRATA_EXPERIMENTAL_SM60=""
+
+if [ x${CUDA_ARCHITECTURES} = x ]; then
+	export CUDA_ARCHITECTURES="75;80;86;89;120"
+	if [ x${CUDA_MAJOR_VERSION} = x12 ]; then
+		export CUDA_ARCHITECTURES="60,61,70"
+	fi
+fi
+
+if [ x$CUDA_MAJOR_VERSION = x12 ]; then
+       export STRATA_EXPERIMENTAL_SM60=1
+fi
+
 STRATA_DATA="${STRATA_DATA:-/data}"
 FAMILY="${FAMILY:-qwen}"
 MODEL="${MODEL:-IQ2_XS}"
@@ -73,7 +87,7 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GGUF_DIR" ]; then set -- "$@" --gguf-dir "$GGUF_DIR"; fi
   if [ -n "$RESIDENT_BUDGET_GIB" ]; then set -- "$@" --resident-budget-gib "$RESIDENT_BUDGET_GIB"; fi
   if [ -n "$KV_STREAMING" ]; then set -- "$@" --kv-streaming "$KV_STREAMING"; fi
-  .venv/bin/python setup.py --setup --yes "$@"
+  .venv/bin/python setup.py --setup --yes --cuda ${CUDA_MAJOR_VERSION} "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
   echo "Config: $cfg (from MODEL $MODEL, just set up)"
 else
