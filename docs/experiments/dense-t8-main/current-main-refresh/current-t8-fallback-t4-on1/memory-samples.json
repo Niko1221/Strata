@@ -1,0 +1,3655 @@
+{
+  "summary": {
+    "sampled_gpu_min_free_bytes": 8991080448,
+    "sampled_host_min_available_bytes": 76406284288,
+    "sampled_host_max_swap_used_bytes": 371920896,
+    "sampled_engine_max_swap_bytes": 0,
+    "scope": "200ms samples across startup,function,benchmark,shutdown; not allocator-exact peaks. NVML GPU memory plus proc host/engine memory."
+  },
+  "samples": [
+    {
+      "unix": 1791720844.2554,
+      "gpu_error": 0,
+      "gpu_free_bytes": 101957959680,
+      "gpu_used_bytes": 683999232,
+      "host_available_bytes": 129731760128,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720844.4557865,
+      "gpu_error": 0,
+      "gpu_free_bytes": 101957959680,
+      "gpu_used_bytes": 683999232,
+      "host_available_bytes": 129626030080,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720844.6559858,
+      "gpu_error": 0,
+      "gpu_free_bytes": 101263671296,
+      "gpu_used_bytes": 1378287616,
+      "host_available_bytes": 129347563520,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720844.8561757,
+      "gpu_error": 0,
+      "gpu_free_bytes": 101263671296,
+      "gpu_used_bytes": 1378287616,
+      "host_available_bytes": 128696053760,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720845.0564885,
+      "gpu_error": 0,
+      "gpu_free_bytes": 99776790528,
+      "gpu_used_bytes": 2865168384,
+      "host_available_bytes": 128649691136,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720845.2568226,
+      "gpu_error": 0,
+      "gpu_free_bytes": 99776790528,
+      "gpu_used_bytes": 2865168384,
+      "host_available_bytes": 128646078464,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720845.457371,
+      "gpu_error": 0,
+      "gpu_free_bytes": 98872918016,
+      "gpu_used_bytes": 3769040896,
+      "host_available_bytes": 128643309568,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720845.657695,
+      "gpu_error": 0,
+      "gpu_free_bytes": 98554150912,
+      "gpu_used_bytes": 4087808000,
+      "host_available_bytes": 128646397952,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720845.8580377,
+      "gpu_error": 0,
+      "gpu_free_bytes": 97333608448,
+      "gpu_used_bytes": 5308350464,
+      "host_available_bytes": 128644816896,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720846.0584204,
+      "gpu_error": 0,
+      "gpu_free_bytes": 95966265344,
+      "gpu_used_bytes": 6675693568,
+      "host_available_bytes": 128638607360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720846.258829,
+      "gpu_error": 0,
+      "gpu_free_bytes": 95139987456,
+      "gpu_used_bytes": 7501971456,
+      "host_available_bytes": 128523001856,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720846.459136,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 128624402432,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720846.6595407,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 128493314048,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720846.8599074,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 128124719104,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720847.0603166,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127763968000,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720847.2608106,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127394443264,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720847.4611938,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127286190080,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720847.6616716,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127285673984,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720847.862133,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127285157888,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720848.0625694,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127287738368,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720848.2629542,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127285673984,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720848.4634652,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127293071360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720848.6639426,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127282315264,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720848.864382,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127280996352,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720849.064791,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127286669312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720849.265173,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127280705536,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720849.4657624,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127274860544,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720849.666233,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127278768128,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720849.8666563,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127274221568,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720850.0670595,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127267807232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720850.2675838,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127269068800,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720850.4681268,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127271895040,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720850.6687777,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127265800192,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720850.8692858,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127270068224,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720851.069892,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127265005568,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720851.2703598,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127258267648,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720851.470754,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127259824128,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720851.6713073,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127260635136,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720851.8717768,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127263961088,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720852.0721734,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127250190336,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720852.2725801,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127251968000,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720852.4729607,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127254544384,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720852.673612,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127246897152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720852.874104,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127249772544,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720853.0746608,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127252582400,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720853.2751,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127248035840,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720853.475662,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127243444224,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720853.676055,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127245221888,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720853.8764703,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127239192576,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720854.0770032,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127242002432,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720854.2775393,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127235588096,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720854.477909,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127230758912,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720854.6782823,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127231053824,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720854.878735,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127233347584,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720855.0791934,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127226867712,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720855.2796285,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127222386688,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720855.480085,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127229779968,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720855.68058,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127223750656,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720855.8809803,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127218819072,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720856.081393,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127220146176,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720856.281793,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127213535232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720856.482347,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127214391296,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720856.682785,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127209459712,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720856.8831928,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127210205184,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720857.0836866,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127211532288,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720857.284281,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127205437440,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720857.4847267,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127199854592,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720857.6851146,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127201632256,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720857.8855152,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127202959360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720858.0860572,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127204220928,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720858.2864819,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127198191616,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720858.4868774,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127189430272,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720858.6873186,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127191539712,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720858.887702,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127193317376,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720859.0880942,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127194578944,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720859.2886233,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127193325568,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720859.4890988,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127187742720,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720859.6895294,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127180165120,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720859.8899312,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127188267008,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720860.0903692,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127187013632,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720860.2907622,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127180017664,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720860.4913452,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127177142272,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720860.6918838,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127172489216,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720860.892439,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127174881280,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720861.0929933,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127178059776,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720861.2934022,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127172096000,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720861.4939692,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127169388544,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720861.694456,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127164702720,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720861.8948,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127171379200,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720862.0952518,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127164628992,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720862.2956357,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127171272704,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720862.4960566,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127156195328,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720862.6964602,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127155761152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720862.8968902,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127156637696,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720863.0972137,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127166652416,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720863.2975645,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127164534784,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720863.4979746,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127163596800,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720863.6983802,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127152340992,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720863.8988466,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127155486720,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720864.0994565,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127155007488,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720864.2998407,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127116005376,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720864.5002732,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127151415296,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720864.7006836,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127155232768,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720864.9011292,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127156154368,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720865.1015775,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127154511872,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720865.30198,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127147073536,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720865.5024486,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127151181824,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720865.7029572,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127149965312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720865.9034915,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127146364928,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720866.1038952,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127150170112,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720866.3043272,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127145250816,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720866.504733,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127144194048,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720866.7051349,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127136481280,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720866.905507,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127141183488,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720867.1059048,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127140728832,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720867.306469,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127145193472,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720867.5069022,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127143174144,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720867.7073977,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127147487232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720867.9079187,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127150776320,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720868.108337,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127145586688,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720868.3087368,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127137423360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720868.5091963,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127143043072,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720868.709623,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127139393536,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720868.9100223,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127139115008,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720869.1104124,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127141380096,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720869.3108711,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127142895616,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720869.5112638,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127140274176,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720869.7117012,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127137914880,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720869.912263,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127132921856,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720870.1126313,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127133556736,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720870.313037,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127139676160,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720870.5134668,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127137243136,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720870.7140548,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127138394112,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720870.9144993,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127132717056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720871.1150706,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127140765696,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720871.3156943,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127134695424,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720871.5160651,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127130361856,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720871.7165158,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127130935296,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720871.916903,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127135789056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720872.1173105,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127136546816,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720872.317899,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127129161728,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720872.5182326,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127008399360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720872.7185864,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127008399360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720872.9189644,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127009595392,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720873.119333,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 126822985728,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720873.3196843,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 126632067072,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720873.520019,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127106170880,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720873.7203846,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127102980096,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720873.9207098,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127106543616,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720874.1210613,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127107674112,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720874.321418,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127107129344,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720874.5217683,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127104450560,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720874.7221377,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127107563520,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720874.9224665,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127101448192,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720875.1228054,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127110348800,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720875.3231535,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127109713920,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720875.523509,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127110864896,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720875.7238698,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127105474560,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720875.9242237,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127113375744,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720876.124603,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127103983616,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720876.3249674,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127133401088,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720876.5253048,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127161868288,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720876.725656,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127192784896,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720876.9260173,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127190298624,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720877.1263893,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127186911232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720877.3267388,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127190433792,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720877.527085,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127189254144,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720877.7274039,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127183478784,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720877.92778,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127190130688,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720878.1280982,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127192109056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720878.328458,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127189479424,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720878.528799,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127190011904,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720878.7291634,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127188533248,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720878.9294949,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127186731008,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720879.129854,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127189549056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720879.3301954,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127188959232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720879.5305514,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127189757952,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720879.730909,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127186235392,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720879.9312546,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127187427328,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720880.1316047,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127193989120,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720880.3319664,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127222374400,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720880.5323431,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127238934528,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720880.7327044,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127243149312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720880.9330683,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127239688192,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720881.1333885,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127248580608,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720881.3337395,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127242321920,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720881.5340374,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127243825152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720881.734405,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127245164544,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720881.9347656,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127245074432,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720882.1351163,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127243845632,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720882.3354683,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127248900096,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720882.5358205,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127246299136,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720882.7361305,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127241535488,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720882.9364498,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 127238868992,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720883.1368403,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 126847881216,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720883.3372316,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 126187761664,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720883.5376246,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 125526089728,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720883.7380116,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 124865970176,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720883.938389,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 124204883968,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720884.1386824,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 123552636928,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720884.3390732,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 122892066816,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720884.5394785,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 122231431168,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720884.7398863,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 121570861056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720884.9402778,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 120910225408,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720885.1406584,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 120249655296,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720885.3410254,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 119589019648,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720885.5413737,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 118928449536,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720885.7417006,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 118267813888,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720885.9419825,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 117607243776,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720886.1423063,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 116946608128,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720886.342598,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 116294426624,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720886.542892,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 115633790976,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720886.7431984,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 114981609472,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720886.9434657,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 114320973824,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720887.1437235,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 113668276224,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720887.3440065,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 113008156672,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720887.544318,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 112347070464,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720887.7445772,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 111694823424,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720887.9448686,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 111034187776,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720888.1451647,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 110382006272,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720888.3454247,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 109721370624,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720888.545723,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 109060800512,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720888.7460198,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 108408553472,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720888.946283,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 107747983360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720889.1465807,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 107087347712,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720889.3468773,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 106426777600,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720889.5471663,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 105766141952,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720889.7474787,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 105105571840,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720889.9477837,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 104446033920,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720890.1480792,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 103792754688,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720890.3483825,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 103132119040,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720890.5486865,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 102471557120,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720890.7489896,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 101810921472,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720890.9492393,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 101150351360,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720891.149537,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 100489715712,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720891.3498142,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 99829145600,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720891.550116,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 99168509952,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720891.7504194,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 98507939840,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720891.950707,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 97847304192,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720892.1509938,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 97186734080,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720892.3513184,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 96534310912,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720892.5516453,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 95873933312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720892.7519727,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 95220375552,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720892.9523032,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 94568644608,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720893.1526437,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 93915430912,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720893.3529625,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 93254795264,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720893.5534399,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 92594110464,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720893.7537525,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 91933474816,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720893.9540646,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 91272904704,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720894.154389,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 90612269056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720894.3547041,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 89951694848,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720894.5550056,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 89291059200,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720894.7553172,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 88630489088,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720894.9555707,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 87969853440,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720895.1558702,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 87309283328,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720895.3561747,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 86648647680,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720895.5564961,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 85988044800,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720895.7568011,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 85327441920,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720895.9571085,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 84666839040,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720896.1574183,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 84006236160,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720896.3577254,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 83345633280,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720896.5580232,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 82685030400,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720896.758337,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 82024427520,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720896.9586413,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 81365405696,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720897.1589487,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 80704253952,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720897.3592484,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 80042618880,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720897.559558,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 79498620928,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720897.9916887,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13604814848,
+      "gpu_used_bytes": 89037144064,
+      "host_available_bytes": 78939746304,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720898.191939,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13567066112,
+      "gpu_used_bytes": 89074892800,
+      "host_available_bytes": 78938701824,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720898.3921437,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13527220224,
+      "gpu_used_bytes": 89114738688,
+      "host_available_bytes": 78937989120,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720898.5925953,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78937989120,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720898.792967,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78935007232,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720898.993347,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78935523328,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720899.193718,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78939136000,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720899.3941138,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78936555520,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720899.5945027,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78939996160,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720899.7949054,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78929174528,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720899.9953315,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78931755008,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720900.195711,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78928658432,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720900.396099,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78917976064,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720900.5964909,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78921568256,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720900.7968771,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78924664832,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720900.99726,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78924664832,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720901.197633,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78909509632,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720901.3980165,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78911295488,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720901.5984113,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78916456448,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720901.7987614,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78909083648,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720901.9992285,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78904102912,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720902.1996577,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78903586816,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720902.400036,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78898425856,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720902.6004257,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78897688576,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720902.8007898,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78900776960,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720903.0012302,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78895099904,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720903.2016203,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78896656384,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720903.4019978,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78897172480,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720903.6024468,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78890225664,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720903.802924,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78884024320,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720904.0033784,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78882205696,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720904.203832,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78882213888,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720904.4042814,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78874841088,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720904.6046717,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78871228416,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720904.8050482,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78869032960,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720905.0055292,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78875234304,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720905.2060103,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78869549056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720905.406477,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78861537280,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720905.6069407,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78866317312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720905.8074224,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78863220736,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720906.0078914,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78852390912,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720906.2083495,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78852407296,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720906.40879,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78859792384,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720906.609216,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78855147520,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720906.8096957,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78845882368,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720907.0101674,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78846906368,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720907.2106318,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78841556992,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720907.4110937,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78835580928,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720907.611579,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78837645312,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720907.8120024,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78839193600,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720908.0124898,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78834262016,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720908.2129502,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78831165440,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720908.4134147,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78832705536,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720908.6138349,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78823985152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720908.8141885,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78825009152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720909.0146644,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78819856384,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720909.215126,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78824493056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720909.41553,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78817349632,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720909.6159277,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78815801344,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720909.8163776,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78814253056,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720910.016814,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78814769152,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720910.2172656,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78809575424,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720910.417656,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78806679552,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720910.618037,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78798659584,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720910.818475,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78801764352,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720911.0189319,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78801756160,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720911.219332,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78801248256,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720911.4197836,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78790787072,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720911.6202562,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78792105984,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720911.8207326,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78783774720,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720912.0210857,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13512540160,
+      "gpu_used_bytes": 89129418752,
+      "host_available_bytes": 78486315008,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720912.2257006,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13405585408,
+      "gpu_used_bytes": 89236373504,
+      "host_available_bytes": 77915521024,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720912.4260464,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13325893632,
+      "gpu_used_bytes": 89316065280,
+      "host_available_bytes": 77507997696,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720912.626417,
+      "gpu_error": 0,
+      "gpu_free_bytes": 13250396160,
+      "gpu_used_bytes": 89391562752,
+      "host_available_bytes": 77121433600,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720912.8267636,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9326624768,
+      "gpu_used_bytes": 93315334144,
+      "host_available_bytes": 76763111424,
+      "host_swap_used_bytes": 371920896
+    },
+    {
+      "unix": 1791720913.027102,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9068675072,
+      "gpu_used_bytes": 93573283840,
+      "host_available_bytes": 76735410176,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 99951607808,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720913.2283578,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690788352,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100024025088,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720913.429716,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100036149248,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720913.6301236,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100046176256,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720913.8307407,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100052467712,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720914.031914,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100053516288,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720914.2328653,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100053516288,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720914.4335587,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100055089152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720914.6339676,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100055089152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720914.835069,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100055089152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720915.0357206,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100055089152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720915.2360423,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76690530304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100055089152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720915.4363418,
+      "gpu_error": 0,
+      "gpu_free_bytes": 9045606400,
+      "gpu_used_bytes": 93596352512,
+      "host_available_bytes": 76649865216,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100156698624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720915.6367588,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433604608,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720915.836999,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433604608,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720916.037273,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433604608,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720916.2375321,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433604608,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720916.4377632,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720916.638034,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720916.8382523,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720917.0385163,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720917.2387676,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100376645632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720917.439168,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100377305088,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720917.639615,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100394864640,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720917.840407,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100412166144,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720918.0413263,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100432203776,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720918.2416923,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8995274752,
+      "gpu_used_bytes": 93646684160,
+      "host_available_bytes": 76433592320,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100450918400,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720918.4421573,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76422754304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100474077184,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720918.64278,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76422754304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100483969024,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720918.8431425,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76422754304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100503273472,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720919.0434592,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76422754304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100517871616,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720919.2439322,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76422754304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100526211072,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720919.4443,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100538204160,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720919.6449416,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100547117056,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720919.846366,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100556554240,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720920.0467234,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100565991424,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720920.2471614,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100573265920,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720920.4477723,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100579557376,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720920.6483438,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100586438656,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720920.848946,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100592730112,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720921.0497735,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100595863552,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720921.250262,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100598484992,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720921.451304,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100607918080,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720921.6524093,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100616826880,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720921.852703,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100630392832,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720922.0532758,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100656545792,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720922.2536492,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100674875392,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720922.454029,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76414496768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100682559488,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720922.6547909,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406284288,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100707082240,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720922.8553133,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406444032,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100718485504,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720923.05581,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406444032,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100722675712,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720923.2562962,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406444032,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100725297152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720923.4570491,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406398976,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100733747200,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720923.6573627,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406398976,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100736892928,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720923.8576746,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406398976,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100748988416,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720924.058145,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406398976,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100780388352,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720924.2590308,
+      "gpu_error": 0,
+      "gpu_free_bytes": 8991080448,
+      "gpu_used_bytes": 93650878464,
+      "host_available_bytes": 76406398976,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 100808241152,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720924.4592738,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93906862080,
+      "gpu_used_bytes": 8735096832,
+      "host_available_bytes": 77290860544,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 99953332224,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720925.0335526,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77921697792,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 99953332224,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720925.23398,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77938212864,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 91801702400,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720925.434421,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77938470912,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 83633295360,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720925.634846,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77938470912,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 75427139584,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720925.8352563,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77938470912,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 67218886656,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720926.0356545,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 77938470912,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 59029508096,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720926.2360604,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 78432141312,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720926.4363482,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 80883748864,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720926.6366231,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 83354943488,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720926.8369236,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 85813366784,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720927.037209,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 88290627584,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720927.2375135,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 90753953792,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720927.437783,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 93210198016,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720927.6381092,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 95665238016,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720927.8384385,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 98079977472,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720928.0387292,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 100516380672,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720928.2390583,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 102968868864,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720928.439332,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 105419808768,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720928.6396291,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 107857178624,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720928.8399146,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 110309097472,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720929.040229,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 112786341888,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720929.2405791,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 115251253248,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720929.4408529,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 117706522624,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720929.6411874,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 120175525888,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720929.841507,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 122637131776,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720930.0418448,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125081284608,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 52408602624,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720930.2422273,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125551964160,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 45964689408,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720930.44281,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125551964160,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 36336988160,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720930.6432588,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125610283008,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 26525802496,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720930.8437088,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125622669312,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 16476823552,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720931.0441315,
+      "gpu_error": 0,
+      "gpu_free_bytes": 93980262400,
+      "gpu_used_bytes": 8661696512,
+      "host_available_bytes": 125672214528,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 6455877632,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720931.244532,
+      "gpu_error": 0,
+      "gpu_free_bytes": 98898083840,
+      "gpu_used_bytes": 3743875072,
+      "host_available_bytes": 127459426304,
+      "host_swap_used_bytes": 371920896,
+      "VmRSS": 2216534016,
+      "VmSwap": 0
+    },
+    {
+      "unix": 1791720931.455818,
+      "gpu_error": 0,
+      "gpu_free_bytes": 101957959680,
+      "gpu_used_bytes": 683999232,
+      "host_available_bytes": 129768566784,
+      "host_swap_used_bytes": 371920896
+    }
+  ]
+}

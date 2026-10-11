@@ -1,0 +1,28 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1339-extract",
+      "exit_code": 0,
+      "machine_seconds": 0.246
+    },
+    {
+      "label": "1339-source",
+      "archive_sha256": "c4de4dcbbd7ecb8bfb6d9c1049902c57bdb4d44f4f8d99fdea4c687029cb47d8"
+    },
+    {
+      "label": "1339-configure",
+      "exit_code": 0,
+      "machine_seconds": 3.578
+    },
+    {
+      "label": "1339-build",
+      "exit_code": 0,
+      "machine_seconds": 127.475
+    },
+    {
+      "label": "1339-binary",
+      "sha256": "9156fe3d031e0a4faa0f49bc3c2fc698172fa723944b27b02edc13564d1e7b3f"
+    }
+  ]
+}

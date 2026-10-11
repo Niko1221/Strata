@@ -1,0 +1,12 @@
+PASS dense T8: relative RMS 2.30370893e-07 maxabs 1.66893005e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.2054136e-07 maxabs 1.90734863e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.47040811e-07 maxabs 1.43051147e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.40693353e-07 maxabs 1.54972076e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.5258082e-07 maxabs 1.07288361e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.48202925e-07 maxabs 1.43051147e-06; scalarbounds,zero row
+PASS dense T8: relative RMS 2.5682704e-07 maxabs 9.53674316e-07; scalarbounds,zero row
+PASS dense T8: relative RMS 2.58791229e-07 maxabs 9.53674316e-07; scalarbounds,zero row
+PASS dense T8: relative RMS 2.60751368e-07 maxabs 7.4505806e-07; scalarbounds,zero row
+PASS dense T8: relative RMS 2.56709723e-07 maxabs 9.53674316e-07; scalarbounds,zero row
+PASS dense T8: relative RMS 2.74176218e-07 maxabs 9.23871994e-07; scalarbounds,zero row
+PASS dense T8 projection: capture, mutation, independent owners/streams, scalar format, unsupported shapes and early close

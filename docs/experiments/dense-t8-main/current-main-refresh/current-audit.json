@@ -1,0 +1,154 @@
+{
+  "pr": "1339",
+  "source_head": "b57144b620daddf912255d5b692d6c3c6a3c3f48",
+  "cases": [
+    {
+      "label": "1339-default-main",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "7cad18d61b63fe8bc8077a36842eb7709de52209c703b67590697a4da17c46e1",
+      "startup_seconds": 68.86167873709928,
+      "decode_tok_s": 56.81124685152514,
+      "effective_tok_s": 46.390258045810384,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "1339-default-new",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 69.0709784940118,
+      "decode_tok_s": 67.47051459445213,
+      "effective_tok_s": 53.25400705199547,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "current-q8-t8-final-control",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 68.78066647204105,
+      "decode_tok_s": 70.980979315699,
+      "effective_tok_s": 55.42685171152056,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "current-q8-t8-final-candidate",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 68.64091879304033,
+      "decode_tok_s": 68.28305459977061,
+      "effective_tok_s": 53.78998791826443,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 57
+    },
+    {
+      "label": "current-t8-fallback-t1-on0",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 68.82265036401805,
+      "decode_tok_s": 49.807870032589136,
+      "effective_tok_s": 41.6084257062055,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "current-t8-fallback-t1-on1",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 68.5534757450223,
+      "decode_tok_s": 51.19027384796889,
+      "effective_tok_s": 42.5648656962099,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "current-t8-fallback-t4-on0",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 70.1570420829812,
+      "decode_tok_s": 71.43554755626246,
+      "effective_tok_s": 55.68788679696762,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    },
+    {
+      "label": "current-t8-fallback-t4-on1",
+      "complete": true,
+      "output_tokens": 512,
+      "function_passed": true,
+      "error": null,
+      "binary_sha256": "c04fef4a9c7a5f4b86393bd2fb6fbe07fb1de9b7603e8132bf0d3c0b6909b7a8",
+      "startup_seconds": 68.60458314104471,
+      "decode_tok_s": 74.76089654668905,
+      "effective_tok_s": 57.69274108128817,
+      "cancellation_checks": 0,
+      "dense_t8_benchmark_windows": 0
+    }
+  ],
+  "comparisons": [
+    {
+      "reference": "1339-default-main",
+      "candidate": "1339-default-new",
+      "complete": true,
+      "same_input": true,
+      "exact_ids": true,
+      "first_difference_zero_based": null,
+      "initial_function_ids_equal": true,
+      "timing_scope": "Single observations; dynamic placement history and draft work must be reviewed before interpreting rate differences."
+    },
+    {
+      "reference": "current-q8-t8-final-control",
+      "candidate": "current-q8-t8-final-candidate",
+      "complete": true,
+      "same_input": true,
+      "exact_ids": false,
+      "first_difference_zero_based": 16,
+      "initial_function_ids_equal": true,
+      "timing_scope": "Single observations; dynamic placement history and draft work must be reviewed before interpreting rate differences."
+    },
+    {
+      "reference": "current-t8-fallback-t1-on0",
+      "candidate": "current-t8-fallback-t1-on1",
+      "complete": true,
+      "same_input": true,
+      "exact_ids": true,
+      "first_difference_zero_based": null,
+      "initial_function_ids_equal": false,
+      "timing_scope": "Single observations; dynamic placement history and draft work must be reviewed before interpreting rate differences."
+    },
+    {
+      "reference": "current-t8-fallback-t4-on0",
+      "candidate": "current-t8-fallback-t4-on1",
+      "complete": true,
+      "same_input": true,
+      "exact_ids": true,
+      "first_difference_zero_based": null,
+      "initial_function_ids_equal": false,
+      "timing_scope": "Single observations; dynamic placement history and draft work must be reviewed before interpreting rate differences."
+    }
+  ],
+  "all_cases_complete": true,
+  "scope": "Complete benchmark token arrays compared without truncation. No broad model-quality or whole-engine speedup verdict."
+}

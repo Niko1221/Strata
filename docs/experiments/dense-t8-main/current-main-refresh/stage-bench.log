@@ -1,0 +1,4 @@
+PASS dense T8: relative RMS 2.30370893e-07 maxabs 1.66893005e-06; scalarbounds,zero row
+RESULT mmq=0 k=2560 n=10240 t=8 replays=256 stage_us=20.543751
+RESULT mmq=1 k=2560 n=10240 t=8 replays=256 stage_us=14.330000
+PASS dense T8: relative RMS 2.30370893e-07 maxabs 1.66893005e-06; scalarbounds,zero row
