@@ -160,7 +160,8 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
 - **Long prompts:** Strata reads the first message of a chat in full, about 1 minute per 30,000 tokens. Follow-up
   messages start in seconds.
 
-More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
+More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it),
+[every flag and setting](docs/CONFIGURATION.md).
 
 ## Something went wrong?
 
