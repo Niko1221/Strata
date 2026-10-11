@@ -7501,15 +7501,21 @@ int main(int argc, char **argv) try {
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
             if (!conversations.make_room(estimate, held)) {
+                // The K/V this park took was not used. Handing it back is what lets the next park of the same
+                // conversation reuse it; dropping it makes that park copy the whole conversation again.
+                reuse.stages = std::move(stage_reuse);
+                conversations.put_reuse(std::move(reuse));
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
             }
+            // Hoisted above the try: the refusal lines report what was asked for, and a catch handler cannot
+            // see locals of the block it guards. Arithmetic on values already computed above.
+            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+            const size_t retained = reuse.bytes() + stage_retained;
+            const size_t additional = estimate > retained ? estimate - retained : 0;
             const auto t0 = Clock::now();
             try {
-                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
-                const size_t retained = reuse.bytes() + stage_retained;
-                const size_t additional = estimate > retained ? estimate - retained : 0;
                 if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
                         additional, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, or telemetry unavailable)\n",
@@ -7544,10 +7550,15 @@ int main(int argc, char **argv) try {
                              stored ? "parked" : "skipped", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
-            } catch (const std::bad_alloc&) {
+            } catch (const std::bad_alloc& e) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
-                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
+                // The bare "allocation failed; skip parking" named no region and no cause, so a refusal could not
+                // be attributed to one. This region is the capture, after the admission passed.
+                std::fprintf(stderr, "strata serve: conversation cache: allocation failed at the capture; skip parking: %s\n", e.what());
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the capture (not an allocation: %s)\n",
+                             e.what());
             }
             return true;
         };
@@ -7555,8 +7566,16 @@ int main(int argc, char **argv) try {
         // ending the server
         auto park_current = [&](size_t held) -> bool {
             try { return park_current_body(held); }
-            catch (const std::bad_alloc&) {
-                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
+            catch (const std::bad_alloc& e) {
+                // This handler also covers the checkpoint split and the stage byte estimates, which run before any
+                // admission - the region no admission gate can explain, and the only one left that can still produce
+                // the unattributed line. Say which region it was.
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the checkpoint split (bad_alloc: %s)\n",
+                             e.what());
+                return true;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the checkpoint split (not an allocation: %s)\n",
+                             e.what());
                 return true;
             }
         };

@@ -64,6 +64,26 @@ std::optional<HostMemoryReading> sample_host_memory();
 
 std::optional<uint64_t> available_host_bytes();
 
+/// What the machine says about an allocation of `bytes` right now. Called from a bad_alloc handler, after the
+/// failed call and before anything else allocates, to tell a size the machine cannot commit from one that was
+/// refused by the moment. Reserve first (address space only), then commit: reserving without committing says
+/// the commit limit is the cause. `probed` is false for a size of 0 - a park that reuses all of its K/V asks
+/// for nothing new, and there is nothing to ask the machine about.
+struct AllocationProbe {
+    bool probed = false;
+    bool reserved = false;
+    bool committed = false;
+    unsigned long error = 0;        ///< GetLastError() / errno of the failing step
+};
+AllocationProbe conversation_memory_probe(size_t bytes);
+
+inline const char* conversation_memory_probe_text(const AllocationProbe& p) {
+    if (!p.probed) return "nothing new was requested, so the size is not the cause";
+    if (p.reserved && !p.committed) return "the address space reserves but will not commit: commit is exhausted";
+    if (!p.reserved) return "the address space itself cannot be reserved";
+    return "the same size allocates now, so the failure was transient or came from elsewhere";
+}
+
 std::optional<uint64_t> conversation_mem_available(std::istream& meminfo);
 
 inline bool conversation_memory_admit(std::optional<uint64_t> available,

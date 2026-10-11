@@ -62,5 +62,37 @@ int main() {
     check(available.has_value() && *available <= physical.ullTotalPhys,
           "Windows provider returns a known, physically bounded sample");
 #endif
+    {
+        // The probe is what tells a size the machine cannot commit from one refused by the moment, and it
+        // runs in the bad_alloc handler. A size of 0 was never worth asking about: a park that reuses all
+        // of its K/V asks for nothing new routinely, and the probe must not imply a cause it did not measure.
+        const AllocationProbe none = conversation_memory_probe(0);
+        check(!none.probed && !none.reserved && !none.committed && none.error == 0,
+              "a zero-byte request is not probed");
+        check(std::string(conversation_memory_probe_text(none)).find("nothing new") != std::string::npos,
+              "the zero-byte probe says the size is not the cause");
+
+        const size_t modest = 4 << 20;
+        const AllocationProbe fits = conversation_memory_probe(modest);
+        check(fits.probed && fits.reserved && fits.committed && fits.error == 0,
+              "a size this machine has room for reserves and commits");
+        check(std::string(conversation_memory_probe_text(fits)).find("allocates now") != std::string::npos,
+              "the text for a size that fits says so");
+
+        // The distinction the field needs: reserved-but-not-committed is the commit limit, and only a
+        // fabricated probe can show it here - the real machine either has the room or does not.
+        AllocationProbe commit_short;
+        commit_short.probed = commit_short.reserved = true;
+        check(std::string(conversation_memory_probe_text(commit_short)).find("commit is exhausted") != std::string::npos,
+              "a size that reserves but will not commit is reported as commit exhaustion");
+        AllocationProbe no_space;
+        no_space.probed = true;
+        check(std::string(conversation_memory_probe_text(no_space)).find("address space") != std::string::npos,
+              "a size that cannot even be reserved is reported as address space");
+
+        // The real provider is not assumed to be empty: what it says is either a usable sample or unknown.
+        const auto room = available_host_bytes();
+        if (room) check(conversation_memory_probe(*room).probed, "the probe reports for the room the guard measured");
+    }
     std::printf("conversation_memory_test: %d checks passed\n", checks);
 }

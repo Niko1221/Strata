@@ -384,5 +384,58 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // What an admission may count as "the cache can pay for it" must be exactly what evict_oldest() can
+        // free. bytes() also counts the retained K/V and any entry holding a pinned shared prefix, and an
+        // admission bounded by that spends conversations that cannot help and still refuses.
+        ConversationCache cache(1ull << 30, 4);
+        auto with_pin = [](bool pin, std::initializer_list<int32_t> ids) {
+            SavedConversation s = image(ids);
+            ConversationCheckpoint c;
+            c.ids = ids;
+            c.pinned = pin;
+            c.gdn.resize(64, 1);
+            s.checkpoints = {c};
+            return s;
+        };
+        check(cache.put(with_pin(false, {1, 2, 3})), "park an evictable conversation");
+        const size_t loose = cache.bytes();
+        check(cache.put(with_pin(true, {9, 8, 7})) && cache.size() == 2, "park a second, pinned one");
+        check(cache.evictable_bytes() == loose && cache.bytes() > loose,
+              "only the unpinned entry counts as freeable");
+        check(cache.evict_oldest() && cache.evictable_bytes() == 0,
+              "evicting the freeable entry leaves nothing freeable, the pinned one stays");
+        check(cache.size() == 1 && cache.bytes() > 0, "the pinned entry is still parked and still charged");
+
+        // A park took a candidate and then refused on its own budget: handing it back is what lets the next
+        // park reuse it instead of copying the whole conversation again.
+        ConversationKv kv;
+        kv.k.resize(1 << 12, 3);
+        ConversationKvReuse candidate;
+        candidate.kv = {kv};
+        candidate.captured_tokens = candidate.unchanged_tokens = 4096;
+        const size_t candidate_bytes = candidate.bytes();
+        cache.put_reuse(std::move(candidate));
+        check(cache.retained_bytes() == candidate_bytes && cache.bytes() >= candidate_bytes,
+              "an unused candidate is handed back and charged against the cache");
+        ConversationKvReuse again;
+        again.kv = {kv};
+        again.captured_tokens = again.unchanged_tokens = 4096;
+        cache.put_reuse(std::move(again));
+        check(cache.retained_bytes() == candidate_bytes, "a second candidate does not replace the one held");
+        ConversationKvReuse taken = cache.take_reuse();
+        check(taken.kv.size() == 1 && cache.retained_bytes() == 0, "taking it leaves nothing retained");
+        cache.put_reuse(std::move(taken));
+        check(cache.retained_bytes() == candidate_bytes, "taking and handing back round-trips");
+        ConversationKvReuse empty;
+        cache.put_reuse(std::move(empty));
+        check(cache.retained_bytes() == candidate_bytes, "an empty candidate is not stored");
+        ConversationCache tight(candidate_bytes / 2, 2);
+        ConversationKvReuse too_big;
+        too_big.kv = {kv};
+        too_big.captured_tokens = too_big.unchanged_tokens = 4096;
+        tight.put_reuse(std::move(too_big));
+        check(tight.retained_bytes() == 0, "a candidate over the budget is not retained (as with retain())");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

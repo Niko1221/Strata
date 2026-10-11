@@ -230,6 +230,12 @@ public:
         if (reuse_.unchanged_tokens <= 0) reuse_ = {};
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
+    /// Hand back K/V a park took and then did not use, so the next park can still reuse it. A cache that
+    /// already holds a candidate keeps that one; the budget bounds this exactly as it bounds retain().
+    void put_reuse(ConversationKvReuse&& reuse) {
+        if (enabled() && reuse_.kv.empty() && !reuse.kv.empty() && reuse.bytes() <= budget_ - bytes_)
+            reuse_ = std::move(reuse);
+    }
     size_t retained_bytes() const { return reuse_.bytes(); }
     bool can_fit(size_t incoming, size_t held = 0) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
@@ -301,6 +307,16 @@ public:
 
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
+
+    /// The bytes evict_oldest() can actually give back: the parked entries that do not hold a pinned shared
+    /// prefix. bytes() is not this - it also counts the retained K/V and the pinned entries, so an admission
+    /// that bounds itself by bytes() concludes the cache could pay for a snapshot it cannot make room for.
+    size_t evictable_bytes() const {
+        size_t sum = 0;
+        for (const auto& e : entries_)
+            if (!e.pinned()) sum += e.bytes();
+        return sum;
+    }
 
     // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
     // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
