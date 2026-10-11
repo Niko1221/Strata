@@ -4843,7 +4843,8 @@ int main(int argc, char** argv) {
         // in the resident arena; their streamed experts go through the pinned staging ring.  A Linux driver has no
         // such limit, so there the whole arena is pinned (#253).  STRATA_ARENA_PIN_GIB overrides both ways.
         const int pin_env = strata::core::arena_pin_cap_gib();   // -1 unset, -2 "auto" (#243, Windows sliced pin)
-        const bool pin_wddm_cap = pin_env < 0 && (o.expert_cache_remote[0] > 0 || multi_gpu) && under_wddm();
+        const bool pin_wddm_cap = pin_env < 0 &&
+                                  (o.peer_device >= 1 || o.expert_cache_remote[0] > 0 || multi_gpu) && under_wddm();
         const uint64_t pin_limit = pin_env >= 0 ? (uint64_t) pin_env << 30 : pin_wddm_cap ? (8ull << 30) : 0;
         if (pin_env >= 0)
             std::fprintf(stderr, "strata generate: STRATA_ARENA_PIN_GIB=%d: %s\n", pin_env,
