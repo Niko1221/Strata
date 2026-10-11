@@ -5,16 +5,21 @@ Measured on 2026-10-11 by **chiangww** (GitHub). Unsloth UD-IQ4_XS on Strata v0.
 (32 GiB page-locked expert complement) on a machine whose third GPU hangs off a
 USB4/Thunderbolt dock.
 
-Headline: **prompt 918–1,369 tok/s at 30K–120K fresh tokens** (single stream,
-thinking off), **decode median 66.8 tok/s** (range 60.8–83.2 across both suites),
-**needle 6/6** at 32k/128k. The USB4 card (PCIe probe 3.8 GB/s vs 28.9/14.4
-GB/s internal) is a real but surmountable bottleneck: `--pipeline-windows 2`
-overlapping the three stages recovered decode to the same ~67 tok/s the machine
-gets on two internal cards at IQ3_S.
+Headline (pipeline active, no repetition penalty): **prompt 852–1,281 tok/s at
+30K–120K fresh tokens** (single stream, thinking off), **decode median 75.9
+tok/s** on the short suite (67.1–86.7), **needle 6/6** at 32k/128k.
 
-Main limitation: one engine session, one repetition per long-context length;
-the negative result included (STRATA_SPLIT_RING=384, −22% prefill median here)
-was measured on the same session.
+The transferable finding: **`--pipeline-windows` silently decodes serially
+whenever a request carries `penalty_last_n > 0`** — so a llama.cpp-style
+default sampling set (`repeat_penalty 1.03`) leaves the flag a no-op with only
+a once-per-reason log line. We measured both arms on this rig: pipeline ON is
+worth **+3.4–6% decode median** here (the decode bottleneck is expert file
+fetches, not hand-off, so far from the +33% measured on 4x R9700); what the
+overlap does hide is the per-window hand-off across the USB4 stage.
+
+Main limitations: two engine sessions (one per arm), one repetition per
+long-context length; the arms also differ in generated text (no penalty vs
+1.03), so the A/B is regime-level, not strictly single-variable.
 
 ## Hardware and software
 
@@ -57,13 +62,20 @@ was measured on the same session.
   drafts up to 4 + extensions")
 - Context 204,800; KV `k8v4`; expert cache auto (GPU0 2,960 / GPU1 4,370 /
   GPU2 3,348 slots); low-RAM mode `--resident-experts --resident-budget-gib 32`
-  (30.9 GiB expert complement, 32 GiB page-locked); conversation cache
-  5,120 MiB / 8 slots; `--vram-reserve-mib 750`; `--pipeline-windows 2`
+  (30.9 GiB expert complement, 32 GiB page-locked); `--vram-reserve-mib 750`;
+  `--pipeline-windows 2`
+- Conversation cache 5,120 MiB / 8 slots in the serial arm, 6,144 MiB in the
+  pipeline arm (raised between sessions; not expected to affect decode)
 - Abliterated behavior via control vector:
   `Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0`, project, per-layer,
   layers 1..47 (47 steered)
-- Sampling defaults (server config): temp 0.7, top_p 1.0, top_k 64, min_p 0.08,
-  repetition_penalty 1.03; `reasoning_budget_tokens` 5120 (unused here, thinking off)
+- Sampling:
+  - **pipeline arm (headline)**: server defaults temp 0.7, top_p 1.0, top_k 64,
+    min_p 0.08 — **no `repeat_penalty`** ([config-rep-off.json](config-rep-off.json));
+    clients sending `repeat_penalty: 1.0` did not trigger the serial fallback
+  - **serial arm**: same plus `repetition_penalty 1.03` server-side
+    ([config.json](config.json))
+  - `reasoning_budget_tokens` 5120 (unused here, thinking off)
 - Environment: `STRATA_PREFILL_HELP=1`, `STRATA_SSD_KEEPALIVE=0`,
   `STRATA_IO_PREFETCH=1`, `STRATA_PREFILL_CPU_SHARE=auto`
 - No `--calibrate`, no experimental speed projection, no `--batch`.
@@ -80,36 +92,37 @@ strata --serve \
   --resident-experts --resident-budget-gib 32 \
   --vision --vram-reserve-mib 750 \
   --pipeline-windows 2 \
-  --conversation-cache-mib 5120 --conversation-cache-slots 8 \
+  --conversation-cache-mib 6144 --conversation-cache-slots 8 \
   --control-vector-scaled models/IQ3_S/Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0 \
   --control-vector-layer-range 1 47 --cvec-mode project --cvec-dir per-layer \
   --layer-split 32,41        # GPUs 0,1,2; CUDA0 layers 0-31, CUDA1 32-40, CUDA2 41-47 + head
 ```
 
-Full server config (paths abbreviated, no credentials): [config.json](config.json).
-Startup log (engine 0.1.42, one session, everything below measured in it):
-[engine-log.txt](engine-log.txt).
+Startup logs: [engine-log-rep-off.txt](engine-log-rep-off.txt) (pipeline arm,
+headline; contains **no** "decodes serially" line across 20 requests) and
+[engine-log.txt](engine-log.txt) (serial arm, `repeat_penalty 1.03`, warning
+present).
 
 ## Method
 
 Two Python 3 stdlib clients against the OpenAI-compatible streaming API over
 LAN (scripts not attached; the workloads are fully described here):
 
-- **Short suite** (`results-short.txt`): 10 general questions in Traditional
+- **Short suite** (`results-short*.txt`): 10 general questions in Traditional
   Chinese (TCP handshake steps, birthday probability for 30 people, quicksort
   without built-in sort, REST vs GraphQL + N+1, a two-pipe reservoir equation,
   the uncertainty principle, a monthly top-3 SQL window-function query,
   self-attention math, a knights-and-knaves logic puzzle, PostgreSQL MVCC).
   One user message each, thinking off (`chat_template_kwargs.enable_thinking:
   false`), `max_tokens` 2,048, sequential single stream.
-- **Long fresh-prompt ramp** (`results-long.txt`): targets 15,000→120,000
+- **Long fresh-prompt ramp** (`results-long*.txt`): targets 15,000→120,000
   tokens in 15K steps. Context = a long system-design document in Traditional
   Chinese built by cycling 12 fixed technical paragraphs (order rotated per run
   by a seeded RNG) until the target length, with one needle fact planted at
   ~50% depth; the question asks to extract the needle and summarize the
   document. `max_tokens` 512. **Every request carries a random 32-hex salt at
   the front**, so no run reuses a prefix — engine logs show `reused = 0` on all
-  eight runs. Character counts are resized to hit targets using measured
+  runs. Character counts are resized to hit targets using measured
   `prompt_tokens` from earlier runs.
 
 Both suites send one warm-up request first (absorbs CUDA graph capture / KV
@@ -117,38 +130,77 @@ allocation; model loading is not in any timed run). Timing is client-side:
 TTFT = first non-empty streamed content delta; `prefill tok/s = prompt_tokens / TTFT`;
 `decode tok/s = completion_tokens / (total − TTFT)` using the usage counters the
 server reports (`stream_options.include_usage`). LAN latency is sub-millisecond.
-The engine's own log lines agree with the client numbers to within ~1%
-(e.g. 120,081 tokens in 87.69 s = 1,370 tok/s both sides). Expert cache state:
-one warm session — the adaptive tier and pinned complement were trained by
-prior production traffic (long agent conversations), not reset for these runs;
-the ramp's own fresh prompts kept the page cache hot as it went.
+The engine's own log lines agree with the client numbers to within ~1%.
+Expert cache state: warm sessions in both arms — the adaptive tier and pinned
+complement were trained by prior production traffic (long agent conversations),
+not reset for these runs; the ramp's own fresh prompts kept the page cache hot
+as it went.
 
 ## Results
 
-Short suite (`results-short.txt`, 10 questions, prompt 36–69 tokens, output 435–2,048):
+### Pipeline arm (headline; no repetition penalty, `--pipeline-windows 2` active)
 
-| Configuration | Prompt tok/s median / range | Decode tok/s median / range | TTFT s median / range |
-| --- | ---: | --- | --- |
-| UD-IQ4_XS 3-GPU split, thinking off, ≤2,048 out | 66.7 (5.8–105.3, noise-dominated at 36–69 tokens) | **71.6** (65.1–83.2) | 0.74 (0.41–7.20) |
+Short suite (`results-short-rep-off.txt`, 10 questions, prompt 36–69 tokens,
+output 514–2,048):
 
-Long fresh-prompt ramp (`results-long.txt`, one run per length, `reused = 0` on all):
+| Configuration | Decode tok/s median / range | TTFT s median / range |
+| --- | ---: | --- |
+| UD-IQ4_XS 3-GPU split, pipeline ON, thinking off, ≤2,048 out | **75.9** (67.1–86.7) | 2.03 (0.57–2.49) |
+
+TTFT on 36–69-token prompts was erratic (0.6–2.5 s; first eight requests ~2 s,
+last two ~0.6 s) — prefill at these sizes is overhead- and noise-dominated;
+listed for completeness, not as a throughput figure.
+
+Long fresh-prompt ramp (`results-long-rep-off.txt`, one run per length,
+`reused = 0` on all):
 
 | Actual prompt tokens | Reused | Generated | Prefill tok/s | Decode tok/s | TTFT s | Total s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 13,777 | 0 | 246 | 529.0 | 66.3 | 26.0 | 29.8 |
-| 30,041 | 0 | 424 | 918.2 | 69.1 | 32.7 | 38.9 |
-| 45,096 | 0 | 174 | 1,023.7 | 65.3 | 44.1 | 46.7 |
-| 60,127 | 0 | 206 | 1,087.7 | 64.2 | 55.3 | 58.5 |
-| 75,068 | 0 | 131 | 962.3 | 71.5 | 78.0 | 79.8 |
-| 90,112 | 0 | 157 | 1,138.0 | 60.8 | 79.2 | 81.8 |
-| 105,071 | 0 | 397 | 1,202.9 | 64.4 | 87.4 | 93.5 |
-| 120,081 | 0 | 395 | **1,369.4** | 67.3 | 87.7 | 93.6 |
+| 13,777 | 0 | 283 | 545.4 | 69.1 | 25.3 | 29.4 |
+| 30,038 | 0 | 229 | 851.8 | 69.1 | 35.3 | 38.6 |
+| 45,097 | 0 | 347 | 1,020.1 | 67.5 | 44.2 | 49.4 |
+| 60,134 | 0 | 174 | 1,048.1 | 71.0 | 57.4 | 59.8 |
+| 75,062 | 0 | 241 | 982.4 | 68.6 | 76.4 | 79.9 |
+| 90,110 | 0 | 123 | 1,262.1 | 61.4 | 71.4 | 73.4 |
+| 105,076 | 0 | 141 | 1,281.3 | 64.9 | 82.0 | 84.2 |
+| 120,080 | 0 | 219 | 1,262.4 | 66.6 | 95.1 | 98.4 |
 
-Prefill keeps rising with length (amortizing expert streaming); decode is flat
-60.8–71.5 tok/s across 13.8K→120K context. Draft acceptance over the whole
-session ran 64–70%.
+Decode stays 61–71 tok/s across 13.8K→120K context; draft acceptance 62%.
 
-### Negative result: STRATA_SPLIT_RING=384 (same session, same ramp)
+### A/B: the `penalty_last_n` serial fallback
+
+With `--pipeline-windows 2`, the engine decodes a request **serially** if it
+carries `penalty_last_n > 0` (the once-printed line: `a request with repetition
+penalties (penalty_last_n) decodes serially`). Sending `repeat_penalty: 1.0`
+does **not** trigger it — the fallback keys on the history window, not on the
+penalty value. Both arms are full 20-request sessions on the same machine and
+engine config, one session each:
+
+| Arm | Short decode median | Ramp decode median | Engine-side decode median | Acceptance |
+| --- | ---: | ---: | ---: | ---: |
+| serial (`repeat_penalty 1.03`) | 71.6 (65.1–83.2) | 65.8 (60.8–71.5) | 67.5 (60.3–83.1) | 0.65 |
+| pipeline (no penalty) | **75.9** (67.1–86.7) | **68.0** (61.4–71.0) | **69.8** (60.5–86.6) | 0.62 |
+
+Pipeline overlap is worth **+3.4% to +6% decode median** on this rig. Modest
+because the decode bottleneck here is expert file fetches (engine-side stats
+show decode waited 10–20% of wall time in fetches), which overlap does not
+remove; what it does hide is the per-window hand-off across the USB4 stage.
+Caveats: dropping the 1.03 penalty also changes the sampled text (acceptance
+0.65 → 0.62), and the conversation cache differs between the sessions
+(5,120 vs 6,144 MiB), so the delta is a regime-level number.
+Suggested consideration: a request whose penalty is exactly 1.0 is a no-op —
+skipping the penalty history for it (instead of only checking
+`penalty_last_n > 0`) would keep pipeline mode on for llama.cpp-style default
+sampling sets, which is what most clients send.
+
+### Serial arm detail (`repeat_penalty 1.03`; also the baseline for the SPLIT_RING A/B)
+
+Ramp (`results-long.txt`): prefill 529.0 / 918.2 / 1,023.7 / 1,087.7 / 962.3 /
+1,138.0 / 1,202.9 / **1,369.4** tok/s at 13.8K/30K/45K/60K/75K/90K/105K/120K;
+decode 60.8–71.5 tok/s; acceptance 64–70%. Short suite (`results-short.txt`):
+decode median 71.6 (65.1–83.2).
+
+### Negative result: STRATA_SPLIT_RING=384 (same serial session, same ramp)
 
 `results-long-split-ring-384.txt` — only change: added `STRATA_SPLIT_RING=384`
 (lend ring grows 96→384 slots; borrowed slots 4,624→5,864). Same targets, fresh
@@ -157,24 +209,24 @@ salts. Prefill median **887 vs 1,056 tok/s (−16%)**, per-length gaps +9% to
 borrowed slots come out of a 42%-resident expert tier, and re-reading them
 during chunks costs more than the ring saves. The author's R9700 numbers
 (+2.3%, file reads −65%) do not transfer to a USB4-eGPU split with tight RAM.
-Reverted after this A/B; baseline is the table above.
+Reverted after this A/B.
 
 ### Correctness checks
 
-- `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90`:
+- `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90` (serial session):
   **6/6 found** (`needles.json`); 32.8K prompts 38–46 s, 125.5K prompts 103–209 s
   (the 209 s outlier is the depth-90 run right after a fresh 120K ramp —
   page-cache pressure, not a recall failure).
 - The short suite doubles as qualitative spot-checks (reasoning, code, SQL);
   answers complete and on-topic at temp 0.7; no stalls, all runs finished with
-  `stop`.
+  `stop`, in both arms.
 
 ## Memory observations
 
 - VRAM, idle snapshot with everything loaded: GPU0 15,593 / 16,303 MiB,
   GPU1 15,549 / 16,311, GPU2 15,725 / 16,311; engine reports 339 MiB free on
   GPU0 after all captures (`--pipeline-windows 2` holds 309 MiB back on CUDA0
-  itself for the second verifier + GDN snapshots). No stalls, no OOM.
+  itself for the second verifier + GDN snapshots). No stalls, no OOM, both arms.
 - RAM: 32 GiB page-locked expert complement built at startup in 33 s (engine
   released the model's cached pages first); ~10.8 GiB left for the OS page
   cache against a 23.4 GiB file-tier expert footprint — the startup WARNING
@@ -183,13 +235,14 @@ Reverted after this A/B; baseline is the table above.
 
 ## Limitations
 
-- One engine session; one repetition per long-context length (the short suite
-  is 10 distinct questions, not repeats of one).
+- Two engine sessions (one per A/B arm); one repetition per long-context length
+  (the short suite is 10 distinct questions, not repeats of one).
 - Thinking/reasoning off; vision loaded but untested; TTFT includes tokenizer
   time and LAN, excludes queueing (single client).
 - The expert cache and page cache were warmed by real prior traffic — a cold
   first-run-after-boot number will be lower (observed ~1,690 tok/s on 165K for
   a cold-cache 0.1.41 first prompt vs 2,000+ warm).
-- Decode was not compared against `--pipeline-windows` off within this session;
-  the two-card IQ3_S sibling config of this machine measures ~75 tok/s median,
-  and without pipeline overlap this three-card IQ4_XS split ran clearly slower.
+- The pipeline-vs-serial A/B changes generated text between arms (penalty
+  removed; acceptance 0.65 → 0.62) and conversation-cache size (5,120 vs
+  6,144 MiB); the decode delta is a regime-level number, not a strictly
+  single-variable one.
