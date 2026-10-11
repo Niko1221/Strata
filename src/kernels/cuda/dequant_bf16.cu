@@ -3,6 +3,7 @@
 // Arithmetic transcribed from ggml/src/ggml-quants.c at the pinned llama.cpp (MIT License, Copyright (c) 2023-2026
 // The ggml authors): dequantize_row_q2_0/q4_0/q5_0/q8_0/q3_K/q4_K/q5_K/q6_K/iq4_nl/iq4_xs.
 #include "strata/kernels/dequant_bf16.hpp"
+#include "strata/core/tc_sm75.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_fp16.h>
@@ -166,13 +167,28 @@ __device__ __forceinline__ void group32(const uint8_t* row_blocks, int gi_in_row
     }
 }
 
-template <int TYPE, typename T>
+/// `VEC` (fork, Daily be4cf1c, sm_75 only): the group is dequantised into a register buffer and flushed with 16-byte
+/// stores.  The plain form writes each element where it is computed, which for a warp means 32 store instructions
+/// whose lanes are 64 bytes apart - 32 two-byte transactions per instruction.  **The values are identical** (the
+/// same arithmetic, the same order), only the stores are wider; the Turing build measured this kernel at 18% of the
+/// row's bandwidth.  (0.1.42's Q8_0 kernel below already writes coalesced and is left as it is.)
+template <int TYPE, typename T, bool VEC>
 __global__ void dequant_kernel(const uint8_t* __restrict__ blocks, int64_t row_bytes, int64_t row0, int64_t rows,
                                int64_t groups_per_row, int64_t ld, T* __restrict__ out) {
     const int64_t g = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (g >= rows * groups_per_row) return;
     const int64_t r = g / groups_per_row, gi = g % groups_per_row;
-    group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * ld + gi * 32);
+    T* dst = out + r * ld + gi * 32;
+    if constexpr (!VEC) {
+        group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, dst);
+    } else {
+        __align__(16) T buf[32];        // the uint4 flush below reads it as 16-byte vectors
+        group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, buf);
+        // 32 elements: 64 B for the 16-bit forms (4 x uint4), 128 B for the float one (8 x uint4)
+        constexpr int CHUNKS = (sizeof(T) == 2 ? 4 : 8);
+#pragma unroll
+        for (int c = 0; c < CHUNKS; ++c) reinterpret_cast<uint4*>(dst)[c] = reinterpret_cast<const uint4*>(buf)[c];
+    }
 }
 
 // Q8_0 with four threads per block, 8 values each: the warp reads 8 consecutive blocks and writes 512 consecutive
@@ -237,7 +253,19 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
         if (e != cudaSuccess) { std::fprintf(stderr, "dequant launch: %s\n", cudaGetErrorString(e)); std::exit(1); }
         return;
     }
-#define STRATA_DQ(TY) dequant_kernel<TY, T><<<grid, 256, 0, st>>>(p, row_bytes, row0, rows, gpr, ld, out); break
+    // sm_75 (and only cc 7.5) takes the vectorised-store form when every group's 32 outputs start on 16 bytes (an
+    // aligned `out` and a row stride of whole 16-byte units); every other SM model keeps the plain kernel
+    int dev = 0, cmaj = 0, cmin = 0;
+    const bool vec = (reinterpret_cast<uintptr_t>(out) & 15) == 0 && ((uint64_t) ld * sizeof(T)) % 16 == 0 &&
+                     cudaGetDevice(&dev) == cudaSuccess &&
+                     cudaDeviceGetAttribute(&cmaj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                     cudaDeviceGetAttribute(&cmin, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess &&
+                     strata::core::tc_sm75_enabled(cmaj, cmin);
+    if (!vec) cudaGetLastError();
+#define STRATA_DQ(TY)                                                                                     \
+    if (vec) dequant_kernel<TY, T, true><<<grid, 256, 0, st>>>(p, row_bytes, row0, rows, gpr, ld, out);    \
+    else dequant_kernel<TY, T, false><<<grid, 256, 0, st>>>(p, row_bytes, row0, rows, gpr, ld, out);       \
+    break
     switch (type) {
     case 2: STRATA_DQ(2);
     case 6: STRATA_DQ(6);
