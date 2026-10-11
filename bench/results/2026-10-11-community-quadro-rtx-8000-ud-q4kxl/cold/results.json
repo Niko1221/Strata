@@ -1,0 +1,378 @@
+{
+ "summary": {
+  "~4K prompt tokens": {
+   "runs": 1,
+   "prompt_tokens": [
+    2986
+   ],
+   "reused": [
+    0
+   ],
+   "read": [
+    2986
+   ],
+   "generated": [
+    256
+   ],
+   "prompt_tps": {
+    "runs": [
+     612.2
+    ],
+    "median": 612.2,
+    "min": 612.2,
+    "max": 612.2
+   },
+   "decode_tps": {
+    "runs": [
+     49.1
+    ],
+    "median": 49.1,
+    "min": 49.1,
+    "max": 49.1
+   },
+   "ttft_s": {
+    "runs": [
+     4.89
+    ],
+    "median": 4.89,
+    "min": 4.89,
+    "max": 4.89
+   },
+   "total_s": {
+    "runs": [
+     10.11
+    ],
+    "median": 10.11,
+    "min": 10.11,
+    "max": 10.11
+   },
+   "hit_rate_pct": {
+    "runs": [
+     97.1
+    ],
+    "median": 97.1,
+    "min": 97.1,
+    "max": 97.1
+   },
+   "draft_accept_pct": {
+    "runs": [
+     76.6
+    ],
+    "median": 76.6,
+    "min": 76.6,
+    "max": 76.6
+   },
+   "vram_peak_mib": {
+    "runs": [
+     48156
+    ],
+    "median": 48156,
+    "min": 48156,
+    "max": 48156
+   },
+   "power_max_w": {
+    "runs": [
+     217.6
+    ],
+    "median": 217.6,
+    "min": 217.6,
+    "max": 217.6
+   },
+   "temp_max_c": {
+    "runs": [
+     59
+    ],
+    "median": 59,
+    "min": 59,
+    "max": 59
+   }
+  },
+  "~32K prompt tokens": {
+   "runs": 1,
+   "prompt_tokens": [
+    30770
+   ],
+   "reused": [
+    0
+   ],
+   "read": [
+    30770
+   ],
+   "generated": [
+    256
+   ],
+   "prompt_tps": {
+    "runs": [
+     1019.0
+    ],
+    "median": 1019.0,
+    "min": 1019.0,
+    "max": 1019.0
+   },
+   "decode_tps": {
+    "runs": [
+     59.6
+    ],
+    "median": 59.6,
+    "min": 59.6,
+    "max": 59.6
+   },
+   "ttft_s": {
+    "runs": [
+     30.25
+    ],
+    "median": 30.25,
+    "min": 30.25,
+    "max": 30.25
+   },
+   "total_s": {
+    "runs": [
+     34.55
+    ],
+    "median": 34.55,
+    "min": 34.55,
+    "max": 34.55
+   },
+   "hit_rate_pct": {
+    "runs": [
+     98.9
+    ],
+    "median": 98.9,
+    "min": 98.9,
+    "max": 98.9
+   },
+   "draft_accept_pct": {
+    "runs": [
+     90.7
+    ],
+    "median": 90.7,
+    "min": 90.7,
+    "max": 90.7
+   },
+   "vram_peak_mib": {
+    "runs": [
+     48156
+    ],
+    "median": 48156,
+    "min": 48156,
+    "max": 48156
+   },
+   "power_max_w": {
+    "runs": [
+     210.8
+    ],
+    "median": 210.8,
+    "min": 210.8,
+    "max": 210.8
+   },
+   "temp_max_c": {
+    "runs": [
+     67
+    ],
+    "median": 67,
+    "min": 67,
+    "max": 67
+   }
+  },
+  "~128K prompt tokens": {
+   "runs": 1,
+   "prompt_tokens": [
+    128270
+   ],
+   "reused": [
+    0
+   ],
+   "read": [
+    128270
+   ],
+   "generated": [
+    256
+   ],
+   "prompt_tps": {
+    "runs": [
+     899.1
+    ],
+    "median": 899.1,
+    "min": 899.1,
+    "max": 899.1
+   },
+   "decode_tps": {
+    "runs": [
+     59.5
+    ],
+    "median": 59.5,
+    "min": 59.5,
+    "max": 59.5
+   },
+   "ttft_s": {
+    "runs": [
+     142.85
+    ],
+    "median": 142.85,
+    "min": 142.85,
+    "max": 142.85
+   },
+   "total_s": {
+    "runs": [
+     147.15
+    ],
+    "median": 147.15,
+    "min": 147.15,
+    "max": 147.15
+   },
+   "hit_rate_pct": {
+    "runs": [
+     99.3
+    ],
+    "median": 99.3,
+    "min": 99.3,
+    "max": 99.3
+   },
+   "draft_accept_pct": {
+    "runs": [
+     84.3
+    ],
+    "median": 84.3,
+    "min": 84.3,
+    "max": 84.3
+   },
+   "vram_peak_mib": {
+    "runs": [
+     48156
+    ],
+    "median": 48156,
+    "min": 48156,
+    "max": 48156
+   },
+   "power_max_w": {
+    "runs": [
+     209.3
+    ],
+    "median": 209.3,
+    "min": 209.3,
+    "max": 209.3
+   },
+   "temp_max_c": {
+    "runs": [
+     71
+    ],
+    "median": 71,
+    "min": 71,
+    "max": 71
+   }
+  }
+ },
+ "runs": [
+  {
+   "run_id": "4k-r1-1791733757",
+   "target_tokens": 4096,
+   "seed": 20261011,
+   "ts": "2026-10-11T15:49:27+0000",
+   "prompt_chars": 14915,
+   "max_tokens": 256,
+   "prompt_n": 2986,
+   "prompt_ms": 4877.1,
+   "prompt_tps": 612.2,
+   "gen_n": 256,
+   "gen_ms": 5218.1,
+   "gen_tps": 49.1,
+   "draft_n": 154,
+   "draft_n_accepted": 118,
+   "cache_n": 0,
+   "usage_prompt": 2986,
+   "usage_cached": 0,
+   "finish": "length",
+   "wall_s": 10.11,
+   "ttft_s_proxy": 4.89,
+   "engine_reused": 0,
+   "engine_prompt_read": 2986,
+   "engine_hit_rate": 0.971,
+   "engine_pcie_share": 0.001,
+   "engine_decode_tok_s": 49.1,
+   "gpu": {
+    "samples": 20,
+    "vram_peak_mib": 48156,
+    "util_mean_pct": 83.9,
+    "util_max_pct": 100,
+    "temp_max_c": 59,
+    "power_max_w": 217.6,
+    "power_mean_w": 178.6
+   },
+   "contaminated": false
+  },
+  {
+   "run_id": "32k-r1-1791733770",
+   "target_tokens": 32768,
+   "seed": 20261011,
+   "ts": "2026-10-11T15:50:05+0000",
+   "prompt_chars": 161989,
+   "max_tokens": 256,
+   "prompt_n": 30770,
+   "prompt_ms": 30195.7,
+   "prompt_tps": 1019.0,
+   "gen_n": 256,
+   "gen_ms": 4298.5,
+   "gen_tps": 59.6,
+   "draft_n": 140,
+   "draft_n_accepted": 127,
+   "cache_n": 0,
+   "usage_prompt": 30770,
+   "usage_cached": 0,
+   "finish": "length",
+   "wall_s": 34.55,
+   "ttft_s_proxy": 30.25,
+   "engine_reused": 0,
+   "engine_prompt_read": 30770,
+   "engine_hit_rate": 0.989,
+   "engine_pcie_share": 0.0,
+   "engine_decode_tok_s": 59.6,
+   "gpu": {
+    "samples": 66,
+    "vram_peak_mib": 48156,
+    "util_mean_pct": 95.0,
+    "util_max_pct": 100,
+    "temp_max_c": 67,
+    "power_max_w": 210.8,
+    "power_mean_w": 182.5
+   },
+   "contaminated": false
+  },
+  {
+   "run_id": "128000-r1-1791733808",
+   "target_tokens": 128000,
+   "seed": 20261011,
+   "ts": "2026-10-11T15:52:35+0000",
+   "prompt_chars": 673321,
+   "max_tokens": 256,
+   "prompt_n": 128270,
+   "prompt_ms": 142659.2,
+   "prompt_tps": 899.1,
+   "gen_n": 256,
+   "gen_ms": 4302.2,
+   "gen_tps": 59.5,
+   "draft_n": 153,
+   "draft_n_accepted": 129,
+   "cache_n": 0,
+   "usage_prompt": 128270,
+   "usage_cached": 0,
+   "finish": "length",
+   "wall_s": 147.15,
+   "ttft_s_proxy": 142.85,
+   "engine_reused": 0,
+   "engine_prompt_read": 128270,
+   "engine_hit_rate": 0.993,
+   "engine_pcie_share": 0.0,
+   "engine_decode_tok_s": 59.5,
+   "gpu": {
+    "samples": 280,
+    "vram_peak_mib": 48156,
+    "util_mean_pct": 98.7,
+    "util_max_pct": 100,
+    "temp_max_c": 71,
+    "power_max_w": 209.3,
+    "power_mean_w": 188.8
+   },
+   "contaminated": false
+  }
+ ]
+}

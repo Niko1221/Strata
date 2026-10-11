@@ -1,0 +1,39 @@
+{
+ "measured_at": "2026-10-11 15:49:17+0000",
+ "kind": "cold engine, warm OS file cache (NOT a cold boot)",
+ "unload_s": 6.79,
+ "load_s": 65.7,
+ "engine_pid_before": [
+  "27516"
+ ],
+ "engine_pid_after": [
+  "106524"
+ ],
+ "gpu_used_mib_before": 48180,
+ "gpu_used_mib_after_unload": 1,
+ "gpu_used_mib_after_load": 48064,
+ "engine_startup": {
+  "log_lines": [
+   "[strata] 2026-10-11 15:48:13 engine started: /home/asx/sources/Strata/engine/strata --serve --pack /opt/models/gguf/packs/unsloth-ud-q4_k_xl --native /opt/models/gguf/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile /home/asx/sources/Strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp /opt/models/gguf/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --vision --vram-reserve-mib 700 --pcie-frac 0.32 --spec-min-p 0.70",
+   "strata generate: 1416 MiB of weights loaded from /opt/models/gguf/packs/unsloth-ud-q4_k_xl in 0.3 s (303 canonical tensors skipped: served natively)",
+   "strata generate: CPU pool tasks/phase: 24 (automatic), participating threads: 8",
+   "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)",
+   "strata aux cpus: threads that are neither pool workers nor the host go to CPUs 8 (off at start; a request's aux_cpus=1 turns it on)",
+   "strata generate: expert cache auto: 39.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 10286 slots",
+   "strata generate: expert cache 13099 slots, 38.26 GiB of VRAM; policy is",
+   "strata generate: R4 hit path ON - resident experts are computed on the GPU",
+   "strata generate: 7 expert-pool workers + the host thread",
+   "strata generate: token graph hit path: 13099 resident experts, decided on the device",
+   "FileExpertSource: mapped pinned cache complement ready: resident 33.47 GiB, pinned 33.47 GiB in 37 s; page-locked and mapped",
+   "strata mtp: draft head over 106299 tokens (275.7 MiB)",
+   "strata serve: 335 MiB of VRAM free with everything loaded"
+  ],
+  "resident_gib": [
+   "33.47",
+   "33.47",
+   "37"
+  ],
+  "vram_free_mib": "335"
+ },
+ "note": "load_s is the wall time of POST /load, which blocks until the engine is ready. The model files stay in the OS page cache across an unload, so the file reads are not cold; a cold boot is a different, larger number."
+}
