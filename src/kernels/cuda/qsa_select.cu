@@ -1153,11 +1153,12 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
             cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
         }
         if (cc_major[dev] < 8) {
-            // no TF32 tensor cores: the FP32 tiled kernel, opt-in (STRATA_SELECT_SIMT=1): its sum order differs from the
-            // warp kernel's, so the default stays the caller's warp kernel and the output bytes stay the same
+            // no TF32 tensor cores: the FP32 tiled kernel (its sum order differs from the warp kernel's: not bitwise).
+            // Fork (Daily dab24920, PR #1091): on by default, as in the Daily (-16% of a 2080 Ti's prompt time);
+            // STRATA_SELECT_SIMT=0 keeps upstream 0.1.42's default, the caller's warp kernel
             static const bool simt = [] {
                 const char* v = std::getenv("STRATA_SELECT_SIMT");
-                return v != nullptr && v[0] == '1';
+                return v == nullptr || v[0] != '0';
             }();
             if (!simt) return false;
             const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
