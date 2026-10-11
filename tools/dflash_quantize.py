@@ -33,11 +33,12 @@ def export(source, output, kind, chunk_rows=256):
     directory = []
     offset = 0
     for t in g.tensors:
-        if t.type_id != 30 or len(t.shape) not in (1, 2):
+        extension = any(name in t.name for name in ('selector', 'conv_base', 'conv_proj', 'base_kernel', 'kernel_projection'))
+        if t.type_id != 30 or len(t.shape) not in ((1, 2, 3) if extension else (1, 2)):
             raise ValueError(f'{t.name}: expected original BF16 vector or matrix')
         if g.data_start + t.offset + t.expected_bytes() > source.stat().st_size:
             raise ValueError(f'{t.name}: truncated payload')
-        typ = Q[kind].value if len(t.shape) == 2 else 30
+        typ = Q[kind].value if len(t.shape) == 2 and not extension else 30
         block, size = BLOCK_GEOMETRY[kind if typ != 30 else 'BF16']
         if t.shape[0] % block:
             raise ValueError(f'{t.name}: columns must be divisible by {block}')

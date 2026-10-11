@@ -136,7 +136,8 @@ bool DFlashArtifact::require(const char* canon, std::vector<const char*> aliases
     out->name = canon;
     out->file_name = found->name;
     // 1-D norms ride as one row of `cols` values; matrices are [cols, rows] (ne0 fastest)
-    out->rows = (int64_t) found->shape.size() > 1 ? (int64_t) found->shape[1] : 1;
+    out->rows = 1;
+    for (size_t d = 1; d < found->shape.size(); ++d) out->rows *= (int64_t) found->shape[d];
     out->cols = (int64_t) found->shape[0];
     out->type = found->type;
     out->bytes = bytes;
@@ -218,6 +219,9 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
         {&g.mask_token_id, {"dflash.mask_token_id"}, "mask_token_id", false},
         {&g.markov_rank, {"dflash.markov_rank"}, "markov_rank", false},
         {&g.selector_top_k, {"dflash.selector_top_k"}, "selector_top_k", false},
+        {&g.selector_rank, {"dflash.selector_rank"}, "selector_rank", false},
+        {&g.conv_kernel_size, {"dflash.conv_kernel_size"}, "conv_kernel_size", false},
+        {&g.conv_group_size, {"dflash.conv_group_size"}, "conv_group_size", false},
     };
     for (const auto& n : nums) {
         if (!meta_i64(f, n.keys, n.out)) {
@@ -253,7 +257,8 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     struct Flag { std::vector<const char*> keys; bool* out; };
     for (const Flag& flag : {Flag{{"dflash.sample_from_anchor"}, &g.sample_from_anchor},
                              Flag{{"dflash.attention.causal", "dflash.causal"}, &g.causal},
-                             Flag{{"dflash.has_confidence_head"}, &g.confidence_head}}) {
+                             Flag{{"dflash.has_confidence_head"}, &g.confidence_head},
+                             Flag{{"dflash.target_layer_inputs"}, &g.target_layer_inputs}}) {
         if (meta(f, flag.keys) && !meta_flag(f, flag.keys, flag.out)) {
             err = std::string("dflash: invalid boolean metadata ") + flag.keys[0];
             return false;
@@ -310,7 +315,8 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
             return false;
         }
     }
-    if (!g.sample_from_anchor) {
+    if (g.is_dflash2() && !meta(f, {"dflash.sample_from_anchor"})) g.sample_from_anchor = false;
+    if (!g.sample_from_anchor && !g.is_dflash2()) {
         err = "dflash: this artifact declares the generic 1+N fill-in layout "
               "(dflash.sample_from_anchor=false); this implementation supports only the DeepSpec "
               "anchor layout (query_zero_predicts_next)";
@@ -326,9 +332,40 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
               "this implementation supports plain DeepSpec DFlash only";
         return false;
     }
-    if (g.selector_top_k > 0) {
-        err = "dflash: this artifact carries a DFlash2 selector (dflash.selector_top_k=" +
-              std::to_string(g.selector_top_k) + "); DFlash2 is out of scope";
+    if (g.is_dflash2()) {
+#ifndef STRATA_ENABLE_DFLASH2
+        err = "dflash2: rebuild with -DSTRATA_ENABLE_DFLASH2=ON (experimental runtime)";
+        return false;
+#else
+        if (g.sample_from_anchor || g.block_size < 2 || g.block_size > 8 ||
+            g.selector_top_k > 64 || g.selector_top_k > g.vocab ||
+            g.selector_rank < 1 || g.selector_rank > 1024 ||
+            g.conv_kernel_size < 1 || g.conv_kernel_size > 8 ||
+            g.conv_group_size < 1 || g.hidden % g.conv_group_size != 0 ||
+            !fits(g.hidden, g.selector_rank) || !fits(g.vocab, g.selector_rank)) {
+            err = "dflash2: invalid conv/selector geometry or anchor layout (block 2..8, top-k 1..64, rank 1..1024)";
+            return false;
+        }
+        // These llama.cpp GGUF options change the math; do not silently ignore them.
+        struct Scalar { const char* key; double expected; };
+        for (const Scalar& scalar : {Scalar{"dflash.attention.layer_norm_rms_epsilon", 1e-6},
+                                    Scalar{"dflash.logit_scale", 1},
+                                    Scalar{"dflash.final_logit_softcapping", 0},
+                                    Scalar{"dflash.embedding_scale", 1},
+                                    Scalar{"dflash.attention.value_scale", 1},
+                                    Scalar{"dflash.attention.scale", 1.0 / std::sqrt((double) g.head_dim)},
+                                    Scalar{"dflash.attention.sliding_window", 0}}) {
+            double value = 0;
+            if (meta(f, {scalar.key}) && (!meta_f64(f, {scalar.key}, &value) || !std::isfinite(value) ||
+                std::abs(value - scalar.expected) > 1e-7 * std::abs(scalar.expected))) {
+                err = std::string("dflash2: unsupported metadata ") + scalar.key;
+                return false;
+            }
+        }
+        if (!meta(f, {"dflash.target_layer_inputs"})) g.target_layer_inputs = true;
+#endif
+    } else if (g.selector_top_k < 0 || g.selector_rank != 0 || g.conv_kernel_size != 0 || g.conv_group_size != 0) {
+        err = "dflash2: incomplete conv/selector metadata";
         return false;
     }
 
@@ -341,7 +378,8 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
             return false;
         }
         for (const char* bad : {"selector", "conv_base", "conv_proj", "markov", "conf_proj", "d2t"}) {
-            if (t.name.find(bad) != std::string::npos) {
+            if (t.name.find(bad) != std::string::npos &&
+                !(g.is_dflash2() && (std::string(bad) == "selector" || std::string(bad) == "conv_base" || std::string(bad) == "conv_proj"))) {
                 err = "dflash: unexpected tensor '" + t.name + "' (DFlash2/DSpark extension); " +
                       "this implementation reads plain DeepSpec DFlash artifacts";
                 return false;
@@ -363,7 +401,6 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     if (!require("norm", {"output_norm.weight", "norm.weight"}, {(uint64_t) H}, &t, err)) return false;
     add((uint64_t) H * 2);
     for (int64_t l = 0; l < g.layers; ++l) {
-        const uint64_t u = (uint64_t) l;
         struct M {
             const char* canon;
             std::vector<const char*> llama, hf;
@@ -402,6 +439,40 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
             std::snprintf(canon, sizeof canon, "layers.%d.%s", (int) l, m.canon);
             if (!require(canon, aliases, m.shape, &t, err)) return false;
             add((uint64_t) m.elems * 2);
+        }
+    }
+    if (g.is_dflash2()) {
+        auto extra = [&](const std::string& canon, const std::string& llama,
+                         const std::string& hf, std::vector<uint64_t> shape) {
+            const std::string bare = hf.ends_with(".weight") ? hf.substr(0, hf.size() - 7) : hf;
+            std::vector<const char*> aliases{llama.c_str()};
+            if (hf != llama) aliases.push_back(hf.c_str());
+            if (bare != hf && bare != llama) aliases.push_back(bare.c_str());
+            if (!require(canon.c_str(), aliases, shape, &t, err)) return false;
+            if (t.type != 30) {
+                err = "dflash2: extension tensors must be BF16 in the experimental runtime: " + t.file_name;
+                return false;
+            }
+            add(0);
+            return true;
+        };
+        const uint64_t rank = (uint64_t) g.selector_rank;
+        if (!extra("selector.predecessor", "selector_predecessor.weight", "candidate_selector.predecessor_codebook.weight",
+                   {rank, (uint64_t) g.vocab}) ||
+            !extra("selector.successor", "selector_successor.weight", "candidate_selector.successor_codebook.weight",
+                   {rank, (uint64_t) g.vocab}) ||
+            !extra("selector.hidden", "selector_hidden.weight", "candidate_selector.hidden_projection.weight",
+                   {(uint64_t) H, rank})) return false;
+        for (int64_t l = 0; l < g.layers; ++l) {
+            const auto pre = "layers." + std::to_string(l) + ".";
+            const auto blk = "blk." + std::to_string(l) + ".";
+            for (const auto& side : {std::pair{"attention_conv", "attn_conv"}, std::pair{"mlp_conv", "ffn_conv"}}) {
+                if (!extra(pre + side.first + ".base_kernel", blk + side.second + "_base",
+                           pre + side.first + ".base_kernel", {(uint64_t) H, (uint64_t) g.conv_kernel_size, 2}) ||
+                    !extra(pre + side.first + ".kernel_projection", blk + side.second + "_proj.weight",
+                           pre + side.first + ".kernel_projection.weight",
+                           {(uint64_t) H, (uint64_t) (2 * g.conv_kernel_size * (H / g.conv_group_size))})) return false;
+            }
         }
     }
     // Anything else in the directory is a tensor this implementation does not know: refuse rather

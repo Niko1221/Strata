@@ -51,6 +51,45 @@ PER_LAYER = [
 ]
 
 
+
+def is_dflash2(cfg: dict) -> bool:
+    return "DFlash2DraftModel" in (cfg.get("architectures") or [])
+
+
+def dflash2_names(cfg: dict) -> dict[str, str]:
+    names = {
+        "candidate_selector.predecessor_codebook.weight": "selector_predecessor.weight",
+        "candidate_selector.successor_codebook.weight": "selector_successor.weight",
+        "candidate_selector.hidden_projection.weight": "selector_hidden.weight",
+    }
+    for l in range(cfg["num_hidden_layers"]):
+        for hf, gg in (("attention_conv", "attn_conv"), ("mlp_conv", "ffn_conv")):
+            names[f"layers.{l}.{hf}.base_kernel"] = f"blk.{l}.{gg}_base"
+            names[f"layers.{l}.{hf}.kernel_projection.weight"] = f"blk.{l}.{gg}_proj.weight"
+    return names
+
+
+def normalize_config(cfg: dict) -> dict:
+    if not is_dflash2(cfg):
+        return cfg
+    cfg = dict(cfg)
+    cfg.update(cfg.get("dflash_config") or {})
+    H = cfg["hidden_size"]
+    for key in ("conv_kernel_size", "conv_group_size", "selector_rank", "selector_top_k", "block_size"):
+        if not isinstance(cfg.get(key), int) or isinstance(cfg[key], bool) or cfg[key] <= 0:
+            raise ValueError(f"DFlash2 config requires a positive integer {key}")
+    if H % cfg["conv_group_size"] or not 2 <= cfg["block_size"] <= 8 or cfg["selector_top_k"] > min(64, cfg["vocab_size"]) or cfg["selector_rank"] > 1024 or cfg["conv_kernel_size"] > 8:
+        raise ValueError("DFlash2 geometry exceeds the experimental runtime limits")
+    if cfg.get("sample_from_anchor", False):
+        raise ValueError("DFlash2 requires sample_from_anchor=false")
+    if cfg.get("hidden_act", "silu") != "silu" or cfg.get("rms_norm_eps", 1e-6) != 1e-6:
+        raise ValueError("experimental runtime requires SiLU and rms_norm_eps=1e-6")
+    if cfg.get("use_sliding_window", False) or cfg.get("sliding_window") or cfg.get("attention_bias", False):
+        raise ValueError("experimental runtime requires full attention without biases")
+    if cfg.get("output_multiplier", 1.0) != 1.0 or cfg.get("final_logit_softcapping", 0.0):
+        raise ValueError("experimental runtime does not implement logit scaling/softcapping")
+    return cfg
+
 def read_safetensors(path: pathlib.Path) -> dict[str, tuple[str, list[int], int]]:
     """The header: name -> (dtype, torch shape, absolute byte offset of the payload)."""
     with path.open("rb") as f:
@@ -95,6 +134,19 @@ def expected(cfg: dict) -> dict[str, list[int]]:
                 "mlp.down_proj.weight": [H, I],
             }[hf]
             want[f"layers.{l}.{hf}"] = shape
+    if is_dflash2(cfg):
+        rank = cfg["selector_rank"]
+        kernel = cfg["conv_kernel_size"]
+        projected = 2 * kernel * (H // cfg["conv_group_size"])
+        want.update({
+            "candidate_selector.predecessor_codebook.weight": [cfg["vocab_size"], rank],
+            "candidate_selector.successor_codebook.weight": [cfg["vocab_size"], rank],
+            "candidate_selector.hidden_projection.weight": [rank, H],
+        })
+        for l in range(L):
+            for side in ("attention_conv", "mlp_conv"):
+                want[f"layers.{l}.{side}.base_kernel"] = [2, kernel, H]
+                want[f"layers.{l}.{side}.kernel_projection.weight"] = [projected, H]
     return want
 
 
@@ -110,7 +162,7 @@ def main() -> int:
     cfg_path = args.config or args.safetensors.parent / "config.json"
     if not cfg_path.exists():
         raise SystemExit(f"no config.json at {cfg_path}; pass --config")
-    cfg = json.loads(cfg_path.read_text())
+    cfg = normalize_config(json.loads(cfg_path.read_text()))
     for key in ("hidden_size", "intermediate_size", "head_dim", "num_attention_heads",
                 "num_key_value_heads", "num_hidden_layers", "vocab_size", "block_size",
                 "mask_token_id", "target_layer_ids"):
@@ -119,6 +171,14 @@ def main() -> int:
 
     want = expected(cfg)
     have = read_safetensors(args.safetensors)
+    if is_dflash2(cfg):
+        for name in ("predecessor_codebook", "successor_codebook"):
+            bare = "candidate_selector." + name
+            if bare in have:
+                if bare + ".weight" in have:
+                    raise ValueError(f"duplicate selector tensor: {bare}")
+                have[bare + ".weight"] = have.pop(bare)
+
     missing = sorted(set(want) - set(have))
     extra = sorted(set(have) - set(want))
     if missing:
@@ -149,8 +209,15 @@ def main() -> int:
     w.add("dflash.mask_token_id", cfg["mask_token_id"], "u32")
     w.add("dflash.target_layers", [int(x) for x in cfg["target_layer_ids"]], "array:u32")
     w.add("dflash.rope.frequency_base", float(rope.get("rope_theta", 1e7)), "f64")
-    w.add("dflash.sample_from_anchor", "true")          # the DeepSpec anchor layout
+    w.add("dflash.sample_from_anchor", "false" if is_dflash2(cfg) else "true")          # the DeepSpec anchor layout
     w.add("dflash.attention.causal", "false")
+    if is_dflash2(cfg):
+        for key in ("conv_kernel_size", "conv_group_size", "selector_rank", "selector_top_k"):
+            w.add("dflash." + key, cfg[key], "u32")
+        # HF target_layer_ids refer to OUTPUTS; llama.cpp converts them to INPUT boundaries.
+        # Retain the HF IDs and mark their interpretation explicitly for Strata.
+        w.add("dflash.target_layer_inputs", "false")
+
     w.add("dflash.markov_rank", 0, "u32")
     w.add("dflash.has_confidence_head", "false")
     w.add("dflash.source.sha256", src_sha.hexdigest())
@@ -160,6 +227,8 @@ def main() -> int:
     for l in range(cfg["num_hidden_layers"]):
         for hf, gg in PER_LAYER:
             named[f"layers.{l}.{hf}"] = gg.format(l=l)
+    if is_dflash2(cfg):
+        named.update(dflash2_names(cfg))
     for hf_name, shape in want.items():
         gguf_name = named[hf_name]
         _, torch_shape, off = have[hf_name]
@@ -168,6 +237,8 @@ def main() -> int:
         flat = bf16_to_f32(raw)
         if len(shape) == 1:
             w.add_bf16(gguf_name, flat.reshape(1, -1), shape=[int(shape[0])])
+        elif len(shape) == 3:
+            w.add_bf16(gguf_name, flat.reshape(-1, shape[-1]), shape=list(reversed(shape)))
         else:
             w.add_bf16(gguf_name, flat.reshape(torch_shape))
     w.write(args.output)
