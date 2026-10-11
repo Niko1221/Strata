@@ -28,6 +28,16 @@ should choose among supported CPU and GPU execution paths, RAM and VRAM residenc
 model files according to measured completion cost. Returning resources to Strata after another workload
 finishes is part of the objective.
 
+Parking identity distinguishes learned cache ranking from model identity. When
+`--expert-profile` and `--expert-profile-save` resolve to the same file, a valid
+atomic save or reorder preserves parking identity. The profile format, model
+shape, slot/count fields, expert membership and configured path remain checked;
+missing or malformed input cannot authorize resume. Other assets, the binary and
+launch configuration retain their existing identity checks. Routing calibration
+still invalidates on profile metadata changes. This applies to idle parking,
+tool-lease reload and active-request journals; it does not retain warm KV state.
+Existing journals with the older fingerprint are not migrated and fail closed.
+
 This branch currently provides live expert-cache resizing, cooperative background waits and pacing,
 opt-in active text-request parking, opt-in pressure-triggered idle unloading with guarded reload admission,
 and experimental single-GPU routing from matched measurements.

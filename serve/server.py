@@ -5175,12 +5175,12 @@ class Service:
         return now
 
     def _parking_identity(self):
-        """Private journal identity; model assets use the existing runtime fingerprint."""
+        """Private journal identity; native learned-profile saves preserve model identity."""
         # __init__ temporarily sets max_context=0 until READY. A failed load
         # retains known_ctx from the previous valid READY; the actual new READY
         # is checked again once alive, rather than corrupting retry identity.
         context = self.engine.max_context if self.loaded() else getattr(self.engine, "known_ctx", self.engine.max_context)
-        return {"runtime": runtime_key(self.engine), "context": context,
+        return {"runtime": runtime_key(self.engine, for_parking=True), "context": context,
                 "vision": bool(self.vision)}
 
     def _parking_footprint(self):
