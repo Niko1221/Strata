@@ -1824,7 +1824,6 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
-                "gfx900": "https://rocm.nightlies.amd.com/v2/gfx900/",
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
                 "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
 # The TheRock nightly indexes are pruned and move on, and each GPU family's index holds its own range (#1103: gfx103X-all
@@ -1863,7 +1862,8 @@ AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX
 
 
 def rocm_index(arch):
-    return os.environ.get("STRATA_ROCM_INDEX") or ROCM_INDEXES[arch]
+    return os.environ.get("STRATA_ROCM_INDEX") or (
+        "https://rocm.nightlies.amd.com/v2/gfx900/" if arch == "gfx900" else ROCM_INDEXES[arch])
 
 
 def gfx900_opt_in():

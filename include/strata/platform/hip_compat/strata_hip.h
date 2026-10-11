@@ -92,7 +92,6 @@
 #define cudaSetDevice hipSetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaGetDeviceProperties hipGetDeviceProperties
-#define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
 // The shared-memory opt-in limit: some HIP versions report 0 for it on GCN cards; the real ceiling there is
 // the plain per-block limit (64 KB of LDS on gfx906).
 inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, int dev) {

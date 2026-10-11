@@ -91,8 +91,13 @@ GPU expert-cache slots (8.23 GiB).
 End-to-end checks pass for health and model discovery, the browser UI, arithmetic
 and Python-code responses, repeated-prompt reuse, streaming through its final
 `[DONE]` marker, Anthropic Messages, OpenAI Responses, and monitoring metrics.
-These are functional checks on one PC, not a throughput benchmark or validation
-of every model, context size or GPU listed above.
+The retained 0.1.39 engine log on this PC records one uncached request with
+38 prompt tokens read in 952 ms (**39.9 prompt tokens/s**) and 256 output tokens
+in 8091 ms (**31.6 decode tokens/s**). This is one request with the configuration
+above, not a benchmark average or a measurement of the rebased engine.
+
+These are functional checks on one PC, not validation of every model, context
+size or GPU listed above.
 
 A follow-up run on the same PC uses context 32768 and a 2048-token thinking
 budget. The server accepts a 10000-token output allowance, and a modular
