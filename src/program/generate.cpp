@@ -1,4 +1,4 @@
-﻿#include "strata/core/logit_bias.hpp"
+#include "strata/core/logit_bias.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -7977,7 +7977,7 @@ int main(int argc, char** argv) {
                         why = "; freeing parked conversations did not return memory to the OS, so it stopped";
                     else if (hopeless)
                         why = "; freeing every parked byte that could be freed (" + std::to_string(freeable >> 20) +
-                              " MiB) could not have fitted it, so nothing was evicted";
+                              " MiB) could not have fitted it";
                     else if (short_by)
                         why = "; the conversations still parked would leave it short by " + std::to_string(short_by >> 20) + " MiB";
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (memory admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s)\n",

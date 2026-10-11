@@ -18,6 +18,92 @@ It appeared intermittently at 52k-97k-token conversations while the reported cac
 well inside the configured 16 GiB, and with free physical RAM. Nothing about the conversation was lost; the
 park was skipped and the next request re-read the whole prompt.
 
+### What the log says (`strata-iq3_s.log`, 25 353 lines, `engine 0.1.40`)
+
+Counted over the whole file by `..\project_strata_ivanov\strata_patches\log_stats_042.py`:
+
+```
+park attempts: 2481 succeeded, 291 refused -> 10.5% refused
+refusal families, matched against the branches of the build that wrote this file:
+    203  "conversation cache: allocation failed; skip parking"
+    88   "skip parking (physical RAM admission; need N MiB plus 4096 MiB floor, or telemetry unavailable)"
+     0   "skip parking (snapshot N MiB exceeds available budget)"
+     0   "skip parking (physical RAM floor after capture, or telemetry unavailable)"
+```
+
+Every refusal belongs to exactly one of two branches, and both are visible in
+`git show v0.1.40:src/program/generate.cpp`:
+
+1. **88 refusals at the RAM gate, L6464.** The gate asks the OS for free bytes and requires
+   `additional + 4096 MiB floor` to fit; `additional` is `estimate - retained` (L6463). Capacity was already
+   granted by `make_room(estimate, held)` at L6454 - that is the cache-budget eviction path, and it refused
+   **zero** times in this log. So none of these refusals were ever about the 16 GiB budget or the 4 slots; they
+   were the OS saying it had no room for `new bytes + 4 GiB floor`. Note for anyone reading that line: in
+   v0.1.40 `or telemetry unavailable` is a *static literal* in the format string, printed on every refusal -
+   it does not say whether telemetry worked. 0.1.42 prints the measured figure instead.
+2. **203 `bad_alloc` caught at L6495 (the capture) or L6506 (the wrapper around the checkpoint split).** The
+   admission gate had already passed. Both handlers print one identical, region-less, cause-less line, which is
+   why the failure could never be attributed to a stage. The other three `bad_alloc` catches in the file are
+   session save/restore and do name themselves.
+
+### The mechanism behind the 88
+
+In v0.1.40 `conversation_available_memory()` returns `status.ullAvailPhys` - free *physical* only
+(`git show v0.1.40:src/core/conversation_memory.cpp` line 40). The condition that failed was therefore:
+
+```
+free physical RAM  >=  (new bytes) + 4096 MiB
+```
+
+Across those 88 refusals the requested new bytes were min 531 MiB, median 2441 MiB, max 3165 MiB, and the line
+carried `4096` as the floor in all 88: the gate asked for a 5.8-7.2 GiB cushion on free physical RAM every
+time, in one configuration.
+
+The same machine, measured while the engine is running (values read directly, not estimated):
+
+```
+physical total                        79.8 GiB
+free physical right now               11.2 GiB
+this process: private commit           87.5 GiB, working set 10.7 GiB
+page file configured                 65536 MB; system commit limit 143.8 GiB, 41.7 GiB available
+startup line: "expert arena: locked 40290 MiB via working-set minimum + VirtualLock"
+```
+
+A 40 GiB arena held by a working-set minimum plus `VirtualLock`, plus WDDM device allocations, is what that
+87.5 GiB of private commit is: the process commits far past physical RAM on purpose. With that in place free
+physical measured 11.2 GiB just now, and the gate's own demand on this workload reaches 7.2 GiB - a margin of
+a few GiB on a resource that moves by gigabytes per request while a 100k-token prompt is read and decoded. I
+did not sample free physical at the instant of each historical refusal (the log does not record it), so the
+per-refusal dip is not measured; what is measured is that the gate and the demand were within a few GiB of
+each other on this machine, and that 88 requests lost that race. That is why "Windows still has substantial
+free RAM" never prevented a refusal: the check is not about whether the machine has RAM, it is about a fixed
+4 GiB cushion on the one resource the engine itself had already committed.
+
+Both explanations people reach for are excluded by one measurement each:
+
+```
+                          median      p90        max
+cache bytes, refused:     4.62 GiB    7.52 GiB   12.09 GiB
+cache bytes, succeeded:   4.49 GiB    6.94 GiB   12.09 GiB   <- same maximum, overlapping
+slots occupied, refused:  1:77  2:66  3:81  4:67              <- every slot count fails
+```
+
+Token count correlates but is not a threshold: 7/339 under 50k (2%), 106/1293 at 50k-100k (8.2%), 178/1140
+above 100k (15.6%) - a rising rate on one code path, not a cutoff. A 108k-token conversation parked in 182 ms
+two lines before a 79k-token one was refused.
+
+**Why no configuration change could have moved this.** The settings that were tuned are the budget
+(`--conversation-cache-mib 16384`), the slots (`--conversation-cache-slots 4`) and the floor
+(`--conversation-cache-min-free-mib 4096`). In the build that produced this log the budget branch never fired,
+and the slot count only appears in the *success* distribution. The floor is the one number in the failing
+condition of the 88 - and it is a subtracted margin on a measurement, so lowering it moves the threshold but
+leaves the cause; raising it makes more requests fail. The 203 are thrown by the copy itself and were not
+reported with a size or a cause, so no setting could be shown to relate to them at all.
+
+`engine/BUILD.json` of the process that wrote this log reads `"version": "0.1.40", "source": "release"` - the
+stock release binary, 140 MB, still containing the old string and none of the new ones. No parking fix has run
+on this machine yet.
+
 ## What 0.1.42 already fixes, so it was not re-applied
 
 `src/core/conversation_memory.cpp` line 286 admits on
@@ -36,13 +122,15 @@ local commit `0b0ae6be` on branch `fork-0.1.42`.
 
 ### 1. The eviction loop bounds itself by what cannot be freed — `conversation_cache.hpp`, `generate.cpp`
 
-Upstream's loop is bounded by `conversations.slots()` and gated on `conversations.size() > 0`, and it calls
-`evict_oldest()` unconditionally. Two categories of memory are charged in `bytes()` but are **not**
-`evict_oldest()` material: the retained K/V (`reuse_`, see `conversation_cache.hpp` line 207,
-`bytes() { return bytes_ + reuse_.bytes(); }`) and entries holding a pinned shared prefix
-(`evict_oldest()` skips them, line 284). So a park asking for more than the evictable total spends
-conversations one at a time, evicts everything it can, and still refuses at the end — the log shows
-`evicted 3, 0 still parked` for a refusal that could not have been won.
+Upstream's loop (`v0.1.42` only - `git show v0.1.42:src/program/generate.cpp` line 7802; v0.1.40 has no such
+loop, which is why the 0.1.40 log above shows no evictions at all) is bounded by `conversations.slots()` and
+gated on `conversations.size() > 0`, and it calls `evict_oldest()` unconditionally. Two categories of memory
+are charged in `bytes()` but are **not** `evict_oldest()` material: the retained K/V (`reuse_`, see
+`conversation_cache.hpp` line 207, `bytes() { return bytes_ + reuse_.bytes(); }`) and entries holding a pinned
+shared prefix (`evict_oldest()` skips them, line 284). So a park asking for more than the evictable total
+spends conversations one at a time, evicts everything it can, and still refuses at the end - the 0.1.40.1 fork
+log that this analysis started from shows `evicted 3, 0 still parked` for exactly such a refusal. This
+(defect B in `strata_fork_main/CONVERSATION_PARKING_ROOT_CAUSE.md`) is upstream's code, not the port's.
 
 Added `ConversationCache::evictable_bytes()` (mirrors `evict_oldest()`'s own filter), and the loop now:
 
@@ -153,6 +241,50 @@ counts exactly what `evict_oldest()` can free, pinned entries excluded; `put_reu
 over-budget candidate, ignores an empty one) and `src/core/conversation_memory_test.cpp` (+7 checks: the probe
 says nothing for 0 bytes, confirms a size the machine has room for, and its text distinguishes commit
 exhaustion from address-space failure). Both fail without the patch, which is the point of them.
+
+## Independent review and the changes it asked for
+
+An independent senior reviewer (`.openhands/agents/senior-reviewer.md`, conversation
+`a36c2bcd-bc38-43a5-a55f-7096f56df07b`) read the diff. It accepted the diagnosis and the port as sound, and
+raised three concrete notes. All three were checked against the code and acted on:
+
+1. **`put_reuse()`'s "only if nothing is held" guard.** The reviewer called the `reuse_.kv.empty()` condition
+   dead weight: a park reaches `put_reuse()` only after `take_reuse()` has cleared `reuse_`, and every other
+   caller of `put_reuse()` (session restore in `generate.cpp`, the engine's own paths) also runs on a cleared
+   candidate. Left in, it would silently drop a hand-back in a future call site that does hold one. The guard
+   is removed; the doc comment now states the invariant instead of enforcing it. The test for this changed from
+   "a second candidate does not replace the one held" to "a newer candidate replaces the one held, as with
+   `retain()`", and the round-trip and "an empty candidate is not stored" checks now assert against the newer
+   candidate's size.
+2. **A UTF-8 BOM had appeared at the start of `src/program/generate.cpp`.** It came from an editor, not the
+   patch. The file is otherwise pure ASCII (3 non-ASCII bytes, all the BOM; `v0.1.42` had 0), the CMake build
+   adds no `/utf-8` flag, and MSVC accepts a BOM - so this changed no behaviour, but it made the local file
+   differ from upstream for no reason. The BOM is stripped: the file now has 0 non-ASCII bytes, matching
+   upstream, and the SYCL copy was already BOM-free with 0 non-ASCII bytes. No charset flag was added.
+3. **The probe leaked its reservation on the path that matters.** `conversation_memory_probe()` only reached
+   `VirtualFree` on success, so every failed *commit* left the `MEM_RESERVE` range held. The reviewer noted
+   this as a comment-worthy detail; it is cheap to make correct instead, so the failure paths now release the
+   reservation before returning (`VirtualFree` after a failed commit on Windows, `munmap` after a failed
+   `mprotect` on Linux). Repeated refusals no longer each keep the probed size of address space.
+
+Two review points needed no change. The reviewer asked whether the SYCL copy's skip-parking wording was as
+precise as the CUDA one; `git grep` on the current tree shows the SYCL text already says "not an allocation",
+names `bad_alloc`, and covers the checkpoint split, so nothing was edited there. The reviewer also confirmed
+the stalled-eviction loop and the hoisted `put_reuse` lifetime are correct as written.
+
+Re-run after these changes (same commands as above):
+
+```
+ctest --test-dir build_tests                        -> 100% tests passed out of 43   (2 skipped: CPU-only build)
+build_tests\conversation_cache_test.exe             -> conversation_cache_test: 4225 checks passed
+build_tests\conversation_memory_test.exe            -> conversation_memory_test: 32 checks passed
+build_cuda_042.bat / cmake --build build_cuda_new --target strata -> [7/7] BUILD_EXIT=0, "strata 0.1.42"
+```
+
+`build_cuda_new\strata.exe` after the re-review still contains `allocation failed at the capture`,
+`skip parking after the checkpoint split`, `could not have fitted it`, `freeing every parked byte` and
+`reserves but will not commit`, and still does not contain the old `allocation failed; skip parking`.
+The non-ASCII audit of both park copies reports `non_ascii_bytes=0` and `bom=False`.
 
 ## Limitations
 

@@ -230,10 +230,11 @@ public:
         if (reuse_.unchanged_tokens <= 0) reuse_ = {};
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
-    /// Hand back K/V a park took and then did not use, so the next park can still reuse it. A cache that
-    /// already holds a candidate keeps that one; the budget bounds this exactly as it bounds retain().
+    /// Hand back K/V a park took and then did not use, so the next park can still reuse it. A park only ever
+    /// reaches this after take_reuse(), so the cache holds no other candidate at that point; the budget bounds
+    /// this exactly as it bounds retain().
     void put_reuse(ConversationKvReuse&& reuse) {
-        if (enabled() && reuse_.kv.empty() && !reuse.kv.empty() && reuse.bytes() <= budget_ - bytes_)
+        if (enabled() && !reuse.kv.empty() && reuse.bytes() <= budget_ - bytes_)
             reuse_ = std::move(reuse);
     }
     size_t retained_bytes() const { return reuse_.bytes(); }

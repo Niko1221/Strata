@@ -419,17 +419,19 @@ int main() {
         check(cache.retained_bytes() == candidate_bytes && cache.bytes() >= candidate_bytes,
               "an unused candidate is handed back and charged against the cache");
         ConversationKvReuse again;
-        again.kv = {kv};
+        again.kv = {kv, kv};
         again.captured_tokens = again.unchanged_tokens = 4096;
+        const size_t again_bytes = again.bytes();
         cache.put_reuse(std::move(again));
-        check(cache.retained_bytes() == candidate_bytes, "a second candidate does not replace the one held");
+        check(cache.retained_bytes() == again_bytes,
+              "a newer candidate replaces the one held, as with retain()");
         ConversationKvReuse taken = cache.take_reuse();
-        check(taken.kv.size() == 1 && cache.retained_bytes() == 0, "taking it leaves nothing retained");
+        check(taken.kv.size() == 2 && cache.retained_bytes() == 0, "taking it leaves nothing retained");
         cache.put_reuse(std::move(taken));
-        check(cache.retained_bytes() == candidate_bytes, "taking and handing back round-trips");
+        check(cache.retained_bytes() == again_bytes, "taking and handing back round-trips");
         ConversationKvReuse empty;
         cache.put_reuse(std::move(empty));
-        check(cache.retained_bytes() == candidate_bytes, "an empty candidate is not stored");
+        check(cache.retained_bytes() == again_bytes, "an empty candidate is not stored, the held one stays");
         ConversationCache tight(candidate_bytes / 2, 2);
         ConversationKvReuse too_big;
         too_big.kv = {kv};
