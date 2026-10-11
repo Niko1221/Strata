@@ -1,1 +1,56 @@
-WwogewogICJsZW5ndGgiOiAiMzJrIiwKICAiZGVwdGgiOiAxMCwKICAicHJvbXB0X3Rva2VucyI6IDMyODA0LAogICJzZWNvbmRzIjogNDYuMCwKICAiZm91bmQiOiB0cnVlLAogICJ3b3JkIjogIm1lYWRvdy1jb3BwZXItNTA0IiwKICAiYW5zd2VyIjogIm1lYWRvdy1jb3BwZXItNTA0IgogfSwKIHsKICAibGVuZ3RoIjogIjMyayIsCiAgImRlcHRoIjogNTAsCiAgInByb21wdF90b2tlbnMiOiAzMjgwNCwKICAic2Vjb25kcyI6IDM4LjgsCiAgImZvdW5kIjogdHJ1ZSwKICAid29yZCI6ICJmYWxjb24tcXVhcnR6LTk0MCIsCiAgImFuc3dlciI6ICJmYWxjb24tcXVhcnR6LTk0MCIKIH0sCiB7CiAgImxlbmd0aCI6ICIzMmsiLAogICJkZXB0aCI6IDkwLAogICJwcm9tcHRfdG9rZW5zIjogMzI4MDUsCiAgInNlY29uZHMiOiAzOC4xLAogICJmb3VuZCI6IHRydWUsCiAgIndvcmQiOiAid2lsbG93LWNvYmFsdC02OTYiLAogICJhbnN3ZXIiOiAid2lsbG93LWNvYmFsdC02OTYiCiB9LAogewogICJsZW5ndGgiOiAiMTI4ayIsCiAgImRlcHRoIjogMTAsCiAgInByb21wdF90b2tlbnMiOiAxMjU1MzcsCiAgInNlY29uZHMiOiAxMDMuMywKICAiZm91bmQiOiB0cnVlLAogICJ3b3JkIjogImZhbGNvbi1zYWZmcm9uLTEzOCIsCiAgImFuc3dlciI6ICJmYWxjb24tc2FmZnJvbi0xMzgiCiB9LAogewogICJsZW5ndGgiOiAiMTI4ayIsCiAgImRlcHRoIjogNTAsCiAgInByb21wdF90b2tlbnMiOiAxMjU1MzUsCiAgInNlY29uZHMiOiAxMDUuMCwKICAiZm91bmQiOiB0cnVlLAogICJ3b3JkIjogInF1YXJ0ei10dW5kcmEtNTI4IiwKICAiYW5zd2VyIjogInF1YXJ0ei10dW5kcmEtNTI4IgogfSwKIHsKICAibGVuZ3RoIjogIjEyOGsiLAogICJkZXB0aCI6IDkwLAogICJwcm9tcHRfdG9rZW5zIjogMTI1NTM1LAogICJzZWNvbmRzIjogMjA4LjgsCiAgImZvdW5kIjogdHJ1ZSwKICAid29yZCI6ICJxdWFydHotZ2xhY2llci0xOTIiLAogICJhbnN3ZXIiOiAicXVhcnR6LWdsYWNpZXItMTkyIgogfQpd
+[
+ {
+  "length": "32k",
+  "depth": 10,
+  "prompt_tokens": 32804,
+  "seconds": 46.0,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "32k",
+  "depth": 50,
+  "prompt_tokens": 32804,
+  "seconds": 38.8,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ },
+ {
+  "length": "32k",
+  "depth": 90,
+  "prompt_tokens": 32805,
+  "seconds": 38.1,
+  "found": true,
+  "word": "willow-cobalt-696",
+  "answer": "willow-cobalt-696"
+ },
+ {
+  "length": "128k",
+  "depth": 10,
+  "prompt_tokens": 125537,
+  "seconds": 103.3,
+  "found": true,
+  "word": "falcon-saffron-138",
+  "answer": "falcon-saffron-138"
+ },
+ {
+  "length": "128k",
+  "depth": 50,
+  "prompt_tokens": 125535,
+  "seconds": 105.0,
+  "found": true,
+  "word": "quartz-tundra-528",
+  "answer": "quartz-tundra-528"
+ },
+ {
+  "length": "128k",
+  "depth": 90,
+  "prompt_tokens": 125535,
+  "seconds": 208.8,
+  "found": true,
+  "word": "quartz-glacier-192",
+  "answer": "quartz-glacier-192"
+ }
+]

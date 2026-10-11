@@ -1,1 +1,31 @@
-RW5kcG9pbnQgICA6IGh0dHA6Ly88aG9zdD46NTAwMy92MQpNb2RlbCAgICAgIDogcXdlbjMuOC1mbGFzaC1uZXh0LXVuc2xvdGgtdWQtaXE0X3hzClRoaW5raW5nICAgOiBvZmYKU2FtcGxpbmcgICA6IHRlbXAgMC43ICB0b3BfcCAxLjAgIHRvcF9rIDY0ICBtaW5fcCAwLjA4ICByZXAgMS4wMwptYXhfdG9rZW5zIDogNTEyLCBsb25nLWNvbnRleHQgcmFtcCAxNTAwMOKGkjEyMDAwMCB0b2tlbnMKClsgMV0gY3R4fjE1MDAwICBhY3R1YWxfcHJvbXB0PTEzNzc3ICBvdXQ9MTk0ICBUVEZUPSAzMS4xMHMgIHRvdGFsPSAzNC4wMXMgIHByZWZpbGw9ICAgNDQzLjAgdC9zICBkZWNvZGU9ICA2Ni42MCB0L3MKWyAyXSBjdHh+MzAwMDAgIGFjdHVhbF9wcm9tcHQ9MzAwMzcgIG91dD0yODIgIFRURlQ9IDQwLjg4cyAgdG90YWw9IDQ1LjExcyAgcHJlZmlsbD0gICA3MzQuNyB0L3MgIGRlY29kZT0gIDY2Ljc5IHQvcwpbIDNdIGN0eH40NTAwMCAgYWN0dWFsX3Byb21wdD00NTA5NyAgb3V0PTI5MCAgVFRGVD0gNTMuNjhzICB0b3RhbD0gNTguMTZzICBwcmVmaWxsPSAgIDg0MC4xIHQvcyAgZGVjb2RlPSAgNjQuNzUgdC9zClsgNF0gY3R4fjYwMDAwICBhY3R1YWxfcHJvbXB0PTYwMTM5ICBvdXQ9MzQwICBUVEZUPSA3OS45N3MgIHRvdGFsPSA4NS4xMnMgIHByZWZpbGw9ICAgNzUyLjAgdC9zICBkZWNvZGU9ICA2Ni4wNyB0L3MKWyA1XSBjdHh+NzUwMDAgIGFjdHVhbF9wcm9tcHQ9NzUwNjcgIG91dD0zMDUgIFRURlQ9IDc4Ljk2cyAgdG90YWw9IDgzLjU4cyAgcHJlZmlsbD0gICA5NTAuNyB0L3MgIGRlY29kZT0gIDY2LjEwIHQvcwpbIDZdIGN0eH45MDAwMCAgYWN0dWFsX3Byb21wdD05MDEwNyAgb3V0PTQ0OCAgVFRGVD0gOTYuNDBzICB0b3RhbD0xMDMuMTZzICBwcmVmaWxsPSAgIDkzNC43IHQvcyAgZGVjb2RlPSAgNjYuMzMgdC9zClsgN10gY3R4fjEwNTAwMCAgYWN0dWFsX3Byb21wdD0xMDUwNzUgIG91dD00MTUgIFRURlQ9IDk1LjAxcyAgdG90YWw9MTAxLjE5cyAgcHJlZmlsbD0gIDExMDUuOSB0L3MgIGRlY29kZT0gIDY3LjEzIHQvcwpbIDhdIGN0eH4xMjAwMDAgIGFjdHVhbF9wcm9tcHQ9MTIwMDc2ICBvdXQ9MTg3ICBUVEZUPTExNS40MnMgIHRvdGFsPTExOC4yM3MgIHByZWZpbGw9ICAxMDQwLjMgdC9zICBkZWNvZGU9ICA2Ni43NCB0L3MKCj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQpTVU1NQVJZICAoOCBsb25nLWNvbnRleHQgcnVucywgMTM3NzfigJMxMjAwNzYgcHJvbXB0IHRva2VucykKPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ClByZWZpbGwgIDogbWVhbiAgICA4NTAuMiB0L3MgICBtZWRpYW4gICAgODg3LjQgICBtaW4gICAgNDQzLjAgICBtYXggICAxMTA1LjkKRGVjb2RlICAgOiBtZWFuICAgIDY2LjMxIHQvcyAgIG1lZGlhbiAgICA2Ni40NiAgIG1pbiAgICA2NC43NSAgIG1heCAgICA2Ny4xMwpUVEZUICAgICA6IG1lYW4gICAgNzMuOTMgcyAgIG1lZGlhbiAgICA3OS40NyBzCgpQZXItcnVuIHByZWZpbGwgdC9zIHZzIGNvbnRleHQgbGVuZ3RoICh3YXRjaCBmb3IgZGVncmFkYXRpb24pOgogIDEzNzc3IHRvayAgICA0NDMuMCB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiAgMzAwMzcgdG9rICAgIDczNC43IHQvcyAgIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwogIDQ1MDk3IHRvayAgICA4NDAuMSB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwogIDYwMTM5IHRvayAgICA3NTIuMCB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwogIDc1MDY3IHRvayAgICA5NTAuNyB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiAgOTAxMDcgdG9rICAgIDkzNC43IHQvcyAgIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiAgMTA1MDc1IHRvayAgIDExMDUuOSB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCiAgMTIwMDc2IHRvayAgIDEwNDAuMyB0L3MgICMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjCg==
+Endpoint   : http://<host>:5003/v1
+Model      : qwen3.8-flash-next-unsloth-ud-iq4_xs
+Thinking   : off
+Sampling   : temp 0.7  top_p 1.0  top_k 64  min_p 0.08  rep 1.03
+max_tokens : 512, long-context ramp 15000→120000 tokens
+
+[ 1] ctx~15000  actual_prompt=13777  out=194  TTFT= 31.10s  total= 34.01s  prefill=   443.0 t/s  decode=  66.60 t/s
+[ 2] ctx~30000  actual_prompt=30037  out=282  TTFT= 40.88s  total= 45.11s  prefill=   734.7 t/s  decode=  66.79 t/s
+[ 3] ctx~45000  actual_prompt=45097  out=290  TTFT= 53.68s  total= 58.16s  prefill=   840.1 t/s  decode=  64.75 t/s
+[ 4] ctx~60000  actual_prompt=60139  out=340  TTFT= 79.97s  total= 85.12s  prefill=   752.0 t/s  decode=  66.07 t/s
+[ 5] ctx~75000  actual_prompt=75067  out=305  TTFT= 78.96s  total= 83.58s  prefill=   950.7 t/s  decode=  66.10 t/s
+[ 6] ctx~90000  actual_prompt=90107  out=448  TTFT= 96.40s  total=103.16s  prefill=   934.7 t/s  decode=  66.33 t/s
+[ 7] ctx~105000  actual_prompt=105075  out=415  TTFT= 95.01s  total=101.19s  prefill=  1105.9 t/s  decode=  67.13 t/s
+[ 8] ctx~120000  actual_prompt=120076  out=187  TTFT=115.42s  total=118.23s  prefill=  1040.3 t/s  decode=  66.74 t/s
+
+==============================================================================
+SUMMARY  (8 long-context runs, 13777–120076 prompt tokens)
+==============================================================================
+Prefill  : mean    850.2 t/s   median    887.4   min    443.0   max   1105.9
+Decode   : mean    66.31 t/s   median    66.46   min    64.75   max    67.13
+TTFT     : mean    73.93 s   median    79.47 s
+
+Per-run prefill t/s vs context length (watch for degradation):
+  13777 tok    443.0 t/s  ############################################
+  30037 tok    734.7 t/s  #########################################################################
+  45097 tok    840.1 t/s  ####################################################################################
+  60139 tok    752.0 t/s  ###########################################################################
+  75067 tok    950.7 t/s  ###############################################################################################
+  90107 tok    934.7 t/s  #############################################################################################
+  105075 tok   1105.9 t/s  ##############################################################################################################
+  120076 tok   1040.3 t/s  ########################################################################################################

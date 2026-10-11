@@ -1,1 +1,192 @@
-IyBDb21tdW5pdHkgYmVuY2htYXJrOiBSVFggNTA3MCBUaSArIDJ4IFJUWCA1MDYwIFRpIChvbmUgb24gYSBVU0I0IGVHUFUpLCBSeXplbiA3IDc3MDBYLCA0NiBHaUIgUkFNIGluIGFuIExYQwoKTWVhc3VyZWQgb24gMjAyNi0xMC0xMSBieSAqKmNoaWFuZ3d3KiogKEdpdEh1YikuIFVuc2xvdGggVUQtSVE0X1hTIG9uIFN0cmF0YSB2MC4xLjQyLAozLUdQVSBsYXllciBzcGxpdCBgMzIsNDFgIHdpdGggYC0tcGlwZWxpbmUtd2luZG93cyAyYCwgcmVzaWRlbnQgUkFNIG1vZGUKKDMyIEdpQiBwYWdlLWxvY2tlZCBleHBlcnQgY29tcGxlbWVudCkgb24gYSBtYWNoaW5lIHdob3NlIHRoaXJkIEdQVSBoYW5ncyBvZmYgYQpVU0I0L1RodW5kZXJib2x0IGRvY2suCgpIZWFkbGluZTogKipwcm9tcHQgOTE44oCTMSwzNjkgdG9rL3MgYXQgMzBL4oCTMTIwSyBmcmVzaCB0b2tlbnMqKiAoc2luZ2xlIHN0cmVhbSwKdGhpbmtpbmcgb2ZmKSwgKipkZWNvZGUgbWVkaWFuIDY2LjggdG9rL3MqKiAocmFuZ2UgNjAuOOKAkzgzLjIgYWNyb3NzIGJvdGggc3VpdGVzKSwKKipuZWVkbGUgNi82KiogYXQgMzJrLzEyOGsuIFRoZSBVU0I0IGNhcmQgKFBDSWUgcHJvYmUgMy44IEdCL3MgdnMgMjguOS8xNC40CkdCL3MgaW50ZXJuYWwpIGlzIGEgcmVhbCBidXQgc3VybW91bnRhYmxlIGJvdHRsZW5lY2s6IGAtLXBpcGVsaW5lLXdpbmRvd3MgMmAKb3ZlcmxhcHBpbmcgdGhlIHRocmVlIHN0YWdlcyByZWNvdmVyZWQgZGVjb2RlIHRvIHRoZSBzYW1lIH42NyB0b2svcyB0aGUgbWFjaGluZQpnZXRzIG9uIHR3byBpbnRlcm5hbCBjYXJkcyBhdCBJUTNfUy4KCk1haW4gbGltaXRhdGlvbjogb25lIGVuZ2luZSBzZXNzaW9uLCBvbmUgcmVwZXRpdGlvbiBwZXIgbG9uZy1jb250ZXh0IGxlbmd0aDsKdGhlIG5lZ2F0aXZlIHJlc3VsdCBpbmNsdWRlZCAoU1RSQVRBX1NQTElUX1JJTkc9Mzg0LCDiiJIyMiUgcHJlZmlsbCBtZWRpYW4gaGVyZSkKd2FzIG1lYXN1cmVkIG9uIHRoZSBzYW1lIHNlc3Npb24uCgojIyBIYXJkd2FyZSBhbmQgc29mdHdhcmUKCi0gR1BVcyAoYWxsIHRocmVlIHNlbGVjdGVkLCBsYXllciBzcGxpdCk6CiAgLSBHUFUwIE5WSURJQSBHZUZvcmNlIFJUWCA1MDcwIFRpIDE2IEdCIOKAlCBQQ0llIDUuMCB4OCwgZGlyZWN0IHRvIENQVSwgcHJvYmUgMjguOSBHQi9zIGhvc3TihpJkZXZpY2UKICAtIEdQVTEgTlZJRElBIEdlRm9yY2UgUlRYIDUwNjAgVGkgMTYgR0Ig4oCUIFBDSWUgNC4wIHg4LCBkaXJlY3QgdG8gQ1BVLCBwcm9iZSAxNC40IEdCL3MKICAtIEdQVTIgTlZJRElBIEdlRm9yY2UgUlRYIDUwNjAgVGkgMTYgR0Ig4oCUICoqVVNCNC9UaHVuZGVyYm9sdCBlR1BVKiogYmVoaW5kIGEgVEJUNCBkb2NrCiAgICAoYDAwOjAyLjItWzEyLTc5XWAgQU1EIFVTQjQgaG9zdCDihpIgMyBkb3duc3RyZWFtIGJyaWRnZXMg4oaSIGNhcmQsIGxpbmsgcmVwb3J0cwogICAgUENJZSA0LjAgeDQgYWZ0ZXIgdGhlIGRvY2spLCBwcm9iZSAqKjMuOCBHQi9zKioKLSBDUFU6IEFNRCBSeXplbiA3IDc3MDBYICg4Qy8xNlQsIEFWWC01MTIgY2FwYWJsZSwgbWF4IDUuNTggR0h6KTsgU3RyYXRhIHBvb2w6CiAgNyB3b3JrZXJzICsgaG9zdCB0aHJlYWQgKGAtLWhvc3QtY29yZSBmaXJzdGApLCAyNCB0YXNrcy9waGFzZSBhdXRvbWF0aWMKLSBSQU06IDQ2IEdpQiB1c2FibGUgYnkgdGhlIGNvbnRhaW5lciAoaG9zdCBpcyBhIFByb3htb3ggbm9kZTsgU3RyYXRhIHJ1bnMgaW4gYW4gTFhDKQotIFN0b3JhZ2U6IEtMRVZWIENSQVMgQzkzMCAxIFRCIE5WTWUgKG1vZGVscyBhbmQgcGFja3Mgb24gbG9jYWwgTlZNZSkKLSBQQ0llIHBvd2VyIGxpbWl0cyAoc3RvY2spOiAyNzAgVyAoNTA3MCBUaSksIDE2MiBXLCAxNjIgVwotIE9TOiBVYnVudHUgMjYuMDQuMSBMVFMgaW5zaWRlIExYQyAoUHJveG1veCBob3N0IGtlcm5lbCA3LjAuMTQtMTUtcHZlKQotIERyaXZlciA1OTUuOTEuMDc7IENVREEgMTMuMyB0b29sa2l0IChgL3Vzci9sb2NhbC9jdWRhLTEzLjNgKQotIFN0cmF0YSAqKnYwLjEuNDIqKiAoYDYxYjNmYjVgKSwgZW5naW5lIGJpbmFyeSBpbnN0YWxsZWQgYnkgc2V0dXAvdXBkYXRlCiAgKGBlbmdpbmUvQlVJTEQuanNvbmA6IHZlcnNpb24gMC4xLjQyLCBhcmNoIDEyMCwgc3JjIGAxZTBjOTc1ODg4NDhlYTBmYDsKICB2aXNpb24gZW5naW5lIHNyYyBgMWZiMmIzZmI3OTdlYzQwMmApIOKAlCBub3QgYSBtYW51YWwgc291cmNlIGJ1aWxkCi0gTm8gYmFja2dyb3VuZCB3b3JrbG9hZHMgZHVyaW5nIHRoZSBydW5zOyBubyBjbG9jayBjYXB0dXJlLgoKIyMgTW9kZWwgYW5kIGNvbmZpZ3VyYXRpb24KCi0gTW9kZWw6IGB1bnNsb3RoL1F3ZW4zLjgtRmxhc2gtTmV4dC1HR1VGYCBAIHJldmlzaW9uIGA3NjY5MTFhNmI3MzY5ODQwYTkxZGJjZDk1ZjlmOTk3YWNhYWI2Y2Q2YCwKICBgVUQtSVE0X1hTL1F3ZW4zLjgtRmxhc2gtTmV4dC1VRC1JUTRfWFMtMDAwMHsxLDIsM30tb2YtMDAwMDMuZ2d1ZmAgKH45My43IEdCKSwKICBzaGEyNTY6CiAgLSAwMDAwMSBgNWNlODkzNzA3MjBmOGJmOTA4OTBmNDM5MzYxMjgyMTA0YzFhYTE0ODJkNDAxM2JiOWE1MDkyM2U3NThlNzFhNGAKICAtIDAwMDAyIGA1NzdhMzhhMjM5MmI0MGNhMjE5M2NlYTUwMmUxZDkyZjYwYjhjZDM3MDY3NWQzMDhlMGVjMjE4ODVkOWRhYWE3YAogIC0gMDAwMDMgYGQ0NjM0ZTZkODRmMGViYjA5NDBiZTE1YzkwZDM3OTBiZjY0NjRlM2RlYTNhMWNkZGM1NjdkYzBlODNhZDg4MzNgCi0gVmlzaW9uIGVuY29kZXIgYG1tcHJvai1Rd2VuMy44LUZsYXNoLU5leHQtQkYxNi5nZ3VmYCBsb2FkZWQgKGAtLXZpc2lvbmApIGJ1dCBub3QKICBleGVyY2lzZWQg4oCUIGFsbCBydW5zIGFyZSB0ZXh0LW9ubHkKLSBOYXRpdmUtZXhwZXJ0cyBwYWNrIGB1bnNsb3RoLXVkLWlxNF94c2AgKHNldHVwLWJ1aWx0LCBleHBlcnRzIHNlcnZlZCBuYXRpdmVseQogIGZyb20gdGhlIEdHVUYsIGxhcmdlc3QgYmxvYiAzLjQ4IE1CKTsgc2hpcHBlZCBgZXhwZXJ0LXByb2ZpbGUuYmluYAogIChzaGEyNTYgYDhmNTliNGFhODg3MzIwOWRmZjExYzExZTM3YmNkYTk1MjlhMTMzNWI3MjRhMWFmZWVhMzdiZjYzODg5NzViYWZgKQotIE1UUCBkcmFmdCBoZWFkIGZyb20gc2V0dXAgKGBTdHJhdGEtZGF0YS9tdHAvcnRgKSwgYC0tc3BlYyA1IC0tc3BlYy1taW4tcCAwLjVgCiAgKHZlcmlmeSB3aW5kb3cgZ3Jvd3MgdG8gNyB3aXRoIHRoZSBkZWZhdWx0IHN1ZmZpeCBkcmFmdGVyOyB3ZWIgcGFuZWw6ICJNVFAKICBkcmFmdHMgdXAgdG8gNCArIGV4dGVuc2lvbnMiKQotIENvbnRleHQgMjA0LDgwMDsgS1YgYGs4djRgOyBleHBlcnQgY2FjaGUgYXV0byAoR1BVMCAyLDk2MCAvIEdQVTEgNCwzNzAgLwogIEdQVTIgMywzNDggc2xvdHMpOyBsb3ctUkFNIG1vZGUgYC0tcmVzaWRlbnQtZXhwZXJ0cyAtLXJlc2lkZW50LWJ1ZGdldC1naWIgMzJgCiAgKDMwLjkgR2lCIGV4cGVydCBjb21wbGVtZW50LCAzMiBHaUIgcGFnZS1sb2NrZWQpOyBjb252ZXJzYXRpb24gY2FjaGUKICA1LDEyMCBNaUIgLyA4IHNsb3RzOyBgLS12cmFtLXJlc2VydmUtbWliIDc1MGA7IGAtLXBpcGVsaW5lLXdpbmRvd3MgMmAKLSBBYmxpdGVyYXRlZCBiZWhhdmlvciB2aWEgY29udHJvbCB2ZWN0b3I6CiAgYEh1aWh1aS1Rd2VuMy44LUZsYXNoLU5leHQtcmVmdXNhbC1kaXJlY3Rpb24tci5nZ3VmOjEuMGAsIHByb2plY3QsIHBlci1sYXllciwKICBsYXllcnMgMS4uNDcgKDQ3IHN0ZWVyZWQpCi0gU2FtcGxpbmcgZGVmYXVsdHMgKHNlcnZlciBjb25maWcpOiB0ZW1wIDAuNywgdG9wX3AgMS4wLCB0b3BfayA2NCwgbWluX3AgMC4wOCwKICByZXBldGl0aW9uX3BlbmFsdHkgMS4wMzsgYHJlYXNvbmluZ19idWRnZXRfdG9rZW5zYCA1MTIwICh1bnVzZWQgaGVyZSwgdGhpbmtpbmcgb2ZmKQotIEVudmlyb25tZW50OiBgU1RSQVRBX1BSRUZJTExfSEVMUD0xYCwgYFNUUkFUQV9TU0RfS0VFUEFMSVZFPTBgLAogIGBTVFJBVEFfSU9fUFJFRkVUQ0g9MWAsIGBTVFJBVEFfUFJFRklMTF9DUFVfU0hBUkU9YXV0b2AKLSBObyBgLS1jYWxpYnJhdGVgLCBubyBleHBlcmltZW50YWwgc3BlZWQgcHJvamVjdGlvbiwgbm8gYC0tYmF0Y2hgLgoKYGBgdGV4dApzdHJhdGEgLS1zZXJ2ZSBcCiAgLS1wYWNrIFN0cmF0YS1kYXRhL3BhY2tzL3Vuc2xvdGgtdWQtaXE0X3hzIFwKICAtLW5hdGl2ZSBtb2RlbHMvdW5zbG90aC1VRC1JUTRfWFMvUXdlbjMuOC1GbGFzaC1OZXh0LVVELUlRNF9YUy0wMDAwMS1vZi0wMDAwMy5nZ3VmIFwKICAtLWV4cGVydC1wcm9maWxlIGRhdGEvZXhwZXJ0LXByb2ZpbGUuYmluIFwKICAtLWV4cGVydC1jYWNoZSBhdXRvIC0tcHJlZmlsbCBhdXRvIFwKICAtLXNwZWMgNSAtLXNwZWMtbWluLXAgMC41IFwKICAtLW10cCBTdHJhdGEtZGF0YS9tdHAvcnQgXAogIC0tbWF4LWNvbnRleHQgMjA0ODAwIC0ta3Ygazh2NCBcCiAgLS1yZXNpZGVudC1leHBlcnRzIC0tcmVzaWRlbnQtYnVkZ2V0LWdpYiAzMiBcCiAgLS12aXNpb24gLS12cmFtLXJlc2VydmUtbWliIDc1MCBcCiAgLS1waXBlbGluZS13aW5kb3dzIDIgXAogIC0tY29udmVyc2F0aW9uLWNhY2hlLW1pYiA1MTIwIC0tY29udmVyc2F0aW9uLWNhY2hlLXNsb3RzIDggXAogIC0tY29udHJvbC12ZWN0b3Itc2NhbGVkIG1vZGVscy9JUTNfUy9IdWlodWktUXdlbjMuOC1GbGFzaC1OZXh0LXJlZnVzYWwtZGlyZWN0aW9uLXIuZ2d1ZjoxLjAgXAogIC0tY29udHJvbC12ZWN0b3ItbGF5ZXItcmFuZ2UgMSA0NyAtLWN2ZWMtbW9kZSBwcm9qZWN0IC0tY3ZlYy1kaXIgcGVyLWxheWVyIFwKICAtLWxheWVyLXNwbGl0IDMyLDQxICAgICAgICAjIEdQVXMgMCwxLDI7IENVREEwIGxheWVycyAwLTMxLCBDVURBMSAzMi00MCwgQ1VEQTIgNDEtNDcgKyBoZWFkCmBgYAoKRnVsbCBzZXJ2ZXIgY29uZmlnIChwYXRocyBhYmJyZXZpYXRlZCwgbm8gY3JlZGVudGlhbHMpOiBbY29uZmlnLmpzb25dKGNvbmZpZy5qc29uKS4KU3RhcnR1cCBsb2cgKGVuZ2luZSAwLjEuNDIsIG9uZSBzZXNzaW9uLCBldmVyeXRoaW5nIGJlbG93IG1lYXN1cmVkIGluIGl0KToKW2VuZ2luZS1sb2cudHh0XShlbmdpbmUtbG9nLnR4dCkuCgojIyBNZXRob2QKClR3byBQeXRob24gMyBzdGRsaWIgY2xpZW50cyBhZ2FpbnN0IHRoZSBPcGVuQUktY29tcGF0aWJsZSBzdHJlYW1pbmcgQVBJIG92ZXIKTEFOIChzY3JpcHRzIG5vdCBhdHRhY2hlZDsgdGhlIHdvcmtsb2FkcyBhcmUgZnVsbHkgZGVzY3JpYmVkIGhlcmUpOgoKLSAqKlNob3J0IHN1aXRlKiogKGByZXN1bHRzLXNob3J0LnR4dGApOiAxMCBnZW5lcmFsIHF1ZXN0aW9ucyBpbiBUcmFkaXRpb25hbAogIENoaW5lc2UgKFRDUCBoYW5kc2hha2Ugc3RlcHMsIGJpcnRoZGF5IHByb2JhYmlsaXR5IGZvciAzMCBwZW9wbGUsIHF1aWNrc29ydAogIHdpdGhvdXQgYnVpbHQtaW4gc29ydCwgUkVTVCB2cyBHcmFwaFFMICsgTisxLCBhIHR3by1waXBlIHJlc2Vydm9pciBlcXVhdGlvbiwKICB0aGUgdW5jZXJ0YWludHkgcHJpbmNpcGxlLCBhIG1vbnRobHkgdG9wLTMgU1FMIHdpbmRvdy1mdW5jdGlvbiBxdWVyeSwKICBzZWxmLWF0dGVudGlvbiBtYXRoLCBhIGtuaWdodHMtYW5kLWtuYXZlcyBsb2dpYyBwdXp6bGUsIFBvc3RncmVTUUwgTVZDQykuCiAgT25lIHVzZXIgbWVzc2FnZSBlYWNoLCB0aGlua2luZyBvZmYgKGBjaGF0X3RlbXBsYXRlX2t3YXJncy5lbmFibGVfdGhpbmtpbmc6CiAgZmFsc2VgKSwgYG1heF90b2tlbnNgIDIsMDQ4LCBzZXF1ZW50aWFsIHNpbmdsZSBzdHJlYW0uCi0gKipMb25nIGZyZXNoLXByb21wdCByYW1wKiogKGByZXN1bHRzLWxvbmcudHh0YCk6IHRhcmdldHMgMTUsMDAw4oaSMTIwLDAwMAogIHRva2VucyBpbiAxNUsgc3RlcHMuIENvbnRleHQgPSBhIGxvbmcgc3lzdGVtLWRlc2lnbiBkb2N1bWVudCBpbiBUcmFkaXRpb25hbAogIENoaW5lc2UgYnVpbHQgYnkgY3ljbGluZyAxMiBmaXhlZCB0ZWNobmljYWwgcGFyYWdyYXBocyAob3JkZXIgcm90YXRlZCBwZXIgcnVuCiAgYnkgYSBzZWVkZWQgUk5HKSB1bnRpbCB0aGUgdGFyZ2V0IGxlbmd0aCwgd2l0aCBvbmUgbmVlZGxlIGZhY3QgcGxhbnRlZCBhdAogIH41MCUgZGVwdGg7IHRoZSBxdWVzdGlvbiBhc2tzIHRvIGV4dHJhY3QgdGhlIG5lZWRsZSBhbmQgc3VtbWFyaXplIHRoZQogIGRvY3VtZW50LiBgbWF4X3Rva2Vuc2AgNTEyLiAqKkV2ZXJ5IHJlcXVlc3QgY2FycmllcyBhIHJhbmRvbSAzMi1oZXggc2FsdCBhdAogIHRoZSBmcm9udCoqLCBzbyBubyBydW4gcmV1c2VzIGEgcHJlZml4IOKAlCBlbmdpbmUgbG9ncyBzaG93IGByZXVzZWQgPSAwYCBvbiBhbGwKICBlaWdodCBydW5zLiBDaGFyYWN0ZXIgY291bnRzIGFyZSByZXNpemVkIHRvIGhpdCB0YXJnZXRzIHVzaW5nIG1lYXN1cmVkCiAgYHByb21wdF90b2tlbnNgIGZyb20gZWFybGllciBydW5zLgoKQm90aCBzdWl0ZXMgc2VuZCBvbmUgd2FybS11cCByZXF1ZXN0IGZpcnN0IChhYnNvcmJzIENVREEgZ3JhcGggY2FwdHVyZSAvIEtWCmFsbG9jYXRpb247IG1vZGVsIGxvYWRpbmcgaXMgbm90IGluIGFueSB0aW1lZCBydW4pLiBUaW1pbmcgaXMgY2xpZW50LXNpZGU6ClRURlQgPSBmaXJzdCBub24tZW1wdHkgc3RyZWFtZWQgY29udGVudCBkZWx0YTsgYHByZWZpbGwgdG9rL3MgPSBwcm9tcHRfdG9rZW5zIC8gVFRGVGA7CmBkZWNvZGUgdG9rL3MgPSBjb21wbGV0aW9uX3Rva2VucyAvICh0b3RhbCDiiJIgVFRGVClgIHVzaW5nIHRoZSB1c2FnZSBjb3VudGVycyB0aGUKc2VydmVyIHJlcG9ydHMgKGBzdHJlYW1fb3B0aW9ucy5pbmNsdWRlX3VzYWdlYCkuIExBTiBsYXRlbmN5IGlzIHN1Yi1taWxsaXNlY29uZC4KVGhlIGVuZ2luZSdzIG93biBsb2cgbGluZXMgYWdyZWUgd2l0aCB0aGUgY2xpZW50IG51bWJlcnMgdG8gd2l0aGluIH4xJQooZS5nLiAxMjAsMDgxIHRva2VucyBpbiA4Ny42OSBzID0gMSwzNzAgdG9rL3MgYm90aCBzaWRlcykuIEV4cGVydCBjYWNoZSBzdGF0ZToKb25lIHdhcm0gc2Vzc2lvbiDigJQgdGhlIGFkYXB0aXZlIHRpZXIgYW5kIHBpbm5lZCBjb21wbGVtZW50IHdlcmUgdHJhaW5lZCBieQpwcmlvciBwcm9kdWN0aW9uIHRyYWZmaWMgKGxvbmcgYWdlbnQgY29udmVyc2F0aW9ucyksIG5vdCByZXNldCBmb3IgdGhlc2UgcnVuczsKdGhlIHJhbXAncyBvd24gZnJlc2ggcHJvbXB0cyBrZXB0IHRoZSBwYWdlIGNhY2hlIGhvdCBhcyBpdCB3ZW50LgoKIyMgUmVzdWx0cwoKU2hvcnQgc3VpdGUgKGByZXN1bHRzLXNob3J0LnR4dGAsIDEwIHF1ZXN0aW9ucywgcHJvbXB0IDM24oCTNjkgdG9rZW5zLCBvdXRwdXQgNDM14oCTMiwwNDgpOgoKfCBDb25maWd1cmF0aW9uIHwgUHJvbXB0IHRvay9zIG1lZGlhbiAvIHJhbmdlIHwgRGVjb2RlIHRvay9zIG1lZGlhbiAvIHJhbmdlIHwgVFRGVCBzIG1lZGlhbiAvIHJhbmdlIHwKfCAtLS0gfCAtLS06IHwgLS0tIHwgLS0tIHwKfCBVRC1JUTRfWFMgMy1HUFUgc3BsaXQsIHRoaW5raW5nIG9mZiwg4omkMiwwNDggb3V0IHwgNjYuNyAoNS444oCTMTA1LjMsIG5vaXNlLWRvbWluYXRlZCBhdCAzNuKAkzY5IHRva2VucykgfCAqKjcxLjYqKiAoNjUuMeKAkzgzLjIpIHwgMC43NCAoMC40MeKAkzcuMjApIHwKCkxvbmcgZnJlc2gtcHJvbXB0IHJhbXAgKGByZXN1bHRzLWxvbmcudHh0YCwgb25lIHJ1biBwZXIgbGVuZ3RoLCBgcmV1c2VkID0gMGAgb24gYWxsKToKCnwgQWN0dWFsIHByb21wdCB0b2tlbnMgfCBSZXVzZWQgfCBHZW5lcmF0ZWQgfCBQcmVmaWxsIHRvay9zIHwgRGVjb2RlIHRvay9zIHwgVFRGVCBzIHwgVG90YWwgcyB8CnwgLS0tOiB8IC0tLTogfCAtLS06IHwgLS0tOiB8IC0tLTogfCAtLS06IHwgLS0tOiB8CnwgMTMsNzc3IHwgMCB8IDI0NiB8IDUyOS4wIHwgNjYuMyB8IDI2LjAgfCAyOS44IHwKfCAzMCwwNDEgfCAwIHwgNDI0IHwgOTE4LjIgfCA2OS4xIHwgMzIuNyB8IDM4LjkgfAp8IDQ1LDA5NiB8IDAgfCAxNzQgfCAxLDAyMy43IHwgNjUuMyB8IDQ0LjEgfCA0Ni43IHwKfCA2MCwxMjcgfCAwIHwgMjA2IHwgMSwwODcuNyB8IDY0LjIgfCA1NS4zIHwgNTguNSB8CnwgNzUsMDY4IHwgMCB8IDEzMSB8IDk2Mi4zIHwgNzEuNSB8IDc4LjAgfCA3OS44IHwKfCA5MCwxMTIgfCAwIHwgMTU3IHwgMSwxMzguMCB8IDYwLjggfCA3OS4yIHwgODEuOCB8CnwgMTA1LDA3MSB8IDAgfCAzOTcgfCAxLDIwMi45IHwgNjQuNCB8IDg3LjQgfCA5My41IHwKfCAxMjAsMDgxIHwgMCB8IDM5NSB8ICoqMSwzNjkuNCoqIHwgNjcuMyB8IDg3LjcgfCA5My42IHwKClByZWZpbGwga2VlcHMgcmlzaW5nIHdpdGggbGVuZ3RoIChhbW9ydGl6aW5nIGV4cGVydCBzdHJlYW1pbmcpOyBkZWNvZGUgaXMgZmxhdAo2MC444oCTNzEuNSB0b2svcyBhY3Jvc3MgMTMuOEvihpIxMjBLIGNvbnRleHQuIERyYWZ0IGFjY2VwdGFuY2Ugb3ZlciB0aGUgd2hvbGUKc2Vzc2lvbiByYW4gNjTigJM3MCUuCgojIyMgTmVnYXRpdmUgcmVzdWx0OiBTVFJBVEFfU1BMSVRfUklORz0zODQgKHNhbWUgc2Vzc2lvbiwgc2FtZSByYW1wKQoKYHJlc3VsdHMtbG9uZy1zcGxpdC1yaW5nLTM4NC50eHRgIOKAlCBvbmx5IGNoYW5nZTogYWRkZWQgYFNUUkFUQV9TUExJVF9SSU5HPTM4NGAKKGxlbmQgcmluZyBncm93cyA5NuKGkjM4NCBzbG90czsgYm9ycm93ZWQgc2xvdHMgNCw2MjTihpI1LDg2NCkuIFNhbWUgdGFyZ2V0cywgZnJlc2gKc2FsdHMuIFByZWZpbGwgbWVkaWFuICoqODg3IHZzIDEsMDU2IHRvay9zICjiiJIxNiUpKiosIHBlci1sZW5ndGggZ2FwcyArOSUgdG8KKzQ0JSBhZ2FpbnN0IGl0OyBkZWNvZGUgdW5jaGFuZ2VkICg2Ni41IHZzIDY2LjgpLiBPbiB0aGlzIG1hY2hpbmUgdGhlIGV4dHJhCmJvcnJvd2VkIHNsb3RzIGNvbWUgb3V0IG9mIGEgNDIlLXJlc2lkZW50IGV4cGVydCB0aWVyLCBhbmQgcmUtcmVhZGluZyB0aGVtCmR1cmluZyBjaHVua3MgY29zdHMgbW9yZSB0aGFuIHRoZSByaW5nIHNhdmVzLiBUaGUgYXV0aG9yJ3MgUjk3MDAgbnVtYmVycwooKzIuMyUsIGZpbGUgcmVhZHMg4oiSNjUlKSBkbyBub3QgdHJhbnNmZXIgdG8gYSBVU0I0LWVHUFUgc3BsaXQgd2l0aCB0aWdodCBSQU0uClJldmVydGVkIGFmdGVyIHRoaXMgQS9COyBiYXNlbGluZSBpcyB0aGUgdGFibGUgYWJvdmUuCgojIyMgQ29ycmVjdG5lc3MgY2hlY2tzCgotIGB0b29scy9uZWVkbGVfYmVuY2gucHkgLS1sZW5ndGhzIDMyaywxMjhrIC0tZGVwdGhzIDEwLDUwLDkwYDoKICAqKjYvNiBmb3VuZCoqIChgbmVlZGxlcy5qc29uYCk7IDMyLjhLIHByb21wdHMgMzjigJM0NiBzLCAxMjUuNUsgcHJvbXB0cyAxMDPigJMyMDkgcwogICh0aGUgMjA5IHMgb3V0bGllciBpcyB0aGUgZGVwdGgtOTAgcnVuIHJpZ2h0IGFmdGVyIGEgZnJlc2ggMTIwSyByYW1wIOKAlAogIHBhZ2UtY2FjaGUgcHJlc3N1cmUsIG5vdCBhIHJlY2FsbCBmYWlsdXJlKS4KLSBUaGUgc2hvcnQgc3VpdGUgZG91YmxlcyBhcyBxdWFsaXRhdGl2ZSBzcG90LWNoZWNrcyAocmVhc29uaW5nLCBjb2RlLCBTUUwpOwogIGFuc3dlcnMgY29tcGxldGUgYW5kIG9uLXRvcGljIGF0IHRlbXAgMC43OyBubyBzdGFsbHMsIGFsbCBydW5zIGZpbmlzaGVkIHdpdGgKICBgc3RvcGAuCgojIyBNZW1vcnkgb2JzZXJ2YXRpb25zCgotIFZSQU0sIGlkbGUgc25hcHNob3Qgd2l0aCBldmVyeXRoaW5nIGxvYWRlZDogR1BVMCAxNSw1OTMgLyAxNiwzMDMgTWlCLAogIEdQVTEgMTUsNTQ5IC8gMTYsMzExLCBHUFUyIDE1LDcyNSAvIDE2LDMxMTsgZW5naW5lIHJlcG9ydHMgMzM5IE1pQiBmcmVlIG9uCiAgR1BVMCBhZnRlciBhbGwgY2FwdHVyZXMgKGAtLXBpcGVsaW5lLXdpbmRvd3MgMmAgaG9sZHMgMzA5IE1pQiBiYWNrIG9uIENVREEwCiAgaXRzZWxmIGZvciB0aGUgc2Vjb25kIHZlcmlmaWVyICsgR0ROIHNuYXBzaG90cykuIE5vIHN0YWxscywgbm8gT09NLgotIFJBTTogMzIgR2lCIHBhZ2UtbG9ja2VkIGV4cGVydCBjb21wbGVtZW50IGJ1aWx0IGF0IHN0YXJ0dXAgaW4gMzMgcyAoZW5naW5lCiAgcmVsZWFzZWQgdGhlIG1vZGVsJ3MgY2FjaGVkIHBhZ2VzIGZpcnN0KTsgfjEwLjggR2lCIGxlZnQgZm9yIHRoZSBPUyBwYWdlCiAgY2FjaGUgYWdhaW5zdCBhIDIzLjQgR2lCIGZpbGUtdGllciBleHBlcnQgZm9vdHByaW50IOKAlCB0aGUgc3RhcnR1cCBXQVJOSU5HCiAgdGhhdCBib3Jyb3dlZCBwcm9tcHQtcGF0aCBzbG90cyBoYXZlIG5vIFJBTSBjb3B5IGlzIGV4cGVjdGVkIGluIHRoaXMgcmVnaW1lLgotIE5vIHBhZ2luZywgbm8gZW5naW5lIHJlc3RhcnRzIGR1cmluZyBtZWFzdXJlbWVudC4KCiMjIExpbWl0YXRpb25zCgotIE9uZSBlbmdpbmUgc2Vzc2lvbjsgb25lIHJlcGV0aXRpb24gcGVyIGxvbmctY29udGV4dCBsZW5ndGggKHRoZSBzaG9ydCBzdWl0ZQogIGlzIDEwIGRpc3RpbmN0IHF1ZXN0aW9ucywgbm90IHJlcGVhdHMgb2Ygb25lKS4KLSBUaGlua2luZy9yZWFzb25pbmcgb2ZmOyB2aXNpb24gbG9hZGVkIGJ1dCB1bnRlc3RlZDsgVFRGVCBpbmNsdWRlcyB0b2tlbml6ZXIKICB0aW1lIGFuZCBMQU4sIGV4Y2x1ZGVzIHF1ZXVlaW5nIChzaW5nbGUgY2xpZW50KS4KLSBUaGUgZXhwZXJ0IGNhY2hlIGFuZCBwYWdlIGNhY2hlIHdlcmUgd2FybWVkIGJ5IHJlYWwgcHJpb3IgdHJhZmZpYyDigJQgYSBjb2xkCiAgZmlyc3QtcnVuLWFmdGVyLWJvb3QgbnVtYmVyIHdpbGwgYmUgbG93ZXIgKG9ic2VydmVkIH4xLDY5MCB0b2svcyBvbiAxNjVLIGZvcgogIGEgY29sZC1jYWNoZSAwLjEuNDEgZmlyc3QgcHJvbXB0IHZzIDIsMDAwKyB3YXJtKS4KLSBEZWNvZGUgd2FzIG5vdCBjb21wYXJlZCBhZ2FpbnN0IGAtLXBpcGVsaW5lLXdpbmRvd3NgIG9mZiB3aXRoaW4gdGhpcyBzZXNzaW9uOwogIHRoZSB0d28tY2FyZCBJUTNfUyBzaWJsaW5nIGNvbmZpZyBvZiB0aGlzIG1hY2hpbmUgbWVhc3VyZXMgfjc1IHRvay9zIG1lZGlhbiwKICBhbmQgd2l0aG91dCBwaXBlbGluZSBvdmVybGFwIHRoaXMgdGhyZWUtY2FyZCBJUTRfWFMgc3BsaXQgcmFuIGNsZWFybHkgc2xvd2VyLgo=
+# Community benchmark: RTX 5070 Ti + 2x RTX 5060 Ti (one on a USB4 eGPU), Ryzen 7 7700X, 46 GiB RAM in an LXC
+
+Measured on 2026-10-11 by **chiangww** (GitHub). Unsloth UD-IQ4_XS on Strata v0.1.42,
+3-GPU layer split `32,41` with `--pipeline-windows 2`, resident RAM mode
+(32 GiB page-locked expert complement) on a machine whose third GPU hangs off a
+USB4/Thunderbolt dock.
+
+Headline: **prompt 918–1,369 tok/s at 30K–120K fresh tokens** (single stream,
+thinking off), **decode median 66.8 tok/s** (range 60.8–83.2 across both suites),
+**needle 6/6** at 32k/128k. The USB4 card (PCIe probe 3.8 GB/s vs 28.9/14.4
+GB/s internal) is a real but surmountable bottleneck: `--pipeline-windows 2`
+overlapping the three stages recovered decode to the same ~67 tok/s the machine
+gets on two internal cards at IQ3_S.
+
+Main limitation: one engine session, one repetition per long-context length;
+the negative result included (STRATA_SPLIT_RING=384, −22% prefill median here)
+was measured on the same session.
+
+## Hardware and software
+
+- GPUs (all three selected, layer split):
+  - GPU0 NVIDIA GeForce RTX 5070 Ti 16 GB — PCIe 5.0 x8, direct to CPU, probe 28.9 GB/s host→device
+  - GPU1 NVIDIA GeForce RTX 5060 Ti 16 GB — PCIe 4.0 x8, direct to CPU, probe 14.4 GB/s
+  - GPU2 NVIDIA GeForce RTX 5060 Ti 16 GB — **USB4/Thunderbolt eGPU** behind a TBT4 dock
+    (`00:02.2-[12-79]` AMD USB4 host → 3 downstream bridges → card, link reports
+    PCIe 4.0 x4 after the dock), probe **3.8 GB/s**
+- CPU: AMD Ryzen 7 7700X (8C/16T, AVX-512 capable, max 5.58 GHz); Strata pool:
+  7 workers + host thread (`--host-core first`), 24 tasks/phase automatic
+- RAM: 46 GiB usable by the container (host is a Proxmox node; Strata runs in an LXC)
+- Storage: KLEVV CRAS C930 1 TB NVMe (models and packs on local NVMe)
+- PCIe power limits (stock): 270 W (5070 Ti), 162 W, 162 W
+- OS: Ubuntu 26.04.1 LTS inside LXC (Proxmox host kernel 7.0.14-15-pve)
+- Driver 595.91.07; CUDA 13.3 toolkit (`/usr/local/cuda-13.3`)
+- Strata **v0.1.42** (`61b3fb5`), engine binary installed by setup/update
+  (`engine/BUILD.json`: version 0.1.42, arch 120, src `1e0c97588848ea0f`;
+  vision engine src `1fb2b3fb797ec402`) — not a manual source build
+- No background workloads during the runs; no clock capture.
+
+## Model and configuration
+
+- Model: `unsloth/Qwen3.8-Flash-Next-GGUF` @ revision `766911a6b7369840a91dbcd95f9f997acaab6cd6`,
+  `UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-0000{1,2,3}-of-00003.gguf` (~93.7 GB),
+  sha256:
+  - 00001 `5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4`
+  - 00002 `577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7`
+  - 00003 `d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833`
+- Vision encoder `mmproj-Qwen3.8-Flash-Next-BF16.gguf` loaded (`--vision`) but not
+  exercised — all runs are text-only
+- Native-experts pack `unsloth-ud-iq4_xs` (setup-built, experts served natively
+  from the GGUF, largest blob 3.48 MB); shipped `expert-profile.bin`
+  (sha256 `8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf`)
+- MTP draft head from setup (`Strata-data/mtp/rt`), `--spec 5 --spec-min-p 0.5`
+  (verify window grows to 7 with the default suffix drafter; web panel: "MTP
+  drafts up to 4 + extensions")
+- Context 204,800; KV `k8v4`; expert cache auto (GPU0 2,960 / GPU1 4,370 /
+  GPU2 3,348 slots); low-RAM mode `--resident-experts --resident-budget-gib 32`
+  (30.9 GiB expert complement, 32 GiB page-locked); conversation cache
+  5,120 MiB / 8 slots; `--vram-reserve-mib 750`; `--pipeline-windows 2`
+- Abliterated behavior via control vector:
+  `Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0`, project, per-layer,
+  layers 1..47 (47 steered)
+- Sampling defaults (server config): temp 0.7, top_p 1.0, top_k 64, min_p 0.08,
+  repetition_penalty 1.03; `reasoning_budget_tokens` 5120 (unused here, thinking off)
+- Environment: `STRATA_PREFILL_HELP=1`, `STRATA_SSD_KEEPALIVE=0`,
+  `STRATA_IO_PREFETCH=1`, `STRATA_PREFILL_CPU_SHARE=auto`
+- No `--calibrate`, no experimental speed projection, no `--batch`.
+
+```text
+strata --serve \
+  --pack Strata-data/packs/unsloth-ud-iq4_xs \
+  --native models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+  --expert-profile data/expert-profile.bin \
+  --expert-cache auto --prefill auto \
+  --spec 5 --spec-min-p 0.5 \
+  --mtp Strata-data/mtp/rt \
+  --max-context 204800 --kv k8v4 \
+  --resident-experts --resident-budget-gib 32 \
+  --vision --vram-reserve-mib 750 \
+  --pipeline-windows 2 \
+  --conversation-cache-mib 5120 --conversation-cache-slots 8 \
+  --control-vector-scaled models/IQ3_S/Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf:1.0 \
+  --control-vector-layer-range 1 47 --cvec-mode project --cvec-dir per-layer \
+  --layer-split 32,41        # GPUs 0,1,2; CUDA0 layers 0-31, CUDA1 32-40, CUDA2 41-47 + head
+```
+
+Full server config (paths abbreviated, no credentials): [config.json](config.json).
+Startup log (engine 0.1.42, one session, everything below measured in it):
+[engine-log.txt](engine-log.txt).
+
+## Method
+
+Two Python 3 stdlib clients against the OpenAI-compatible streaming API over
+LAN (scripts not attached; the workloads are fully described here):
+
+- **Short suite** (`results-short.txt`): 10 general questions in Traditional
+  Chinese (TCP handshake steps, birthday probability for 30 people, quicksort
+  without built-in sort, REST vs GraphQL + N+1, a two-pipe reservoir equation,
+  the uncertainty principle, a monthly top-3 SQL window-function query,
+  self-attention math, a knights-and-knaves logic puzzle, PostgreSQL MVCC).
+  One user message each, thinking off (`chat_template_kwargs.enable_thinking:
+  false`), `max_tokens` 2,048, sequential single stream.
+- **Long fresh-prompt ramp** (`results-long.txt`): targets 15,000→120,000
+  tokens in 15K steps. Context = a long system-design document in Traditional
+  Chinese built by cycling 12 fixed technical paragraphs (order rotated per run
+  by a seeded RNG) until the target length, with one needle fact planted at
+  ~50% depth; the question asks to extract the needle and summarize the
+  document. `max_tokens` 512. **Every request carries a random 32-hex salt at
+  the front**, so no run reuses a prefix — engine logs show `reused = 0` on all
+  eight runs. Character counts are resized to hit targets using measured
+  `prompt_tokens` from earlier runs.
+
+Both suites send one warm-up request first (absorbs CUDA graph capture / KV
+allocation; model loading is not in any timed run). Timing is client-side:
+TTFT = first non-empty streamed content delta; `prefill tok/s = prompt_tokens / TTFT`;
+`decode tok/s = completion_tokens / (total − TTFT)` using the usage counters the
+server reports (`stream_options.include_usage`). LAN latency is sub-millisecond.
+The engine's own log lines agree with the client numbers to within ~1%
+(e.g. 120,081 tokens in 87.69 s = 1,370 tok/s both sides). Expert cache state:
+one warm session — the adaptive tier and pinned complement were trained by
+prior production traffic (long agent conversations), not reset for these runs;
+the ramp's own fresh prompts kept the page cache hot as it went.
+
+## Results
+
+Short suite (`results-short.txt`, 10 questions, prompt 36–69 tokens, output 435–2,048):
+
+| Configuration | Prompt tok/s median / range | Decode tok/s median / range | TTFT s median / range |
+| --- | ---: | --- | --- |
+| UD-IQ4_XS 3-GPU split, thinking off, ≤2,048 out | 66.7 (5.8–105.3, noise-dominated at 36–69 tokens) | **71.6** (65.1–83.2) | 0.74 (0.41–7.20) |
+
+Long fresh-prompt ramp (`results-long.txt`, one run per length, `reused = 0` on all):
+
+| Actual prompt tokens | Reused | Generated | Prefill tok/s | Decode tok/s | TTFT s | Total s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 13,777 | 0 | 246 | 529.0 | 66.3 | 26.0 | 29.8 |
+| 30,041 | 0 | 424 | 918.2 | 69.1 | 32.7 | 38.9 |
+| 45,096 | 0 | 174 | 1,023.7 | 65.3 | 44.1 | 46.7 |
+| 60,127 | 0 | 206 | 1,087.7 | 64.2 | 55.3 | 58.5 |
+| 75,068 | 0 | 131 | 962.3 | 71.5 | 78.0 | 79.8 |
+| 90,112 | 0 | 157 | 1,138.0 | 60.8 | 79.2 | 81.8 |
+| 105,071 | 0 | 397 | 1,202.9 | 64.4 | 87.4 | 93.5 |
+| 120,081 | 0 | 395 | **1,369.4** | 67.3 | 87.7 | 93.6 |
+
+Prefill keeps rising with length (amortizing expert streaming); decode is flat
+60.8–71.5 tok/s across 13.8K→120K context. Draft acceptance over the whole
+session ran 64–70%.
+
+### Negative result: STRATA_SPLIT_RING=384 (same session, same ramp)
+
+`results-long-split-ring-384.txt` — only change: added `STRATA_SPLIT_RING=384`
+(lend ring grows 96→384 slots; borrowed slots 4,624→5,864). Same targets, fresh
+salts. Prefill median **887 vs 1,056 tok/s (−16%)**, per-length gaps +9% to
++44% against it; decode unchanged (66.5 vs 66.8). On this machine the extra
+borrowed slots come out of a 42%-resident expert tier, and re-reading them
+during chunks costs more than the ring saves. The author's R9700 numbers
+(+2.3%, file reads −65%) do not transfer to a USB4-eGPU split with tight RAM.
+Reverted after this A/B; baseline is the table above.
+
+### Correctness checks
+
+- `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90`:
+  **6/6 found** (`needles.json`); 32.8K prompts 38–46 s, 125.5K prompts 103–209 s
+  (the 209 s outlier is the depth-90 run right after a fresh 120K ramp —
+  page-cache pressure, not a recall failure).
+- The short suite doubles as qualitative spot-checks (reasoning, code, SQL);
+  answers complete and on-topic at temp 0.7; no stalls, all runs finished with
+  `stop`.
+
+## Memory observations
+
+- VRAM, idle snapshot with everything loaded: GPU0 15,593 / 16,303 MiB,
+  GPU1 15,549 / 16,311, GPU2 15,725 / 16,311; engine reports 339 MiB free on
+  GPU0 after all captures (`--pipeline-windows 2` holds 309 MiB back on CUDA0
+  itself for the second verifier + GDN snapshots). No stalls, no OOM.
+- RAM: 32 GiB page-locked expert complement built at startup in 33 s (engine
+  released the model's cached pages first); ~10.8 GiB left for the OS page
+  cache against a 23.4 GiB file-tier expert footprint — the startup WARNING
+  that borrowed prompt-path slots have no RAM copy is expected in this regime.
+- No paging, no engine restarts during measurement.
+
+## Limitations
+
+- One engine session; one repetition per long-context length (the short suite
+  is 10 distinct questions, not repeats of one).
+- Thinking/reasoning off; vision loaded but untested; TTFT includes tokenizer
+  time and LAN, excludes queueing (single client).
+- The expert cache and page cache were warmed by real prior traffic — a cold
+  first-run-after-boot number will be lower (observed ~1,690 tok/s on 165K for
+  a cold-cache 0.1.41 first prompt vs 2,000+ warm).
+- Decode was not compared against `--pipeline-windows` off within this session;
+  the two-card IQ3_S sibling config of this machine measures ~75 tok/s median,
+  and without pipeline overlap this three-card IQ4_XS split ran clearly slower.

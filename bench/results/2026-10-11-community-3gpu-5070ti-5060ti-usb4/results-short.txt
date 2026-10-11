@@ -1,1 +1,27 @@
-RW5kcG9pbnQgICA6IGh0dHA6Ly88aG9zdD46NTAwMy92MQpNb2RlbCAgICAgIDogcXdlbjMuOC1mbGFzaC1uZXh0LXVuc2xvdGgtdWQtaXE0X3hzClRoaW5raW5nICAgOiBvZmYKU2FtcGxpbmcgICA6IHRlbXAgMC43ICB0b3BfcCAxLjAgIHRvcF9rIDY0ICBtaW5fcCAwLjA4ICByZXAgMS4wMwptYXhfdG9rZW5zIDogMjA0OCwgMTAgcXVlc3Rpb25zLCBzZXF1ZW50aWFsCgpbIDFdIHByb21wdD0gIDM2ICBvdXQ9MTcyOCAgVFRGVD0wLjQxcyAgdG90YWw9IDI1Ljg1cyAgcHJlZmlsbD0gICAgODguNSB0L3MgIGRlY29kZT0gIDY3LjkyIHQvcwpbIDJdIHByb21wdD0gIDQzICBvdXQ9MTA4OCAgVFRGVD0wLjY4cyAgdG90YWw9IDE0LjEycyAgcHJlZmlsbD0gICAgNjMuMCB0L3MgIGRlY29kZT0gIDgwLjk1IHQvcwpbIDNdIHByb21wdD0gIDQzICBvdXQ9IDg3NiAgVFRGVD0wLjg2cyAgdG90YWw9IDExLjQ2cyAgcHJlZmlsbD0gICAgNDkuOSB0L3MgIGRlY29kZT0gIDgyLjY2IHQvcwpbIDRdIHByb21wdD0gIDQ1ICBvdXQ9MTk0OCAgVFRGVD0wLjc5cyAgdG90YWw9IDMwLjE4cyAgcHJlZmlsbD0gICAgNTYuNyB0L3MgIGRlY29kZT0gIDY2LjMwIHQvcwpbIDVdIHByb21wdD0gIDY1ICBvdXQ9IDQzNSAgVFRGVD0wLjkycyAgdG90YWw9ICA2LjY1cyAgcHJlZmlsbD0gICAgNzAuNCB0L3MgIGRlY29kZT0gIDc2LjAxIHQvcwpbIDZdIHByb21wdD0gIDQyICBvdXQ9MTQ3NSAgVFRGVD03LjIwcyAgdG90YWw9IDI5LjYxcyAgcHJlZmlsbD0gICAgIDUuOCB0L3MgIGRlY29kZT0gIDY1LjgxIHQvcwpbIDddIHByb21wdD0gIDYxICBvdXQ9IDY5OCAgVFRGVD0xLjE5cyAgdG90YWw9IDEwLjgycyAgcHJlZmlsbD0gICAgNTEuMSB0L3MgIGRlY29kZT0gIDcyLjQ4IHQvcwpbIDhdIHByb21wdD0gIDQ5ICBvdXQ9MjA0OCAgVFRGVD0wLjQ5cyAgdG90YWw9IDI5LjQ0cyAgcHJlZmlsbD0gICAxMDAuMCB0L3MgIGRlY29kZT0gIDcwLjc0IHQvcwpbIDldIHByb21wdD0gIDY5ICBvdXQ9MTE5MSAgVFRGVD0wLjY2cyAgdG90YWw9IDE0Ljk3cyAgcHJlZmlsbD0gICAxMDUuMyB0L3MgIGRlY29kZT0gIDgzLjIyIHQvcwpbMTBdIHByb21wdD0gIDQ4ICBvdXQ9MTkyMCAgVFRGVD0wLjU3cyAgdG90YWw9IDMwLjA1cyAgcHJlZmlsbD0gICAgODQuNSB0L3MgIGRlY29kZT0gIDY1LjEzIHQvcwoKPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ClNVTU1BUlkgICgxMCBxdWVzdGlvbnMpCj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQpQcmVmaWxsICA6IG1lYW4gICAgIDY3LjUgdC9zICAgbWVkaWFuICAgICA2Ni43ICAgbWluICAgICAgNS44ICAgbWF4ICAgIDEwNS4zCkRlY29kZSAgIDogbWVhbiAgICA3My4xMiB0L3MgICBtZWRpYW4gICAgNzEuNjEgICBtaW4gICAgNjUuMTMgICBtYXggICAgODMuMjIKVFRGVCAgICAgOiBtZWFuICAgICAxLjM4IHMgICBtZWRpYW4gICAgIDAuNzQgcwpUb3RhbCAgICA6IG1lYW4gICAgMjAuMzEgcwoKTm90ZTogVFRGVCBpbmNsdWRlcyBMQU4gbGF0ZW5jeSAofm1zKSBhbmQgYW55IHF1ZXVlIHdhaXQ7CiAgICAgIHByZWZpbGwgdC9zID0gcHJvbXB0X3Rva2VucyAvIFRURlQsIGRlY29kZSB0L3MgPSBvdXRfdG9rZW5zIC8gKHRvdGFsIC0gVFRGVCkuCg==
+Endpoint   : http://<host>:5003/v1
+Model      : qwen3.8-flash-next-unsloth-ud-iq4_xs
+Thinking   : off
+Sampling   : temp 0.7  top_p 1.0  top_k 64  min_p 0.08  rep 1.03
+max_tokens : 2048, 10 questions, sequential
+
+[ 1] prompt=  36  out=1728  TTFT=0.41s  total= 25.85s  prefill=    88.5 t/s  decode=  67.92 t/s
+[ 2] prompt=  43  out=1088  TTFT=0.68s  total= 14.12s  prefill=    63.0 t/s  decode=  80.95 t/s
+[ 3] prompt=  43  out= 876  TTFT=0.86s  total= 11.46s  prefill=    49.9 t/s  decode=  82.66 t/s
+[ 4] prompt=  45  out=1948  TTFT=0.79s  total= 30.18s  prefill=    56.7 t/s  decode=  66.30 t/s
+[ 5] prompt=  65  out= 435  TTFT=0.92s  total=  6.65s  prefill=    70.4 t/s  decode=  76.01 t/s
+[ 6] prompt=  42  out=1475  TTFT=7.20s  total= 29.61s  prefill=     5.8 t/s  decode=  65.81 t/s
+[ 7] prompt=  61  out= 698  TTFT=1.19s  total= 10.82s  prefill=    51.1 t/s  decode=  72.48 t/s
+[ 8] prompt=  49  out=2048  TTFT=0.49s  total= 29.44s  prefill=   100.0 t/s  decode=  70.74 t/s
+[ 9] prompt=  69  out=1191  TTFT=0.66s  total= 14.97s  prefill=   105.3 t/s  decode=  83.22 t/s
+[10] prompt=  48  out=1920  TTFT=0.57s  total= 30.05s  prefill=    84.5 t/s  decode=  65.13 t/s
+
+==============================================================================
+SUMMARY  (10 questions)
+==============================================================================
+Prefill  : mean     67.5 t/s   median     66.7   min      5.8   max    105.3
+Decode   : mean    73.12 t/s   median    71.61   min    65.13   max    83.22
+TTFT     : mean     1.38 s   median     0.74 s
+Total    : mean    20.31 s
+
+Note: TTFT includes LAN latency (~ms) and any queue wait;
+      prefill t/s = prompt_tokens / TTFT, decode t/s = out_tokens / (total - TTFT).
