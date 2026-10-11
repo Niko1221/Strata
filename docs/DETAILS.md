@@ -177,6 +177,14 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   rounds differently from the CPU) depends on when its copy lands.
   It stays on the blocking tier (said in the log) when the exchange buffers are not page-locked; the stats line
   reports ms per round.
+- **The arena too** (one GPU, no layer split): with every expert in RAM `--adapt-async 1` runs the same tier copy-in only:
+  nothing to copy back or move into RAM. The evicted slot is marked non-resident before the round's copies are posted, and an
+  expert becomes resident only once its copy has landed; `STRATA_ADAPT_ASYNC_WAIT=1` (the default there) waits for the round at
+  the next tick, so the window an expert turns GPU-resident does not depend on timing. The pick runs on the host thread
+  (`STRATA_ADAPT_PICK_INLINE=1`, one round per window); `STRATA_ADAPT_ASYNC_BATCH=N` posts at most N copies per tick (default 0
+  = all; 16 measured slower). Every K/V grow and the `VRAM` command land the round in flight first. RTX 3090 + Ryzen 5 5600X,
+  cold prompts: x1.07-1.11 decode, 12 of 12 prompts faster
+  ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-async/README.md)).
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
   blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
   `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).

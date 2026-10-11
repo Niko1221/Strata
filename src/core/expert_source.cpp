@@ -4631,6 +4631,13 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     return base_ + strata::kernels::cpu::expert_layout().blob_offset(layer, expert);
 }
 
+const uint8_t* ArenaExpertSource::blob_at(int64_t layer, int64_t expert) const {
+    if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
+    const int64_t idx = layer * n_expert_ + expert;
+    if (idx < 0 || idx >= blobs_) return nullptr;
+    return base_ + strata::kernels::cpu::expert_layout().blob_offset(layer, expert);
+}
+
 }  // namespace strata::core
 
 // ---- Foresight swap space (see include/strata/core/foresight_swap.hpp) ------------------------------------------

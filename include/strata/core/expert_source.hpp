@@ -906,6 +906,9 @@ public:
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
+    /// tier's job thread, which must not touch the non-atomic `reads_`)
+    const uint8_t* blob_at(int64_t layer, int64_t expert) const;
     int64_t reads() const { return reads_; }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
