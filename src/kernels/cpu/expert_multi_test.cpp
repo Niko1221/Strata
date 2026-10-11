@@ -9,6 +9,7 @@
 #include "strata/kernels/cpu/expert.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,8 +35,8 @@ void rows_path(const uint8_t* blob, const c::ActQ* const* a1, int n, float* cons
 
 void make_blob(uint8_t* b, std::mt19937& rng) {
     for (size_t i = 0; i < c::O_GU_SCALES; ++i) b[i] = (uint8_t) rng();              // codes
-    for (size_t i = c::O_GU_SCALES; i < c::BLOB; i += 2) {                            // fp16 scales ~0.004-0.016
-        const uint16_t h = (uint16_t) (0x1C00 + rng() % 0x0800);
+    for (size_t i = c::O_GU_SCALES; i < c::BLOB; i += 2) {                            // fp16 scales ~0.004-0.016, either sign
+        const uint16_t h = (uint16_t) ((0x1C00 + rng() % 0x0800) | (rng() & 1 ? 0x8000 : 0));   // mtp_pack.py stores d < 0
         std::memcpy(b + i, &h, 2);
     }
 }
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
     }
     const c::ActQ* a1[c::MAXT];
     for (int t = 0; t < c::MAXT; ++t) a1[t] = &acts[t];
-    static float out_multi[c::MAXT][c::H], out_single[c::H];
+    static float out_multi[c::MAXT][c::H], out_single[c::H], out_oracle[c::H];
     float* outs[c::MAXT];
     for (int t = 0; t < c::MAXT; ++t) outs[t] = out_multi[t];
     static c::ExpertScratchMulti wsm;
@@ -78,6 +79,18 @@ int main(int argc, char** argv) {
                 c::s2_expert_vnni_multi(blob, a1, n, outs, wsm);
                 for (int t = 0; t < n; ++t) {
                     c::s2_expert_vnni_q(blob, acts[t], out_single, ws);
+                    if (n == 1) {                                    // the scalar oracle decodes the signed scales on its own
+                        c::s2_expert_scalar(blob, xs[t], out_oracle, true);
+                        double d = 0, mag = 0;
+                        for (int i = 0; i < c::H; ++i) {
+                            d += std::fabs((double) out_single[i] - out_oracle[i]);
+                            mag += std::fabs((double) out_oracle[i]);
+                        }
+                        if (d > 3e-3 * mag) {                        // P2.S3's tolerance (expert_parity.cpp)
+                            std::fprintf(stderr, "FAIL expert %d token %d: the kernel is %.3e from the scalar oracle\n", e, t, d / mag);
+                            ++fail;
+                        }
+                    }
                     if (std::memcmp(out_single, out_multi[t], sizeof out_single) != 0) {
                         std::fprintf(stderr, "FAIL expert %d n=%d token %d differs\n", e, n, t);
                         ++fail;
