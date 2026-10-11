@@ -22,6 +22,7 @@
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/pinned.hpp"
 #include "strata/core/exchange_storage.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -909,8 +910,21 @@ public:
     int64_t reads() const { return reads_; }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
+    /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
+    bool pcie_layer(int64_t layer) const override;
     void prefetch(int64_t layer, int64_t expert) override;
     uint64_t release(int64_t layer, int64_t expert) override;
+
+    /// Pin by need (STRATA_PIN_BY_NEED=1): BEFORE open(), the (layer, expert) pairs worth pinning, by decreasing
+    /// priority - the profile's ranked pairs the GPU cache will NOT hold, then the unranked ones.  open() merges
+    /// neighbours into byte ranges and registers only those (PinnedArena::ByNeed); pinned()/device_alias()/pcie_layer()
+    /// then follow the registered ranges instead of a prefix.  Never called: the old prefix pinning, unchanged.
+    void set_pin_priority(std::vector<std::pair<int32_t, int32_t>> ranked) {
+        pin_pairs_ = std::move(ranked);
+        pin_by_need_ = true;
+    }
+    /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
+    size_t pin_ranges() const { return pin_start_.size(); }
 
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
@@ -942,6 +956,21 @@ private:
     double load_read_s_ = 0.0;
     double load_copy_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
+    // pin by need: set_pin_priority's pairs, and (after open) the registered ranges - sorted starts, ends and the
+    // device alias of each start - plus pcie_layer's answer per layer.  `ranges_` false = the prefix rule above.
+    bool pin_by_need_ = false;
+    bool ranges_ = false;
+    // pin by need: the arena's page-aligned blob stride (see PadMap); `padded_` false = the packed experts.bin layout
+    bool padded_ = false;
+    PadMap pad_;
+    /// where blob (layer, expert) starts in the arena: the ONE address function of this class
+    uint64_t arena_off(int64_t layer, int64_t expert) const;
+    std::vector<std::pair<int32_t, int32_t>> pin_pairs_;
+    std::vector<uint64_t> pin_start_, pin_end_;
+    std::vector<const uint8_t*> pin_dev_;
+    std::vector<uint8_t> layer_pcie_;
+    /// index of the registered range holding [off, off + len), or -1
+    int64_t pin_range_of(uint64_t off, uint64_t len) const;
     std::string gguf_;
 };
 
@@ -952,7 +981,9 @@ bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::E
 /// Fills `dst` (lay.total bytes, the experts.bin layout) from the GGUF files, one role at a time.
 /// `unbuffered`: each chunk read past the file cache (Windows); `ready`: layer l is written only once
 /// *ready > l + 1 (an arena that is still being registered).
+/// `pad` (optional): the destination is the page-aligned padded layout (pin by need), see PadMap.
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr);
+                            int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr,
+                            const PadMap* pad = nullptr);
 
 }  // namespace strata::core
