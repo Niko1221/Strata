@@ -1,0 +1,6 @@
+{"label": "IQ3_S", "mode": "short", "run": 1, "prompt_tokens": 63, "cache_n": 0, "prompt_n": 63, "prefill_tps": 81.8, "predicted_n": 88, "decode_tps": 55.8, "ttft_s": 0.8, "wall_s": 2.36, "finish": "stop", "error": null}
+{"label": "IQ3_S", "mode": "short", "run": 2, "prompt_tokens": 62, "cache_n": 0, "prompt_n": 62, "prefill_tps": 107.7, "predicted_n": 400, "decode_tps": 101.0, "ttft_s": 0.6, "wall_s": 4.54, "finish": "length", "error": null}
+{"label": "IQ3_S", "mode": "short", "run": 3, "prompt_tokens": 63, "cache_n": 0, "prompt_n": 63, "prefill_tps": 110.3, "predicted_n": 378, "decode_tps": 102.5, "ttft_s": 0.6, "wall_s": 4.26, "finish": "stop", "error": null}
+{"label": "IQ3_S", "mode": "short", "run": 1, "prompt_tokens": 57, "cache_n": 0, "prompt_n": 57, "prefill_tps": 107.2, "predicted_n": 88, "decode_tps": 76.4, "ttft_s": 0.56, "wall_s": 1.69, "finish": "stop", "error": null}
+{"label": "IQ3_S", "mode": "short", "run": 2, "prompt_tokens": 62, "cache_n": 0, "prompt_n": 62, "prefill_tps": 110.3, "predicted_n": 400, "decode_tps": 101.0, "ttft_s": 0.58, "wall_s": 4.53, "finish": "length", "error": null}
+{"label": "IQ3_S", "mode": "short", "run": 3, "prompt_tokens": 62, "cache_n": 0, "prompt_n": 62, "prefill_tps": 111.5, "predicted_n": 400, "decode_tps": 102.5, "ttft_s": 0.58, "wall_s": 4.46, "finish": "length", "error": null}

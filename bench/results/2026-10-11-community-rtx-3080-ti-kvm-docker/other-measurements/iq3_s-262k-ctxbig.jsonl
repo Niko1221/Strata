@@ -1,0 +1,2 @@
+{"label": "IQ3_S-262k", "mode": "ctx", "run": 1, "target_tokens": 235000, "prompt_tokens": 220801, "cache_n": 0, "prompt_n": 220801, "prefill_tps": 2114.1, "predicted_n": 217, "decode_tps": 76.8, "ttft_s": 104.68, "wall_s": 107.49, "finish": "stop", "error": null}
+{"label": "IQ3_S-262k", "mode": "ctx", "run": 2, "target_tokens": 235000, "prompt_tokens": 220796, "cache_n": 0, "prompt_n": 220796, "prefill_tps": 2106.9, "predicted_n": 228, "decode_tps": 72.4, "ttft_s": 104.97, "wall_s": 108.1, "finish": "stop", "error": null}

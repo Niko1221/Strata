@@ -1,0 +1,1 @@
+{"label": "IQ3_S-524k", "mode": "ctx", "run": 1, "target_tokens": 235000, "prompt_tokens": 220828, "cache_n": 0, "prompt_n": 220828, "prefill_tps": 1891.7, "predicted_n": 7, "decode_tps": 62.7, "ttft_s": 116.99, "wall_s": 117.08, "finish": "stop", "error": null, "needle_found": true, "answer": "540926"}

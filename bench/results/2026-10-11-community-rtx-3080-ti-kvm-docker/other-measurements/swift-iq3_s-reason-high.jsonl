@@ -1,0 +1,9 @@
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 1, "correct": true, "got": "155", "think_chars": 200, "completion_tokens": 144, "wall_s": 1.8, "decode_tps": 116.4, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 2, "correct": true, "got": "403", "think_chars": 157, "completion_tokens": 118, "wall_s": 1.66, "decode_tps": 104.2, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 3, "correct": true, "got": "62", "think_chars": 263, "completion_tokens": 133, "wall_s": 1.8, "decode_tps": 105.2, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 4, "correct": true, "got": "14", "think_chars": 633, "completion_tokens": 277, "wall_s": 3.23, "decode_tps": 104.6, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 5, "correct": true, "got": "24", "think_chars": 304, "completion_tokens": 128, "wall_s": 1.84, "decode_tps": 97.8, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 6, "correct": true, "got": "9", "think_chars": 229, "completion_tokens": 110, "wall_s": 1.5, "decode_tps": 114.9, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 7, "correct": true, "got": "101", "think_chars": 250, "completion_tokens": 102, "wall_s": 1.5, "decode_tps": 104.2, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "q": 8, "correct": true, "got": "32", "think_chars": 951, "completion_tokens": 463, "wall_s": 4.82, "decode_tps": 108.0, "finish": "stop"}
+{"label": "Swift-IQ3_S", "mode": "reason", "effort": "high", "total": {"correct": 8, "completion_tokens": 1475, "think_chars": 2987, "wall_s": 18.15}, "n": 8}

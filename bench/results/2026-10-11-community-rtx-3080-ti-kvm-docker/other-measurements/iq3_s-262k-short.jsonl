@@ -1,0 +1,3 @@
+{"label": "IQ3_S-262k", "mode": "short", "run": 1, "prompt_tokens": 63, "cache_n": 0, "prompt_n": 63, "prefill_tps": 78.6, "predicted_n": 85, "decode_tps": 52.4, "ttft_s": 0.85, "wall_s": 2.44, "finish": "stop", "error": null}
+{"label": "IQ3_S-262k", "mode": "short", "run": 2, "prompt_tokens": 63, "cache_n": 0, "prompt_n": 63, "prefill_tps": 114.5, "predicted_n": 400, "decode_tps": 95.7, "ttft_s": 0.57, "wall_s": 4.74, "finish": "length", "error": null}
+{"label": "IQ3_S-262k", "mode": "short", "run": 3, "prompt_tokens": 63, "cache_n": 0, "prompt_n": 63, "prefill_tps": 107.6, "predicted_n": 400, "decode_tps": 105.4, "ttft_s": 0.61, "wall_s": 4.39, "finish": "length", "error": null}
