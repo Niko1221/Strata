@@ -20,6 +20,7 @@ What the engine does differently on this chip:
 - **The hipBLASLt table** `tools/hip/gfx1151-hipblaslt-100401.txt` (ROCm 7.14.1's hipBLASLt 1.x `100401`), including the prompt shapes
   at `--prefill 16384` (T 16383 / 16384). Setup's own ROCm for gfx1151 (the 7.14.0a20260608 wheels, hipBLASLt 1.4.0) takes
   `tools/hip/gfx1151-hipblaslt-100400.txt`: the same shapes, calibrated against that library (docs/AMD_HIP.md, Tuning table).
+- **The expert cache and the RAM budget share the RAM.** For a model with a RAM budget (UD-IQ4_XS, UD-Q4_K_XL) setup writes a number for `--expert-cache` (the RAM less 24 GB less the budget), not `auto`: `auto` counts all the memory the OS can give back at start, and with a 55 GiB budget and a desktop open it took the room the OS needed (#1715, a global OOM on a 128 GB box). The number is in the config's `args`; `--expert-cache N` there sets it. An engine run by hand should pass one too.
 
 ## 1. The toolchain (no root needed)
 

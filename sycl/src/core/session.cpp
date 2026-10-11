@@ -1002,6 +1002,14 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             return false;
         }
 
+        // the ring can arrive before its payload on some GPUs (elementwise.hpp): wait until it is whole, or the
+        // pool reads a partly stale payload and the answer is garbage (the A770's "!!!!")
+        if (!strata::kernels::doorbell_wait_payload(s.db->h_seq, s.db->h_x_f, g.n_embd, s.db->h_ids,
+                                                    s.db->h_weights, k, (uint32_t) want)) {
+            err = "session_loop: layer " + std::to_string(l) + " rang but its payload never arrived whole";
+            return false;
+        }
+
         // ---- **THE GPU'S HALF GOES FIRST, SO IT RUNS WHILE THE CPU DOES ITS HALF.**  `Launch` only enqueues:
         // the quantize and the grouped expert kernel land on `main_cs` and the GPU starts on them immediately,
         // while the host is still inside `pool` below.  Nothing here waits.
