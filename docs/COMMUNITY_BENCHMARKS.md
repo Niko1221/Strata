@@ -61,6 +61,15 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-11: 2x AMD gfx906 (Instinct MI50 32 GB + Radeon VII 16 GB), Core i5-12400F, 61.6 GiB RAM](../bench/results/2026-10-11-community-2x-instinct-mi50-32gb-qwen3-8-flash-next-uncensored-iq3-xxs/README.md):
+  the gfx906 build of 0.1.43 with three HIP build gates and the rocBLAS solution-table reader (neither is in a
+  stock tree; the reader follows the idea in #981, and this build turns the table on with the FP16 prompt path
+  it needs), Flash-Next Uncensored IQ3_XXS, 131,072-token context, layer split across both cards, experts
+  resident in host RAM; three runs each: decode 44.0 tok/s, prompt 546.9/621.8 tok/s at 4K/16K.
+- [2026-10-11: same box, expert arena through the page cache (`--mmap-experts`)](../bench/results/2026-10-11-community-2x-instinct-mi50-32gb-qwen3-8-flash-next-uncensored-iq3-xxs-low-ram/README.md):
+  the same run one flag apart, so the difference is attributable: prompt 473.6/543.9 tok/s and first token
+  +14-15% against the resident arm, decode inside the noise (ranges overlap), one 4K run paying for a cold
+  page cache. Same build and config as the entry above.
 
 ## Run the benchmark
 
