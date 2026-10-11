@@ -43,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from http.client import HTTPException
@@ -340,6 +341,146 @@ class EngineStuck(RuntimeError):
 class GpuBusy(RuntimeError):
     """The model is unloaded and the GPU has less free VRAM than min_free_vram_mib: something else (a game, another
     model server) is using it, so the engine is not started into the little that is left."""
+
+
+class LlamaHttpEngine:
+    """A token-level adapter for an already-running llama-server.
+
+    Strata keeps ownership of chat templating, tools, request limits and API compatibility.  The upstream server only
+    receives token ids and streams token ids back.  This is intentionally an opt-in external-engine seam: Strata does
+    not start, stop or unload the upstream process, so platform-specific runtimes can manage their own device setup.
+    """
+
+    batch = 0
+    unloaded = False
+    progress = None
+    gpu_busy = None
+    log_path = None
+
+    def __init__(self, url: str, max_context: int, model_path: str | None = None,
+                 api_key: str = "", timeout_s: float = 900.0):
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError('llama_url must be a non-empty http(s) URL')
+        parsed = urlsplit(url.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"llama_url must be an http(s) URL, not {url!r}")
+        if isinstance(max_context, bool) or not isinstance(max_context, int) or max_context <= 0:
+            raise ValueError(f"max_context must be a positive whole number, not {max_context!r}")
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or timeout_s <= 0:
+            raise ValueError(f"llama_timeout_s must be a positive number, not {timeout_s!r}")
+        self.url = url.strip().rstrip("/")
+        self.max_context = self.known_ctx = max_context
+        self.model_path = model_path or self.url
+        self.api_key = api_key.strip() if isinstance(api_key, str) else ""
+        self.timeout_s = float(timeout_s)
+        self.last = {}
+        self.info = {"version": "llama-http"}
+
+    def _request(self, path: str, data: bytes | None = None, timeout: float | None = None):
+        headers = {"Content-Type": "application/json"} if data is not None else {}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        return urllib.request.urlopen(urllib.request.Request(self.url + path, data=data, headers=headers),
+                                      timeout=timeout or self.timeout_s)
+
+    def alive(self) -> bool:
+        try:
+            with self._request("/health", timeout=min(5.0, self.timeout_s)) as response:
+                body = json.loads(response.read().decode("utf-8"))
+                return response.status == 200 and body.get("status") == "ok"
+        except (OSError, ValueError, urllib.error.HTTPError):
+            return False
+
+    def restart(self):
+        if not self.alive():
+            raise EngineDied(f"the external llama-server at {self.url} is not ready")
+        self.unloaded = False
+
+    def exit_code(self):
+        return None
+
+    def death_note(self) -> str:
+        return (f"The external llama-server at {self.url} stopped answering; its lifecycle and device logs belong to "
+                "that runtime, not this Strata process.")
+
+    def close(self):
+        pass
+
+    @staticmethod
+    def _last_from(result: dict, fallback_generated: int) -> dict:
+        timings = result.get("timings") if isinstance(result.get("timings"), dict) else {}
+        return {
+            "finish": result.get("stop_type") or "stop",
+            "generated": int(timings.get("predicted_n", result.get("tokens_predicted", fallback_generated)) or 0),
+            "reused": int(timings.get("cache_n", 0) or 0),
+            "prompt_read": int(timings.get("prompt_n", result.get("tokens_evaluated", 0)) or 0),
+            "prompt_ms": float(timings.get("prompt_ms", 0) or 0),
+            "decode_ms": float(timings.get("predicted_ms", 0) or 0),
+            "drafts_offered": int(timings["draft_n"]) if timings.get("draft_n") is not None else None,
+            "drafts_accepted": int(timings["draft_n_accepted"])
+            if timings.get("draft_n_accepted") is not None else None,
+        }
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        if embeddings:
+            raise ValueError("the llama-http engine does not accept Strata vision embeddings")
+        aliases = {"repetition_penalty": "repeat_penalty", "penalty_last_n": "repeat_last_n"}
+        allowed = {"temperature", "top_p", "top_k", "min_p", "seed", "repeat_penalty", "repeat_last_n",
+                   "presence_penalty", "frequency_penalty"}
+        payload = {"prompt": list(ids), "n_predict": int(max_new), "stream": True, "return_tokens": True,
+                   "cache_prompt": True}
+        for key, value in (sampling or {}).items():
+            target = aliases.get(key, key)
+            if target in allowed and value is not None:
+                payload[target] = value
+        request = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        pending: list[int] = []
+        generated = 0
+        final = None
+        try:
+            with self._request("/completion", request) as response:
+                for raw in response:
+                    if cancel.is_set():
+                        return
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    event = json.loads(data)
+                    if event.get("stop") is True:
+                        final = event
+                        self.last = self._last_from(event, generated)
+                        for token in pending:
+                            yield token
+                        pending.clear()
+                        break
+                    tokens = event.get("tokens")
+                    if not isinstance(tokens, list) or not all(isinstance(t, int) for t in tokens):
+                        raise EngineDied("the external llama-server response did not include raw token ids")
+                    for token in tokens:
+                        if pending:
+                            yield pending.pop(0)
+                        pending.append(token)
+                        generated += 1
+                    done = int(event.get("tokens_evaluated", 0) or 0)
+                    self.progress = (done, len(ids))
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", "replace")[:1024]
+            except OSError:
+                detail = ""
+            message = f"the external llama-server returned HTTP {e.code}" + (f": {detail}" if detail else "")
+            if 400 <= e.code < 500:
+                raise ValueError(message) from e
+            raise EngineDied(message) from e
+        except (OSError, json.JSONDecodeError) as e:
+            raise EngineDied(f"the external llama-server request failed: {e}") from e
+        finally:
+            self.progress = None
+        if final is None and not cancel.is_set():
+            raise EngineDied("the external llama-server stream ended without a final response")
 
 
 ENGINE_REQUEST = re.compile(
@@ -6014,9 +6155,9 @@ def check_request_sampling(req) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
-    ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
-                                     "written by setup.py")
+    ap.add_argument("--engine", choices=["mock", "strata", "llama-http"], default="mock")
+    ap.add_argument("--config", help="engine config (native Strata: exe, args, cwd; llama-http: llama_url, "
+                                     "max_context; both: tokenizer, model_name)")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network (set an API key); also \"host\" in the config")
@@ -6074,7 +6215,7 @@ def main() -> int:
         a.tokenizer = cfg["tokenizer"]
     tok = ByteTokenizer()
     tpath = Path(a.tokenizer)
-    if a.engine == "strata" and not (tpath / "vocab.json").exists():
+    if a.engine in ("strata", "llama-http") and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
     if (tpath / "vocab.json").exists():
         import strata_tokenizer as ST
@@ -6144,6 +6285,24 @@ def main() -> int:
                                  linux_desktop()) if not groups else None
         if note:                                        # #560 #516: before --open starts a browser on that card
             print(note, flush=True)
+    elif a.engine == "llama-http":
+        if not cfg:
+            ap.error("--engine llama-http needs --config")
+        if cfg.get("vision"):
+            ap.error("--engine llama-http does not accept Strata vision embeddings")
+        try:
+            engine = LlamaHttpEngine(
+                cfg.get("llama_url", ""), int(cfg.get("max_context", 4096)),
+                model_path=cfg.get("model_path"), api_key=cfg.get("llama_api_key", ""),
+                timeout_s=cfg.get("llama_timeout_s", 900))
+        except (TypeError, ValueError) as e:
+            ap.error(str(e))
+        if not engine.alive():
+            ap.error(f"the external llama-server at {engine.url} is not ready")
+        effort_end = None
+        vision = None
+        sampling_defaults = sampling_defaults_from_config(cfg)
+        print(f"[strata] external token engine ready: {engine.url} (context {engine.max_context})", flush=True)
     else:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
