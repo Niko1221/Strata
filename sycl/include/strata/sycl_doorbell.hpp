@@ -6,6 +6,13 @@
 // GPUs: the spin read its first value from L3 forever (measured: the GPU at 100% and the host seeing no ring).
 // Atomic loads and stores with system scope are the accesses that go to memory, so every side of the handshake
 // goes through these two.
+//
+// Windows (Arc Pro B70, driver 32.0.101.8976, oneAPI 2026.0.0, the Level Zero V2 adapter; sycl/probe/doorbell_probe,
+// 2026-10-10, 500 round trips per reading): the uncached read hint below saw every host write (500/500, flag -> kernel
+// done 4.3 us median, 16.8 us p99, at most 18 polls), and so did a volatile load followed by a system-scope acquire
+// fence (500/500, 4.9 us median, at most 40 polls, 100/100 inside a replayed command_graph); a plain volatile load
+// (3/6) and the system-scope atomic load alone (4/9) did not.  So Windows takes the same reading as Linux, and the
+// fenced volatile load stays as a build option; sys_store (atomic store + release fence) rang 500/500 everywhere.
 #pragma once
 #include <sycl/sycl.hpp>
 #include <sycl/ext/intel/experimental/cache_control_properties.hpp>
@@ -24,7 +31,20 @@ using sys_atomic_u32 = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, s
 // ping-pong: 263 ms per round trip, 168 of 200 waits hit the bound). An explicit uncached L1+L3 read hint goes to
 // memory every time: 2.4 us per round trip, 0 of 200. The acquire fence keeps the compiler from hoisting the load
 // out of a spin loop. -DSTRATA_DOORBELL_ATOMIC_LOAD restores the atomic load.
-#ifndef STRATA_DOORBELL_ATOMIC_LOAD
+// The three readings, chosen at build time: -DSTRATA_DOORBELL_ATOMIC_LOAD (the system-scope atomic load), else
+// -DSTRATA_DOORBELL_FENCED_VOLATILE (the volatile load + acquire fence, measured equal on the Windows B70, above),
+// else the uncached read hint (the default on every platform).  doorbell_probe measures all three on a new driver.
+#if defined(STRATA_DOORBELL_ATOMIC_LOAD)
+inline uint32_t sys_load(const volatile uint32_t* p) {
+    return sys_atomic_u32(*const_cast<uint32_t*>(p)).load();
+}
+#elif defined(STRATA_DOORBELL_FENCED_VOLATILE)
+inline uint32_t sys_load(const volatile uint32_t* p) {
+    const uint32_t v = *p;   // the volatile load reads memory; the fence below makes the next one read it again
+    sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::system);
+    return v;
+}
+#else
 using doorbell_uncached_read = decltype(sycl::ext::oneapi::experimental::properties(
     sycl::ext::intel::experimental::read_hint<sycl::ext::intel::experimental::cache_control<
         sycl::ext::intel::experimental::cache_mode::uncached,
@@ -33,10 +53,6 @@ inline uint32_t sys_load(const volatile uint32_t* p) {
     sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::system);
     sycl::ext::oneapi::experimental::annotated_ptr<uint32_t, doorbell_uncached_read> u(const_cast<uint32_t*>(p));
     return u[0];
-}
-#else
-inline uint32_t sys_load(const volatile uint32_t* p) {
-    return sys_atomic_u32(*const_cast<uint32_t*>(p)).load();
 }
 #endif
 inline void sys_store(volatile uint32_t* p, uint32_t v) {
@@ -47,7 +63,8 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
 // Every device spin is bounded. An unbounded spin that never sees its flag is not a hang of one process: the
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
 // stays wedged until a reboot - measured twice. With a bound the failure is a wrong window instead, which the
-// verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
+// verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency (on the Windows B70 one fenced
+// poll takes about 0.86 us: 20,000 reads are 17 ms, 2,000,000 about 1.7 s).
 // The bound is per device, chosen at run time (spin_max below): 20,000 reads on a card under the xe driver (the B-series
 // on Linux), whose device-plan windows only spin in a failure and where a longer spin is what makes the driver reset the
 // GT; 2,000,000 (a few seconds) elsewhere, Windows included (a JIT/OpenCL B-series build measured faster with the long

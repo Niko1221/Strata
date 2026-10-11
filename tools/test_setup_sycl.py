@@ -1,6 +1,6 @@
-"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it warns, stops with a clear
-message on Windows, and on Linux hands the run to sycl/setup_intel.py without its --backend flag. The CUDA / HIP
-paths never see it. No GPU, no network.
+"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it warns and hands the run
+to sycl/setup_intel.py without its --backend flag, on Linux and on Windows (each with its own build pointer). The
+CUDA / HIP paths never see it. No GPU, no network. The Windows installer's own tests are tools/test_setup_sycl_windows.py.
 
     python -m unittest tools.test_setup_sycl
 """
@@ -31,12 +31,15 @@ def run(argv, win):
 
 
 class SyclBackend(unittest.TestCase):
-    def test_windows_stops_with_the_docs_pointer(self):
+    def test_windows_hands_over_with_the_windows_build_pointer(self):
         rc, out, call = run(["--backend", "sycl"], win=True)
-        self.assertEqual(rc, ("exit", 1))
+        self.assertEqual(rc, 0)
         self.assertIn("supported since 0.1.40.2", out)
-        self.assertIn("docs/INTEL_ARC.md", out)
-        call.assert_not_called()
+        self.assertIn("build_windows.bat", out)
+        self.assertIn("docs/INTEL_WINDOWS.md", out)
+        cmd = call.call_args[0][0]
+        self.assertTrue(cmd[1].endswith(str(Path("sycl") / "setup_intel.py")))
+        self.assertEqual(cmd[2:], [])
 
     def test_linux_hands_over_to_setup_intel_without_the_backend_flag(self):
         rc, out, call = run(["--model", "IQ2_XS", "--backend", "sycl", "--port", "8085"], win=False)
@@ -56,10 +59,17 @@ class SyclBackend(unittest.TestCase):
         self.assertRegex(src, r'"--backend", choices=\["cuda", "hip", "sycl"\]')
 
     def test_setup_intel_finds_the_setup_functions_it_replaces(self):
-        """sycl/setup_intel.py swaps these steps; setup.py must still have them (it stops with a message otherwise)."""
+        """sycl/setup_intel.py swaps these steps; setup.py must still have them (it stops with a message otherwise).
+        The Windows path calls more of setup.py's (WIN_NEEDED)."""
         src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
         names = re.search(r'for name in \(([^)]*)\):', src).group(1)
+        checked = 0
         for name in re.findall(r'"(\w+)"', names):
+            self.assertTrue(callable(getattr(setup, name, None)), name)
+            checked += 1
+        self.assertGreaterEqual(checked, 11)
+        win = re.search(r'WIN_NEEDED = \(([^)]*)\)', src).group(1)
+        for name in re.findall(r'"(\w+)"', win):
             self.assertTrue(callable(getattr(setup, name, None)), name)
 
     def test_setup_intel_replacements_take_every_argument_of_the_function_they_replace(self):
@@ -129,7 +139,15 @@ class IntelIds(unittest.TestCase):
 
 class ToSycl(unittest.TestCase):
     """The config sycl/setup_intel.py writes: an explicit --vram-reserve-mib is kept, the B-series streams its experts,
-    the A-series (i915) cannot (a single pinned host allocation above a few GB fails there) and loads them into RAM."""
+    the A-series (i915) cannot (a single pinned host allocation above a few GB fails there) and loads them into RAM.
+    These are the Linux config's rules (the Windows one is tools/test_setup_sycl_windows.py's), so setup.WIN is off."""
+
+    def setUp(self):
+        self.linux = mock.patch.object(setup, "WIN", False)
+        self.linux.start()
+
+    def tearDown(self):
+        self.linux.stop()
 
     @staticmethod
     def mod():

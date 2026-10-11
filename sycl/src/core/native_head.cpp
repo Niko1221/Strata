@@ -3,6 +3,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the head's weights register with the VRAM heartbeat (C9)
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -18,7 +19,10 @@ namespace strata::core {
 NativeHead::~NativeHead() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (scratch_) sycl::free(scratch_, dpct::get_in_order_queue());
-    if (weights_) sycl::free(weights_, dpct::get_in_order_queue());
+    if (weights_) {
+        strata::heartbeat_unregister(weights_);   // before the free: a heartbeat touch in flight finishes first
+        sycl::free(weights_, dpct::get_in_order_queue());
+    }
 }
 
 bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
@@ -83,6 +87,10 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
                   dpct::get_error_string_dummy(status);
             return false;
         }
+        // Windows: output.weight (about 0.5 GB on the Coder) lives as long as the model; registered with the
+        // VRAM heartbeat so WDDM does not evict it from the display-less B70 while the engine idles (the
+        // user observed that eviction).  After the upload's status check: the failure path above frees `weights`.
+        strata::heartbeat_register(weights, (size_t) bytes);
         weights_ = weights;
         scratch_ = scratch;
         bytes_ = bytes;
@@ -161,8 +169,10 @@ const NativeEmbed* native_embed() { return g_embed; }
 
 NativeEmbed::~NativeEmbed() {
     if (host_) sycl::free(host_, dpct::get_in_order_queue());
-    else if (dev_)
+    else if (dev_) {
+        strata::heartbeat_unregister(dev_);   // Windows: the VRAM fallback below registered it; before the free
         sycl::free((void *) dev_, dpct::get_in_order_queue()); // the VRAM fallback below
+    }
 }
 
 bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
@@ -236,6 +246,9 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
             }
             std::fprintf(stderr, "strata: native embedding: cannot pin %llu MiB, kept in VRAM instead\n",
                          (unsigned long long) (bytes_ >> 20));
+            // Windows: the whole table in VRAM for the model's lifetime: the VRAM heartbeat,
+            // as the head's weights above; the destructor unregisters.  The pinned case is host memory: not registered.
+            strata::heartbeat_register(d, (size_t) bytes_);
             dev_ = d;
         } else {
             std::memcpy(host_, gguf.tensor_data(*t), bytes_);

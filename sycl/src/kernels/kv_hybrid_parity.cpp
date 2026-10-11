@@ -87,7 +87,12 @@ int main() {
     // SYCL port: qsa_prompt_attn's tensor-core (mma.sync PTX) kernel is not ported; on SYCL the prompt attention this
     // test's last step checks exists as the XMX kernel (opt-in in the engine, where the FP32 fallback is faster).
     // Test the kernel the port has, unless the caller chose (STRATA_PROMPT_ATTN_XMX=0 shows the refusal).
+#if defined(_WIN32)
+    // Windows: the MSVC CRT has no setenv; an operator's own value stays, as setenv(..., 0) leaves it
+    if (std::getenv("STRATA_PROMPT_ATTN_XMX") == nullptr) _putenv_s("STRATA_PROMPT_ATTN_XMX", "1");
+#else
     setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);
+#endif
     std::printf("=== Running kv_hybrid_parity test ===\n");
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;

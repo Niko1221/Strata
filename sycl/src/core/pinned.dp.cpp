@@ -1,9 +1,20 @@
 // src/core/pinned.cu - P2.S1: the pinned host arena and the parallel expert load.
+#if defined(_WIN32)
+// SYCL port: before <sycl/sycl.hpp>, which (through dpct/device.hpp) includes <windows.h>: its min/max macros would
+// break the SYCL headers, and this file includes <windows.h> itself below for VirtualAlloc and the unbuffered reads.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#endif
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/pinned.hpp"
 #include "strata/platform/memory.hpp"
+#include "strata/sycl_mem.hpp"   // SYCL port: the current device's LUID for the Windows shared-memory budget
 
 #include <atomic>
 #include <climits>
@@ -320,19 +331,18 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
-    int dev = 0;
-    cudaDeviceProp p{};
+    // SYCL port: the adapter is the current dpct device's, by its LUID (sycl_ext_intel_device_info, DPC++ 2025.3+;
+    // strata::device_luid guards the query), the 8 bytes cudaDeviceProp::luid held.  Without it, the RAM rule below.
+    unsigned char luid[8] = {};
     uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
-    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
+    std::string err = "no device LUID from the SYCL runtime";
+    if (strata::device_luid(luid) && strata::platform::gpu_shared_memory_budget(luid, budget, usage, err)) {
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
         std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
                       (double) budget / GiB, (double) usage / GiB);
         why = buf;
         return true;
     }
-    (void) cudaGetLastError();
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
@@ -350,6 +360,90 @@ std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
     for (uint64_t off = 0; off + slice <= bytes; off += slice) b.push_back(off);
     if (!b.empty()) b.push_back(b.back() + slice);
     return b;
+}
+}  // namespace
+
+namespace {
+// SYCL port: the registration.  cudaHostRegister(Portable | Mapped) becomes prepare_for_device_copy
+// (sycl_ext_oneapi_copy_optimize: compute-runtime's import of an external host pointer; a copy source and destination
+// for the copy engine, not addressable by kernels) on the dpct current device's context, as XeStrata's register_pieces
+// does (ref/xestrata/src/core/pinned.cpp) and as sycl/probe/bw_probe.cpp did on the Windows B70.  Measured there
+// (bw_probe, 2026-10-04, bench/results/2026-10-04-b70-windows-first-build/probes.txt, 256 MiB in 16 MiB pieces): H2D
+// 27.6 GB/s from VirtualAlloc memory registered this way against 12.6 GB/s unregistered (malloc_host 27.7), the bytes
+// identical through the device and back.  A refusal throws; here it is a failed registration, exactly where the CUDA
+// code checked cudaSuccess.  The extension is experimental, so the calls sit behind its feature macro: without it
+// every registration is refused and the arena stays resident through the working-set lock, as upstream does on a
+// refusal.  unverified on the B70: a registration of the whole expert arena (the probe registered 256 MiB), and its cost.
+bool register_range(void* base, uint64_t off, uint64_t n, std::string& why) {
+#ifdef SYCL_EXT_ONEAPI_COPY_OPTIMIZE
+    try {
+        sycl::ext::oneapi::experimental::prepare_for_device_copy((const uint8_t*) base + off, (size_t) n,
+                                                                 dpct::get_current_device().get_context());
+        return true;
+    } catch (const sycl::exception& e) {
+        why = e.what();
+    } catch (const std::exception& e) {
+        why = e.what();
+    }
+    return false;
+#else
+    (void) base; (void) off; (void) n;
+    why = "this compiler has no sycl_ext_oneapi_copy_optimize (SYCL_EXT_ONEAPI_COPY_OPTIMIZE)";
+    return false;
+#endif
+}
+
+// release_from_device_copy of one registered piece, best effort: the destructor has nowhere to report a refusal.
+void unregister_range(void* base, uint64_t off) {
+#ifdef SYCL_EXT_ONEAPI_COPY_OPTIMIZE
+    try {
+        sycl::ext::oneapi::experimental::release_from_device_copy((const uint8_t*) base + off,
+                                                                  dpct::get_current_device().get_context());
+    } catch (const std::exception&) {
+    }
+#else
+    (void) base; (void) off;
+#endif
+}
+
+// The longest range one registration may cover: the device's largest allocation (info::device::max_mem_alloc_size;
+// STRATA_MAX_ALLOC_MIB stands in for it, as in device.dp.cpp and in XeStrata).  Past it, XeStrata's UHD 770 (4 GiB)
+// "registered without an error and copied wrong bytes" (ref/xestrata/src/core/pinned.cpp); the B70 reports 31.16 GiB
+// on Windows (alloc_probe, 2026-10-04), so every arena under that is one piece.  0: the device could not be asked.
+uint64_t registration_limit() {
+    uint64_t limit = 0;
+    try {
+        limit = dpct::get_current_device().get_info<sycl::info::device::max_mem_alloc_size>();
+    } catch (const sycl::exception&) {
+    }
+    if (const char* v = std::getenv("STRATA_MAX_ALLOC_MIB"); v != nullptr && *v != '\0') {
+        const uint64_t mib = std::strtoull(v, nullptr, 10);
+        if (mib != 0) limit = mib << 20;
+    }
+    return limit;
+}
+
+// The ends of the pieces that cover [0, bytes), none longer than `limit` (0: one piece).  A piece ends at the last
+// `cut` (a layer start: no expert then crosses two registrations) that keeps it within the limit, or at the limit
+// when no cut does.  The rule is XeStrata's register_pieces (ref/xestrata/src/core/pinned.cpp), written anew here.
+std::vector<uint64_t> piece_ends(uint64_t bytes, const std::vector<uint64_t>& cuts, uint64_t limit) {
+    std::vector<uint64_t> ends;
+    if (limit == 0) {
+        ends.push_back(bytes);
+        return ends;
+    }
+    for (uint64_t start = 0; start < bytes;) {
+        uint64_t end = bytes;
+        if (end - start > limit) {
+            end = start;
+            for (uint64_t c : cuts)
+                if (c > end && c < bytes && c - start <= limit) end = c;
+            if (end == start) end = start + limit;
+        }
+        ends.push_back(end);
+        start = end;
+    }
+    return ends;
 }
 }  // namespace
 
@@ -381,18 +475,42 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
             cap_why = "by STRATA_ARENA_PIN_GIB";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
-        const dpct::err0 e =
-            capped ? 0 :
-                   /*
-                   DPCT1027: The call to cudaHostRegister was replaced with
-                   0 because SYCL currently does not support registering of
-                   existing host memory for use by device. Use USM to allocate
-                   memory for use by host and device.
-                   */
-                0;
-        if (!capped && e == 0) {
-            note = "cudaHostRegister PORTABLE ok; " + note;
-            registered_bytes = bytes;
+        // SYCL port: the whole arena, registered in pieces no longer than the device's largest allocation, cut at the
+        // layer starts when the caller gave them (`bounds`), else at multiples of that size: one piece on the B70 for
+        // every arena under 31.16 GiB.  Each piece goes into slice_starts, so the destructor releases each; slice_bytes
+        // stays 0, because for the stager this is still one contiguous registration from offset 0 (expert_source.cpp
+        // reads slice_starts only when slice_bytes is set, and then as one slice per layer).  A refused piece is the
+        // whole registration refused, as cudaHostRegister's was: the pieces already registered are released again (the
+        // sliced path below would otherwise register the same bytes twice, which the extension leaves undefined) and
+        // the sliced path starts from nothing.
+        const uint64_t piece_limit = registration_limit();
+        std::string whole_why;
+        bool whole_ok = false;
+        if (!capped) {
+            whole_ok = true;
+            uint64_t start = 0;
+            for (uint64_t end : piece_ends(bytes, bounds, piece_limit)) {
+                if (!register_range(base, start, end - start, whole_why)) {
+                    whole_ok = false;
+                    break;
+                }
+                slice_starts.push_back(start);
+                registered_bytes = end;
+                ++registered_slices;
+                start = end;
+            }
+            if (!whole_ok) {
+                for (size_t i = slice_starts.size(); i-- > 0;) unregister_range(base, slice_starts[i]);
+                slice_starts.clear();
+                registered_bytes = 0;
+                registered_slices = 0;
+            }
+        }
+        if (whole_ok) {
+            char gib[32];
+            std::snprintf(gib, sizeof gib, "%.1f", (double) registered_bytes / (double) (1ull << 30));
+            note = "prepare_for_device_copy ok (" + std::to_string(registered_slices) +
+                   (registered_slices == 1 ? " piece, " : " pieces, ") + gib + " GiB); " + note;
         } else if (bounds.size() >= 2 && (capped || clear_error())) {
             // Plan v0.3 P5: the whole range is refused, so pin it slice by slice from the start.  The rest stays
             // resident through the working-set lock below.  (P6: slices may differ in size, one per layer.)
@@ -406,22 +524,21 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
             // 64 GB PC pins 30 GiB past that budget without trouble, and capping it at 26 cost ~20% prompt speed.
             if (!capped && env_gib == -2) limited = sliced_pin_limit(limit, limit_why);
 #endif
+            // SYCL port: one registration per slice (the stager indexes slice_starts by layer), so a slice longer
+            // than the device's largest allocation is refused here rather than split; the first refusal ends the
+            // sliced pin, as the CUDA code's did, and is named in the note.
+            std::string slice_why;
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
                 if (limited && (off > limit || n > limit - off)) break;
-                /*
-                DPCT1027: The call to cudaHostRegister was replaced with 0
-                because SYCL currently does not support registering of existing
-                host memory for use by device. Use USM to allocate memory for
-                use by host and device.
-                */
-                if (0 != 0) {
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and
-                    does not use the error codes. The cudaGetLastError function
-                    call was replaced with 0. You need to rewrite this code.
-                    */
-                    (void)0;
+                if (piece_limit != 0 && n > piece_limit) {
+                    slice_why = "slice " + std::to_string(i) + " (" + std::to_string(n >> 20) +
+                                " MiB) is longer than the device's largest allocation (" +
+                                std::to_string(piece_limit >> 20) + " MiB)";
+                    break;
+                }
+                if (!register_range(base, off, n, slice_why)) {
+                    slice_why = "slice " + std::to_string(i) + " refused: " + slice_why;
                     break;
                 }
                 slice_starts.push_back(off);
@@ -432,24 +549,17 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
             std::snprintf(gib, sizeof gib, "%.1f", (double) limit / (double) (1ull << 30));
             note =
                 (capped
-                     ? "cudaHostRegister limited to " +
+                     ? "prepare_for_device_copy limited to " +
                            std::to_string(cap >> 30) + " GiB " + cap_why + "; "
-                     :
-                     /*
-                     DPCT1009: SYCL reports errors using exceptions and
-                     does not use error codes. Please replace the
-                     "get_error_string_dummy(...)" with a real error-handling
-                     function.
-                     */
-                     "cudaHostRegister of the whole arena FAILED (" +
-                         std::string(dpct::get_error_string_dummy(e)) + "); " +
+                     : "prepare_for_device_copy of the whole arena FAILED (" + whole_why + "); " +
                          (limited ? "slices capped at " + std::string(gib) +
                                         " GiB (" + limit_why +
                                         "; STRATA_ARENA_PIN_GIB=auto; N sets a "
                                         "cap; #243); "
                                   : std::string())) +
                 std::to_string(registered_slices) + " slices pinned (" +
-                std::to_string(registered_bytes >> 30) + " GiB); " + note;
+                std::to_string(registered_bytes >> 30) + " GiB); " +
+                (slice_why.empty() ? std::string() : slice_why + "; ") + note;
             if (registered_bytes < bytes) {
                 const char* env = std::getenv("STRATA_ARENA_LOCK");
                 if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
@@ -462,15 +572,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
                 }
             }
         } else {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            note = std::string("cudaHostRegister FAILED (") +
-                   dpct::get_error_string_dummy(e) +
-                   ") - the arena is NOT pinned, so copies will be slow; " +
-                   note;
+            note = "prepare_for_device_copy FAILED (" + whole_why +
+                   ") - the arena is NOT pinned, so copies will be slow; " + note;
             // **CONSUME THE ERROR, OR IT LIES ABOUT SOMETHING ELSE LATER.**
             //
             // `cudaGetLastError()` returns the last error and CLEARS it; until something reads it, the error
@@ -569,22 +672,11 @@ catch (sycl::exception const &exc) {
 PinnedArena::~PinnedArena() {
     if (base) {
         if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
-        if (slice_bytes) {
-            /*
-            DPCT1027: The call to cudaHostUnregister was replaced with 0
-            because SYCL currently does not support registering of existing host
-            memory for use by device. Use USM to allocate memory for use by host
-            and device.
-            */
-            for (uint64_t off : slice_starts) 0;
-        } else {
-            /*
-            DPCT1026: The call to cudaHostUnregister was removed because
-            SYCL currently does not support registering of existing host memory
-            for use by device. Use USM to allocate memory for use by host and
-            device.
-            */
-        }
+        // SYCL port: release_from_device_copy per registered piece (both paths record their pieces in slice_starts,
+        // the whole arena's with slice_bytes 0), best effort, as cudaHostUnregister was; last piece first.
+        // unverified on the B70: that no copy from the arena is still in flight here (the stager is stopped before
+        // the source closes; XeStrata waits for its queues before releasing).
+        for (size_t i = slice_starts.size(); i-- > 0;) unregister_range(base, slice_starts[i]);
         release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
         base = nullptr;
         mapping_base = nullptr;

@@ -9,7 +9,8 @@ The code is in `sycl/`, and the port's own notes, measurements and maintenance p
 we have not run it on an Arc. Every result on Arc hardware below comes from the community. The NVIDIA and AMD
 engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-There is **no ready-made Intel engine** in the release zips. You build it from source on Linux.
+There is **no ready-made Intel engine** in the release zips. You build it from source, on Linux (this page) or on
+Windows ([INTEL_WINDOWS.md](INTEL_WINDOWS.md)).
 
 ## What has been run, and by whom
 
@@ -48,9 +49,9 @@ Full flags, per-request timings and engine logs are in the report linked in the 
 - **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
   The HIP build is not affected (the option is off by default).
 
-**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, the Alchemist
-A-series, integrated Arc GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and
-images (not wired on Intel).
+**Not tested by anyone yet:** Arc on WSL2 for the 0.1.39 port, integrated Arc GPUs (the B390 / Panther Lake in #515;
+the shared-memory planning does not exist yet), and images (not wired on Intel). Windows runs natively on an Arc Pro
+B70 since this version ([INTEL_WINDOWS.md](INTEL_WINDOWS.md)); other cards on Windows are untested.
 
 ## What you need
 
@@ -157,11 +158,15 @@ Things that matter on an Arc (details in INTEL.md):
 
 ## Windows
 
-There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
-but `sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a
-bash/Docker script, so a native Windows build would need work. Nobody has tried it. WSL2 with an Arc has been
-used by one tester (the B580 row above), but setup cannot detect the card there, because it reads `/sys/class/drm`,
-which WSL2 does not have.
+The port runs natively on Windows 11, without WSL2 or Docker: `sycl\tools\build_windows.bat` builds the engine with
+oneAPI's `icx` and Visual Studio's linker into `engine\`, and `START-HERE.bat --backend sycl` installs and starts a
+model the usual way. It was built and run on an Arc Pro B70 (the card dedicated to the model, an NVIDIA card driving
+the desktop): the Coder IQ1_M at 60 tok/s on the first chat (2026-10-05), Swift 1.5 IQ3_XXS with part of its experts
+in a pinned RAM mirror at 53-64 tok/s decode over several days of use (2026-10-07 to 09). What the Windows build adds
+(a chunked VRAM arena for WDDM, a VRAM heartbeat for a display-less card, the DXGI memory budget, the card choice by
+Level Zero index, the engine's environment, Sysman telemetry) and what is still open is in
+[INTEL_WINDOWS.md](INTEL_WINDOWS.md). WSL2 has been used by one tester (the B580 row above), but setup cannot detect
+the card there, because it reads `/sys/class/drm`, which WSL2 does not have; the native path is the one to use.
 
 ## Reporting a problem
 

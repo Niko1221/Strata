@@ -5,19 +5,29 @@
 Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
 upstream merges stay clean); this wrapper adds, at run time:
 
-  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) when no NVIDIA card answers;
+  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py): on Windows always for a "sycl"
+    config (the NVIDIA card that drives the desktop answers NVML there and would be shown instead), elsewhere when no
+    NVIDIA card answers;
+  - on Windows, the engine's environment for a "sycl" config (sycl_env): the card by its SYCL index
+    (ONEAPI_DEVICE_SELECTOR=level_zero:N), the Level Zero v2 adapter, no persistent JIT cache, Sysman, the port's
+    device-built verify plan, the stager threads, the VRAM heartbeat, and the engine folder first on the PATH for
+    the oneAPI runtime DLLs beside strata.exe.  The config's own "env" wins.  The engine is engine\\strata.exe
+    itself (no strata-sycl.sh: that is the Linux container wrapper);
   - a model menu in the web app's header, for a host that swaps models on one GPU: the config names the RPC that
     does the swap as "model_switcher" (it takes {"mode": m} and answers {"mode", "up", "starting", "choices",
     "urls"}); the menu offers the models served on this server's port.  Without that key nothing changes;
   - OpenAI `logprobs` / `top_logprobs` on /v1/chat/completions (streamed or not): the engine (the SYCL port,
     `logprobs=K` on its GEN line) writes an `LP` line after each `T` line, which upstream's server would ignore.
     The values are the model's log-probabilities from the verify window's logits, before sampling, temperature and
-    penalties; with thinking on, the thinking tokens are listed too (in order, under `reasoning_content`).
+    penalties; with thinking on, the thinking tokens are listed too (in order, under `reasoning_content`);
+  - the start narration for a config whose args carry --stream-experts (install_narrator): upstream's narrator
+    describes the CUDA engine's start (tens of GB locked in RAM, a freeze warning), which this route does not do.
 """
 from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -31,21 +41,120 @@ sys.path.insert(0, str(HERE))
 
 import serve.server as S  # noqa: E402
 import serve.telemetry as T  # noqa: E402
-from xe_telemetry import _XeGpu  # noqa: E402
+from xe_telemetry import xe_gpu  # noqa: E402
+
+WIN = os.name == "nt"
+
+# The engine's environment on Windows (the server sets it; the config's "env" wins): the Level Zero v2 adapter (the
+# v1 one leaks events per graph finalize on Windows, intel/llvm#23073; the v2 one ran the Arc Pro B70), no persistent
+# JIT cache (it segfaults on Xe2 during the first compile, docs/INTEL.md), relaxed allocation limits and Sysman for
+# the free-memory query (what llama.cpp's Windows SYCL users set), the port's device-built verify plan with the host
+# waiting for the whole window (strata-sycl.sh sets the same two on Linux), and the VRAM heartbeat every 10 s (Windows
+# evicts an idle card's memory to RAM, and a Level Zero queue idle for minutes can return DEVICE_LOST,
+# intel/llvm#23209; 0 turns it off).  docs/INTEL_WINDOWS.md has the table.
+SYCL_ENV = {"SYCL_UR_USE_LEVEL_ZERO_V2": "1", "SYCL_CACHE_PERSISTENT": "0", "UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS": "1",
+            "ZES_ENABLE_SYSMAN": "1", "STRATA_VERIFY_DEVICE_PLAN": "1", "STRATA_VERIFY_NO_HOST": "1",
+            "STRATA_SYCL_HEARTBEAT_S": "10"}
 
 
-def install_xe_reader():
-    """telemetry.gpu_reader -> the xe reader when NVML has no card and an Intel Arc is there."""
+def run_config(argv) -> dict:
+    """The run config named by --config in the server's arguments ({} without one, or one that does not parse)."""
+    argv = list(argv)
+    if "--config" in argv and argv.index("--config") + 1 < len(argv):
+        try:
+            return json.loads(Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def install_xe_reader(argv=()):
+    """telemetry.gpu_reader -> the Intel reader: on Windows for a "sycl" config always (a reader that cannot read
+    leaves the Monitor without a GPU, as upstream's Windows HIP state, never the NVIDIA card's figures), elsewhere
+    when NVML has no card and an Intel Arc is there."""
+    backend = run_config(argv).get("backend")
     orig = T.gpu_reader
 
     def gpu_reader(index=0, amd=False):
+        if WIN and backend == "sycl":
+            return xe_gpu(index)
         g = orig(index, amd)
         if g.ok():
             return g
-        xe = _XeGpu(index)
+        xe = xe_gpu(index)
         return xe if xe.ok() else g
 
     T.gpu_reader = gpu_reader
+
+
+def physical_cores() -> int:
+    """The CPU's physical cores (psutil, which setup installs), else half the logical ones."""
+    try:
+        import psutil
+        n = psutil.cpu_count(logical=False)
+    except (ImportError, OSError, RuntimeError):
+        n = None
+    return int(n) if n else max(1, (os.cpu_count() or 8) // 2)
+
+
+def sycl_env(cfg: dict, base: dict | None = None) -> dict:
+    """The engine's environment for a "sycl" config on Windows: the OS environment (`base` in tests), SYCL_ENV, the
+    card by its SYCL index (ONEAPI_DEVICE_SELECTOR=level_zero:N, so the engine's device 0 is that card and never the
+    integrated GPU or the NVIDIA one; every Level Zero GPU when the config names none), the stager threads capped at
+    the physical cores, then the config's own "env" over all of it, and its "lib_dirs" (relative to the config's
+    "cwd", else the repo) first on the PATH: the oneAPI runtime DLLs live beside strata.exe in engine\\."""
+    env = dict(os.environ if base is None else base)
+    gl = S.gpu_list(cfg)
+    env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:" + (",".join(str(i) for i in gl) if gl else "gpu")
+    env.update(SYCL_ENV)
+    env["STRATA_STAGER_THREADS"] = str(min(12, physical_cores()))
+    for k, v in (cfg.get("env") or {}).items():
+        env[str(k)] = str(v)
+    here = Path(cfg.get("cwd") or ROOT)
+    dirs = []
+    for d in cfg.get("lib_dirs") or []:
+        p = Path(str(d)) if os.path.isabs(str(d)) else here / str(d)
+        if p.is_dir():
+            dirs.append(str(p))
+    if dirs:
+        env["PATH"] = os.pathsep.join(dirs + ([env["PATH"]] if env.get("PATH") else []))
+    return env
+
+
+def install_child_env():
+    """serve/server.py's child_env -> sycl_env for a "sycl" config on Windows; everything else as upstream."""
+    orig = S.child_env
+
+    def child_env(cfg):
+        if WIN and cfg.get("backend") == "sycl":
+            return sycl_env(cfg)
+        return orig(cfg)
+
+    S.child_env = child_env
+
+
+def install_free_vram(argv=()):
+    """Service.free_vram_mib (the min_free_vram_mib gate) reads the Arc for a "sycl" config on Windows, not NVML's
+    first card; None when the Arc cannot be read (then nothing is refused, as upstream).  The config is the one the
+    server was started with (--config): Service does not keep the backend itself."""
+    cfg = run_config(argv)
+    backend = cfg.get("backend")
+    gl = S.gpu_list(cfg)
+    orig = S.Service.free_vram_mib
+
+    def free_vram_mib(self):
+        if WIN and backend == "sycl":
+            try:
+                g = xe_gpu(int(gl[0]) if gl else 0)
+                r = g.read() if g.ok() else {}
+                if r.get("mem_total") is None or r.get("mem_used") is None:
+                    return None
+                return int((int(r["mem_total"]) - int(r["mem_used"])) >> 20)
+            except Exception:  # noqa: BLE001 - a reading must never take a request down
+                return None
+        return orig(self)
+
+    S.Service.free_vram_mib = free_vram_mib
 
 
 def model_switcher(url: str, port, model, mode: str = "") -> dict:
@@ -72,11 +181,7 @@ def install_switcher(argv):
     def arg(name, default=None):
         return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
 
-    try:
-        cfg = json.loads(Path(arg("--config")).read_text(encoding="utf-8-sig")) if arg("--config") else {}
-    except (OSError, ValueError):
-        cfg = {}
-    url = cfg.get("model_switcher")
+    url = run_config(argv).get("model_switcher")
     if not url:
         return
     port = arg("--port", "8080")
@@ -287,7 +392,9 @@ def top_logprobs(req: dict):
 
 
 if __name__ == "__main__":
-    install_xe_reader()
+    install_xe_reader(sys.argv[1:])
+    install_child_env()
+    install_free_vram(sys.argv[1:])
     install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()

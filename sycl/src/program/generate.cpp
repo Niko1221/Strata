@@ -25,6 +25,8 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_mem.hpp"         // Windows: the free-VRAM figure lowered by the WDDM budget
+#include "strata/sycl_heartbeat.hpp"   // Windows: the VRAM heartbeat the serve loop runs
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
@@ -88,6 +90,10 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <windows.h>
 #include <psapi.h>
 #include <io.h>
+// rpcndr.h (reached through <windows.h> above) defines `small` as char and `hyper` as __int64; both are local
+// variable names below
+#undef small
+#undef hyper
 #else
 #include <unistd.h>
 #include <cerrno>
@@ -1246,6 +1252,20 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
 #endif
 }
 
+/// The free and total VRAM every sizing step below reads (the weight arena's failure message, the expert cache's
+/// auto size and its reserve check, a layer split's stage_room, the serve-time "free with everything loaded" line).
+/// On Windows it goes through strata::mem_get_info (sycl_mem.hpp): dpct's figure lowered by what the
+/// WDDM local budget withholds for this adapter (DXGI, found by the SYCL device's LUID), as upstream's HIP build does
+/// in src/core/device.cu for cudaMemGetInfo.  On a card that drives no display the subtraction is usually zero; when
+/// no figure is available at all, dpct's stands.  Elsewhere dpct's figure as before (ext_intel_free_memory, which the
+/// Level Zero backend only answers with ZES_ENABLE_SYSMAN=1 - the server sets it; without it dpct reports 0 free).
+void vram_info(size_t& free_b, size_t& total_b) {
+#if defined(_WIN32)
+    if (strata::mem_get_info(free_b, total_b)) return;
+#endif
+    dpct::get_current_device().get_memory_info(free_b, total_b);
+}
+
 /// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)
 void mem_mark(const char* where) {
     static const bool on = std::getenv("STRATA_TRACE") != nullptr;
@@ -1256,7 +1276,7 @@ void mem_mark(const char* where) {
     device information which may not be supported by all compilers or runtimes.
     You may need to adjust the code.
     */
-    dpct::get_current_device().get_memory_info(free_b, total_b);
+    vram_info(free_b, total_b);
     std::fprintf(stderr, "strata trace: %lld MiB free after %s\n", (long long) (free_b >> 20), where);
 }
 
@@ -1528,6 +1548,18 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
         const Clock::time_point t0 = Clock::now();
         cudaMemcpyAsync(d, h, kBytes, cudaMemcpyHostToDevice);
         ok = cudaDeviceSynchronize() == cudaSuccess;
+        ms[b] = (float) std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    }
+#elif defined(_WIN32)
+    // Windows SYCL: the HIP line above, for the same reason - Level Zero event profiling on the Windows driver
+    // is not trusted to bracket a copy engine's transfer (upstream's HIP events read 3,300-26,000 GB/s there), so each
+    // burst is timed on the host clock between two queue waits.  256 MiB takes ~10 ms, so the waits around it hardly
+    // matter; the fastest of the four bursts is the link's figure, as on every other platform.
+    // unverified on the B70: the host-clock figures were not yet compared with the event-profiled ones
+    bool ok = DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()) == 0;
+    for (int b = 0; b < kBursts && ok; ++b) {
+        const Clock::time_point t0 = Clock::now();
+        ok = DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(d, h, kBytes).wait_and_throw()) == 0;
         ms[b] = (float) std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
     }
 #else
@@ -2741,7 +2773,7 @@ int main(int argc, char **argv) try {
         for device information which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
-        dpct::get_current_device().get_memory_info(free_b, total_b);
+        vram_info(free_b, total_b);
         std::fprintf(
             stderr,
             "strata generate: cudaMalloc(%llu) for the weight arena failed "
@@ -2761,6 +2793,10 @@ int main(int argc, char **argv) try {
             (unsigned long long)(total_b >> 20));
         return 1;
     }
+    // Windows: the weight arena lives as long as the model; registered with the VRAM heartbeat
+    // (strata/sycl_heartbeat.hpp) so WDDM does not evict it from a display-less card while the engine idles between
+    // requests.  Unregistered before the free at the end of this function.
+    strata::heartbeat_register(arena, (size_t) pool_bytes);
     auto load_t0 = std::chrono::steady_clock::now();
     auto load_s = [&] {
         const auto t = std::chrono::steady_clock::now();
@@ -3072,7 +3108,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(fb, tb);
+            vram_info(fb, tb);
             const int64_t session = (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers);
             const int64_t held_back = session + (((int64_t) o.vram_reserve_mib + 1000 + 96) << 20);   // + drafter/head, windows
             const int64_t room = (int64_t) fb - held_back;
@@ -3168,7 +3204,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(free_b, total_b);
+            vram_info(free_b, total_b);
             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s (%llu MiB needed, %llu MiB of %llu "
                                  "MiB free on that card)\n", st.dev,
                          err.empty() ? "the weight arena does not fit" : err.c_str(),
@@ -3264,12 +3300,7 @@ int main(int argc, char **argv) try {
         }
         if (!late_weights) {
             size_t fb = 0, tb = 0;
-            /*
-            DPCT1106: 'cudaMemGetInfo' was migrated with the Intel
-            extensions for device information which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            dpct::get_current_device().get_memory_info(fb, tb);
+            vram_info(fb, tb);
             std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights; %.2f GiB free (its session "
                                  "follows the split search)\n", st.dev, (double) fb / 1073741824.0);
         }
@@ -3396,7 +3427,7 @@ int main(int argc, char **argv) try {
         try {
     const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
-        dpct::get_current_device().get_memory_info(fb, tb);   // #423 (tmking01): dpct dropped cudaMemGetInfo here
+        vram_info(fb, tb);   // #423 (tmking01): dpct dropped cudaMemGetInfo here
         /*
         DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions
         for device information which may not be supported by all compilers or
@@ -3671,7 +3702,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(fb, tb);
+            vram_info(fb, tb);
             std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights; %.2f GiB free (its session "
                                  "follows)\n", st.dev, (double) fb / 1073741824.0);
         }
@@ -3702,13 +3733,17 @@ int main(int argc, char **argv) try {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
+        const uint64_t sbuf_bytes = strata::core::session_bytes(g, o.max_context, K, 0, hi0);
         if (DPCT_CHECK_ERROR(
                 sbuf = (void *)sycl::malloc_device(
-                    strata::core::session_bytes(g, o.max_context, K, 0, hi0),
+                    (size_t) sbuf_bytes,
                     dpct::get_in_order_queue())) != 0) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
+        // Windows: the session (the KV pools, the GDN and indexer state, the PLE history) lives as long as the model;
+        // registered with the VRAM heartbeat, as the weight arena above
+        strata::heartbeat_register(sbuf, (size_t) sbuf_bytes);
         if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0) == 0) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
@@ -3765,7 +3800,7 @@ int main(int argc, char **argv) try {
         for device information which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
-        dpct::get_current_device().get_memory_info(fb, tb);
+        vram_info(fb, tb);
         std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights, session [%lld, %lld)%s; "
                              "%.2f GiB free\n", st.dev, (long long) st.lb, (long long) st.le,
                      last ? " and the head" : "", (double) fb / 1073741824.0);
@@ -3839,7 +3874,7 @@ int main(int argc, char **argv) try {
                     by all compilers or runtimes. You may need to adjust the
                     code.
                     */
-                    dpct::get_current_device().get_memory_info(fb, tb);
+                    vram_info(fb, tb);
                     std::fprintf(stderr, "strata generate: WARNING: --batch %d: slot %d's session does not fit on CUDA%d "
                                          "(%.2f GiB each, %.2f GiB free); %d slot%s\n", o.batch, b, dev,
                                  (double) bytes / 1073741824.0, (double) fb / 1073741824.0, b, b == 1 ? "" : "s");
@@ -3856,7 +3891,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(fb, tb);
+            vram_info(fb, tb);
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
@@ -4047,6 +4082,23 @@ int main(int argc, char **argv) try {
                     DPCT_COMPAT_RT_VERSION % 1000 / 10, rt / 1000,
                     rt % 1000 / 10);
         }
+#if defined(_WIN32)
+        {   // Windows: which SYCL runtime this process loaded - the oneAPI DLLs setup copies beside strata.exe, or another
+            // oneAPI install's found first on PATH - and which Level Zero loader (the v2 adapter needs 1.32 or newer on a
+            // B70: intel/llvm#22958; the graphics driver ships one, the engine directory may carry a newer one), as the
+            // HIP build logs its amdhip64 DLL above (#468 #461).  A mismatch here is the first thing to read when the
+            // first submission fails.
+            auto log_dll = [](const char* name) -> bool {
+                HMODULE h = GetModuleHandleA(name);
+                if (h == nullptr) return false;
+                char path[MAX_PATH] = {};
+                if (GetModuleFileNameA(h, path, MAX_PATH) > 0) std::fprintf(stderr, "strata generate: %s is %s\n", name, path);
+                return true;
+            };
+            if (!log_dll("sycl9.dll")) log_dll("sycl8.dll");   // oneAPI 2026.x ships sycl9; an older toolkit sycl8
+            log_dll("ze_loader.dll");
+        }
+#endif
 #endif
 #endif // #if 0
 #endif
@@ -4311,7 +4363,7 @@ int main(int argc, char **argv) try {
         for device information which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
-        dpct::get_current_device().get_memory_info(free_b, total_b);
+        vram_info(free_b, total_b);
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int asked = o.expert_cache;
         const uint64_t budget = (uint64_t) asked * lay.max_blob;
@@ -4608,7 +4660,11 @@ int main(int argc, char **argv) try {
                                     const Fill& g2 = (*fl)[j];
                                     if (!gguf_src.read_into(g2.l, g2.e, other.data(), blob_cap)) continue;
                                     const size_t nb2 = (size_t) lay.blob_bytes(g2.l);
-                                    const void* hit = memmem(other.data(), nb2, probe, 64);
+                                    // std::search, not memmem: the MSVC CRT has no memmem (the Windows build)
+                                    const uint8_t* const begin2 = other.data();
+                                    const uint8_t* const end2 = begin2 + nb2;
+                                    const uint8_t* const found = std::search(begin2, end2, probe, probe + 64);
+                                    const void* hit = found != end2 ? (const void*) found : nullptr;
                                     if (hit != nullptr)
                                         std::fprintf(stderr, "    the wrong data at byte %zu is expert (layer %d, expert %d), slot %d (fill %zu), byte %zu of its blob\n",
                                                      fd + 4096, (int) g2.l, (int) g2.e, (int) g2.slot, j, (size_t) ((const uint8_t*) hit - other.data()));
@@ -4702,12 +4758,22 @@ int main(int argc, char **argv) try {
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
         uint64_t avail = 0;
+#if defined(_WIN32)
+        {   // Windows: MemAvailable's Windows figure - the physical RAM free now; the standby list counts as available,
+            // as Linux's MemAvailable counts reclaimable page cache (without this the mirror was silently off: no
+            // /proc/meminfo, 0 available, cap 0)
+            MEMORYSTATUSEX ms{};
+            ms.dwLength = sizeof ms;
+            if (GlobalMemoryStatusEx(&ms)) avail = (uint64_t) ms.ullAvailPhys;
+        }
+#else
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
             while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+#endif
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -4756,7 +4822,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(fb, tb);
+            vram_info(fb, tb);
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %.2f GiB free of %.2f, room for experts %.2f GiB\n",
                          st.dev, (double) fb / 1073741824.0, (double) tb / 1073741824.0, (double) room / 1073741824.0);
         }
@@ -6590,7 +6656,7 @@ int main(int argc, char **argv) try {
                         adjust the code.
                         */
                         if (DPCT_CHECK_ERROR(
-                                dpct::get_current_device().get_memory_info(
+                                vram_info(
                                     fb, tb)) != 0) {
                             (void)0; continue;
                         }
@@ -6689,7 +6755,7 @@ int main(int argc, char **argv) try {
                     by all compilers or runtimes. You may need to adjust the
                     code.
                     */
-                    dpct::get_current_device().get_memory_info(fb, tb);
+                    vram_info(fb, tb);
                     const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c);
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
@@ -8262,7 +8328,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(free_b, total_b);
+            vram_info(free_b, total_b);
             // below ~256 MiB a later allocation (a first-used window's buffers, the desktop, another program) can make
             // the driver page GPU memory, and a verify graph spinning on a host flag then never finishes
             const int64_t free_mib = (int64_t) (free_b >> 20);
@@ -8289,7 +8355,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(free_b, total_b);
+            vram_info(free_b, total_b);
             // "Experts in VRAM" is every tier, not one card's.  This used to report `xcache` alone, so a layer split
             // showed CUDA0's cache as if it were the whole GPU's: a 4-GPU 256K run read 3327 experts when the four
             // cards held 13320, and the Monitor tab was wrong by 4x for every multi-GPU config.  The tiers are
@@ -8355,6 +8421,72 @@ int main(int argc, char **argv) try {
                     }
                 }).detach();
         }
+        // ---- Windows: the VRAM heartbeat.  Windows' display driver model evicts a GPU's idle allocations
+        // to system RAM, and on a card that drives no display nothing else keeps them warm: a display-less Arc Pro B70
+        // had its VRAM paged out between requests.  A Windows Level Zero driver can also answer the first submission
+        // after minutes of idle with DEVICE_LOST (intel/llvm#23209).  So every STRATA_SYCL_HEARTBEAT_S seconds (default
+        // 10 on Windows, 0 = off elsewhere) this thread calls strata::heartbeat_touch() - device.dp.cpp: one small
+        // kernel per registered range on its own in-order queue, reading a word every 64 KiB - which keeps the ranges
+        // resident and the queue alive.  Registered: the DeviceArena's chunks, and the engine's own long-lived device
+        // allocations (the weight arena and the session above, the expert cache's slots, the verifier's and the
+        // drafter's arenas, the native head and dense matrices, the prompt path's own buffers of 16 MiB and more).
+        // Once, after the first touch, the line below says how much one touch covers against what the plan put on the
+        // card, so an unregistered allocation shows as a gap.  Beside the decode it is safe in the mode the Coder runs in: all
+        // experts resident with STRATA_VERIFY_NO_HOST=1, so no device spin kernel waits on the host and a kernel on
+        // another queue cannot starve one.  Open: the host-handshake mode (a window graph spinning on a host flag while
+        // a heartbeat kernel is queued) has not been measured on the B70.  Joined before the exit below: a queue wait
+        // after the runtime's teardown began is what aborted this engine at exit (docs/INTEL.md, "The engine exits
+        // directly"); the destructor covers the error returns inside the loop.
+        struct Heartbeat {
+            std::thread th;
+            std::mutex mu;
+            std::condition_variable cv;
+            bool stop = false;
+            void start() {
+                const unsigned period = strata::heartbeat_period_s();
+                if (period == 0) return;
+                // what the plan put on the card, read on this (the main) thread with everything loaded: total minus
+                // free (C6's mem_get_info, not vram_info: dpct reports 0 free when Sysman is off, which would read as
+                // a 31 GiB gap; mem_get_info says false then and the comparison below is skipped).  On the dedicated
+                // B70 that difference is this engine's own allocations plus the driver's.
+                size_t free_b = 0, total_b = 0;
+                const size_t planned = strata::mem_get_info(free_b, total_b) && total_b > free_b ? total_b - free_b : 0;
+                th = std::thread([this, period, planned] {
+                    bool said = false, reported = false;
+                    // the first touch runs at once: the model is loaded, so what it covers is the figure to report, and
+                    // a WDDM eviction that began during the load is undone before the first request
+                    for (bool first = true;; first = false) {
+                        if (!first) {
+                            std::unique_lock<std::mutex> lk(mu);
+                            if (cv.wait_for(lk, std::chrono::seconds(period), [&] { return stop; })) return;
+                        }
+                        try {
+                            const size_t covered = strata::heartbeat_touch();
+                            if (!reported) {   // once: what one touch covers (0 = nothing registered, or it failed)
+                                reported = true;
+                                std::fprintf(stderr, "strata: VRAM heartbeat every %u s, touching %llu MiB\n", period,
+                                             (unsigned long long) (covered >> 20));
+                                // unverified on the B70: an allocation nobody registered shows here as the gap
+                                if (planned > 0 && covered < planned / 2)
+                                    std::fprintf(stderr, "strata: VRAM heartbeat covers only %llu of %llu MiB\n",
+                                                 (unsigned long long) (covered >> 20),
+                                                 (unsigned long long) (planned >> 20));
+                            }
+                        } catch (const sycl::exception& e) {   // said once; the next beat tries again
+                            if (!said) std::fprintf(stderr, "strata: VRAM heartbeat: %s (not reported again)\n", e.what());
+                            said = true;
+                        }
+                    }
+                });
+            }
+            void finish() {
+                { std::lock_guard<std::mutex> lk(mu); stop = true; }
+                cv.notify_all();
+                if (th.joinable()) th.join();
+            }
+            ~Heartbeat() { finish(); }
+        } heartbeat;
+        heartbeat.start();
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -8442,7 +8574,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(free_b, total_b);
+            vram_info(free_b, total_b);
             const int64_t want_free = (int64_t) reserve << 20, mapped = xcache.mapped_bytes();
             const int64_t before = xcache.slots();
             // what stays at least: the prompt path's smallest loan (256 tokens) and the 128 slots it must leave
@@ -8503,7 +8635,7 @@ int main(int argc, char **argv) try {
             extensions for device information which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            dpct::get_current_device().get_memory_info(free_b, total_b);
+            vram_info(free_b, total_b);
             std::fprintf(stderr, "strata serve: VRAM %lld MiB kept free: the expert cache %lld -> %lld of %lld slots "
                                  "(%.2f of %.2f GiB), %lld MiB free now, prompt chunk %lld, in %.0f ms%s\n",
                          reserve, (long long) before, (long long) xcache.slots(), (long long) xcache.full_slots(),
@@ -11490,6 +11622,7 @@ int main(int argc, char **argv) try {
                              remote_experts[(size_t) r].ms_begin() - begin_before[(size_t) r],
                              remote_experts[(size_t) r].ms_wait() - wait_before[(size_t) r]);
         }
+        heartbeat.finish();     // Windows: no heartbeat kernel in flight once the teardown below begins
         save_profile("exit");   // #477: QUIT, or the server closed stdin
         // SYCL port: the requests are done and their output written; leave without unwinding the GPU objects (the OS
         // reclaims them). Their destructors ran against a runtime already shutting down and aborted (exit 139).
@@ -12614,6 +12747,8 @@ int main(int argc, char **argv) try {
     sycl::free(d_logits, dpct::get_in_order_queue());
     sycl::free(d_emb, dpct::get_in_order_queue());
     sycl::free(d_parts, dpct::get_in_order_queue());
+    strata::heartbeat_unregister(sbuf);    // Windows: before the frees - a heartbeat touch in flight finishes first
+    strata::heartbeat_unregister(arena);
     sycl::free(sbuf, dpct::get_in_order_queue());
     sycl::free(arena, dpct::get_in_order_queue());
     return 0;

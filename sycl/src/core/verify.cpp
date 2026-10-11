@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the window's device arenas register with the VRAM heartbeat
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
@@ -371,6 +372,9 @@ Verifier::~Verifier() try {
         if (kv.second) delete (kv.second);
     for (auto& kv : commit_bm_)
         if (kv.second) delete (kv.second);
+    // Windows: out of the VRAM heartbeat's registry before the frees (a touch in flight finishes first)
+    if (arena_b_) strata::heartbeat_unregister(arena_b_);
+    if (arena_) strata::heartbeat_unregister(arena_);
     if (arena_b_) sycl::free(arena_b_, dpct::get_in_order_queue());
     if (h_commitb_) sycl::free(h_commitb_, dpct::get_in_order_queue());
     if (qcnt_) sycl::free(qcnt_, dpct::get_in_order_queue());
@@ -546,6 +550,10 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: the device arena (" + std::to_string(count.used >> 20) + " MiB) does not fit";
         return false;
     }
+    // Windows: the window's buffers (the staging slots, the residuals, the head logits) live as long as the verifier;
+    // registered with the VRAM heartbeat (strata/sycl_heartbeat.hpp) so WDDM does not evict them from a display-less
+    // card while the engine idles between requests.  The destructor unregisters.
+    strata::heartbeat_register(arena_, (size_t) count.used);
     strata::big_fill_zero(dpct::get_in_order_queue(), arena_, count.used);
     if (g_trace && trace_h_ == nullptr) {   // #649: the breadcrumbs, mapped so they read while the GPU hangs
         trace_n_ = (size_t) (g.n_layers + 1) * kProfPer * 2;
@@ -2530,6 +2538,8 @@ bool Verifier::init_slots(const std::vector<SessionState *> &slots,
         return false;
     }
     arena_b_ = d;
+    // Windows: the batch buffers live as long as the verifier: the VRAM heartbeat (see init); the destructor unregisters
+    strata::heartbeat_register(arena_b_, (size_t) (a + (uint64_t) S * std::max<int64_t>(nQ, 1) * TS * 4));
     commitb_ = (int32_t*) d;
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;

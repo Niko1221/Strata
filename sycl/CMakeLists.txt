@@ -6,9 +6,15 @@
 # the same way through the include order. Upstream files are never edited, so the port is the content of this
 # directory plus the tool that produced it (../../sycl/migrate.sh).
 #
-#   cmake -S sycl -B build-sycl -G Ninja -DCMAKE_CXX_COMPILER=icpx && cmake --build build-sycl
+#   Linux:    cmake -S sycl -B build-sycl -G Ninja -DCMAKE_CXX_COMPILER=icpx && cmake --build build-sycl
+#   Windows:  sycl\tools\build_windows.bat   (docs/INTEL_WINDOWS.md), which is
+#             cmake -S sycl -B build-sycl-win -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl
+#                   -DCMAKE_CXX_COMPILER=icx -DSTRATA_SYCL_AOT=bmg-g31 -DSTRATA_GGML_DIR=third_party/llama.cpp
+#                   -DSTRATA_PORTABLE=ON -DSTRATA_SYCL_PROBES=ON
+#             cmake --build build-sycl-win --target strata strata-device probes
 #
-# Device code is JIT-compiled from SPIR-V unless STRATA_SYCL_AOT names a device (bmg-g31 for the Arc Pro B70).
+# Device code is JIT-compiled from SPIR-V unless STRATA_SYCL_AOT names a device (bmg-g31 for the Arc Pro B70; plain
+# "bmg" is the B580 die and that binary does not load on a B70).
 cmake_minimum_required(VERSION 3.24)
 # the engine's version is the project's (../CMakeLists.txt): the log line and BUILD.json say 0.1.40.2, not a number of the port's own
 file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/../CMakeLists.txt _strata_proj REGEX "^project\\(strata VERSION [0-9.]+")
@@ -28,6 +34,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
+# --- the two compiler front ends -----------------------------------------------------------------------------------
+# icpx on Linux takes GNU-style options. On Windows the compiler is icx, the MSVC-compatible driver (CMake: compiler
+# id IntelLLVM, frontend variant MSVC), with cl for the C files, the way llama.cpp's windows-sycl release job builds
+# (CMAKE_C_COMPILER=cl CMAKE_CXX_COMPILER=icx, Ninja). The SYCL options (-fsycl, -fsycl-*) are spelled the same on
+# both; every other flag is picked per front end through `_msvc_fe` below. (CMake 3.30 spells this test
+# $<CXX_COMPILER_FRONTEND_VARIANT:MSVC>; 3.24 is the minimum here, so the variable is compared instead.)
+set(_msvc_fe "$<STREQUAL:${CMAKE_CXX_COMPILER_FRONTEND_VARIANT},MSVC>")
+if(MSVC)
+  # The oneAPI runtime DLLs (sycl9.dll, the oneMKL DLLs) use the dynamic CRT; the engine must use the same one, or
+  # the process has two heaps and two sets of iostream/locale state. (The CUDA/HIP builds link the CRT statically
+  # for their zips; here the DLLs ship beside the exes anyway, sycl/tools/package_windows.py.)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
@@ -36,12 +56,25 @@ set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "fixed bound of the device's spins on h
 if(STRATA_SYCL_SPIN_MAX)
   add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)
 endif()
+# How a kernel reads a host flag (include/strata/sycl_doorbell.hpp, sys_load): empty = the uncached L1+L3 read hint (the
+# default), "fenced" = a volatile load plus a system-scope acquire fence, "atomic" = the system-scope atomic load alone.
+# sycl/probe/doorbell_probe measures all three on a driver; the engine's A/B is a rebuild with another value.
+set(STRATA_SYCL_DOORBELL "" CACHE STRING "sys_load reading: empty (the uncached read hint), fenced, or atomic")
+if(STRATA_SYCL_DOORBELL STREQUAL "fenced")
+  add_compile_definitions(STRATA_DOORBELL_FENCED_VOLATILE=1)
+elseif(STRATA_SYCL_DOORBELL STREQUAL "atomic")
+  add_compile_definitions(STRATA_DOORBELL_ATOMIC_LOAD=1)
+elseif(STRATA_SYCL_DOORBELL)
+  message(FATAL_ERROR "STRATA_SYCL_DOORBELL=${STRATA_SYCL_DOORBELL}: expected empty, fenced or atomic")
+endif()
 set(_sycl_flags -fsycl)
 if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)
   # the divide/sqrt rounding option (below) must reach ocloc here: an AOT build has no spir64 backend to take it
   set(_sycl_link -fsycl -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen
       "-device ${STRATA_SYCL_AOT} -options -cl-fp32-correctly-rounded-divide-sqrt")
+  # the engine compares the card it starts on with the device its code was compiled for (sycl/src/core/device.dp.cpp)
+  add_compile_definitions(STRATA_SYCL_AOT_DEVICE="${STRATA_SYCL_AOT}")
 else()
   set(_sycl_link -fsycl)
 endif()
@@ -63,8 +96,15 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
-                    -Wno-unused-variable -Wno-deprecated-declarations)
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>")
+# GNU front end (icpx; icx for C on Linux): the value-safe FP model and quiet about what dpct's output leaves unused.
+# MSVC front end (icx on Windows, C++ only; cl compiles the C files with its own defaults): /fp:precise is the same
+# request; /EHsc for the exceptions the engine throws through its C++ frames; /bigobj because the migrated kernel
+# files pass COFF's 65k-section limit; /utf-8 so the sources' literals keep their encoding whatever the console's
+# code page. The -Wno-* flags stay GNU-only (the MSVC driver reads -W<x> as /W<x>).
+add_compile_options(
+  "$<$<NOT:${_msvc_fe}>:-fp-model=precise;-Wno-unused-parameter;-Wno-unused-variable;-Wno-deprecated-declarations>"
+  "$<$<AND:$<COMPILE_LANGUAGE:CXX>,${_msvc_fe}>:/fp:precise;/EHsc;/bigobj;/utf-8>")
 add_link_options(${_sycl_link})
 
 # --- source resolution: the migrated copy when there is one, the original otherwise -------------------------------
@@ -93,9 +133,28 @@ add_library(strata_includes INTERFACE)
 target_include_directories(strata_includes INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers, first
   ${STRATA_ROOT}/include)
-target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+# -Wall on the MSVC driver is /Wall (clang's -Weverything); /W3 is its default level and what upstream's own code is
+# clean at on Windows
+target_compile_options(strata_includes INTERFACE "$<IF:${_msvc_fe},/W3,-Wall;-Wextra>")
+if(MSVC)
+  # the Windows headers' min/max macros and the whole of windows.h would otherwise reach the dpct helpers and the
+  # engine's std::min/std::max; the CRT's "unsafe function" warnings are not this code's to fix
+  target_compile_definitions(strata_includes INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
+# Only the kernel files get the AVX-512 / AVX2 flags, as in the top-level build; the pool and the probe run on any
+# x86-64 and the engine picks the kernels at run time (cpu_avx512_ok). GNU spelling: -mavx512vnni alone is not
+# enough, VBMI is a separate feature bit. MSVC spelling: /arch:AVX512 covers F/CD/BW/DQ/VL only, and a clang-based
+# compiler (icx, clang-cl) refuses the VNNI and VBMI intrinsics without their feature bits where cl just emits them.
+# ggml-cpu's CMakeLists.txt (llama.cpp 3cf0325, the x86 `if (MSVC)` branch) adds -mavx512vnni / -mavx512vbmi next
+# to /arch:AVX512 when CMAKE_C_COMPILER_ID is Clang for exactly that reason; the same pair is used here. Checked
+# with clang-cl 22: /arch:AVX512 alone fails on _mm256_dpbusd_epi32 and _mm256_multishift_epi64_epi8, with the two
+# -m flags the file compiles; icx 2026.0.0 built the whole tree with them on the Arc Pro B70 PC (2026-10-04).
+set(_avx512_flags "$<IF:${_msvc_fe},/arch:AVX512;-mavx512vnni;-mavx512vbmi,-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma>")
+set(_avx2_flags "$<IF:${_msvc_fe},/arch:AVX2,-mavx2;-mfma;-mf16c>")
+set(_avx1_flags "$<IF:${_msvc_fe},/arch:AVX,-mavx>")
+
 strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
                     src/spec/draft_source.cpp)
 add_library(strata_spec STATIC ${_spec})
@@ -104,12 +163,15 @@ target_link_libraries(strata_spec PUBLIC strata_includes)
 strata_resolve(_cpu src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
                     src/kernels/cpu/q2_avx2.cpp)
 add_library(strata_kernels_cpu STATIC ${_cpu})
-set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS
-  "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "${_avx512_flags}")
+set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "${_avx2_flags}")
 # AVX-VNNI copies of the AVX-2 expert kernels (q2_avx2.cpp, iq_avx2.cpp), taken at run time where the CPU has them
 include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
+else()
+  set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
+endif()
 check_cxx_source_compiles([=[
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
@@ -132,17 +194,33 @@ find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC strata_includes Threads::Threads)
 
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
+# the ready-made engine runs on other PCs: ggml's CPU backend for any AVX2 CPU instead of this machine's (Strata's
+# own AVX-512 kernels are per-file and chosen at run time either way), as the top-level build and tools/vision do
+option(STRATA_PORTABLE "build for other PCs: AVX2 baseline for ggml" OFF)
+# setup.get_llama_cpp() unpacks the pinned llama.cpp zip into third_party/llama.cpp (no git needed; that is how
+# sycl/tools/build_windows.bat gets it); when it is there it is the default, otherwise the pinned commit is fetched
+set(_ggml_default "")
+if(EXISTS ${STRATA_ROOT}/third_party/llama.cpp/ggml/CMakeLists.txt)
+  set(_ggml_default ${STRATA_ROOT}/third_party/llama.cpp)
+endif()
+set(STRATA_GGML_DIR "${_ggml_default}" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
 if(STRATA_NATIVE_EXPERTS)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(GGML_STATIC ON CACHE BOOL "" FORCE)
   set(GGML_CUDA OFF CACHE BOOL "" FORCE)
   set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)        # no vcomp140.dll / libgomp needed on the user's PC
   set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+  if(STRATA_PORTABLE)
+    set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+    foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
+      set(${_f} ON CACHE BOOL "" FORCE)
+    endforeach()
+  else()
+    set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+  endif()
   if(STRATA_GGML_DIR)
     add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   else()
@@ -161,11 +239,10 @@ if(STRATA_NATIVE_EXPERTS)
                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp)   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
   target_sources(strata_kernels_cpu PRIVATE ${_cpu_native})
   target_include_directories(strata_kernels_cpu PRIVATE ${STRATA_ROOT}/third_party/ggml)
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
-    "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "${_avx512_flags}")
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "${_avx2_flags}")
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "${_avx2_flags}")
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "${_avx1_flags}")
   set_property(SOURCE ${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
   target_link_libraries(strata_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_NATIVE_EXPERTS=1)
@@ -180,6 +257,9 @@ target_link_libraries(strata_core PUBLIC strata_includes)
 find_library(STRATA_ZE_LOADER ze_loader)
 if(STRATA_ZE_LOADER)
   target_link_libraries(strata_core PUBLIC ${STRATA_ZE_LOADER})
+  # on Windows the header can be present (the oneAPI compiler ships level_zero/ze_api.h) without an import library to
+  # link against; sycl_queue.hpp then keeps to sycl::malloc_host unless this says the loader is linked
+  target_compile_definitions(strata_includes INTERFACE STRATA_ZE_LOADER_LINKED=1)
 endif()
 
 set(_kernel_cu dequant_s2 s2_gemv s_gemv s2_gemv_quads s2_gemv_fast router_top10 quantize_act rope sampler s2_gemv_q8
@@ -197,6 +277,13 @@ add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
 
+# strata-device: the card, the plan and the arena without a model (upstream's src/core/device_main.cpp through
+# strata_resolve). `--list-devices` is what setup parses to pick the B70 (docs/INTEL_WINDOWS.md), `--selftest` exercises
+# the arena; linked as upstream links it.
+strata_resolve(_device_main src/core/device_main.cpp)
+add_executable(strata-device ${_device_main})
+target_link_libraries(strata-device PRIVATE strata_core strata_kernels)
+
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
                        src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp
                        src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
@@ -212,16 +299,58 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
 add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+# icpx: -qmkl=sequential, the line the port was measured with. icx: /Qmkl:sequential, plus at link time /MD, because
+# on Windows /Qmkl links the static oneMKL unless /MD is on that command line (oneMKL Developer Guide for Windows,
+# "Using the /Qmkl Compiler Option") and CMake's link rule hands the icx driver the link options but not the compile
+# flags; and /Qmkl-sycl-impl:blas so that only the BLAS domain's DLL is imported (the combined SYCL import library
+# would make the exe need every mkl_sycl_*.dll; the runtime set that ships is llama.cpp's, mkl_sycl_blas.6.dll only).
+# STRATA_SYCL_MKL_CONFIG is the way llama.cpp links oneMKL on Windows instead (MKLConfig.cmake from setvars'
+# MKLROOT), kept as the fallback should the driver options misbehave; it is not the measured configuration.
+# unverified on the B70: /Qmkl-sycl-impl:blas and /MD at link with icx 2026.1 (the option's Windows spelling follows
+# Intel's /Qmkl[:lib] and /Qmkl-ilp64 convention; the alphabetical option list has it, its page was not readable).
+option(STRATA_SYCL_MKL_CONFIG "link oneMKL through MKLConfig.cmake (MKL::MKL_SYCL::BLAS) instead of the compiler's -qmkl / /Qmkl" OFF)
+if(STRATA_SYCL_MKL_CONFIG)
+  set(MKL_LINK dynamic)
+  set(MKL_THREADING sequential)
+  find_package(MKL CONFIG REQUIRED)
+  target_link_libraries(strata_prefill PUBLIC MKL::MKL_SYCL::BLAS)
+else()
+  target_compile_options(strata_prefill PUBLIC "$<IF:${_msvc_fe},/Qmkl:sequential,-qmkl=sequential>")
+  target_link_options(strata_prefill PUBLIC "$<IF:${_msvc_fe},/Qmkl:sequential;/Qmkl-sycl-impl:blas;/MD,-qmkl=sequential>")
+endif()
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 
+# --- the probes (sycl/probe): doorbell visibility and latency, the single-allocation ceiling (compute-runtime #998),
+# copy bandwidth per kind of host memory, graph shapes. Their verdicts set the engine's memory and doorbell settings
+# before a model is loaded on a new driver (sycl/probe/README.md). The directory defines doorbell_probe alloc_probe
+# bw_probe graph_probe and the `probes` target, and uses this file's _sycl_flags / _msvc_fe / strata_includes.
+# (sycl/probe also holds the Linux port's own single-file probes, built by hand; they are not part of this target.)
+if(WIN32)
+  set(_probes_default ON)
+else()
+  set(_probes_default OFF)   # written for the Windows port; not validated with icpx yet
+endif()
+option(STRATA_SYCL_PROBES "Build the probes in sycl/probe (targets doorbell_probe alloc_probe bw_probe graph_probe, and probes)" ${_probes_default})
+if(STRATA_SYCL_PROBES)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/probe/CMakeLists.txt)
+    add_subdirectory(probe)
+  else()
+    message(STATUS "strata_sycl: no sycl/probe/CMakeLists.txt, the probes are not built")
+  endif()
+endif()
+
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
-option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
+# measured on Linux (docs/INTEL.md); on Windows they are opt-in (-DSTRATA_SYCL_PARITY=ON)
+if(WIN32)
+  set(_parity_default OFF)
+else()
+  set(_parity_default ON)
+endif()
+option(STRATA_SYCL_PARITY "Build the kernel parity tests" ${_parity_default})
 if(STRATA_SYCL_PARITY)
   enable_testing()
   foreach(p IN ITEMS dequant_s2 s2_gemv iq shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10

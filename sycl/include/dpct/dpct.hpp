@@ -101,4 +101,20 @@ inline const char *get_error_string_dummy(int ec) {
 #define DPCT_PI_F (3.14159274101257f)
 #define DPCT_PI (3.141592653589793115998)
 
+#if defined(_WIN32)
+// windows.h (included above) leaves macros whose names the port uses as identifiers: minwindef.h's IN, OUT, near and
+// far, rpcndr.h's small and hyper.  WIN32_LEAN_AND_MEAN does not drop them, and the CUDA build never sees them.  FAR
+// and NEAR expand to far and near and the SDK still uses FAR (DEFINE_GUID), so they become empty, as they were.
+#undef IN
+#undef OUT
+#undef near
+#undef far
+#undef FAR
+#define FAR
+#undef NEAR
+#define NEAR
+#undef small
+#undef hyper
+#endif
+
 #endif // __DPCT_HPP__

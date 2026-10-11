@@ -3,6 +3,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/native_dense.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the dense matrices register with the VRAM heartbeat
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -138,8 +139,10 @@ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set
 NativeDense::~NativeDense() {
     for (const void* p : packed_keys_) strata::kernels::native_q8_0_packed_unregister(p);
     if (scratch_) sycl::free(scratch_, dpct::get_in_order_queue());
-    for (void *p : weights_)
+    for (void *p : weights_) {
+        strata::heartbeat_unregister(p);   // before the free: a heartbeat touch in flight finishes first
         DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
+    }
 }
 
 bool NativeDense::load(const std::vector<std::string> &shards,
@@ -386,6 +389,12 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
+            // Windows: each matrix is the model's and lives as long as it; registered with the VRAM heartbeat
+            // (strata/sycl_heartbeat.hpp) so WDDM does not evict it from a display-less card while the engine idles.
+            // Here and not at the allocation: until this loop a failure frees it through DevicePtr, which does not
+            // unregister.  The destructor unregisters before it frees.  (The opt-in packed Q8_0 copy below is not
+            // registered: its size is not this item's.)
+            strata::heartbeat_register(item.data.get(), (size_t) item.bytes);
             if (item.packed) {
                 strata::kernels::native_q8_0_packed_register(item.data.get(), item.packed.get(), (int) item.ref->ne0,
                                                              (int) item.ref->ne1);

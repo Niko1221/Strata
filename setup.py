@@ -4549,12 +4549,14 @@ def sycl_setup(argv) -> int:
     with the Intel steps swapped in. Nothing of the CUDA / HIP paths is used or changed."""
     say()
     say("  Intel Arc (--backend sycl): supported since 0.1.40.2 on Linux, tested on an Arc Pro B70 (xe) and an Arc A750 "
-        "(i915); other Arc cards and driver versions are untested, and reports help (docs/INTEL.md).")
+        "(i915), and on Windows, tested on an Arc Pro B70; other Arc cards and driver versions are untested, and "
+        "reports help (docs/INTEL.md).")
     if WIN:
-        fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             "run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
-    say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
-    say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
+        say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icx + oneMKL) by")
+        say("  sycl\\tools\\build_windows.bat, docs/INTEL_WINDOWS.md. Setup continues with sycl\\setup_intel.py.")
+    else:
+        say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
+        say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     rest, skip = [], False
     for x in argv:                                     # setup_intel.py drives this setup through its AMD path
         if skip:
@@ -4667,7 +4669,7 @@ def main() -> int:
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
-                         "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
+                         "sycl = Intel Arc, EXPERIMENTAL: Linux or Windows, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.source:

@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the drafter's VRAM registers with the heartbeat
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
 
@@ -161,6 +162,15 @@ MtpDrafter::~MtpDrafter() {
     if (side_) dpct::get_current_device().destroy_queue(side_);
     if (sh_fork_) dpct::destroy_event(sh_fork_);
     if (sh_join_) dpct::destroy_event(sh_join_);
+    // Windows: out of the VRAM heartbeat's registry before the frees (a touch in flight finishes first); only what
+    // this drafter allocated and registered (shared weights and a shared draft head belong to another drafter)
+    if (owns_weights_) {
+        if (dense_) strata::heartbeat_unregister(dense_);
+        if (experts_) strata::heartbeat_unregister(experts_);
+    }
+    for (const void* p : {(const void*) state_arena_, (const void*) arena_, (const void*) head_logits_})
+        if (p) strata::heartbeat_unregister(p);
+    if (owns_draft_head_ && dhead_) strata::heartbeat_unregister(dhead_);
     if (owns_weights_ && dense_) sycl::free(dense_, dpct::get_in_order_queue());
     if (owns_weights_ && experts_)
         sycl::free(experts_, dpct::get_in_order_queue());
@@ -338,6 +348,10 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
                              : "unknown");
             return false;
         }
+        // Windows: the draft layer's VRAM (this dense blob, the 512 experts, its K/V and its buffers below) lives as
+        // long as the model; each registers with the VRAM heartbeat (strata/sycl_heartbeat.hpp) so WDDM does not
+        // evict it from a display-less card while the engine idles.  The destructor unregisters before it frees.
+        strata::heartbeat_register(dense_, blob.size());
         dpct::get_in_order_queue().memcpy(dense_, blob.data(), blob.size()).wait();
         vram_ += blob.size();
         if (q4_ && !make_q4_dense(blob, err)) return false;
@@ -357,6 +371,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
                                  bytes, dpct::get_in_order_queue())) != 0) {
             err = "mtp: the 512 experts do not fit in VRAM"; return false;
         }
+        strata::heartbeat_register(experts_, (size_t) bytes);   // the VRAM heartbeat (see dense_ above)
 #if !defined(_WIN32)
         strata::platform::advise_willneed(fileno(f), 0, bytes);
 #endif
@@ -394,6 +409,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
                              sb, dpct::get_in_order_queue())) != 0) {
         err = "mtp: the K/V state does not fit"; return false;
     }
+    strata::heartbeat_register(state_arena_, (size_t) sb);   // the VRAM heartbeat (see dense_ above)
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
         if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
         std::fprintf(stderr, "strata mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
@@ -401,6 +417,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
         DPCT1026: The call to cudaGetLastError was removed because this
         functionality is redundant in SYCL.
         */
+        strata::heartbeat_unregister(state_arena_);   // before the free (registered above)
         sycl::free(state_arena_, dpct::get_in_order_queue());
         st_ = QsaState{};
         ring = -1;   // fully resident
@@ -409,6 +426,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
                                  sb, dpct::get_in_order_queue())) != 0) {
             err = "mtp: the K/V state does not fit"; return false;
         }
+        strata::heartbeat_register(state_arena_, (size_t) sb);   // the resident K/V, same as above
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
     qsa_set_kv_int8(kv_int8_was);
@@ -469,6 +487,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
                              count.used, dpct::get_in_order_queue())) != 0) {
         err = "mtp: buffers do not fit"; return false;
     }
+    strata::heartbeat_register(arena_, (size_t) count.used);   // the VRAM heartbeat (see dense_ above)
     strata::big_fill_zero(dpct::get_in_order_queue(), arena_, count.used);
     Bump real;
     real.base = (uint8_t*) arena_;
@@ -728,12 +747,15 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
     if (!wo) { err = "mtp: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;
     if (head == nullptr || !head->loaded()) { err = "mtp: the draft layer needs the native head (--native)"; return false; }
-    if (head_logits_ == nullptr &&
-        DPCT_CHECK_ERROR(head_logits_ = sycl::malloc_device<float>(
-                             (size_t)max_t_ * (size_t)n_vocab_,
-                             dpct::get_in_order_queue())) != 0) {
-        err = "mtp: the draft logits do not fit";
-        return false;
+    if (head_logits_ == nullptr) {
+        if (DPCT_CHECK_ERROR(head_logits_ = sycl::malloc_device<float>(
+                                 (size_t)max_t_ * (size_t)n_vocab_,
+                                 dpct::get_in_order_queue())) != 0) {
+            err = "mtp: the draft logits do not fit";
+            return false;
+        }
+        // sized by the vocabulary, alive as long as the drafter: the VRAM heartbeat (see load)
+        strata::heartbeat_register(head_logits_, (size_t) max_t_ * (size_t) n_vocab_ * sizeof(float));
     }
     if (shared != nullptr) {
         if (shared->head_ != head || shared->device_ != device_ ||
@@ -763,6 +785,8 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
                 draft_head_hint(n_dvocab_, row_bytes);
                 return false;
             }
+            // the draft head's rows (the model's, alive as long as the drafter): the VRAM heartbeat (see load)
+            strata::heartbeat_register(dhead_, (size_t) (n_dvocab_ * row_bytes));
             dpct::get_in_order_queue().memcpy(dvocab_, raw.data(), raw.size()).wait();
             dvocab_host_.resize((size_t) n_dvocab_);
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());

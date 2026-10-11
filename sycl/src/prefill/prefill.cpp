@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the prompt path's own buffers register with the VRAM heartbeat (C9)
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
 #include "../../../src/prefill/wmma_gemm.h"
@@ -321,6 +322,12 @@ struct Alloc {
             ok = false; failed_bytes = bytes; return nullptr;
         }
         owned->push_back(p);
+        // Windows: an owned buffer lives as long as the Prefill (release() frees it).  The ones of 16 MiB and
+        // more (the chunk's residuals and MoE rows, the scratch region, the GEMM scratch) register with the VRAM
+        // heartbeat so WDDM does not evict them from the display-less B70 between requests; the small
+        // ones (per-token tables, one ring slot of a blob each) are left out to keep the touch at a few kernels.
+        // Borrowed buffers (base != nullptr) sit inside the expert cache's allocation, which registers itself.
+        if (bytes >= (16ull << 20)) strata::heartbeat_register(p, (size_t) bytes);
         used += bytes;
         return (T*) p;
     }
@@ -793,8 +800,10 @@ void Prefill::release() {
     if (impl_->kv_ready) dpct::destroy_event(impl_->kv_ready);
     if (impl_->grp_host)
         sycl::free(impl_->grp_host, dpct::get_in_order_queue());
-    for (void *p : impl_->owned)
+    for (void *p : impl_->owned) {
+        strata::heartbeat_unregister(p);   // before the free (a no-op for the buffers Alloc::take did not register)
         DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
+    }
 }
 
 namespace {

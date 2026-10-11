@@ -6,6 +6,8 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/sycl_heartbeat.hpp"   // Windows: the slot arena registers with the VRAM heartbeat
+#include "strata/sycl_mem.hpp"         // Windows: the free-VRAM figure lowered by the WDDM budget
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
 // the gfx906 compat build (PR #638), which compiles this file as HIP without STRATA_USE_HIP
@@ -73,6 +75,11 @@ size_t device_free_bytes() try {
     device information which may not be supported by all compilers or runtimes.
     You may need to adjust the code.
     */
+#if defined(_WIN32)
+    // the runtime's figure lowered by what WDDM's budget withholds for this process (sycl_mem.hpp; upstream's HIP
+    // build does the same for cudaMemGetInfo in src/core/device.cu); dpct's figure when no budget can be read
+    if (!strata::mem_get_info(free_b, total_b))
+#endif
     dpct::get_current_device().get_memory_info(free_b, total_b);
     // #1440: own_drm_local_bytes() sums every DRM fd of the process, i.e. both cards on a layer split, and would charge the
     // first card's cache to the second. With more than one GPU it runs only where the driver reports the whole card as
@@ -665,6 +672,12 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         err = buf;
         return false;
     }
+    // Windows: the slot arena holds the resident experts for the model's lifetime, and WDDM evicts a display-less
+    // card's idle VRAM to system RAM (seen on a dedicated Arc Pro B70 between requests), so it registers with the VRAM
+    // heartbeat (strata/sycl_heartbeat.hpp), which reads a word of every page every STRATA_SYCL_HEARTBEAT_S seconds.
+    // Only the plain allocation: the segmented and VMM caches free through their own paths.  Before the fill: a
+    // failure below goes through close(), which unregisters before it frees.
+    if (segs_.empty() && !vmm_) strata::heartbeat_register(base_, (size_t) want);
     // Zeroed so a slot read before it is filled is a DETERMINISTIC wrong answer rather than whatever the
     // allocator handed back.  A stale block of a previous process's memory would still sum to finite floats.
     if (DPCT_CHECK_ERROR(
@@ -747,6 +760,7 @@ void ExpertCache::close() {
         vmm_.reset();   // unmaps and frees every chunk it still holds
         base_ = nullptr;
     } else if (base_ != nullptr) {
+        strata::heartbeat_unregister(base_);   // before the free: a heartbeat touch in flight finishes first
         sycl::free(base_, dpct::get_in_order_queue());
         base_ = nullptr;
     }

@@ -2,18 +2,81 @@
 #include "strata/core/gguf_expert_source.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
+#if defined(_WIN32)
+// before <sycl/sycl.hpp>, which (through dpct/device.hpp) includes <windows.h>: no min/max macros, no shell headers
+// (guarded: sycl/CMakeLists.txt defines both for every target on Windows)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include <cstring>
-#include <fcntl.h>
-#include <unistd.h>
+#include <algorithm>
 #include <dpct/dpct.hpp>
 #include <sycl/sycl.hpp>
 #include <thread>
 #include <atomic>
+#if defined(_WIN32)
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace strata::core {
 
 namespace {
 constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a layer's worth of streamed experts
+
+#if defined(_WIN32)
+// Windows: the three POSIX calls this file is built on (open, pread, close), as Windows has them.  The reads are
+// positional and concurrent - the profile fill's reader threads and the prompt path's stager share one handle per
+// shard - so the handle is opened overlapped and every read carries its own offset and its thread's event; on a
+// synchronous handle Windows would serialize them on the file object.  The HANDLE travels as a CRT fd
+// (_open_osfhandle), so the header's `std::vector<int> fds_` stays as it is; nothing ever calls _read on it.
+// open(2) read-only: the UTF-8 path as UTF-16 (a model under a folder with a non-ASCII name), as expert_source.cpp
+int fd_open_ro(const std::string& path) {
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+    const HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    const int fd = _open_osfhandle((intptr_t) h, _O_RDONLY);
+    if (fd < 0) CloseHandle(h);
+    return fd;
+}
+// pread(2): one read at `off`, at most 1 GiB (ReadFile counts in a DWORD; the callers loop on short reads anyway)
+int64_t fd_pread(int fd, void* dst, size_t n, uint64_t off) {
+    struct Event {   // this thread's completion event, closed when the thread ends
+        HANDLE h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        ~Event() { if (h != nullptr) CloseHandle(h); }
+    };
+    static thread_local Event ev;
+    const HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (ev.h == nullptr || h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov{};
+    ov.Offset = (DWORD) off;
+    ov.OffsetHigh = (DWORD) (off >> 32);
+    ov.hEvent = ev.h;
+    DWORD got = 0;
+    if (!ReadFile(h, dst, (DWORD) std::min<size_t>(n, 1u << 30), nullptr, &ov) && GetLastError() != ERROR_IO_PENDING)
+        return -1;   // a read past the end of the file lands here too (ERROR_HANDLE_EOF): the callers want every byte
+    if (!GetOverlappedResult(h, &ov, &got, TRUE)) return -1;   // waits on this thread's event
+    return (int64_t) got;
+}
+#define STRATA_FD_OPEN_RO(path) fd_open_ro(path)
+#define STRATA_FD_PREAD(fd, dst, n, off) fd_pread((fd), (dst), (n), (off))
+#define STRATA_FD_CLOSE(fd) _close(fd)
+#else
+#define STRATA_FD_OPEN_RO(path) ::open((path).c_str(), O_RDONLY | O_CLOEXEC)
+#define STRATA_FD_PREAD(fd, dst, n, off) ::pread((fd), (dst), (n), (off_t) (off))
+#define STRATA_FD_CLOSE(fd) ::close(fd)
+#endif
 }
 
 GgufExpertSource::~GgufExpertSource() { close(); }
@@ -21,7 +84,7 @@ GgufExpertSource::~GgufExpertSource() { close(); }
 void GgufExpertSource::close() {
     if (mirror_) { sycl::free(mirror_, dpct::get_in_order_queue()); mirror_ = nullptr; }
     mirror_bytes_ = 0; mirror_off_.clear(); layer_first_.clear();
-    for (int fd : fds_) if (fd >= 0) ::close(fd);
+    for (int fd : fds_) if (fd >= 0) STRATA_FD_CLOSE(fd);
     fds_.clear(); names_.clear(); layer_fd_.clear(); ring_.clear(); ring_key_.clear(); where_.clear();
     ring_next_ = 0;
 }
@@ -65,7 +128,7 @@ int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
     if (lay.gguf_file.size() > i && !lay.gguf_file[i].empty()) name = dir_ + lay.gguf_file[i];
     for (size_t k = 0; k < names_.size(); ++k)
         if (names_[k] == name) { layer_fd_[i] = (int) k; return fds_[k]; }
-    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+    const int fd = STRATA_FD_OPEN_RO(name);
     if (fd < 0) { err = "--stream-experts: cannot open " + name; return -1; }
     names_.push_back(name);
     fds_.push_back(fd);
@@ -103,7 +166,7 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, buf.data() + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const int64_t n = STRATA_FD_PREAD(fd, buf.data() + at[r] + done, (size_t) (per[r] - done), src + done);
             if (n <= 0) { std::lock_guard<std::mutex> lk(mu_); where_.erase(key); ring_key_[slot] = -1; return nullptr; }
             done += (uint64_t) n;
         }
@@ -194,7 +257,7 @@ bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, si
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, dst + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const int64_t n = STRATA_FD_PREAD(fd, dst + at[r] + done, (size_t) (per[r] - done), src + done);
             if (n <= 0) return false;
             done += (uint64_t) n;
         }
