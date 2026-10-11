@@ -288,10 +288,14 @@ The non-ASCII audit of both park copies reports `non_ascii_bytes=0` and `bom=Fal
 
 ## Limitations
 
-* **No end-to-end run yet.** The model is loaded in `project_strata_temp` (its engine still runs), and this PC
-  has ~10 GiB free with it up, so a second engine cannot start alongside it. The 50k-97k-token park/restore
-  demonstration has to be done by stopping that process and starting this build; until it is, no e2e result is
-  claimed here.
+* **No end-to-end run yet.** Measured on this PC at the time of writing: the user's live server is
+  `serve\server.py --port 8080` (PID 7092) with its engine child (PID 9432) running
+  `project_strata\engine\strata.exe`, which is the 0.1.40 binary still containing the textless
+  `allocation failed; skip parking`. Both RTX 5060 Ti are at ~15.0 GiB of 16.3 GiB each and 11.3 GiB of
+  79.8 GiB RAM is free, so a second engine cannot be started alongside it. The 50k-97k-token park/restore
+  demonstration needs that process stopped (the user's call) and this build started with the same arguments;
+  until it is run, no e2e result is claimed here. Installing the new engine means copying
+  `build_cuda_new\strata.exe` over `engine\strata.exe` while the server is down - not done in this session.
 * **SYCL is not compiled.** Both park copies were edited (`src/program/generate.cpp` and
   `sycl/src/program/generate.cpp` - `git grep park_current_body v0.1.42` finds exactly these two), but no Intel
   oneAPI toolchain is installed on this machine, so `sycl/src/program/generate.cpp` was reviewed by hand and not
