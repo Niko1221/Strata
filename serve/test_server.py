@@ -2645,10 +2645,14 @@ class PromptProgress(unittest.TestCase):
                          "llama.cpp's four fields, time_ms elapsed since the read started")
         self.assertTrue(all(s["choices"][0]["delta"] == {} for s in steps), "a progress chunk carries no content")
 
-    def test_a_client_that_does_not_ask_gets_nothing(self):
+    def test_a_client_that_does_not_ask_gets_a_keep_alive_frame(self):
         text = self.stream()
         self.assertNotIn("prompt_progress", text)
-        self.assertIn(": keep-alive", text, "the PP line still keeps the connection alive as it used to")
+        self.assertNotIn(": keep-alive", text)
+        frames = [json.loads(line[6:]) for line in text.splitlines()
+                  if line.startswith("data: ") and line != "data: [DONE]"]
+        self.assertTrue(any(f["choices"][0]["delta"] == {} for f in frames),
+                        "the PP line keeps the connection alive with a real, empty chunk, not an SSE comment")
 
     def test_the_line_that_says_the_prompt_is_read_is_dropped(self):
         # the batched path leaves up to --short-read tokens to the verify windows, so its last PP stops short of the
@@ -2666,6 +2670,56 @@ class PromptProgress(unittest.TestCase):
         self.engine.reused = 0                        # an engine too old to print RESUME never sets it
         self.assertEqual(prompt_progress(self.svc)["cache"], 0,
                          "an engine too old to print RESUME counts the reused prefix as work")
+
+
+class KeepAliveFrames(unittest.TestCase):
+    """A heartbeat while the engine reads a long prompt reaches the client as a real SSE frame, not an SSE
+    comment: clients such as OpenCode reset their "no data" read timeout on frames only, so a comment would let a
+    slow prefill time out and be retried from scratch (the /v1/responses path already sends a real event)."""
+
+    class HeartbeatEngine(MockEngine):
+        def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+            yield None                                   # a heartbeat: the engine is quiet (reading a long prompt)
+            yield None
+            yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(cls.HeartbeatEngine(tok, ANSWER, max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def stream(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read().decode()
+
+    def test_chat_keepalive_is_a_frame(self):
+        text = self.stream("/v1/chat/completions",
+                           {"model": "m", "max_tokens": 4, "stream": True,
+                            "messages": [{"role": "user", "content": "hi"}]})
+        self.assertNotIn(": keep-alive", text)
+        frames = [json.loads(line[6:]) for line in text.splitlines()
+                  if line.startswith("data: ") and line != "data: [DONE]"]
+        self.assertTrue(any(f["choices"][0]["delta"] == {} for f in frames), "no empty keep-alive chunk")
+        self.assertTrue(any(f["choices"][0]["delta"].get("content") or
+                            f["choices"][0]["delta"].get("reasoning_content") for f in frames),
+                        "no content chunk")
+
+    def test_anthropic_keepalive_is_a_ping_event(self):
+        text = self.stream("/v1/messages",
+                           {"model": "m", "max_tokens": 4, "stream": True,
+                            "messages": [{"role": "user", "content": "hi"}]})
+        self.assertNotIn(": keep-alive", text)
+        self.assertIn('event: ping\ndata: {"type": "ping"}', text)
 
 
 class ConfigReasoningEffort(unittest.TestCase):

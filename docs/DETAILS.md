@@ -800,8 +800,9 @@ print(r.choices[0].message.content)
   helper calls (a session title in a few dozen tokens) need; its real turns ask for thinking when it is on there.
 - **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
   (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
-  long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
-  15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
+  long prompt the stream sends keep-alives as real SSE frames (an empty chunk, a `ping` event on Anthropic), so
+  agents that drop SSE comments do not time out; the window prints progress every 15 s, and `GET /status` says what
+  it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
 - **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
@@ -1917,7 +1918,8 @@ duplicate keys, non-finite numbers, schema violations and incomplete generations
 `error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
 tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
 
-Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
+Structured SSE buffers the answer while sending keep-alive frames (empty chunks). It emits content only after
+validation,
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
