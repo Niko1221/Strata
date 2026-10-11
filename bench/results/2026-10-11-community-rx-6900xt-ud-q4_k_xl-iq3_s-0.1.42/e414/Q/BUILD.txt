@@ -1,0 +1,7 @@
+name Q
+worktree /work/prs-q8k d8d7aab838220a88ab17f621ccc0f51f4af5fa6e cmake: STRATA_MMQ_Q8K (HIP RDNA2) compiles strata_mmq with GGML_CUDA_MMQ_Q8K
+binary sha256 e1cf536092a8b4711136ee7c72e2f22586e1549182cc7a9d14d15fa5ec4b5f9d
+env -
+extra args 
+gfxoff knob at start: dri/0: 00000001 00000001 00000001 00000001 * 00000000 00000000 00000000 00000000 * dri/1: 00000001 00000001 00000001 00000001 * 
+
