@@ -282,9 +282,6 @@ def request_tools(req: dict):
         if not isinstance(name, str) or not name:
             raise ResponsesError("a tool needs a name", param + ".name")
         flat = f"{namespace}.{name}" if namespace else name
-        if flat in names:
-            # already declared: the first-seen one wins, the order the prompt cache holds (#1624)
-            return
         description = tool.get("description") or ""
         if ns_description:
             description = ns_description + ("\n\n" + description if description else "")
@@ -311,9 +308,9 @@ def request_tools(req: dict):
         if kind in ("function", "custom"):
             add(tool, param)
         elif kind == "tool_search":
-            # Codex's client-side tool discovery: no host can run it, so the model gets an ordinary function the
-            # client answers, and the call goes back as a `tool_search_call`. A search some other host runs is left
-            # out, like the other hosted tools.
+            # Codex's client-side tool discovery (#1917): no host can run it, so the model gets an ordinary function
+            # the client answers, and the call goes back as a `tool_search_call`. A search some other host runs is
+            # left out, like the other hosted tools.
             if tool.get("execution") not in (None, "client"):
                 skipped.append(kind)
             elif CLIENT_TOOL_SEARCH in names:
