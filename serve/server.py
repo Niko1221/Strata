@@ -791,6 +791,24 @@ class StrataEngine:
             tl = self.__dict__.setdefault("_tl", threading.local())
             tl.last = value
 
+    # `lp_lines`: the LP lines of the tokens of the request being read (logprobs), taken by LogprobEntries on the
+    # thread that reads the request's tokens.  With batch slots several requests run at once: one deque per thread.
+    @property
+    def lp_lines(self):
+        if self.batch:
+            tl = self.__dict__.setdefault("_tl", threading.local())
+            if not hasattr(tl, "lp_lines"):
+                tl.lp_lines = collections.deque()
+            return tl.lp_lines
+        return self.__dict__.setdefault("_lp_lines", collections.deque())
+
+    @lp_lines.setter
+    def lp_lines(self, value):
+        if self.batch:
+            self.__dict__.setdefault("_tl", threading.local()).lp_lines = value
+        else:
+            self.__dict__["_lp_lines"] = value
+
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
@@ -1251,19 +1269,35 @@ class StrataEngine:
         except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
-    def _control(self, cancel, on_token, stop_when=None, on_quiet=None):
+    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE).  `on_quiet()` runs whenever the engine has been
-        quiet for half a second: between two PP lines of a read whose chunks take longer than that."""
+        quiet for half a second: between two PP lines of a read whose chunks take longer than that.  `want_lp`
+        (logprobs): a `T` is held until the next line, and its `LP` line (the engine writes it right after the token,
+        in the same flush) goes to lp_lines before the token is passed on, so whoever takes the token finds it; any
+        other line, or 0.5 s of silence, passes the token on first (an engine without LP lines)."""
         stopped = False
         beat = time.monotonic()
+        held = None
+
+        def pass_on(t):
+            nonlocal stopped
+            on_token(t)
+            if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
+                self._send("STOP")
+                stopped = True
         while True:
             try:
                 # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
                 # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
                 line = self.lines.get(timeout=0.5)
             except queue.Empty:
+                if held is not None:
+                    t, held = held, None
+                    pass_on(t)
+                    yield False
+                    continue
                 if cancel.is_set() and not stopped:
                     self._send("STOP")
                     stopped = True
@@ -1278,11 +1312,19 @@ class StrataEngine:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             if not line.startswith(("PP ", "INFO")):
                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
+            if held is not None:
+                t, held = held, None
+                if line.startswith("LP "):
+                    self.lp_lines.append((t, line))
+                pass_on(t)
+                yield False                              # a token is pending (not a heartbeat)
+                if line.startswith("LP "):
+                    continue
             if line.startswith("T "):
-                on_token(int(line[2:]))
-                if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
-                    self._send("STOP")
-                    stopped = True
+                if want_lp:
+                    held = int(line[2:])
+                    continue
+                pass_on(int(line[2:]))
                 yield False                              # a token is pending (not a heartbeat)
             elif line.startswith("PP "):
                 f = line.split()
@@ -1549,6 +1591,8 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        want_lp = top_logprobs(sampling or {}) is not None
+        self.lp_lines = collections.deque()             # this request's (per thread with batch slots)
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
@@ -1595,7 +1639,8 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
+                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way,
+                                          want_lp=want_lp):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
@@ -1705,7 +1750,7 @@ class StrataEngine:
                             self._send(f"BYIELD {slot}")
                             asked = True
                     try:
-                        for x in self._control(cancel, pending.append, on_quiet=ask):
+                        for x in self._control(cancel, pending.append, on_quiet=ask, want_lp=want_lp):
                             while pending:
                                 t = pending.pop(0)
                                 out.append(t)
@@ -6085,6 +6130,11 @@ def make_handler(svc: Service):
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            if top_logprobs(req) is not None and getattr(svc.engine, "batch", 0) and max_req != 1:
+                # a batch slot's BT lines carry no LP lines: past its first token a request would get partial or
+                # misplaced entries.  One token (a typed decision) is read on the control lines and has its LP line.
+                raise ValueError('logprobs: with "parallel" (batch slots) only for max_tokens 1; '
+                                 'run without "parallel" for longer replies')
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
