@@ -99,6 +99,48 @@ int main() {
         check(cache.evictions() == 1, "eviction counter");
     }
     {
+        // evict_oldest(): the physical-RAM admission gate in generate.cpp frees parked conversations
+        // one at a time and re-checks the host's free memory, so this has to be exactly the oldest-first
+        // step make_room() takes - same accounting, same counters - and it has to stop at empty.
+        ConversationCache cache(4096, 4);
+        cache.put(image({1, 2, 3}));
+        cache.put(image({9, 8, 7}));
+        check(cache.size() == 2 && cache.slots() == 4, "slots() reports the configured limit");
+        const size_t both = cache.bytes();
+        check(cache.evict_oldest(), "evict_oldest reports an eviction");
+        check(cache.size() == 1 && cache.evictions() == 1, "evict_oldest drops exactly one, oldest first");
+        check(cache.best(a, {}, true).tokens == 0 && cache.best(b, {}, true).tokens == 3,
+              "the oldest conversation went, the newest stayed");
+        check(cache.bytes() == both - image({1, 2, 3}).bytes(), "evict_oldest releases the entry's bytes");
+        cache.evict_oldest();
+        check(cache.size() == 0 && cache.bytes() == 0, "evicting the last parked conversation empties the cache");
+        check(!cache.evict_oldest(), "the gate's loop can reach an empty cache: false");
+        check(cache.size() == 0 && cache.evictions() == 2, "evict_oldest on an empty cache is a no-op");
+    }
+    {   // the RAM gate's eviction skips a conversation that holds a pinned shared prefix, and says so (false)
+        ConversationCache cache(1 << 20, 4);
+        auto pinned = image({1, 2, 3});
+        pinned.checkpoints.push_back(ConversationCheckpoint{});
+        pinned.checkpoints.back().ids = {1, 2};
+        pinned.checkpoints.back().pinned = true;
+        pinned.checkpoints.back().gdn.resize(64, 1);
+        cache.put(std::move(pinned));
+        cache.put(image({9, 8, 7}));
+        check(cache.evict_oldest() && cache.size() == 1, "the oldest unpinned conversation went (the pinned one is older)");
+        check(!cache.evict_oldest() && cache.size() == 1, "only a pinned one is left: nothing more can go");
+        // #879: after non-finite logits every parked conversation goes, the pinned one too
+        cache.put(image({4, 5, 6}));
+        std::vector<ConversationKv> kv(1);
+        kv[0].cells = 3;
+        kv[0].k.resize(64, 1);
+        cache.retain(std::move(kv), 3);
+        check(cache.retained_bytes() > 0, "a retained K/V before clear()");
+        check(cache.clear() == 2, "clear() reports how many were parked");
+        check(cache.size() == 0 && cache.bytes() == 0 && cache.retained_bytes() == 0, "clear() leaves nothing parked");
+        check(cache.best(std::vector<int64_t>{1, 2, 3, 4}, {}, true).tokens == 0, "a cleared cache matches nothing");
+        check(cache.clear() == 0, "clear() on an empty cache");
+    }
+    {
         auto s = image({1, 2, 3});
         ConversationCheckpoint cp;
         cp.ids = {1, 2};
@@ -209,6 +251,23 @@ int main() {
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");
         check(disabled.best(a,{},true).tokens == 0, "disabled cache has no matches");
+    }
+    {
+        // --conversation-cache-min-tokens: a conversation shorter than the minimum is not worth one of the slots.
+        // Parking is a switch-time decision, so without this a client's short side requests park themselves and,
+        // once the cache is full, evict the long conversation they were interleaved with (oldest first).
+        ConversationCache any(1024, 4, 0), floor(1024, 4, 12288);
+        check(any.enabled() && floor.enabled(), "the minimum does not disable the cache");
+        check(any.wants(0) && any.wants(1) && any.wants(1 << 20), "0 parks every length, as before the flag");
+        check(!floor.wants(0) && !floor.wants(1) && !floor.wants(12287), "below the minimum is not parked");
+        check(floor.wants(12288) && floor.wants(12289), "the minimum itself and above are parked");
+        // the CLI rejects a negative, but the predicate must not invert for one that reaches it another way
+        ConversationCache negative(1024, 4, -1);
+        check(negative.wants(0) && negative.wants(1), "a negative minimum parks everything, like 0");
+        // wants() answers for the length alone; the gate is enabled() && wants(), so a disabled cache parks
+        // nothing whatever the length - keep the two independent rather than folding one into the other
+        ConversationCache disabled_min(0, 4, 12288);
+        check(!disabled_min.enabled() && disabled_min.wants(1 << 20), "a disabled cache still answers for length");
     }
     {
         // layer-split parking: checkpoints moved apart into stage parts and put back, no running state copied

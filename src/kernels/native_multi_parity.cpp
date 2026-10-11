@@ -10,9 +10,11 @@
 //     once: memcmp.
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
+#include "strata/kernels/router_top10.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -89,6 +91,40 @@ int main(int argc, char**) {
         std::printf("  %-52s %s (%d cases)\n", (std::string("router multi == single, ") + names[mode]).c_str(),
                     mode_bad ? "*** NO ***" : "bitwise", cases);
         bad += mode_bad;
+    }
+
+    // ---- #1357: a model that does not have 512 experts takes the generic router (the native one reads 512 floats a
+    // row, so mtp.cpp's per-token call is guarded by n_expert == 512 like its siblings): router_top10 on 256-wide
+    // rows picks the host reference's ids in order, with its renormalised softmax weights
+    {
+        const int n = 3, NE = 256, K = 10;
+        std::vector<float> lg((size_t) n * NE);
+        for (auto& v : lg) v = gauss(rng) * 2.0f;
+        float* d_l = up(lg);
+        int32_t* d_i = nullptr;
+        float* d_w = nullptr;
+        check(cudaMalloc(&d_i, (size_t) n * K * 4), "i");
+        check(cudaMalloc(&d_w, (size_t) n * K * 4), "w");
+        router_top10(d_l, n, NE, K, d_i, d_w, st);
+        check(cudaDeviceSynchronize(), "sync");
+        const auto gi = down(d_i, (size_t) n * K);
+        const auto gw = down(d_w, (size_t) n * K);
+        int rbad = 0;
+        for (int t = 0; t < n; ++t) {
+            std::vector<int> ord(NE);
+            for (int i = 0; i < NE; ++i) ord[i] = i;
+            const float* row = lg.data() + (size_t) t * NE;
+            std::sort(ord.begin(), ord.end(), [&](int a, int b) { return row[a] != row[b] ? row[a] > row[b] : a < b; });
+            double sum = 0;
+            for (int j = 0; j < K; ++j) sum += std::exp((double) row[ord[j]] - row[ord[0]]);
+            for (int j = 0; j < K; ++j) {
+                const double want = std::exp((double) row[ord[j]] - row[ord[0]]) / sum;
+                if (gi[(size_t) t * K + j] != ord[j] || std::fabs(gw[(size_t) t * K + j] - want) > 1e-5) ++rbad;
+            }
+        }
+        std::printf("  %-52s %s\n", "router_top10 on 256 experts (non-512 fallback)", rbad ? "*** NO ***" : "matches the host reference");
+        bad += rbad;
+        cudaFree(d_l); cudaFree(d_i); cudaFree(d_w);
     }
 
     // ---- the combine

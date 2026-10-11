@@ -55,9 +55,11 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include "strata/kernels/router_top10.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -65,6 +67,116 @@ namespace strata::kernels {
 namespace {
 
 constexpr int RT_MAX_THREADS = 512;
+
+// The fork's parity-tested SYCL implementation of the HIP fast router below.
+// A tree sum brackets the serial reciprocal; ambiguous rounding falls back to
+// the original ascending sum. Selection and renormalisation stay in subgroup 0.
+template <bool FORCE_SERIAL>
+void launch_sycl_fast(sycl::queue& q, const float* logits, int n_tokens, int n_expert, int k,
+                      int* ids, float* weights) {
+    const int threads = (std::min(n_expert, RT_MAX_THREADS) + 31) & ~31;
+    q.submit([&](sycl::handler& h) {
+        sycl::local_accessor<double, 1> s_ex(sycl::range<1>(n_expert), h);
+        sycl::local_accessor<float, 1> s_red(sycl::range<1>(RT_MAX_THREADS / 32), h);
+        sycl::local_accessor<double, 1> s_dred(sycl::range<1>(RT_MAX_THREADS / 32), h);
+        sycl::local_accessor<float, 1> s_inv(sycl::range<1>(1), h);
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>((size_t)n_tokens * threads),
+                                        sycl::range<1>(threads)),
+            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+                const auto sg = it.get_sub_group();
+                const int t = it.get_group(0), tid = it.get_local_id(0);
+                const int lane = tid & 31, warp = tid >> 5;
+                const int nt = it.get_local_range(0), nw = (nt + 31) >> 5;
+                const float* l = logits + (size_t)t * n_expert;
+                auto bar = [&] { sycl::group_barrier(it.get_group()); };
+                float mx = -INFINITY;
+                for (int e = tid; e < n_expert; e += nt) mx = sycl::fmax(mx, l[e]);
+                for (int off = 16; off > 0; off >>= 1)
+                    mx = sycl::fmax(mx, sycl::shift_group_left(sg, mx, off));
+                if (lane == 0) s_red[warp] = mx;
+                bar();
+                if (tid < 32) {
+                    float v = tid < nw ? s_red[tid] : -INFINITY;
+                    for (int off = 16; off > 0; off >>= 1)
+                        v = sycl::fmax(v, sycl::shift_group_left(sg, v, off));
+                    if (tid == 0) s_red[0] = v;
+                }
+                bar();
+                mx = s_red[0];
+                double part = 0.0;
+                for (int e = tid; e < n_expert; e += nt) {
+                    const double x = sycl::exp((double)l[e] - (double)mx);
+                    s_ex[e] = x;
+                    part += x;
+                }
+                for (int off = 16; off > 0; off >>= 1)
+                    part += sycl::permute_group_by_xor(sg, part, off);
+                if (lane == 0) s_dred[warp] = part;
+                bar();
+                double tot = 0.0;
+                for (int w = 0; w < nw; ++w) tot += s_dred[w];
+                const double lo = tot * (1.0 - 0x1p-40), hi = tot * (1.0 + 0x1p-40);
+                const float f_lo = (float)(1.0 / hi), f_hi = (float)(1.0 / lo);
+                float inv;
+                if (!FORCE_SERIAL && tot >= 1.0 && hi < 1e300 && f_lo == f_hi) {
+                    inv = f_lo;
+                } else {
+                    if (tid == 0) {
+                        double sum = 0.0;
+                        for (int e = 0; e < n_expert; ++e) sum += s_ex[e];
+                        s_inv[0] = (float)(1.0 / sum);
+                    }
+                    bar();
+                    inv = s_inv[0];
+                }
+                if (warp != 0) return;
+                constexpr int PER = 16;
+                float pv[PER];
+                unsigned live = 0;
+                for (int j = 0; j < PER; ++j) {
+                    const int e = lane + 32 * j;
+                    pv[j] = -INFINITY;
+                    if (e < n_expert) { pv[j] = (float)(s_ex[e] * inv); live |= 1u << j; }
+                }
+                float my_w = 0.0f;
+                int my_id = 0, nsel = 0;
+                for (int i = 0; i < k; ++i) {
+                    float bv = -INFINITY;
+                    int bi = n_expert;
+                    for (int j = 0; j < PER; ++j)
+                        if (((live >> j) & 1u) && pv[j] > bv) { bv = pv[j]; bi = lane + 32 * j; }
+                    for (int off = 16; off > 0; off >>= 1) {
+                        const float ov = sycl::permute_group_by_xor(sg, bv, off);
+                        const int oi = sycl::permute_group_by_xor(sg, bi, off);
+                        if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+                    }
+                    if (bi >= n_expert) break;
+                    if ((bi & 31) == lane) live &= ~(1u << (bi >> 5));
+                    if (lane == i) { my_w = bv; my_id = bi; }
+                    nsel = i + 1;
+                }
+                if (nsel == k) {
+                    double s = 0.0;
+                    for (int i = 0; i < k; ++i) s += (double)sycl::select_from_group(sg, my_w, i);
+                    const double sc = sycl::fmax(s, 6.103515625e-05);
+                    if (lane < k) {
+                        ids[(size_t)t * k + lane] = my_id;
+                        weights[(size_t)t * k + lane] = (float)((double)my_w / sc);
+                    }
+                } else {
+                    if (lane < nsel) { ids[(size_t)t * k + lane] = my_id; weights[(size_t)t * k + lane] = my_w; }
+                    sycl::group_barrier(sg);
+                    if (lane == 0) {
+                        double s = 0.0;
+                        for (int i = 0; i < k; ++i) s += (double)weights[(size_t)t * k + i];
+                        const double sc = sycl::fmax(s, 6.103515625e-05);
+                        for (int i = 0; i < k; ++i)
+                            weights[(size_t)t * k + i] = (float)((double)weights[(size_t)t * k + i] / sc);
+                    }
+                }
+            });
+    });
+}
 
 /// One BLOCK per token, so the reductions have somewhere to happen.  `n_tokens` is 1 in decode; the grid keeps
 /// the batch case working without a second code path.
@@ -540,14 +652,38 @@ bool router_top10_variant(const float* logits, int n_tokens, int n_expert, int k
     launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, variant);
     return cudaGetLastError() == cudaSuccess;
 #else
-    (void) logits; (void) n_tokens; (void) n_expert; (void) k; (void) ids; (void) weights; (void) stream;
-    (void) variant;
-    return false;
+    if (n_tokens <= 0 || n_expert <= 64 || n_expert > 512 || k <= 0 || k > 32 || variant < 0 || variant > 2)
+        return false;
+    auto& q = *strata::q_of(stream);
+    if (variant == 1) launch_sycl_fast<false>(q, logits, n_tokens, n_expert, k, ids, weights);
+    else if (variant == 2) launch_sycl_fast<true>(q, logits, n_tokens, n_expert, k, ids, weights);
+    else {
+        const int threads = (std::min(n_expert, RT_MAX_THREADS) + 31) & ~31;
+        const size_t taken_bytes = ((size_t)n_expert + 15u) & ~size_t(15);
+        const size_t smem = taken_bytes + n_expert * (sizeof(double) + sizeof(float));
+        q.submit([&](sycl::handler& h) {
+            sycl::local_accessor<uint8_t, 1> local(sycl::range<1>(smem), h);
+            h.parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, (size_t)n_tokens * threads),
+                                             sycl::range<3>(1, 1, threads)),
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                    router_top10_kernel(logits, n_tokens, n_expert, k, ids, weights,
+                        local.get_multi_ptr<sycl::access::decorated::no>().get());
+                });
+        });
+    }
+    if (stream == nullptr) q.wait_and_throw();
+    return true;
 #endif
 }
 
 void router_top10(const float *logits, int n_tokens, int n_expert, int k,
                   int *ids, float *weights, void *stream) try {
+    if (strata::a770_fast() && n_tokens > 0 && n_expert > 64 && n_expert <= 512 && k > 0 && k <= 32) {
+        auto& q = *strata::q_of(stream);
+        launch_sycl_fast<false>(q, logits, n_tokens, n_expert, k, ids, weights);
+        if (stream == nullptr) q.wait_and_throw();
+        return;
+    }
 #if defined(__HIPCC__)
     {
 #if defined(STRATA_HIP_GFX906)

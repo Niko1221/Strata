@@ -26,9 +26,16 @@ What setup does differently for this model:
   engine 0.1.32 or newer (checked before anything is downloaded), and an NVIDIA
   GPU: it has not been run on AMD cards (its prompt kernels for the Q4_K / Q5_K experts are NVIDIA-only), so with
   `--backend hip` setup says so and asks before the download (#429; `--model UD-Q4_K_XL --yes` tries it). One GPU
-  by default: the RAM budget below has no layer split (the engine refuses `--resident-budget-gib` with one). No
+  by default (the tested setup); on several, see the next point. No
   experimental speed projection (not tested with it). Images (#967) are an option, with a warning that this file is untested with them (reported working, #971).
-- Several GPUs (#498): when the RAM holds the GGUF files and 24 GB more (~135 GB of RAM) and two or more cards can
+- Several GPUs, with an engine that keeps the resident RAM copy on a layer split (0.1.40 and newer, #642): the RAM
+  budget is kept on the split. Each card caches the experts of its own layers, and the budget holds the hottest of
+  the rest by the whole expert profile (the experts no card holds), so any RAM works as on one card. Setup asks (one
+  GPU stays the default; `--gpus 0,1`, "2" at setup or "y" when a start offers both cards takes the split), and a
+  start on several GPUs keeps `--resident-budget-gib`. Measured on an RTX 3090 (x16) + RTX 3080 Ti (x4), 91 GB of RAM,
+  budget 64 GiB, engine 0.1.41: decode 45 tok/s against 38 on the 3090 alone (the auto split gives the x4 card two
+  layers); 57.6 GiB of experts in RAM, no file reads per request.
+- Several GPUs with an older engine (#498): when the RAM holds the GGUF files and 24 GB more (~135 GB of RAM) and two or more cards can
   share it, setup asks (one GPU stays the default; `--gpus 0,1` takes the split). The split runs **without** the RAM budget: all 77 GB of experts are loaded into RAM from the GGUFs at
   start, the files pass through the OS file cache while they load, and the config gets `"gpu": [0, 1]` and
   `"layer_split": "auto"`. Measured on 2x RTX 3090 with 165 GiB (#498): decode 31 tok/s on one card with the budget,
@@ -243,7 +250,7 @@ PLE table, a Q6_K head) is UD-Q4_K_XL's. Three shards, 93.7 GB:
 
 Setup treats it like UD-Q4_K_XL (the list above): the same RAM budget (your RAM less 24 GB; at most all 55 GiB of its
 experts, so a PC with ~80 GB of RAM or more holds all of them), the pack with `--compat-bf16`, no `experts.bin`, one
-GPU by default. It does not ask on AMD: its experts' formats have prompt kernels there too. Images are an option (asked,
+GPU by default (several keep the budget, as above). It does not ask on AMD: its experts' formats have prompt kernels there too. Images are an option (asked,
 off by default; NVIDIA): the image path has no restriction for this pack, which uses the original model's image
 encoder; not yet run with images.
 

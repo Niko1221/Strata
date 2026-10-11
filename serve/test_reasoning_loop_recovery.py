@@ -36,6 +36,13 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(reasoning_repeat_coverage(' '.join(str(i) for i in range(4000))), 0)
         self.assertGreater(reasoning_repeat_coverage(self.loop), .9)
 
+    def test_a_loop_written_as_one_long_word(self):
+        """#1753: a 24k-digit string cycling an 11-digit pattern is one word to the split and never one token twice."""
+        self.assertEqual(reasoning_repeat_coverage('Counting the digits of 9^104. ' + '58747693387' * 3000), 1)
+        counted = 'Digits: ' + ''.join(str(i) for i in range(1000))     # 2,893 chars that never repeat
+        self.assertEqual(reasoning_repeat_coverage(counted), 0)
+        self.assertEqual(reasoning_repeat_coverage('58747693387' * 100), 0)   # a tail too short to judge
+
     def test_user_instruction_is_never_rewritten(self):
         ids = self.tok.encode('<|im_start|>user\n' + HIGH_EFFORT, parse_special=True)
         self.assertIsNone(focused_recovery_prompt(self.tok, ids, []))
@@ -108,6 +115,17 @@ class ReasoningLoopRecovery(unittest.TestCase):
         self.assertEqual(len(engine.calls), 1)                   # no second pass
         self.assertEqual(events[-1][1]['finish'], 'length')
         self.assertLess(events[-1][1]['completion_tokens'], 20000)
+        self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
+
+    def test_stop_mode_ends_a_loop_written_as_one_long_word(self):
+        """#1753: the word count never sees the digits, so only the tail's period ends the reply."""
+        engine = RecordingEngine(self.tok, ['9^104 = ' + '58747693387' * 3000])
+        service = Service(engine, self.tok, None)
+        service.reasoning_loop_recovery = "stop"
+        events = list(service.run(self.ids, True, [], 40000, {}, threading.Event()))
+        self.assertEqual(len(engine.calls), 1)                   # no second pass
+        self.assertEqual(events[-1][1]['finish'], 'length')
+        self.assertLess(events[-1][1]['completion_tokens'], 5000)
         self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
 
     def test_disabled_is_one_pass(self):

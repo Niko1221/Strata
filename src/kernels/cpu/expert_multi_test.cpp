@@ -46,7 +46,10 @@ double now_ms() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    c::cpu_require_expert_support();
+    if (const c::CpuFeatures feat = c::cpu_features(); !feat.usable()) {   // the AVX-512 kernel: nothing to test here
+        std::printf("expert_multi_test: CPU lacks %s: SKIPPED\n", feat.reason());
+        return 77;
+    }
     std::mt19937 rng(9);
     const bool bench = argc > 1 && std::strcmp(argv[1], "--bench") == 0;
     const int E = bench ? (argc > 2 ? std::atoi(argv[2]) : 256) : 4;
