@@ -1,0 +1,441 @@
+{
+  "backend": "hip-rx7900xtx",
+  "engine_commit": "e6da7e11fd8c09d62c43c327f290f3283c9233b1",
+  "passed": true,
+  "checks": [
+    {
+      "name": "A1 durable response",
+      "passed": true
+    },
+    {
+      "name": "B1 durable response",
+      "passed": true
+    },
+    {
+      "name": "C1 durable response",
+      "passed": true
+    },
+    {
+      "name": "A2-after-B-C durable response",
+      "passed": true
+    },
+    {
+      "name": "A resumed from disk",
+      "passed": true,
+      "cached_tokens": 1332,
+      "marker_recalled": true
+    },
+    {
+      "name": "A3-live durable response",
+      "passed": true
+    },
+    {
+      "name": "live continuation reused prefix",
+      "passed": true,
+      "cached_tokens": 1363
+    },
+    {
+      "name": "B2 durable response",
+      "passed": true
+    },
+    {
+      "name": "B independent cache",
+      "passed": true,
+      "marker_recalled": true
+    },
+    {
+      "name": "left-branch durable response",
+      "passed": true
+    },
+    {
+      "name": "right-branch durable response",
+      "passed": true
+    },
+    {
+      "name": "branch history isolation",
+      "passed": true
+    },
+    {
+      "name": "explicit durable session save",
+      "passed": true,
+      "snapshot": {
+        "n_saved": 1390,
+        "n_written": 255916472,
+        "timings": {
+          "save_ms": 1021.5
+        }
+      }
+    },
+    {
+      "name": "streaming session restore",
+      "passed": true,
+      "snapshot": {
+        "n_restored": 1390,
+        "n_read": 255916472,
+        "timings": {
+          "restore_ms": 1912.9
+        }
+      }
+    },
+    {
+      "name": "after-clean-restart durable response",
+      "passed": true
+    },
+    {
+      "name": "history and KV survive restart",
+      "passed": true,
+      "marker_recalled": true
+    },
+    {
+      "name": "parent deletion preserves existing descendants",
+      "passed": true
+    },
+    {
+      "name": "changed-instructions durable response",
+      "passed": true
+    },
+    {
+      "name": "changed instructions avoid stale KV reuse",
+      "passed": true,
+      "cached_tokens": 0
+    },
+    {
+      "name": "summaries-off durable response",
+      "passed": true
+    },
+    {
+      "name": "summary generation disabled",
+      "passed": true
+    },
+    {
+      "name": "summaries-on durable response",
+      "passed": true
+    },
+    {
+      "name": "summary second pass exercised",
+      "passed": true
+    },
+    {
+      "name": "primary-after-summary durable response",
+      "passed": true
+    },
+    {
+      "name": "primary history continues after summary",
+      "passed": true,
+      "cached_tokens": 310
+    },
+    {
+      "name": "stream disconnect settles response",
+      "passed": true,
+      "status": "cancelled"
+    },
+    {
+      "name": "after-disconnect durable response",
+      "passed": true
+    },
+    {
+      "name": "queue recovers after cancellation",
+      "passed": true,
+      "cached_tokens": 1398
+    },
+    {
+      "name": "corruption fixture exists",
+      "passed": true,
+      "files": 8
+    },
+    {
+      "name": "corrupt-cache-fallback durable response",
+      "passed": true
+    },
+    {
+      "name": "corrupt KV falls back to saved history",
+      "passed": true,
+      "cached_tokens": 0,
+      "marker_recalled": true
+    },
+    {
+      "name": "small-cache-budget durable response",
+      "passed": true
+    },
+    {
+      "name": "history survives cache-budget eviction",
+      "passed": true,
+      "cached_tokens": 0
+    }
+  ],
+  "requests": [
+    {
+      "label": "A1",
+      "wall_s": 13.027,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1331,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 2,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1333
+      }
+    },
+    {
+      "label": "B1",
+      "wall_s": 12.942,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1397,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 2,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1399
+      }
+    },
+    {
+      "label": "C1",
+      "wall_s": 12.538,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1397,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 2,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1399
+      }
+    },
+    {
+      "label": "A2-after-B-C",
+      "wall_s": 5.833,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1358,
+        "input_tokens_details": {
+          "cached_tokens": 1332
+        },
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1364
+      }
+    },
+    {
+      "label": "A3-live",
+      "wall_s": 2.145,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1382,
+        "input_tokens_details": {
+          "cached_tokens": 1363
+        },
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1388
+      }
+    },
+    {
+      "label": "B2",
+      "wall_s": 4.512,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1424,
+        "input_tokens_details": {
+          "cached_tokens": 1398
+        },
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1430
+      }
+    },
+    {
+      "label": "left-branch",
+      "wall_s": 13.572,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1389,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 2,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1391
+      }
+    },
+    {
+      "label": "right-branch",
+      "wall_s": 12.56,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1389,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 2,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1391
+      }
+    },
+    {
+      "label": "after-clean-restart",
+      "wall_s": 5.958,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1455,
+        "input_tokens_details": {
+          "cached_tokens": 1429
+        },
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1461
+      }
+    },
+    {
+      "label": "changed-instructions",
+      "wall_s": 14.686,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1497,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 3,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1500
+      }
+    },
+    {
+      "label": "summaries-off",
+      "wall_s": 16.552,
+      "http_status": 200,
+      "status": "incomplete",
+      "usage": {
+        "input_tokens": 23,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 192,
+        "output_tokens_details": {
+          "reasoning_tokens": 160
+        },
+        "total_tokens": 215
+      }
+    },
+    {
+      "label": "summaries-on",
+      "wall_s": 32.248,
+      "http_status": 200,
+      "status": "incomplete",
+      "usage": {
+        "input_tokens": 255,
+        "input_tokens_details": {
+          "cached_tokens": 18
+        },
+        "output_tokens": 374,
+        "output_tokens_details": {
+          "reasoning_tokens": 160
+        },
+        "total_tokens": 629
+      }
+    },
+    {
+      "label": "primary-after-summary",
+      "wall_s": 4.661,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 336,
+        "input_tokens_details": {
+          "cached_tokens": 310
+        },
+        "output_tokens": 4,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 340
+      }
+    },
+    {
+      "label": "after-disconnect",
+      "wall_s": 5.441,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1424,
+        "input_tokens_details": {
+          "cached_tokens": 1398
+        },
+        "output_tokens": 7,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1431
+      }
+    },
+    {
+      "label": "corrupt-cache-fallback",
+      "wall_s": 15.654,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1456,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 7,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1463
+      }
+    },
+    {
+      "label": "small-cache-budget",
+      "wall_s": 15.17,
+      "http_status": 200,
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1482,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 7,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1489
+      }
+    }
+  ],
+  "live_duration_s": 284.87
+}

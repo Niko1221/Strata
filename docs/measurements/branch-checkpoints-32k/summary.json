@@ -1,0 +1,42 @@
+{
+  "fresh": {
+    "n": 3,
+    "ttft_s": 4.459297716035508,
+    "total_s": 5.988695948966779,
+    "cached_tokens": [
+      0,
+      0,
+      0
+    ]
+  },
+  "reuse": {
+    "n": 3,
+    "ttft_s": 1.2039654039544985,
+    "total_s": 2.739361351937987,
+    "cached_tokens": [
+      32761,
+      32761,
+      32761
+    ]
+  },
+  "branch-before-answer": {
+    "ttft_s": 1.0270461230538785,
+    "total_s": 2.5753239310579374,
+    "cached_tokens": 32761,
+    "disk_restores": 1
+  },
+  "protected-restart": {
+    "ttft_s": 1.4355767980450764,
+    "total_s": 3.396986640058458,
+    "cached_tokens": 32761,
+    "disk_restores": 1
+  },
+  "deleted-cache-replay": {
+    "ttft_s": 4.804227113025263,
+    "total_s": 6.344717068015598,
+    "cached_tokens": 0,
+    "disk_restores": 0
+  },
+  "checks": 9,
+  "ttft_speedup": 3.7038420716979656
+}

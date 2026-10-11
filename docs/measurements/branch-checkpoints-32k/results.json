@@ -1,0 +1,1071 @@
+{
+  "rows": [
+    {
+      "mode": "plain",
+      "label": "fresh-0",
+      "ttft_s": 4.604145876946859,
+      "total_s": 6.104763716924936,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300",
+      "expected": [
+        "CEDAR-100",
+        "MARBLE-200",
+        "QUARTZ-300"
+      ],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_6d88823aa5fc4441971c4b3acbc05559",
+        "object": "response",
+        "created_at": 1791527183,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_b145bb240edb4d46b1ddb893adb81eae",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-100|MARBLE-200|QUARTZ-300",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32768,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32790
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527189
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "switch-0",
+      "ttft_s": 0.11946765298489481,
+      "total_s": 0.6950182130094618,
+      "text": "ready",
+      "expected": [],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_1b0f449757d74d59befd06c73fa97ba0",
+        "object": "response",
+        "created_at": 1791527189,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_5e8e810c5dbc4f6f87591cc2f197002f",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ready",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 17,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 19
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527190
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "reuse-0",
+      "ttft_s": 1.1743124410277233,
+      "total_s": 2.6874667550437152,
+      "text": "CEDAR-100|MARBLE-200|QUARTZ-300",
+      "expected": [
+        "CEDAR-100",
+        "MARBLE-200",
+        "QUARTZ-300"
+      ],
+      "correct": true,
+      "disk_restores": 1,
+      "response": {
+        "id": "resp_8b83bdc60cee47d3a8fc4e0b452dd403",
+        "object": "response",
+        "created_at": 1791527190,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_28855627090b48f8b0172f35b8215260",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-100|MARBLE-200|QUARTZ-300",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_6d88823aa5fc4441971c4b3acbc05559",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32822,
+          "input_tokens_details": {
+            "cached_tokens": 32761
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32844
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527192
+      },
+      "cached_tokens": 32761,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "fresh-1",
+      "ttft_s": 4.453316352097318,
+      "total_s": 5.967542450991459,
+      "text": "CEDAR-101|MARBLE-201|QUARTZ-301",
+      "expected": [
+        "CEDAR-101",
+        "MARBLE-201",
+        "QUARTZ-301"
+      ],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_794f4a4d0fc44510b726b8a39831f2cf",
+        "object": "response",
+        "created_at": 1791527193,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_d1f3dabd941c4c6f9237b85b14ea4924",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-101|MARBLE-201|QUARTZ-301",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32768,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32790
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527199
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "switch-1",
+      "ttft_s": 0.12966104701627046,
+      "total_s": 0.7318102249410003,
+      "text": "ready",
+      "expected": [],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_5d5deb2222f54c28917c7c8956af0bf0",
+        "object": "response",
+        "created_at": 1791527199,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_7edf687c1f3543bfab952e4dcb8d4fd7",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ready",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 17,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 19
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527199
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "reuse-1",
+      "ttft_s": 1.2039654039544985,
+      "total_s": 2.739361351937987,
+      "text": "CEDAR-101|MARBLE-201|QUARTZ-301",
+      "expected": [
+        "CEDAR-101",
+        "MARBLE-201",
+        "QUARTZ-301"
+      ],
+      "correct": true,
+      "disk_restores": 1,
+      "response": {
+        "id": "resp_c7979cd743244792badf141f0add852f",
+        "object": "response",
+        "created_at": 1791527199,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_5818a7c2112141809a4d90541b7763cb",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-101|MARBLE-201|QUARTZ-301",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_794f4a4d0fc44510b726b8a39831f2cf",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32822,
+          "input_tokens_details": {
+            "cached_tokens": 32761
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32844
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527202
+      },
+      "cached_tokens": 32761,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "fresh-2",
+      "ttft_s": 4.459297716035508,
+      "total_s": 5.988695948966779,
+      "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+      "expected": [
+        "CEDAR-102",
+        "MARBLE-202",
+        "QUARTZ-302"
+      ],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_2420b118cc8749d7ba4abaa137088834",
+        "object": "response",
+        "created_at": 1791527202,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_7c702dcbf20d44958be788596b94dd58",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32768,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32790
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527208
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "switch-2",
+      "ttft_s": 0.1587000449653715,
+      "total_s": 0.7727948940591887,
+      "text": "ready",
+      "expected": [],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_73b3299d1d2140589738618f53bb25c0",
+        "object": "response",
+        "created_at": 1791527208,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_0548783e38f34d8e82c02e0d0fdbd3d4",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ready",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 17,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 19
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527209
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "reuse-2",
+      "ttft_s": 1.235698363976553,
+      "total_s": 2.780968465958722,
+      "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+      "expected": [
+        "CEDAR-102",
+        "MARBLE-202",
+        "QUARTZ-302"
+      ],
+      "correct": true,
+      "disk_restores": 1,
+      "response": {
+        "id": "resp_cfa1f5af07094aad9d5a60c7e9f522db",
+        "object": "response",
+        "created_at": 1791527209,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_52fd7e8b62584d13a66cfa07fad0bfb8",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_2420b118cc8749d7ba4abaa137088834",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32822,
+          "input_tokens_details": {
+            "cached_tokens": 32761
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32844
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527212
+      },
+      "cached_tokens": 32761,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "switch-before-branch",
+      "ttft_s": 0.1659081589896232,
+      "total_s": 0.7947143480414525,
+      "text": "ready",
+      "expected": [],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_3796a2d3b0f74a0a9ea9d5645a50d159",
+        "object": "response",
+        "created_at": 1791527212,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_4a327243ba57472b9e7b767f73ca724d",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ready",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 17,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 19
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527213
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "branch-before-answer",
+      "ttft_s": 1.0270461230538785,
+      "total_s": 2.5753239310579374,
+      "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+      "expected": [
+        "CEDAR-102",
+        "MARBLE-202",
+        "QUARTZ-302"
+      ],
+      "correct": true,
+      "disk_restores": 1,
+      "response": {
+        "id": "resp_808b75ee0b2344c0a83d1db37291e8e0",
+        "object": "response",
+        "created_at": 1791527213,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_bb451d850d5d42be800d7afb3ac381eb",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_2420b118cc8749d7ba4abaa137088834",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32768,
+          "input_tokens_details": {
+            "cached_tokens": 32761
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32790
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527215
+      },
+      "cached_tokens": 32761,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "ordinary-before-stop",
+      "ttft_s": 0.1705558419926092,
+      "total_s": 0.8161130329826847,
+      "text": "ready",
+      "expected": [],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_626cbcb2063e4726b7077a32d62a3ea5",
+        "object": "response",
+        "created_at": 1791527215,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_4b58d33d6c9b4527bd7641b1c412ea1f",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ready",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 17,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 19
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527216
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "protected-restart",
+      "ttft_s": 1.4355767980450764,
+      "total_s": 3.396986640058458,
+      "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+      "expected": [
+        "CEDAR-102",
+        "MARBLE-202",
+        "QUARTZ-302"
+      ],
+      "correct": true,
+      "disk_restores": 1,
+      "response": {
+        "id": "resp_31df81a1dd5a4b05bef8f26a943d21d6",
+        "object": "response",
+        "created_at": 1791527268,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_69c7ed66bd654f1ca90aeab5f5f0a417",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_808b75ee0b2344c0a83d1db37291e8e0",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32822,
+          "input_tokens_details": {
+            "cached_tokens": 32761
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32844
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527272
+      },
+      "cached_tokens": 32761,
+      "owned_snapshots": 2
+    },
+    {
+      "mode": "plain",
+      "label": "deleted-cache-replay",
+      "ttft_s": 4.804227113025263,
+      "total_s": 6.344717068015598,
+      "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+      "expected": [
+        "CEDAR-102",
+        "MARBLE-202",
+        "QUARTZ-302"
+      ],
+      "correct": true,
+      "disk_restores": 0,
+      "response": {
+        "id": "resp_0bb6df02a3d241e6bf6177a468e0a194",
+        "object": "response",
+        "created_at": 1791527320,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 128,
+        "model": "qwen3.8-flash-next",
+        "output": [
+          {
+            "id": "msg_e5c27384f7a0425fb6374e8873d16019",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CEDAR-102|MARBLE-202|QUARTZ-302",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_808b75ee0b2344c0a83d1db37291e8e0",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 32822,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 22,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 32844
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791527326
+      },
+      "cached_tokens": 0,
+      "owned_snapshots": 2
+    }
+  ],
+  "audits": [
+    {
+      "mode": "plain",
+      "kind": "exact-input",
+      "rep": 0,
+      "tokens": 32768,
+      "profile_tokens": 0,
+      "sha256": "591bebfe1cd005f82a5f0f47b3688affd1e86b599b01767609211d94bfb27222"
+    },
+    {
+      "mode": "plain",
+      "kind": "exact-input",
+      "rep": 1,
+      "tokens": 32768,
+      "profile_tokens": 0,
+      "sha256": "b914acd9f24c726fbcc8b62925cb7cd23e3928f88e1982b0f5059c22278416d6"
+    },
+    {
+      "mode": "plain",
+      "kind": "exact-input",
+      "rep": 2,
+      "tokens": 32768,
+      "profile_tokens": 0,
+      "sha256": "e7c578ff1275ef25d68b6c265ff697a49d614e8ee1a257f5cdf706f79bc6907e"
+    },
+    {
+      "mode": "plain",
+      "kind": "shutdown-cleanup",
+      "protected_retained": true,
+      "ordinary_removed": true
+    },
+    {
+      "mode": "plain",
+      "kind": "cache-deletion",
+      "blocks": 2
+    }
+  ]
+}

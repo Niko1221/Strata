@@ -2,16 +2,17 @@
 
 A Responses request becomes the same template messages, tools and kwargs a Chat Completions request does, runs through
 the same Service.run, and its events (reasoning, text, tool calls) come back as Responses output items and typed SSE
-events.  Nothing is stored: the client sends the whole conversation in `input` every time (`store: false`, as Codex CLI
-does), including the reasoning, message and function_call items of earlier answers.
+events. By default nothing is stored: the client sends the whole conversation in `input` every time (`store: false`,
+as Codex CLI does), including the reasoning, message and function_call items of earlier answers. Experimental history
+persistence and generated summaries live in response_store.py and response_runner.py; see docs/RESPONSES_EXPERIMENTAL.md.
 
 Codex CLI is the first client.  What it needs, and what this does:
   * `instructions` and `developer` messages -> the system message (leading ones merged, so the prompt start is stable
     and the conversation cache holds across turns);
   * function tools, also inside `namespace` tools (Codex's MCP and agent tools: the model sees `namespace.name`) and
     `custom` tools (a free-form `input` string); hosted tools (web search, ...) are left out, the model cannot run them;
-  * reasoning items: the model's thinking is returned as `reasoning_text` content (no summaries: this model does not
-    write them, see docs/DETAILS.md) and, when `include` asks for `reasoning.encrypted_content`, also as an opaque
+  * reasoning items: the model's thinking is returned as `reasoning_text` content (no summaries by default;
+    an optional second pass can generate one) and, when `include` asks for `reasoning.encrypted_content`, also as an opaque
     `encrypted_content` string (base64, not encrypted: the client already holds the text).  Either form sent back is
     put into the conversation again, so the prompt matches what the model wrote and the cache is reused;
   * the official event order: response.created, response.in_progress, response.output_item.added, deltas,
@@ -165,8 +166,9 @@ def input_messages(req: dict) -> list[dict]:
                 turn(content if isinstance(content, str) else "".join(
                     p.get("text", "") for p in content if p.get("type") == "text"))
             else:
+                if thinking:
+                    turn()                          # a completed thinking item can survive an interrupted answer
                 open_turn = None
-                thinking.clear()
                 messages.append({"role": "system" if role == "developer" else role, "content": content})
         elif kind == "reasoning":
             text = _reasoning_text(item, param)
@@ -194,14 +196,19 @@ def input_messages(req: dict) -> list[dict]:
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":
-            raise ResponsesError("item references need stored responses, and this server keeps none: send the items "
-                                 "themselves", param, "unsupported_parameter")
+            raise ResponsesError("item_reference is not supported: send the items themselves or use "
+                                 "previous_response_id with experimental persistence", param, "unsupported_parameter")
         else:
             raise ResponsesError(f"input items of type {kind!r} are not supported", param + ".type",
                                  "unsupported_parameter")
+    if thinking:
+        turn()
+    # Permission/steering updates can arrive after user turns. The template needs
+    # them in its leading instruction block; retain their authority and order.
+    instructions = [m for m in messages if m["role"] in ("system", "developer")]
+    messages = instructions + [m for m in messages if m["role"] not in ("system", "developer")]
     _order_tool_results(messages)
-    # leading system/developer messages (Codex: instructions, then its developer message) become one system message
-    # at the start; later ones become user messages in place, as on the chat path
+    # System/developer messages become one leading instruction block for templates that require it.
     lead = 0
     while lead < len(messages) and messages[lead]["role"] == "system" and isinstance(messages[lead]["content"], str):
         lead += 1
@@ -330,7 +337,7 @@ def _title_text(req: dict) -> str:
     return line[:36].rstrip() or "Untitled"
 
 
-def thread_title_events(req: dict, model: str):
+def thread_title_events(req: dict, model: str, *, allow_previous: bool = False):
     """Codex's thread-title turn, answered here. None when this request is not one.
 
     Codex 0.160 sends this beside the user turn: another session, no tools, the full instructions. Running it on the
@@ -338,7 +345,7 @@ def thread_title_events(req: dict, model: str):
     """
     if (_turn_body(req) or {}).get("thread_source") != "thread_title":
         return None
-    check_request(req)
+    check_request(req, allow_previous=allow_previous)
     text = json.dumps({"title": _title_text(req)}, ensure_ascii=False)
     asm = Assembler(req, model, 0, {}, False, json_mode=False)
     events = asm.start()
@@ -432,9 +439,9 @@ def text_format(req: dict):
     raise ResponsesError("text.format.type must be text, json_object or json_schema", "text.format.type")
 
 
-def check_request(req: dict) -> None:
-    """What this stateless server cannot do, refused before anything runs."""
-    if req.get("previous_response_id"):
+def check_request(req: dict, *, allow_previous: bool = False) -> None:
+    """Unsupported operations, refused before anything runs. Persistence may enable previous_response_id."""
+    if req.get("previous_response_id") and not allow_previous:
         raise ResponsesError("this server keeps no responses (stateless): send the whole conversation in input "
                              "instead of previous_response_id", "previous_response_id", "unsupported_parameter")
     if req.get("conversation"):
@@ -673,9 +680,10 @@ class Assembler:
 
     def failed(self, message: str, code: str = "server_error") -> dict:
         """response.failed: an error after the stream started (the HTTP status is already sent)."""
-        if self.item is not None:
-            self.item["status"] = "incomplete"
-            self.item = None
+        for item in self.response["output"]:
+            if item.get("status") == "in_progress":
+                item["status"] = "incomplete"
+        self.item = None
         self.response["status"] = "failed"
         self.response["error"] = {"code": code, "message": message}
         return self.event("response.failed", response=self.snapshot())

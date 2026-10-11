@@ -1,0 +1,1232 @@
+{
+  "started": 1791706905.6357756,
+  "checks": [
+    {
+      "name": "A1 durable response",
+      "passed": true
+    },
+    {
+      "name": "B1 durable response",
+      "passed": true
+    },
+    {
+      "name": "C1 durable response",
+      "passed": true
+    },
+    {
+      "name": "A2-after-B-C durable response",
+      "passed": true
+    },
+    {
+      "name": "A resumed from disk",
+      "passed": true,
+      "cached_tokens": 1332,
+      "marker_recalled": true
+    },
+    {
+      "name": "A3-live durable response",
+      "passed": true
+    },
+    {
+      "name": "live continuation reused prefix",
+      "passed": true,
+      "cached_tokens": 1363
+    },
+    {
+      "name": "B2 durable response",
+      "passed": true
+    },
+    {
+      "name": "B independent cache",
+      "passed": true,
+      "marker_recalled": true
+    },
+    {
+      "name": "left-branch durable response",
+      "passed": true
+    },
+    {
+      "name": "right-branch durable response",
+      "passed": true
+    },
+    {
+      "name": "branch history isolation",
+      "passed": true
+    },
+    {
+      "name": "explicit durable session save",
+      "passed": true,
+      "result": {
+        "id_slot": 0,
+        "filename": "checkpoint.session",
+        "n_saved": 1390,
+        "n_written": 255916472,
+        "timings": {
+          "save_ms": 191.1
+        }
+      }
+    },
+    {
+      "name": "streaming session restore",
+      "passed": true,
+      "result": {
+        "id_slot": 0,
+        "filename": "checkpoint.session",
+        "n_restored": 1390,
+        "n_read": 255916472,
+        "timings": {
+          "restore_ms": 272.3
+        }
+      }
+    },
+    {
+      "name": "after-clean-restart durable response",
+      "passed": true
+    },
+    {
+      "name": "history and KV survive restart",
+      "passed": true,
+      "marker_recalled": true
+    },
+    {
+      "name": "parent deletion preserves existing descendants",
+      "passed": true
+    },
+    {
+      "name": "changed-instructions durable response",
+      "passed": true
+    },
+    {
+      "name": "changed instructions avoid stale KV reuse",
+      "passed": true,
+      "cached_tokens": 0
+    },
+    {
+      "name": "summaries-off durable response",
+      "passed": true
+    },
+    {
+      "name": "summary generation disabled",
+      "passed": true
+    },
+    {
+      "name": "summaries-on durable response",
+      "passed": true
+    },
+    {
+      "name": "summary second pass exercised",
+      "passed": true
+    },
+    {
+      "name": "primary-after-summary durable response",
+      "passed": true
+    },
+    {
+      "name": "primary history continues after summary",
+      "passed": true,
+      "cached_tokens": 18
+    },
+    {
+      "name": "stream disconnect settles response",
+      "passed": true,
+      "status": "cancelled"
+    },
+    {
+      "name": "after-disconnect durable response",
+      "passed": true
+    },
+    {
+      "name": "queue recovers after cancellation",
+      "passed": true,
+      "cached_tokens": 1398
+    },
+    {
+      "name": "corruption fixture exists",
+      "passed": true,
+      "files": 8
+    },
+    {
+      "name": "corrupt-cache-fallback durable response",
+      "passed": true
+    },
+    {
+      "name": "corrupt KV falls back to saved history",
+      "passed": true,
+      "cached_tokens": 0,
+      "marker_recalled": true
+    },
+    {
+      "name": "small-cache-budget durable response",
+      "passed": true
+    },
+    {
+      "name": "history survives cache-budget eviction",
+      "passed": true,
+      "cached_tokens": 0
+    }
+  ],
+  "requests": [
+    {
+      "label": "A1",
+      "status_code": 200,
+      "wall_s": 0.5656890809768811,
+      "response": {
+        "id": "resp_8476afa4f229455fadf4b1ea3c89a558",
+        "object": "response",
+        "created_at": 1791706917,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_7a12a2efc11e4ba8b2b3dcfa39ecf907",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ACK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1331,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1333
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706918
+      }
+    },
+    {
+      "label": "B1",
+      "status_code": 200,
+      "wall_s": 0.6554588619619608,
+      "response": {
+        "id": "resp_7bbbd213a3024723b33962dd57bb55cf",
+        "object": "response",
+        "created_at": 1791706918,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_2adcbd58e1fb4a44a15e545b8889f876",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ACK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1397,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1399
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706918
+      }
+    },
+    {
+      "label": "C1",
+      "status_code": 200,
+      "wall_s": 0.6452954980777577,
+      "response": {
+        "id": "resp_aa3d3b16aeb648efa66983cd5abeb15c",
+        "object": "response",
+        "created_at": 1791706918,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_0e7c1d817f1449498924ffe6435519df",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ACK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1397,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1399
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706919
+      }
+    },
+    {
+      "label": "A2-after-B-C",
+      "status_code": 200,
+      "wall_s": 0.6453127709683031,
+      "response": {
+        "id": "resp_fa1693fd825b42808801fc49ec8f3f26",
+        "object": "response",
+        "created_at": 1791706919,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_2be7a409c67d4a9680428e908f27ba13",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ALPHA731",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_8476afa4f229455fadf4b1ea3c89a558",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1358,
+          "input_tokens_details": {
+            "cached_tokens": 1332
+          },
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1364
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706920
+      }
+    },
+    {
+      "label": "A3-live",
+      "status_code": 200,
+      "wall_s": 0.15757841302547604,
+      "response": {
+        "id": "resp_cac280ebf3934d108d4bc09b682507f1",
+        "object": "response",
+        "created_at": 1791706920,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_6eef22178574485e81c0593a6ab77587",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ALPHA731",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_fa1693fd825b42808801fc49ec8f3f26",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1382,
+          "input_tokens_details": {
+            "cached_tokens": 1363
+          },
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1388
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706920
+      }
+    },
+    {
+      "label": "B2",
+      "status_code": 200,
+      "wall_s": 0.6486958999885246,
+      "response": {
+        "id": "resp_b2d137fe50b349e499e031a693b06eb7",
+        "object": "response",
+        "created_at": 1791706920,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_e7f02a50a94d4ee38ba26bd6e19fb771",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "BETA492",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_7bbbd213a3024723b33962dd57bb55cf",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1424,
+          "input_tokens_details": {
+            "cached_tokens": 1398
+          },
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1430
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706920
+      }
+    },
+    {
+      "label": "left-branch",
+      "status_code": 200,
+      "wall_s": 0.6575166690163314,
+      "response": {
+        "id": "resp_a303c8e11fe14ad58dd058845b1f3f23",
+        "object": "response",
+        "created_at": 1791706920,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_d08f9531d8b64283809347ffb3aad75d",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ACK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_fa1693fd825b42808801fc49ec8f3f26",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1389,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1391
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706921
+      }
+    },
+    {
+      "label": "right-branch",
+      "status_code": 200,
+      "wall_s": 0.6474030499812216,
+      "response": {
+        "id": "resp_45df272e892c405392cae8565dfbfd74",
+        "object": "response",
+        "created_at": 1791706921,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_68be35438ddf457c9369fe25e23c18a3",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "ACK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_fa1693fd825b42808801fc49ec8f3f26",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1389,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1391
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706922
+      }
+    },
+    {
+      "label": "after-clean-restart",
+      "status_code": 200,
+      "wall_s": 0.5217266390100121,
+      "response": {
+        "id": "resp_a70c9481f94f45ebb130892cb34d26ba",
+        "object": "response",
+        "created_at": 1791706936,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_e2328f9965b6419988e3f5dda28cda6b",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "BETA492",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_b2d137fe50b349e499e031a693b06eb7",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1455,
+          "input_tokens_details": {
+            "cached_tokens": 1429
+          },
+          "output_tokens": 6,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1461
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706936
+      }
+    },
+    {
+      "label": "changed-instructions",
+      "status_code": 200,
+      "wall_s": 0.7927193980431184,
+      "response": {
+        "id": "resp_505274cf973c4b1c88c600eb5f6e2436",
+        "object": "response",
+        "created_at": 1791706936,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": "You are a different test profile. Follow the current request exactly.",
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_a21925c529c84fbdaeeca48942ee2afb",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "CHANGE_OK",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_a70c9481f94f45ebb130892cb34d26ba",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1497,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1500
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706937
+      }
+    },
+    {
+      "label": "summaries-off",
+      "status_code": 200,
+      "wall_s": 1.590821792022325,
+      "response": {
+        "id": "resp_78c2a9552b9847af98cb1f5327fa3d4b",
+        "object": "response",
+        "created_at": 1791706937,
+        "status": "incomplete",
+        "background": false,
+        "error": null,
+        "incomplete_details": {
+          "reason": "max_output_tokens"
+        },
+        "instructions": null,
+        "max_output_tokens": 192,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "rs_318224b0612e47529567d452bc7dbe50",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [],
+            "content": [
+              {
+                "type": "reasoning_text",
+                "text": "The user wants me to compute 17 \u00d7 19 and explain the arithmetic. Let me work through this clearly.\n\n17 \u00d7 19 can be computed several ways:\n\nMethod 1: Direct multiplication\n17 \u00d7 19 = 17 \u00d7 (20 - 1) = 340 - 17 = 323\n\nMethod 2: Standard multiplication\n17 \u00d7 19\n= 17 \u00d7 9 + 17 \u00d7 10\n= 153 + 170\n= 323\n\nMethod 3: (18-1)(18+1) = 18\u00b2 - 1 = 324 - 1 = 323\n\nLet me present a clear explanation.\n"
+              }
+            ]
+          },
+          {
+            "id": "msg_c50d0d02999344b8ad60ef1fe41f671d",
+            "type": "message",
+            "status": "incomplete",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "## 17 \u00d7 19 = **323**\n\nHere are a few",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "medium",
+          "summary": "concise"
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 23,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 192,
+          "output_tokens_details": {
+            "reasoning_tokens": 172
+          },
+          "total_tokens": 215
+        },
+        "user": null,
+        "metadata": {}
+      }
+    },
+    {
+      "label": "summaries-on",
+      "status_code": 200,
+      "wall_s": 3.3598087989958003,
+      "response": {
+        "id": "resp_5f2365369a4f4c889fa4274f2b1eeeb1",
+        "object": "response",
+        "created_at": 1791706952,
+        "status": "incomplete",
+        "background": false,
+        "error": null,
+        "incomplete_details": {
+          "reason": "max_output_tokens"
+        },
+        "instructions": null,
+        "max_output_tokens": 384,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "rs_2e21067ea89946f7901dcd7f70765606",
+            "type": "reasoning",
+            "status": "incomplete",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "The recorded reasoning outlines a plan to compute 17 \u00d7 19 and explain the arithmetic. It identifies three distinct methods for the calculation: using the distributive property with 20 minus 1, performing standard multiplication by splitting 19 into 9 and 10, and applying the difference of squares formula with 18. All three methods are shown to yield the result 323, and the reasoning concludes with an intention to present a clear explanation"
+              }
+            ],
+            "content": [
+              {
+                "type": "reasoning_text",
+                "text": "The user wants me to compute 17 \u00d7 19 and explain the arithmetic. Let me work through this clearly.\n\n17 \u00d7 19 can be computed several ways:\n\nMethod 1: Direct multiplication\n17 \u00d7 19 = 17 \u00d7 (20 - 1) = 340 - 17 = 323\n\nMethod 2: Standard multiplication\n17 \u00d7 19\n= 17 \u00d7 9 + 17 \u00d7 10\n= 153 + 170\n= 323\n\nMethod 3: (18-1)(18+1) = 18\u00b2 - 1 = 324 - 1 = 323\n\nLet me present a clear explanation.\n"
+              }
+            ]
+          },
+          {
+            "id": "msg_ac1c4d3c591f41aa8e72042c2b463d7f",
+            "type": "message",
+            "status": "incomplete",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "## 17 \u00d7 19 = **323**\n\nHere are a few ways to work it out:\n\n### Method 1: Break 19 into 20 \u2212 1\nThis is the quickest mental shortcut:\n\n17 \u00d7 19 = 17 \u00d7 (20 \u2212 1)\n= 17 \u00d7 20 \u2212 17 \u00d7 1\n= 340 \u2212 17\n= **323**\n\n### Method 2: Standard column multiplication\n```\n   ",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "medium",
+          "summary": "concise"
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 267,
+          "input_tokens_details": {
+            "cached_tokens": 18
+          },
+          "output_tokens": 384,
+          "output_tokens_details": {
+            "reasoning_tokens": 172
+          },
+          "total_tokens": 651
+        },
+        "user": null,
+        "metadata": {}
+      }
+    },
+    {
+      "label": "primary-after-summary",
+      "status_code": 200,
+      "wall_s": 0.715502452920191,
+      "response": {
+        "id": "resp_99333f235bbc454db5ba53cf4b0a7eb3",
+        "object": "response",
+        "created_at": 1791706956,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_4c28e89fe7244e77b2bc397d0397a5f7",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "323",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_5f2365369a4f4c889fa4274f2b1eeeb1",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 334,
+          "input_tokens_details": {
+            "cached_tokens": 18
+          },
+          "output_tokens": 4,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 338
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706956
+      }
+    },
+    {
+      "label": "after-disconnect",
+      "status_code": 200,
+      "wall_s": 0.7005366600351408,
+      "response": {
+        "id": "resp_148542ac8e844514959831e4139af5f0",
+        "object": "response",
+        "created_at": 1791706958,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_72e5a7ce9ef0421c81a2ef9f55f7d436",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "GAMMA916",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_aa3d3b16aeb648efa66983cd5abeb15c",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1424,
+          "input_tokens_details": {
+            "cached_tokens": 1398
+          },
+          "output_tokens": 7,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1431
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706958
+      }
+    },
+    {
+      "label": "corrupt-cache-fallback",
+      "status_code": 200,
+      "wall_s": 0.8939378999639302,
+      "response": {
+        "id": "resp_f4b5c60c1b81417dbbdb9008e76141f5",
+        "object": "response",
+        "created_at": 1791706970,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_67516740ab2e4a289f0e59842c77c4fd",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "GAMMA916",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_148542ac8e844514959831e4139af5f0",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1456,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 7,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1463
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706971
+      }
+    },
+    {
+      "label": "small-cache-budget",
+      "status_code": 200,
+      "wall_s": 0.6269198270747438,
+      "response": {
+        "id": "resp_ed44d24b966e45898607514afcb34211",
+        "object": "response",
+        "created_at": 1791706985,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "cache-integration-test",
+        "output": [
+          {
+            "id": "msg_1b706458331b458c821371c987a311ca",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "GAMMA916",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": "resp_f4b5c60c1b81417dbbdb9008e76141f5",
+        "reasoning": {
+          "effort": "none",
+          "summary": null
+        },
+        "store": true,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 1482,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 7,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 1489
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791706986
+      }
+    }
+  ],
+  "host": "dflanag3-B650-GAMING-X-AX",
+  "source": "5d8be3316c59bc16eb6b3f3b6c309dec183a8f59",
+  "source_provenance": "explicit archive commit",
+  "engine_sha256": "151a1ea30b7ddd92782fb98809febfdbb7f7ff3977c19dc5f119c60985526202",
+  "phase": "complete",
+  "success": true,
+  "finished": 1791706987.8156772
+}
