@@ -28,13 +28,16 @@ was measured on the same session.
   7 workers + host thread (`--host-core first`), 24 tasks/phase automatic
 - RAM: 46 GiB usable by the container (host is a Proxmox node; Strata runs in an LXC)
 - Storage: KLEVV CRAS C930 1 TB NVMe (models and packs on local NVMe)
-- PCIe power limits (stock): 270 W (5070 Ti), 162 W, 162 W
+- GPU power limits: set to **90% of spec** — 270 W on the 5070 Ti (of 300 W),
+  162 W on each 5060 Ti (of 180 W)
 - OS: Ubuntu 26.04.1 LTS inside LXC (Proxmox host kernel 7.0.14-15-pve)
 - Driver 595.91.07; CUDA 13.3 toolkit (`/usr/local/cuda-13.3`)
 - Strata **v0.1.42** (`61b3fb5`), engine binary installed by setup/update
   (`engine/BUILD.json`: version 0.1.42, arch 120, src `1e0c97588848ea0f`;
   vision engine src `1fb2b3fb797ec402`) — not a manual source build
-- No background workloads during the runs; no clock capture.
+- Background load: the Proxmox host ran its usual other VMs/LXCs during the
+  runs (~5% host CPU load); the LXC itself had no other Strata instances.
+  No clock capture.
 
 ## Model and configuration
 
