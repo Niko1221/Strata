@@ -6,7 +6,7 @@
 set -e
 cd /opt/strata || exit 1
 
-export CUDA_MAJOR_VERSION=`${CUDA_VERSION%%.*}`
+export CUDA_MAJOR_VERSION=${CUDA_VERSION%%.*}
 export STRATA_EXPERIMENTAL_SM60=""
 
 if [ x${CUDA_ARCHITECTURES} = x ]; then
