@@ -14,6 +14,8 @@ up to three times per start and follows the CPU-pool timing; see the log lines b
 
 Main limitation: one machine, one model, and the two new defaults changed together — this report does not
 separate the tail skip from the PCIe share. The long-context arms are single runs; the short arms are three.
+The gain is also regime-specific: on a nearly-resident card the same default measures **1–2% slower**
+([#1884](https://github.com/Niko1221/Strata/issues/1884), quoted in the limitations below).
 
 ## Hardware and software
 
@@ -157,9 +159,20 @@ difference is not a different number of resident experts.
 - **One machine, one model.** Volta on Linux in a VM is not a configuration the release notes cover, so the
   size of the gain should not be generalized beyond "a card that misses experts, with a CPU pool several
   times faster than its PCIe link".
+- **The gain is regime-specific, and the opposite regime is measured.** [#1884](https://github.com/Niko1221/Strata/issues/1884)
+  (V100-PCIe-32GB in an x4 slot, Coder IQ1_M with `--vision`, 11,644 of 12,288 experts resident and the rest in
+  pinned RAM) reports 0.1.42 as **0.8–2.4% slower**, with `STRATA_ROUTE_TAIL_SKIP=0` restoring 0.1.41 run for run
+  (three arms, order rotated, 30 runs, identical draft counts; the skip alone cost draft acceptance 70.1% →
+  68.2%). There the misses come from pinned RAM rather than PCIe and almost nothing is left to skip, so the
+  skipped experts only perturb the draft. Their run also shows the adaptive share not engaging at all when misses
+  are rare: the start-up probe measured 3.3 GB/s (`pcie_frac 0.09`) and no `PCIe share:` line was printed. Two
+  sides of the same condition — how much of a token waits for a missed expert — and it is worth saying in the
+  docs that "nearly every expert resident" is the losing case for the tail skip, next to "every expert in VRAM",
+  where it is already off.
 - **Question for the maintainers:** the share search ends at its **floor** on this host (0.10–0.15 with the CPU
   pool 3.5–4× the link). Is that floor right, or would a lower one pay off on machines shaped like this one?
-  Related: `/metrics` keeps reporting the start-up `pcie_frac` (0.36) and does not follow the adaptive value.
+  Related: `/metrics` keeps reporting the start-up `pcie_frac` (0.36) and does not follow the adaptive value, and
+  in the #1884 shape (probe 0.09) the search never runs at all.
 
 ## Files
 
