@@ -4741,6 +4741,18 @@ int main(int argc, char** argv) {
 #endif
         srcp = &arena_src;
     }
+#if defined(__linux__) && !defined(STRATA_USE_HIP)
+    if (const char* e = std::getenv("STRATA_ADAPT_CALLBACK_WARMUP"); e && e[0] == '1' && adapt_overlap()) {
+        // CUDA creates its host-callback thread lazily. Create it before ExpertPool pins this thread:
+        // otherwise it inherits the host core and competes with the verifier's busy wait for its signal.
+        if (cudaLaunchHostFunc(nullptr, [](void*) {}, nullptr) != cudaSuccess ||
+            cudaStreamSynchronize(nullptr) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: cannot warm up the CUDA host-callback thread\n");
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: CUDA host-callback thread warmed before host-core pinning\n");
+    }
+#endif
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
                                         o.pool_affinity, o.pool_tasks);
     std::fprintf(stderr, "strata generate: CPU pool tasks/phase: %d%s, participating threads: %d\n",
