@@ -2539,6 +2539,76 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
                                       *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
                 if (!wn || !wd || !wu || !wi) return false;
+                // STRATA_HC_HOST=1: the down/up pair lives in pinned host memory; one device copy per layer and
+                // half, in stream order before the reads below (two staging buffers, ~13 MB)
+                // Two slots on a stream of their own: while this half computes, the next half's pair (the same
+                // layer's FFN half, or the next layer's mixer half) crosses the bus.  A slot keeps the pair it holds
+                // (keyed by the host address), so a pair is copied again only when another pair took its slot.
+                core::WeightRef wd_staged, wu_staged;
+                if (core::hc_host_requested()) {
+                    struct HcSlots {
+                        cudaStream_t s = nullptr;
+                        void* buf[2][2] = {{nullptr, nullptr}, {nullptr, nullptr}};   // [slot][down, up]
+                        uint64_t cap[2] = {0, 0};
+                        const void* key[2] = {nullptr, nullptr};
+                        cudaEvent_t copied[2] = {nullptr, nullptr}, used[2] = {nullptr, nullptr};
+                        bool live[2] = {false, false};
+                        int64_t seq = 0;
+                    };
+                    static HcSlots hs;
+                    if (hs.s == nullptr) {
+                        if (cudaStreamCreateWithFlags(&hs.s, cudaStreamNonBlocking) != cudaSuccess) { err = "STRATA_HC_HOST: stream"; return false; }
+                        for (int j = 0; j < 2; ++j)
+                            if (cudaEventCreateWithFlags(&hs.copied[j], cudaEventDisableTiming) != cudaSuccess ||
+                                cudaEventCreateWithFlags(&hs.used[j], cudaEventDisableTiming) != cudaSuccess) {
+                                err = "STRATA_HC_HOST: events"; return false;
+                            }
+                    }
+                    // stage the pair (d, u) into slot j unless it is already there; the copy waits until the slot's
+                    // previous pair has been read (its `used` event, recorded on the compute stream)
+                    auto stage = [&](int j, const core::WeightRef* d, const core::WeightRef* u) -> bool {
+                        if (hs.key[j] == d->data) return true;
+                        const uint64_t need_b = std::max(d->bytes, u->bytes);
+                        if (hs.cap[j] < need_b) {
+                            cudaStreamSynchronize(hs.s);
+                            cudaStreamSynchronize(m.cs);
+                            for (int k = 0; k < 2; ++k) {
+                                if (hs.buf[j][k]) cudaFree(hs.buf[j][k]);
+                                hs.buf[j][k] = nullptr;
+                                if (cudaMalloc(&hs.buf[j][k], need_b) != cudaSuccess) { err = "STRATA_HC_HOST: staging"; return false; }
+                            }
+                            hs.cap[j] = need_b;
+                            hs.live[j] = false;
+                        }
+                        if (hs.live[j]) cudaStreamWaitEvent(hs.s, hs.used[j], 0);
+                        if (cudaMemcpyAsync(hs.buf[j][0], d->data, d->bytes, cudaMemcpyDefault, hs.s) != cudaSuccess ||
+                            cudaMemcpyAsync(hs.buf[j][1], u->data, u->bytes, cudaMemcpyDefault, hs.s) != cudaSuccess) {
+                            err = "STRATA_HC_HOST: staging copy"; return false;
+                        }
+                        cudaEventRecord(hs.copied[j], hs.s);
+                        hs.key[j] = d->data;
+                        return true;
+                    };
+                    const int cur = (int) (hs.seq & 1), nxt = cur ^ 1;
+                    // the previous half's reads are all on the compute stream by now: its slot may be refilled after them
+                    if (hs.seq > 0) { cudaEventRecord(hs.used[nxt], m.cs); hs.live[nxt] = true; }
+                    if (!stage(cur, wd, wu)) return false;
+                    // prefetch the next pair into the other slot
+                    if (half == 0) {
+                        const core::WeightRef *nd = need(v, "hc_ffn_down.weight", err), *nu = need(v, "hc_ffn_up.weight", err);
+                        if (nd && nu && !stage(nxt, nd, nu)) return false;
+                    } else if (l + 1 < LE) {
+                        const core::LayerView vn(*m.wt, l + 1);
+                        const core::WeightRef *nd = need(vn, "hc_attn_down.weight", err), *nu = need(vn, "hc_attn_up.weight", err);
+                        if (nd && nu && !stage(nxt, nd, nu)) return false;
+                    }
+                    cudaStreamWaitEvent(m.cs, hs.copied[cur], 0);
+                    ++hs.seq;
+                    wd_staged = *wd; wd_staged.data = hs.buf[cur][0];
+                    wu_staged = *wu; wu_staged.data = hs.buf[cur][1];
+                    wd = &wd_staged;
+                    wu = &wu_staged;
+                }
                 pt.mark(kPfHc, cs);
                 // the xn16 token stride of this chunk (the writers of both halves and of the fused write-backs use it)
                 const int64_t ldx = hc_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) && !gr_unfused() &&

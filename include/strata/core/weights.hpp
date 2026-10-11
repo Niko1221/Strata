@@ -107,6 +107,13 @@ struct LoadReport {
     double upload_ms = 0.0;
 };
 
+/// STRATA_HC_HOST=1: the hyper-connection down/up projections (BF16, ~1.2 GB) are not loaded into the arena
+/// but into pinned host memory (mapped); the prompt path stages a layer's pair into device memory before it reads it
+/// (layer.cpp) and the verify windows read the load-time Q8_0 copy (STRATA_HC_Q8=1, native_dense.cpp).  The freed
+/// VRAM goes to the expert cache.
+bool hc_host_requested();
+bool hc_host_name(const std::string& name);
+
 class WeightTable {
 public:
     /// The arena size the index asks for, readable WITHOUT loading anything - so a caller can size its
@@ -133,6 +140,11 @@ public:
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }
+    /// STRATA_HC_HOST=1: point a skipped row at bytes that live elsewhere (pinned host memory, mapped).
+    void rebind(const std::string& name, const void* data) {
+        auto it = table_.find(name);
+        if (it != table_.end()) { it->second.data = data; it->second.resident = true; }
+    }
     const LoadReport& report() const { return report_; }
 
 private:

@@ -1393,6 +1393,30 @@ const char* pre[2] = {"hc_attn_", "hc_ffn_"};    const WeightRef* w_norm[2];    
 // The GR weights are BF16 and the arena holds them re-rounded to 2 B/elem.  `gr_read` wants exactly
 // that; handing it f32 bytes would walk 2x the tensor inside the arena without faulting.
 if (w_down[h]->kind != WeightKind::Bf16InF32 || w_up[h]->kind != WeightKind::Bf16InF32 ||            w_inject[h]->kind != WeightKind::Bf16InF32 || w_norm[h]->kind != WeightKind::F32) {            err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";            return false;        }    }
+// STRATA_HC_HOST=1: the down/up pair lives in pinned host memory; one device copy per layer and half, in stream
+// order before the read (4 staging buffers, ~26 MB), so the prompt path reads it from VRAM as before.
+const uint16_t* hc_dn[2] = {(const uint16_t*) w_down[0]->data, (const uint16_t*) w_down[1]->data};
+const uint16_t* hc_up[2] = {(const uint16_t*) w_up[0]->data, (const uint16_t*) w_up[1]->data};
+if (strata::core::hc_host_requested()) {
+    static void* stage[4] = {nullptr, nullptr, nullptr, nullptr};
+    static uint64_t stage_bytes[4] = {0, 0, 0, 0};
+    for (int h = 0; h < 2; ++h) {
+        const WeightRef* wr[2] = {w_down[h], w_up[h]};
+        for (int j = 0; j < 2; ++j) {
+            const int b = 2 * h + j;
+            if (stage_bytes[b] < wr[j]->bytes) {
+                if (stage[b] != nullptr) { cudaStreamSynchronize((cudaStream_t) stream); cudaFree(stage[b]); stage[b] = nullptr; }
+                if (cudaMalloc(&stage[b], wr[j]->bytes) != cudaSuccess) { err = "STRATA_HC_HOST: staging cudaMalloc"; return false; }
+                stage_bytes[b] = wr[j]->bytes;
+            }
+            if (cudaMemcpyAsync(stage[b], wr[j]->data, wr[j]->bytes, cudaMemcpyDefault, (cudaStream_t) stream) != cudaSuccess) {
+                err = "STRATA_HC_HOST: staging copy"; return false;
+            }
+        }
+        hc_dn[h] = (const uint16_t*) stage[2 * h];
+        hc_up[h] = (const uint16_t*) stage[2 * h + 1];
+    }
+}
 // ---- half 1: the mixer
 float* R = bb.R;
     // R0.11: WHICH STAGES TO RUN.  `stage_prefix == 0` means "as `half` says", so every caller that predates
@@ -1408,12 +1432,12 @@ st_begin(layer, 0, stream);
     if (fused) {
         strata::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = pending_ffn; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject2;
-        fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = (const uint16_t*) w_down[0]->data;
-        fa.w_up = (const uint16_t*) w_up[0]->data; fa.w_inject = (const uint16_t*) w_inject[0]->data;
+        fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = hc_dn[0];
+        fa.w_up = hc_up[0]; fa.w_inject = (const uint16_t*) w_inject[0]->data;
         fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject; fa.mixed = bb.mixed;
         strata::kernels::fused_gr_read(fa, stream);
     } else {
-    gr_read(R, (const float*) w_norm[0]->data, (const uint16_t*) w_down[0]->data,            (const uint16_t*) w_up[0]->data, (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
+    gr_read(R, (const float*) w_norm[0]->data, hc_dn[0],            hc_up[0], (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
     st_end(layer, 0, stream);    dump_half(bb, g, layer, bb.inject, 2 * g.n_embd, g.hc, stream);        }
     if (run1) {
@@ -1431,12 +1455,12 @@ st_begin(layer, 3, stream);
     if (fused) {
         strata::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = true; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject;
-        fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = (const uint16_t*) w_down[1]->data;
-        fa.w_up = (const uint16_t*) w_up[1]->data; fa.w_inject = (const uint16_t*) w_inject[1]->data;
+        fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = hc_dn[1];
+        fa.w_up = hc_up[1]; fa.w_inject = (const uint16_t*) w_inject[1]->data;
         fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject2; fa.mixed = bb.mixed;
         strata::kernels::fused_gr_read(fa, stream);
     } else {
-    gr_read(R, (const float*) w_norm[1]->data, (const uint16_t*) w_down[1]->data,            (const uint16_t*) w_up[1]->data, (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
+    gr_read(R, (const float*) w_norm[1]->data, hc_dn[1],            hc_up[1], (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
     st_end(layer, 3, stream);        }
     if (run4) {
