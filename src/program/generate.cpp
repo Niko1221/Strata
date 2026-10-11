@@ -965,6 +965,8 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+    // Opt-in adaptive barriers keep routing by window row until the host verdict.
+    std::vector<std::vector<int32_t>>* usage_rows = nullptr;
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -1001,8 +1003,21 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
                       int64_t layer) {
     Drive* t = (Drive*) user;
     t->d.layers = layer;
+    std::vector<float> held_usage;
+    if (t->usage_rows != nullptr) {
+        auto& rows = *t->usage_rows;
+        if (rows.size() < (size_t) n_tok) rows.resize((size_t) n_tok);
+        for (int64_t row = 0; row < n_tok; ++row)
+            for (int64_t j = 0; j < k; ++j) {
+                const int32_t e = ids[row * k + j];
+                if (e >= 0 && e < t->d.n_expert)
+                    rows[(size_t) row].push_back((int32_t) (layer * t->d.n_expert + e));
+            }
+        held_usage.swap(t->d.usage);   // dispatch must not count rejected draft rows
+    }
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+    if (t->usage_rows != nullptr) held_usage.swap(t->d.usage);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
@@ -1031,6 +1046,7 @@ struct SplitDrive {
     const uint8_t* cache_base[kMax] = {};
     const uint64_t* cache_slot_off[kMax] = {};
     int pcie_num[kMax] = {};
+    std::vector<std::vector<int32_t>>* usage_rows = nullptr;
 };
 void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                       int64_t layer) {
@@ -1042,7 +1058,10 @@ void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t 
     d.d.cache_base = s->cache_base[st];
     d.d.cache_slot_off = s->cache_slot_off[st];
     d.d.pcie_num = s->pcie_num[st];
+    auto* saved_rows = d.usage_rows;
+    d.usage_rows = s->usage_rows;
     drive_pool_multi(s->base, x_f, ids, n_tok, k, out, layer);
+    d.usage_rows = saved_rows;
 }
 
 /// Layer split across GPUs: a later stage on its own device, with its own copy of the dense weights, a session, an
@@ -3259,6 +3278,16 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
+    const int64_t adapt_barrier_tokens = [] {
+        const char* v = std::getenv("STRATA_ADAPT_BARRIER_TOKENS");
+        if (v == nullptr || *v == '\0') return int64_t{0};
+        char* end = nullptr;
+        const long n = std::strtol(v, &end, 10);
+        return end != v && *end == '\0' && n >= 0 && n <= 1048576 ? (int64_t) n : int64_t{-1};
+    }();
+    // Accepted-token barriers serialize adaptation. Resolve that policy before pipeline admission
+    // checks three-stage async incompatibility and before stages reserve their pipeline buffers.
+    if (adapt_barrier_tokens > 0) o.adapt_async = 0;
     // --pipeline-windows (opt-in): one conversation's windows with the two stages of a layer split overlapped.  Decided
     // here, before any stage sizes its expert cache (the second verifier per stage and the snapshots are allocated
     // after the caches, so their room is kept out of them).  What it does not support turns it off, said once.
@@ -6708,6 +6737,20 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: the mapped view of the experts %s (%s)\n",
                      dropped ? "is closed" : "stays open", why.c_str());
     }
+    if (adapt_barrier_tokens < 0 ||
+        (adapt_barrier_tokens > 0 && (!o.serve || o.batch > 0 || !multi_gpu || split_same ||
+                                     peer.valid() || remote_opt || remote_caches || o.pcie_frac != 0.0 ||
+                                     o.adapt_every <= 0 || o.adapt_swaps <= 0))) {
+        std::fprintf(stderr, "strata: STRATA_ADAPT_BARRIER_TOKENS needs a positive token interval (at most 1048576), "
+                             "--serve, a layer split, --pcie-frac 0 and adaptation enabled; no batch or helper tier\n");
+        return 2;
+    }
+    if (adapt_barrier_tokens > 0) {
+        o.adapt_async = 0;
+        std::fprintf(stderr, "strata: adaptive cache barriers every %lld accepted tokens: committed routing only; "
+                             "copies finish before the next block (--adapt-every is replaced by this interval)\n",
+                     (long long) adapt_barrier_tokens);
+    }
     // 0.1.42 (H11): the default CPU share is armed only when the host has the memory for it.  One line says why not;
     // an explicit STRATA_PREFILL_CPU_SHARE (other than 0) is armed anyway, with a warning when memory is short.
     auto share_default_ok = [&]() -> bool {
@@ -7306,6 +7349,8 @@ int main(int argc, char** argv) {
                     stage_ver_p(st, par).set_always_publish(true);
                 }
         }
+        if (adapt_barrier_tokens > 0)
+            for (int st = 0; st < n_stages; ++st) stage_ver(st).set_always_publish(true);
         if (n_stages > 1) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
@@ -10684,6 +10729,12 @@ int main(int argc, char** argv) {
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
+            if (adapt_barrier_tokens > 0 &&
+                std::any_of(split_drive.pcie_num, split_drive.pcie_num + split_drive.n, [](int n) { return n != 0; })) {
+                std::printf("ERR adaptive barriers require pcie_frac 0 on every stage\n");
+                std::fflush(stdout);
+                continue;
+            }
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
@@ -10820,6 +10871,67 @@ int main(int argc, char** argv) {
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
             int32_t x = (int32_t) ids[(size_t) (n - 1)];
+            const bool barrier_adapt = adapt_barrier_tokens > 0 && !drive.d.usage.empty();
+            int64_t next_adapt_p = p + adapt_barrier_tokens;
+            std::vector<std::vector<int32_t>> route_rows[2];
+            struct ResetUsageRows {
+                Drive& drive;
+                SplitDrive& even;
+                SplitDrive& odd;
+                ~ResetUsageRows() { drive.usage_rows = nullptr; even.usage_rows = nullptr; odd.usage_rows = nullptr; }
+            } reset_usage_rows{drive, split_drive, split_drive_b};
+            if (barrier_adapt) {
+                drive.usage_rows = &route_rows[0];
+                split_drive.usage_rows = &route_rows[0];
+                split_drive_b.usage_rows = &route_rows[1];
+            }
+            auto accept_usage = [&](int par, int keep) -> bool {
+                if (!barrier_adapt) return true;
+                if ((size_t) keep > route_rows[par].size()) {
+                    err = "adaptive barrier: committed routing rows are missing";
+                    return false;
+                }
+                for (int row = 0; row < keep; ++row)
+                    for (const int32_t i : route_rows[par][(size_t) row]) drive.d.usage[(size_t) i] += 1.0f;
+                return true;
+            };
+            auto cache_barrier = [&]() -> bool {
+                // No verifier may cross this token boundary. The host has served every window and rollback;
+                // only commits and the drafter can remain on these streams, so these waits cannot need the host.
+                if (!ver.wait_commit(err)) return false;
+                for (int st = 0; st < n_stages; ++st) {
+                    const strata::core::OnDevice on(stage_ver(st).device());
+                    if (cudaStreamSynchronize(stage_ver(st).stream()) != cudaSuccess) {
+                        err = "adaptive barrier: waiting for a stage failed";
+                        return false;
+                    }
+                }
+                if (use_mtp) {
+                    const strata::core::OnDevice on(mtp.device());
+                    if (cudaStreamSynchronize(mtp.stream()) != cudaSuccess) {
+                        err = "adaptive barrier: waiting for the drafter failed";
+                        return false;
+                    }
+                }
+                auto hash_bytes = [](const void* ptr, size_t size) {
+                    uint64_t h = 14695981039346656037ull;
+                    const auto* b = (const uint8_t*) ptr;
+                    for (size_t i = 0; i < size; ++i) h = (h ^ b[i]) * 1099511628211ull;
+                    return h;
+                };
+                static const bool trace_barrier = std::getenv("STRATA_TRACE_ADAPT") != nullptr;
+                const uint64_t usage_hash = trace_barrier ? hash_bytes(drive.d.usage.data(), drive.d.usage.size() * sizeof(float)) : 0;
+                apply_pending(true);
+                if (!adapt()) { err = "adaptive barrier: refill failed"; return false; }
+                const size_t swapped = pending.size();
+                apply_pending(true);   // publish the new placement only after every copy has completed
+                if (trace_barrier)
+                    std::fprintf(stderr, "strata adaptive barrier: p=%lld swaps=%zu usage=%016llx residency=%016llx\n",
+                                 (long long) next_adapt_p, swapped, (unsigned long long) usage_hash,
+                                 (unsigned long long) hash_bytes(host_res.data(), host_res.size() * sizeof(int32_t)));
+                next_adapt_p += adapt_barrier_tokens;
+                return true;
+            };
             // (the drafter writes max_t - 1 drafts: 8 rows with --pipeline-windows 2)
             const size_t DS = (size_t) std::max(S, use_mtp ? mtp.max_t() : 0);
             std::vector<int32_t> drafts(DS, 0), window((size_t) S), outv((size_t) S);
@@ -11017,8 +11129,10 @@ int main(int argc, char** argv) {
                     if (base >= avail) return;
                     B.seq = A.seq + 1;
                     B.p = A.p + A.T;
+                    if (barrier_adapt && B.p >= next_adapt_p) return;
                     B.tok[0] = oc[base];
                     B.T = t_rule(op, base + 1, avail);
+                    if (barrier_adapt) B.T = (int) std::min<int64_t>(B.T, next_adapt_p - B.p);
                     for (int i = 1; i < B.T; ++i) {
                         B.tok[i] = oc[base + i];
                         B.prob[i - 1] = op[base + i];
@@ -11133,7 +11247,9 @@ int main(int argc, char** argv) {
                         B = PW{};
                         B.seq = A.seq + 1;
                         B.p = A.p + A.T;
+                        if (barrier_adapt && B.p >= next_adapt_p) return;
                         B.T = std::min(S, rest);
+                        if (barrier_adapt) B.T = (int) std::min<int64_t>(B.T, next_adapt_p - B.p);
                         for (int i = 0; i < B.T; ++i) B.tok[i] = pl_sbuf[(size_t) (A.T - 1 + i)];
                         for (int i = 1; i < B.T; ++i) B.prob[i - 1] = 1.0f;
                         B.p_on = pl_lookup_pon;
@@ -11167,6 +11283,10 @@ int main(int argc, char** argv) {
                 }();
                 auto ms_now = [&]() { return std::chrono::duration<double, std::milli>(Clock::now() - pl_t0).count(); };
                 while (true) {
+                    if (barrier_adapt && !ending && p >= next_adapt_p && !doomed) {
+                        if (A.launched || B.launched) return die("a window crossed the adaptive barrier");
+                        if (!cache_barrier()) return die(err);
+                    }
                     g_pl_diag.iters.fetch_add(1, std::memory_order_relaxed);
                     g_pl_diag.a_seq.store(A.seq, std::memory_order_relaxed);
                     g_pl_diag.a_bits.store(pw_bits(A), std::memory_order_relaxed);
@@ -11243,6 +11363,7 @@ int main(int argc, char** argv) {
                                     A.prob[i - 1] = mtp.chain_prob()[i - 1];
                                 }
                                 pick_lookup(A, mtp.chain_tok());
+                                if (barrier_adapt) A.T = (int) std::min<int64_t>(A.T, next_adapt_p - A.p);
                                 A.ready = true;
                                 early_used = true;
                                 tre("CE", A.seq, A.T);
@@ -11260,6 +11381,7 @@ int main(int argc, char** argv) {
                                 A.prob[i - 1] = op[i - 1];
                             }
                             pick_lookup(A, oc);
+                            if (barrier_adapt) A.T = (int) std::min<int64_t>(A.T, next_adapt_p - A.p);
                             A.ready = true;
                             early_used = true;
                         }
@@ -11308,6 +11430,7 @@ int main(int argc, char** argv) {
                         const int st = A.fr;
                         if (st == 0 && A.p + A.T > o.max_context) { ending = true; continue; }
                         if (ajob && st == 0) a_gap(0);   // --adapt-async: stage 0 is idle until this launch
+                        if (barrier_adapt && st == 0) route_rows[A.seq & 1].clear();
                         if (!snap_take(st, A.seq)) return die("the GDN snapshot failed");
                         if (!VF(st, A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.fl = true;
@@ -11337,6 +11460,7 @@ int main(int argc, char** argv) {
                             if (st == 0) {
                                 undo_ple[0] = ss.ple_prev[0];
                                 undo_ple[1] = ss.ple_prev[1];
+                                if (barrier_adapt) route_rows[B.seq & 1].clear();
                             }
                             if (!VF(st, A).pl_commit_async(A.T, err) || !snap_take(st, B.seq) ||
                                 !VF(st, B).pl_launch(B.T, B.tok, B.p, err))
@@ -11374,6 +11498,7 @@ int main(int argc, char** argv) {
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
+                    if (!accept_usage(A.seq & 1, a + 1)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
                     draft_accepted += a;
@@ -11421,7 +11546,7 @@ int main(int argc, char** argv) {
                     }
                     x = outp[(size_t) a];
                     p = A.p + a + 1;
-                    if (!last && !ajob && !pl_adapt()) return die("an adaptive refill failed");
+                    if (!last && !ajob && !barrier_adapt && !pl_adapt()) return die("an adaptive refill failed");
                     if (on && !last) {
                         ++pl_on;
                         // the chain over A, forced through B's drafts: B's bonus guess and the next window's drafts
@@ -11556,6 +11681,11 @@ int main(int argc, char** argv) {
                         chain_n = policy.chain(T, p_mtp, chain_n, cm);
                     }
                 }
+                if (barrier_adapt) {
+                    const int left = (int) std::min<int64_t>(S, next_adapt_p - p);
+                    T = std::min(T, left);
+                    chain_n = std::min(chain_n, left - T);
+                }
                 const int T_mtp = T;
                 T += chain_n;
                 const bool timed_round = !first_window;
@@ -11598,6 +11728,7 @@ int main(int argc, char** argv) {
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 if (use_mtp && mtp.prob() && !from_sfx && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+                if (barrier_adapt) route_rows[0].clear();
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -11630,10 +11761,14 @@ int main(int argc, char** argv) {
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
-                if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
+                if (!drive.d.usage.empty() && !ajob && !barrier_adapt && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                if (!accept_usage(0, a + 1)) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
@@ -11688,6 +11823,10 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 if (!drafted) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                if (barrier_adapt && !eos && produced_n < max_new && p + a + 1 >= next_adapt_p && !cache_barrier()) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }

@@ -283,6 +283,19 @@ and the asynchronous tier stay two-stage. In the config:
   advance between the verified windows. Each card's copies are queued by the decode loop itself while that card has
   no window in flight, after every window that may still read what they overwrite has finished; the moves into RAM
   wait the same way.
+- **Accepted-token cache barriers** (experimental, opt-in): `STRATA_ADAPT_BARRIER_TOKENS=64` keeps the expert
+  placement fixed for each block of 64 accepted decode tokens. Only the accepted rows count toward adaptation;
+  rejected drafts and wrong speculative windows do not. Verify windows stop at the block boundary, all commits
+  finish, and the cache copies complete before the next block starts. Pipelining stays on inside each block.
+  This needs `--serve`, a layer split, `--pcie-frac 0`, and positive `--adapt-every` and `--adapt-swaps`. The token
+  interval replaces the window-based `--adapt-every` cadence; `--adapt-swaps` and `--adapt-decay` still control each
+  update. It uses blocking updates even if `--adapt-async 1` was requested. Unset or `0` keeps the existing path.
+  Exact comparisons need the same starting expert placement, request history and barrier interval, with
+  `STRATA_IQ_MT_MIN=1` for the IQ CPU kernels and `STRATA_ROUTE_TAIL_SKIP=0` on every stage. The normal
+  rank-7 approximation uses expert ranks across the window, so different draft rows can change contributions
+  even with identical placement. The barrier does not disable that ordinary routing default.
+  `STRATA_TRACE_ADAPT=1` logs the accepted-routing and residency hashes
+  at each boundary. This option is in the CUDA/HIP engine; the separate SYCL engine is unchanged.
 - **Measured** (Swift 1.5 IQ3_XXS, 160K context, q4_0 KV, the stock draft layer, RTX 4060 Ti (layers 0-19) +
   RTX 5080 (20-47), i9-14900KF, 32 GB of RAM with the resident RAM mode on the split (#848); greedy, 500 tokens, two
   interleaved pairs of three rounds, decode tok/s): Python code 90.4 -> 103.1, C code 76.6 -> 81.6, English prose

@@ -1,0 +1,9 @@
+{
+  "native_source": "4b8e0ee4e68a3dbe7f4b25e69a78abb5869901de",
+  "combined_cpu_validation_source": "28ec132dda34d765c1cefb74ebb0ad2a99827564",
+  "upstream": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406",
+  "generate_cpp_sha256": "f73e8e436eec9cbcbe3f1fa25386e0a52391ad70122d90aa826fb7cd182cf8ec",
+  "gate_commit": "cd4d0670",
+  "hardware": "Three Tesla P4s, layer split19,37, CUDA sm61",
+  "scope": "Native source hash matched local checkout and CUDA/HIP/SYCL source exports; each result records its actual executable hash"
+}

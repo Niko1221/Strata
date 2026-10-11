@@ -1,0 +1,794 @@
+{
+  "complete": true,
+  "history_comparisons": [
+    {
+      "arm": "serial",
+      "repeat": 0,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "serial",
+      "repeat": 0,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "serial",
+      "repeat": 0,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "serial",
+      "repeat": 1,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "serial",
+      "repeat": 1,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "serial",
+      "repeat": 1,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 0,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 0,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 0,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 1,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 1,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "pipeline",
+      "repeat": 1,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 0,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 0,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 0,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 1,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 1,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "forced-rollback",
+      "repeat": 1,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 0,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 0,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 0,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 1,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 1,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "no-guess",
+      "repeat": 1,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 0,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 0,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 0,
+      "prompt": "counting",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 1,
+      "prompt": "code",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 1,
+      "prompt": "prose",
+      "matches": true
+    },
+    {
+      "arm": "serial-repeat",
+      "repeat": 1,
+      "prompt": "counting",
+      "matches": true
+    }
+  ],
+  "traces": [
+    {
+      "arm": "serial",
+      "boundaries": [
+        [
+          "91",
+          "80",
+          "2cc18e9714787ebc",
+          "d32c9590041ec945"
+        ],
+        [
+          "155",
+          "80",
+          "1d2e5ae855941f44",
+          "866b87f8333ac839"
+        ],
+        [
+          "219",
+          "80",
+          "2f034a73342a100c",
+          "fbaf39c01f916b6d"
+        ],
+        [
+          "89",
+          "80",
+          "a76239e503b33b4d",
+          "074194a9852cf29d"
+        ],
+        [
+          "153",
+          "80",
+          "e7916bf008fb3cba",
+          "d07013ee870eb71d"
+        ],
+        [
+          "217",
+          "80",
+          "693cb236e431c834",
+          "8a5da84f94521dad"
+        ],
+        [
+          "94",
+          "80",
+          "f0dd0140371bf10d",
+          "d4cad66be65eca79"
+        ],
+        [
+          "158",
+          "80",
+          "2e2b10c1529b9092",
+          "f1c0b60f35e885b1"
+        ],
+        [
+          "222",
+          "80",
+          "150f269f64371f34",
+          "cac7bc8118eb7961"
+        ],
+        [
+          "91",
+          "80",
+          "31f827b60abee076",
+          "dce08f385e20367d"
+        ],
+        [
+          "155",
+          "80",
+          "deb892400d1aabdf",
+          "0f099fb27a2acdf1"
+        ],
+        [
+          "219",
+          "80",
+          "81072eca9eca84d9",
+          "f52442d5d331b90d"
+        ],
+        [
+          "89",
+          "80",
+          "57c44f0172c24044",
+          "9786bfe2eae8a525"
+        ],
+        [
+          "153",
+          "80",
+          "e7851da47495e87b",
+          "c46b7423a6a24555"
+        ],
+        [
+          "217",
+          "80",
+          "6f6ebcecae0d0765",
+          "088cb4290bcd0219"
+        ],
+        [
+          "94",
+          "80",
+          "e345d8750543e520",
+          "0002dd6cacef079d"
+        ],
+        [
+          "158",
+          "80",
+          "428d1a8caadae061",
+          "f9d0bc4122420861"
+        ],
+        [
+          "222",
+          "80",
+          "3e789b11e762fb61",
+          "e7f5cdc69054eee9"
+        ]
+      ]
+    },
+    {
+      "arm": "pipeline",
+      "boundaries": [
+        [
+          "91",
+          "80",
+          "2cc18e9714787ebc",
+          "d32c9590041ec945"
+        ],
+        [
+          "155",
+          "80",
+          "1d2e5ae855941f44",
+          "866b87f8333ac839"
+        ],
+        [
+          "219",
+          "80",
+          "2f034a73342a100c",
+          "fbaf39c01f916b6d"
+        ],
+        [
+          "89",
+          "80",
+          "a76239e503b33b4d",
+          "074194a9852cf29d"
+        ],
+        [
+          "153",
+          "80",
+          "e7916bf008fb3cba",
+          "d07013ee870eb71d"
+        ],
+        [
+          "217",
+          "80",
+          "693cb236e431c834",
+          "8a5da84f94521dad"
+        ],
+        [
+          "94",
+          "80",
+          "f0dd0140371bf10d",
+          "d4cad66be65eca79"
+        ],
+        [
+          "158",
+          "80",
+          "2e2b10c1529b9092",
+          "f1c0b60f35e885b1"
+        ],
+        [
+          "222",
+          "80",
+          "150f269f64371f34",
+          "cac7bc8118eb7961"
+        ],
+        [
+          "91",
+          "80",
+          "31f827b60abee076",
+          "dce08f385e20367d"
+        ],
+        [
+          "155",
+          "80",
+          "deb892400d1aabdf",
+          "0f099fb27a2acdf1"
+        ],
+        [
+          "219",
+          "80",
+          "81072eca9eca84d9",
+          "f52442d5d331b90d"
+        ],
+        [
+          "89",
+          "80",
+          "57c44f0172c24044",
+          "9786bfe2eae8a525"
+        ],
+        [
+          "153",
+          "80",
+          "e7851da47495e87b",
+          "c46b7423a6a24555"
+        ],
+        [
+          "217",
+          "80",
+          "6f6ebcecae0d0765",
+          "088cb4290bcd0219"
+        ],
+        [
+          "94",
+          "80",
+          "e345d8750543e520",
+          "0002dd6cacef079d"
+        ],
+        [
+          "158",
+          "80",
+          "428d1a8caadae061",
+          "f9d0bc4122420861"
+        ],
+        [
+          "222",
+          "80",
+          "3e789b11e762fb61",
+          "e7f5cdc69054eee9"
+        ]
+      ]
+    },
+    {
+      "arm": "forced-rollback",
+      "boundaries": [
+        [
+          "91",
+          "80",
+          "2cc18e9714787ebc",
+          "d32c9590041ec945"
+        ],
+        [
+          "155",
+          "80",
+          "1d2e5ae855941f44",
+          "866b87f8333ac839"
+        ],
+        [
+          "219",
+          "80",
+          "2f034a73342a100c",
+          "fbaf39c01f916b6d"
+        ],
+        [
+          "89",
+          "80",
+          "a76239e503b33b4d",
+          "074194a9852cf29d"
+        ],
+        [
+          "153",
+          "80",
+          "e7916bf008fb3cba",
+          "d07013ee870eb71d"
+        ],
+        [
+          "217",
+          "80",
+          "693cb236e431c834",
+          "8a5da84f94521dad"
+        ],
+        [
+          "94",
+          "80",
+          "f0dd0140371bf10d",
+          "d4cad66be65eca79"
+        ],
+        [
+          "158",
+          "80",
+          "2e2b10c1529b9092",
+          "f1c0b60f35e885b1"
+        ],
+        [
+          "222",
+          "80",
+          "150f269f64371f34",
+          "cac7bc8118eb7961"
+        ],
+        [
+          "91",
+          "80",
+          "31f827b60abee076",
+          "dce08f385e20367d"
+        ],
+        [
+          "155",
+          "80",
+          "deb892400d1aabdf",
+          "0f099fb27a2acdf1"
+        ],
+        [
+          "219",
+          "80",
+          "81072eca9eca84d9",
+          "f52442d5d331b90d"
+        ],
+        [
+          "89",
+          "80",
+          "57c44f0172c24044",
+          "9786bfe2eae8a525"
+        ],
+        [
+          "153",
+          "80",
+          "e7851da47495e87b",
+          "c46b7423a6a24555"
+        ],
+        [
+          "217",
+          "80",
+          "6f6ebcecae0d0765",
+          "088cb4290bcd0219"
+        ],
+        [
+          "94",
+          "80",
+          "e345d8750543e520",
+          "0002dd6cacef079d"
+        ],
+        [
+          "158",
+          "80",
+          "428d1a8caadae061",
+          "f9d0bc4122420861"
+        ],
+        [
+          "222",
+          "80",
+          "3e789b11e762fb61",
+          "e7f5cdc69054eee9"
+        ]
+      ]
+    },
+    {
+      "arm": "no-guess",
+      "boundaries": [
+        [
+          "91",
+          "80",
+          "2cc18e9714787ebc",
+          "d32c9590041ec945"
+        ],
+        [
+          "155",
+          "80",
+          "1d2e5ae855941f44",
+          "866b87f8333ac839"
+        ],
+        [
+          "219",
+          "80",
+          "2f034a73342a100c",
+          "fbaf39c01f916b6d"
+        ],
+        [
+          "89",
+          "80",
+          "a76239e503b33b4d",
+          "074194a9852cf29d"
+        ],
+        [
+          "153",
+          "80",
+          "e7916bf008fb3cba",
+          "d07013ee870eb71d"
+        ],
+        [
+          "217",
+          "80",
+          "693cb236e431c834",
+          "8a5da84f94521dad"
+        ],
+        [
+          "94",
+          "80",
+          "f0dd0140371bf10d",
+          "d4cad66be65eca79"
+        ],
+        [
+          "158",
+          "80",
+          "2e2b10c1529b9092",
+          "f1c0b60f35e885b1"
+        ],
+        [
+          "222",
+          "80",
+          "150f269f64371f34",
+          "cac7bc8118eb7961"
+        ],
+        [
+          "91",
+          "80",
+          "31f827b60abee076",
+          "dce08f385e20367d"
+        ],
+        [
+          "155",
+          "80",
+          "deb892400d1aabdf",
+          "0f099fb27a2acdf1"
+        ],
+        [
+          "219",
+          "80",
+          "81072eca9eca84d9",
+          "f52442d5d331b90d"
+        ],
+        [
+          "89",
+          "80",
+          "57c44f0172c24044",
+          "9786bfe2eae8a525"
+        ],
+        [
+          "153",
+          "80",
+          "e7851da47495e87b",
+          "c46b7423a6a24555"
+        ],
+        [
+          "217",
+          "80",
+          "6f6ebcecae0d0765",
+          "088cb4290bcd0219"
+        ],
+        [
+          "94",
+          "80",
+          "e345d8750543e520",
+          "0002dd6cacef079d"
+        ],
+        [
+          "158",
+          "80",
+          "428d1a8caadae061",
+          "f9d0bc4122420861"
+        ],
+        [
+          "222",
+          "80",
+          "3e789b11e762fb61",
+          "e7f5cdc69054eee9"
+        ]
+      ]
+    },
+    {
+      "arm": "serial-repeat",
+      "boundaries": [
+        [
+          "91",
+          "80",
+          "2cc18e9714787ebc",
+          "d32c9590041ec945"
+        ],
+        [
+          "155",
+          "80",
+          "1d2e5ae855941f44",
+          "866b87f8333ac839"
+        ],
+        [
+          "219",
+          "80",
+          "2f034a73342a100c",
+          "fbaf39c01f916b6d"
+        ],
+        [
+          "89",
+          "80",
+          "a76239e503b33b4d",
+          "074194a9852cf29d"
+        ],
+        [
+          "153",
+          "80",
+          "e7916bf008fb3cba",
+          "d07013ee870eb71d"
+        ],
+        [
+          "217",
+          "80",
+          "693cb236e431c834",
+          "8a5da84f94521dad"
+        ],
+        [
+          "94",
+          "80",
+          "f0dd0140371bf10d",
+          "d4cad66be65eca79"
+        ],
+        [
+          "158",
+          "80",
+          "2e2b10c1529b9092",
+          "f1c0b60f35e885b1"
+        ],
+        [
+          "222",
+          "80",
+          "150f269f64371f34",
+          "cac7bc8118eb7961"
+        ],
+        [
+          "91",
+          "80",
+          "31f827b60abee076",
+          "dce08f385e20367d"
+        ],
+        [
+          "155",
+          "80",
+          "deb892400d1aabdf",
+          "0f099fb27a2acdf1"
+        ],
+        [
+          "219",
+          "80",
+          "81072eca9eca84d9",
+          "f52442d5d331b90d"
+        ],
+        [
+          "89",
+          "80",
+          "57c44f0172c24044",
+          "9786bfe2eae8a525"
+        ],
+        [
+          "153",
+          "80",
+          "e7851da47495e87b",
+          "c46b7423a6a24555"
+        ],
+        [
+          "217",
+          "80",
+          "6f6ebcecae0d0765",
+          "088cb4290bcd0219"
+        ],
+        [
+          "94",
+          "80",
+          "e345d8750543e520",
+          "0002dd6cacef079d"
+        ],
+        [
+          "158",
+          "80",
+          "428d1a8caadae061",
+          "f9d0bc4122420861"
+        ],
+        [
+          "222",
+          "80",
+          "3e789b11e762fb61",
+          "e7f5cdc69054eee9"
+        ]
+      ]
+    }
+  ],
+  "tokens_equal": true,
+  "hashes_equal": true,
+  "coverage": {
+    "serial": {
+      "drafts": 1335,
+      "speculative": 0,
+      "rollbacks": 0,
+      "suffix_windows": 0
+    },
+    "pipeline": {
+      "drafts": 1387,
+      "speculative": 354,
+      "rollbacks": 142,
+      "suffix_windows": 0
+    },
+    "forced-rollback": {
+      "drafts": 1335,
+      "speculative": 426,
+      "rollbacks": 426,
+      "suffix_windows": 0
+    },
+    "no-guess": {
+      "drafts": 1335,
+      "speculative": 0,
+      "rollbacks": 0,
+      "suffix_windows": 0
+    },
+    "serial-repeat": {
+      "drafts": 1335,
+      "speculative": 0,
+      "rollbacks": 0,
+      "suffix_windows": 0
+    }
+  },
+  "gate_exit": 1,
+  "gate_failures": [
+    "serial/prose: token difference 81, finish length",
+    "pipeline/prose: token difference 81, finish length",
+    "forced-rollback/prose: token difference 81, finish length",
+    "no-guess/prose: token difference 81, finish length",
+    "serial-repeat/prose: token difference 81, finish length"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "state": "completed",
+  "pid": 2315115,
+  "results": [
+    {
+      "label": "barrier-full-exact-1779-64",
+      "machine_seconds": 415.487,
+      "complete": true,
+      "tokens_equal": true,
+      "hashes_equal": true,
+      "gate_exit": 1
+    },
+    {
+      "label": "barrier-full-exact-1779-17",
+      "machine_seconds": 426.554,
+      "complete": true,
+      "tokens_equal": true,
+      "hashes_equal": true,
+      "gate_exit": 1
+    },
+    {
+      "label": "barrier-full-exact-barrier-iq-64",
+      "machine_seconds": 420.454,
+      "complete": true,
+      "tokens_equal": true,
+      "hashes_equal": true,
+      "gate_exit": 1
+    },
+    {
+      "label": "barrier-full-exact-barrier-iq-17",
+      "machine_seconds": 425.866,
+      "complete": true,
+      "tokens_equal": true,
+      "hashes_equal": true,
+      "gate_exit": 1
+    }
+  ],
+  "note": "Inspect matched-history proof and coverage; gate has historical repeat-reference limitation"
+}

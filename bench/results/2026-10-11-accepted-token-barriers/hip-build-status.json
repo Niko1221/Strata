@@ -1,0 +1,18 @@
+{
+  "state": "passed",
+  "pid": 19477,
+  "results": [
+    {
+      "label": "1779-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.69
+    },
+    {
+      "label": "1779-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 32.452
+    }
+  ]
+}
