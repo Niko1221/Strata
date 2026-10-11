@@ -1,0 +1,74 @@
+[strata] 2026-10-10 21:36:10 engine started: ${WORKSPACE}\engines\strata\app\engine\rocm\bin\strata.exe --serve --pack ${WORKSPACE}\models\strata\huihui-ud-iq4-xs --native ${WORKSPACE}\models\unsloth-UD-IQ4_XS\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile ${WORKSPACE}\engines\strata\app\data\expert-profile.bin --mmap-experts --expert-cache 24576 --prefill 16384 --spec 6 --max-context 262144 --kv int8 --pool-workers 8 --pcie-frac 0 --adapt-every 0 --vram-reserve-mib 4096 --prompt-cache 6 --conversation-cache-mib 0 --mtp ${WORKSPACE}\models\strata\mtp-rt --mtp-window 8192 --no-prefill-borrow --resident-budget-gib 1 --spec-min-p 0.4
+strata: WARNING --prefill 16384: prompt chunks of 8192 tokens or more crashed the engine on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, #1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at 6144
+strata: gfx1151 (Strix Halo): 18 exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE HCD_EXACT PF_PAD Q8_PACKED Q6_PACKED MMVF_ROWS ATTN_LANECELL EXPERT_V2 TSUM LFUSE GDN_SPLIT QFUSE PLE_BATCH SH_STREAM
+strata generate: memory guard: limit 31.6 GiB (source: meminfo), current 13.7 GiB, reclaimable cache credited 0.0 GiB; available 17.9 GiB (MemAvailable 17.9 GiB), floor 2560 MiB
+strata generate: native pack: ${WORKSPACE}\models\strata\huihui-ud-iq4-xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 1.4 s)
+strata generate: 1416 MiB of weights loaded from ${WORKSPACE}\models\strata\huihui-ud-iq4-xs in 0.3 s (303 canonical tensors skipped: served natively)
+native dense: STRATA_Q8_PACKED=1 packed 84 Q8_0 matrices for decode (+1912.5 MiB)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 495 native projection matrices, 3619.14 MiB of weights, in 4.4 s
+strata generate: PLE direct read probe: 110015 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile ${WORKSPACE}\engines\strata\app\data\expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of ${WORKSPACE}\models\unsloth-UD-IQ4_XS\Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata mtp: draft layer loaded, 1090 MiB of VRAM (experts 675, dense 111), files read in 0.24 s (3216 MiB/s)
+strata: STRATA_Q6_PACKED=1 packed the output head (248320 x 2560, +497.3 MiB)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 1.2 s
+strata generate: GPU 0: AMD Radeon(TM) 8060S Graphics (gfx1151)
+strata generate: HIP runtime ${WORKSPACE}\engines\strata\app\engine\rocm\bin\amdhip64_7.dll
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: the file tier reads unbuffered (STRATA_UNBUFFERED_LOAD=1)
+strata generate: CPU pool tasks/phase: 27 (automatic), participating threads: 9
+strata generate: 8 pool workers on logical processors 2,4,6,8,10,12,14,16, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: not available on this system
+strata generate: expert cache 24576 slots, 55.43 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 24576 of 24576 slots from the profile in 76.2 s (781 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 8 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.42)
+strata generate: expert arena: 55.15 GiB of VRAM-held experts handed back to the OS
+strata generate: token graph hit path: 24576 resident experts, decided on the device
+FileExpertSource: available RAM 15.83 GiB, 15.93 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: --resident-budget-gib 1.00 exceeds available commit (0.88 GiB minus 4 GiB headroom and a 0.25 GiB margin): 0.00 GiB
+FileExpertSource: RAM budget 0.00 GiB: 0 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: copied cache complement through layer 8/48 (0.00 GiB, 0 s)
+FileExpertSource: copied cache complement through layer 16/48 (0.00 GiB, 0 s)
+FileExpertSource: copied cache complement through layer 24/48 (0.00 GiB, 0 s)
+FileExpertSource: copied cache complement through layer 32/48 (0.00 GiB, 0 s)
+FileExpertSource: copied cache complement through layer 40/48 (0.00 GiB, 0 s)
+FileExpertSource: copied cache complement through layer 48/48 (0.00 GiB, 0 s)
+FileExpertSource: locked resident cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s
+strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 24576 in the GPU cache; adaptive swaps off
+strata generate: the file tier reads unbuffered (STRATA_UNBUFFERED_LOAD=1)
+strata generate: the mapped view of the experts stays open (the GGUF in place keeps its maps (token embedding, PLE))
+strata serve: Windows commit: 0.9 GiB left of a 96.7 GiB limit (RAM + page file)
+strata serve: WARNING the Windows commit limit is 96.7 GiB (RAM + page file) and 0.9 GiB of it is left, but this run plans 2.0 GiB of host allocations and keeps 4.0 GiB free: it can end at the limit with no message (exit code 0xC0000409, #1607) while RAM is still free. Raise the page file (System managed, or RAM-sized) or lower --conversation-cache-mib / --max-context / --prefill
+strata serve: every expert is in the GPU cache (24576 of 24576): the CPU prefill share has nothing to take, so it is not armed by default (STRATA_PREFILL_CPU_SHARE=auto forces it)
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+prefill gemm: hipBLASLt tuning enabled (32 rows, gfx1151, version 100500)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 8 tokens, 100.0 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata: STRATA_Q6_PACKED=1 packed the MTP draft head (106299 x 2560, +212.9 MiB)
+strata serve: 30313 MiB of VRAM free with everything loaded
+strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1151)
+strata verify: capturing the 1-token window (30307 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: capturing the 6-token window (30259 MiB of VRAM free)
+strata verify: captured the 6-token window (upload no error, sync no error)
+strata verify: capturing the 8-token window (30212 MiB of VRAM free)
+strata verify: captured the 8-token window (upload no error, sync no error)
+strata verify: capturing the 3-token window (30165 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata verify: capturing the 5-token window (30119 MiB of VRAM free)
+strata verify: captured the 5-token window (upload no error, sync no error)
+strata verify: capturing the 4-token window (30073 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata serve: prompt 116 tokens = 0 reused + 116 read in 951 ms (122.0 tok/s), 397 generated in 7321 ms (54.2 tok/s), drafts accepted 302 of 434, 0 checkpoints
+strata serve: resident RAM: 0.00 GiB of experts in RAM, 0 exchanged with the VRAM tier, 0 blob reads from the file
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 59522.1 MB read (the GGUF in place)
+strata serve: suffix drafts: 3 windows, 10 of 17 drafts accepted

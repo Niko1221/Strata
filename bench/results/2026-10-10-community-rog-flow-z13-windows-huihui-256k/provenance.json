@@ -1,0 +1,203 @@
+{
+  "Model": {
+    "PreparedUtc": "2026-10-10T18:39:20.882977+00:00",
+    "StrataVersion": "0.1.42",
+    "StrataRevision": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406",
+    "Source": {
+      "Repository": "huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF",
+      "Revision": "c219df4f109fa42c402c44c702c4e33e2ce05fe2",
+      "Quantization": "unsloth-UD-IQ4_XS",
+      "Files": [
+        {
+          "Name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+          "Path": "unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+          "Size": 10946624,
+          "Sha256": "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"
+        },
+        {
+          "Name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+          "Path": "unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+          "Size": 49835229856,
+          "Sha256": "c67b468b3b83bc12a987e455ec4a0c2c3937250da1c234ae1638d9505180c161"
+        },
+        {
+          "Name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+          "Path": "unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+          "Size": 43836407744,
+          "Sha256": "130560b6a447e0febf61de9b03476f52143160bc4bcbacc9bfa07d9538718e2c"
+        }
+      ]
+    },
+    "Command": [
+      "tools/iq_pack.py",
+      "--gguf",
+      "${WORKSPACE}\\models\\unsloth-UD-IQ4_XS\\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "--out",
+      "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs",
+      "--compat-bf16"
+    ],
+    "OriginalExpertAndPleWeightsUnchanged": true,
+    "Conversions": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\conversions.json",
+    "CopiedExpertsBin": false,
+    "PackFiles": [
+      {
+        "Path": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\dense.bin",
+        "Size": 1485688320,
+        "Sha256": "f53174059b262ed342b82e143af62056081948ef5e5f1903a1a70eeb73fa4a23"
+      },
+      {
+        "Path": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\index.txt",
+        "Size": 93559,
+        "Sha256": "e61c835287c36ececdd3c0794c1d23bcc8e0714eadc6c4aec56c152abcb2364d"
+      },
+      {
+        "Path": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\native_experts.txt",
+        "Size": 5803,
+        "Sha256": "f9a8bdec38ab634fec9a31807cc3284e6497ef24c1afa0d8853127b0537c68db"
+      },
+      {
+        "Path": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\conversions.json",
+        "Size": 171933,
+        "Sha256": "f050a448cbe24ea3af9ccac0f0ea62f84f7ce90d2c2da2042acf4877e326a77f"
+      },
+      {
+        "Path": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\tokenizer\\chat_template.jinja",
+        "Size": 9993,
+        "Sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+      }
+    ]
+  },
+  "MTP": {
+    "Source": "Qwen/Qwen3.8-Flash-Next",
+    "SourceRevision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    "SourceTensorCount": 31,
+    "SourceManifest": "${WORKSPACE}\\models\\strata\\mtp-source\\mtp-manifest.json",
+    "ExpertQuantization": "Q2_0",
+    "Converter": "Strata v0.1.42 official tools/mtp_pack.py and tools/mtp_rt.py",
+    "DraftVocabulary": "Strata official data/draft_vocab.bin (default, CJK-inclusive)",
+    "CompletedUtc": "2026-10-10T19:02:48.527101+00:00",
+    "Files": [
+      {
+        "File": "models\\strata\\mtp-rt\\dense.bin",
+        "Size": 116099072,
+        "Sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
+      },
+      {
+        "File": "models\\strata\\mtp-rt\\dense.txt",
+        "Size": 1880,
+        "Sha256": "8773c81ebb0986e37fe94a8a9933e87be48b1fabc6889a0106bcdab179d1c2ac"
+      },
+      {
+        "File": "models\\strata\\mtp-rt\\draft_vocab.bin",
+        "Size": 425196,
+        "Sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
+      },
+      {
+        "File": "models\\strata\\mtp-rt\\experts.bin",
+        "Size": 707788800,
+        "Sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+      }
+    ],
+    "GgufSha256": "a22206a4d74eafbf31063a84610292535fb3b49af9a339963817fd04aed81e4d"
+  },
+  "MeasurementSourceHashes": {
+    "screen-spec3.json": "ab61e8de6c268e7f6c5ffda0a8908c403e711ac87a394f5914a221b97b7c9932",
+    "screen-spec4.json": "3feb77d885ceec88cb3c54466f7bd6a72ca82408157746ad6a196de3e2cb32d5",
+    "screen-spec5.json": "5f693e80a56d8b5e2055a7fd264618ab909cf9a8d05a86d70856fc4ccc8f46c0",
+    "screen-spec6.json": "05188a05c0130ff10c5876973480cbbc178a0be0744370fb01ef1c6eaea498ba",
+    "refine-refine-spec2.json": "1c122d5e1d3d786e1aca3f0315c3457a136efbcd718c85cebaf8665f43ec1f78",
+    "refine-refine-spec4.json": "993feaf3d0b432432b6ee882bf309b7a8c1c46fb4bf783fca5d261a951d21081",
+    "refine-refine-spec6.json": "96d0b3dbc14c40162a967515198b73937b8c0c173df0d635d872d82b0b414aae",
+    "refine-refine-spec8.json": "f8716ddaf1dbd71d14af28a3d379ab7a718d33a7b1ff005c4f6b6cc4f50842c7",
+    "refine2-refine2-control.json": "fbda6eec082b3192b1a44ad8ba58392d37da97ad1c4bebb684c758439f5daefe",
+    "refine2-refine2-off.json": "25454e36f957f7e9a6851c787c0334304c2f1eb019439893d413257c98cc604a",
+    "refine2-refine2-spec5.json": "cfaa2ae67ed3371ceda17fff4e0436fd9e053301ba6aa6a0a2c9f2022832e7d9",
+    "refine2-refine2-spec7-retry.json": "6b736ccd91b585b084249eceb926b4e58a98f3bebd1a5c0f857c2e958837a063",
+    "refine3-refine3-floors.json": "2425840bc2313015a36bfe43fe07014f0148e1d9aab5eaa7be76cec43ad8e4d9",
+    "startup-startup-budget1.json": "c2559984fe58a5ed6116bcc66209a3462ddf5a1f08cee2d463d763755adba56b",
+    "startup-startup-budget4.json": "9ae6d387a8ff36b5abfd84713c80a24fe96edc7768d1bc3a21f33eda2e8001d1",
+    "startuporder-startuporder-layer-1.json": "e27581908a60b9f1355646f2e07b8e28fbd2dd3ea22a9fcbc565755ac5e36676",
+    "startuporder-startuporder-layer-2.json": "bb258cb5f4ced4d76c4f2a09dce88afcb83715b22acde476c21f74a5bc34fb6b",
+    "startuporder-startuporder-prior.json": "f9c42c4ad47fb2ae3f04ecda51f68716d246b944786331b6151ccd3f49baaa21",
+    "prefill-prefill-16384.json": "14c418c05a8d2778051abb6a1a59e35c1ececc2670ad5b37a390cd9a045b492b",
+    "prefill-prefill-4096.json": "738274b987ccb0d3fb2a661708e79a15fd58b368ba8324ade2fbc92562ae5a8e",
+    "prefill-prefill-6144.json": "adba4b5d7f2cdcf95e311aef30d9ae57b9b6f6d44157c4b6c1e7c6c3c8ab9997",
+    "prefill-prefill-8192.json": "4167577c642e26dea53693144f9396dd5b66415223c3e952469b1f98b59e5cef",
+    "prefilllarge-prefilllarge-32768.json": "2705a41a937db15732ac4d4b7e01cb4e41e2f0bcfa7b4cc55ace04b84876cccf",
+    "prefilllarge-prefilllarge-control.json": "e3bd69ea8b74684a65dd83249198c27f3eb7ba741933693ea0c26365d0280e5e",
+    "workers-workers-1.json": "9be0a03779b60f2be9325813e086311ba5bf200f40bcdcce0849090526f2ceaf",
+    "workers-workers-12.json": "6066e41d7b194a7445eb324e9402f405faf3febb9408ff7c732821b431c4e41e",
+    "workers-workers-16.json": "e9cb29552b73a7a15fba7b92935eb315501d44a50c57126d62770103901244d7",
+    "workers-workers-4.json": "781cf3f57943c7b1b79475a0450ffe17dd7cad2a0007c6dab50bbf157fc0e807",
+    "workers-workers-8.json": "c61424d523e61b3356fdf2358b759de8ca7bdee47c435b4ab2ab77a9e36223e2",
+    "drafting-draft-coupled.json": "695b91112d70ddabbfc22eb6b47ae666e2965f4f01acad5f6db3983b856ad0dd",
+    "drafting-draft-default.json": "0a513ad9aae75abdf8992ec0e1869dde50f57c63073a5c0e68cdfe29f03746d8",
+    "drafting-draft-english.json": "e9adfc2c5599c37c5b97037d5f4eff05e3730b67da371616df4bc0cfd3d76718",
+    "drafting-draft-prob.json": "0b60a81963cd978790580da7f6bf8c6db4fe5d49dd2e73580fcbd25834377831",
+    "drafting-draft-stream-norm.json": "83c0549c7c27ea707f133f7bd529641cc4a4f010f4e526b16ea573835b375d6c",
+    "drafttemp-drafttemp-control.json": "492f08ac76438681fb1304ac879528b7cd24730521ed0aadfba90ce06fe2c7cf",
+    "drafttemp-drafttemp-coupled.json": "66ac38ceb232f0253d8ae871ae1335d13eeea65ee002640da6d15caf3f549abe",
+    "drafttemp-drafttemp-prob.json": "7f69b6617967d779ad4293f85c64241a106fe1a027965b2d97c4f7f667ea813e",
+    "window-window-16384.json": "89009747973b9c51ff731597307ee1973ad43a6d6331cbc3f0b2bccbeabcd70a",
+    "window-window-4096.json": "da356639985e17a8f58054ab52217bcb112b357c5ffaa9d60562abc4db5c636b",
+    "window-window-8192.json": "96a7d46072bd866ab218eaedcb872a7dd50d9065c3c98cbe7a2bd78594f4e7f2",
+    "kv-kv-fp16.json": "4f538b90033eb3d2e8ec4b695297dd6f39c05fc076b2557787c73adb850fabd9",
+    "kv-kv-int8.json": "929784f1769a940397fe51c06227d0f9956bc859e0ee9cbd24062e3fe3204178",
+    "kv-kv-k8v4.json": "111720b8350e22cf0a7f8b2aafa25d9a8ad05cbbefb481729e7b088ffe298a4e",
+    "kv-kv-q4_0.json": "e9ffdb36bba76abd0945b1e679d55b5b84f88acdecfaa3fd3a175828b96bdfd5",
+    "interaction-interaction-default.json": "ea19d8389c85e4c9d77860cc1c592bfcc1d9a97fe4d46232dff766ec90031840",
+    "interaction-interaction-host-last.json": "ed0a7c3796db1b97c575bf50af2d4c0cc685045ce9989f72347771b84c6e7978",
+    "interaction-interaction-lookup-only.json": "25fa2e829010aed23e1749698ea5b0a7eea2af2c9c403c7da76d817a336ed27c",
+    "interaction-interaction-q4-lookup.json": "515fae84ede84f58bd69a0f7ce30eb64dfc6555b2f17f836a1031298df997bdc",
+    "interaction-interaction-q4-only.json": "ce8504604b500a90c9c719c4fe5add3563d9df4d3f5b9d34d3c2e2a9ecce6d67",
+    "interaction-interaction-suffix-off.json": "25d16e7711644de43375f577255a5ba9b5b062d8a6b950d963c2679aec2eed57",
+    "generalization-general-current.json": "d6bdf4b7700d18700901871b687c1773ba2344afe746d7317e7f88bce991ae1e",
+    "generalization-general-original.json": "b89cad80ecfbc7eaac1ea90de921776dd2b12708919e75301050fcf49bdca149",
+    "generalization-general-prefill-6144.json": "aa40aa8234be1b60b01a6ccc81d046e7c548b35253a011df590be2d7a1bc8542",
+    "generalization-general-spec4.json": "19d0b51e8108f50719dd280a052f4d0d1fc829c757e1064de3405bfca224e9b9",
+    "generalization-general-spec5.json": "129b9a90f2b8095c5ed904517604472e34438e97c4fd726217f79673781d35c8",
+    "quality-original-budget8192-verified.json": "f9bb4aa88c23626749e004b0206e59d9fd341cfe7dc711dd4c94f6041fd0ea24",
+    "quality-final-budget8192-verified.json": "c33921ba4af11dc9a3e7ab53720ee3a8a8a50658ced6efe63ece50e20bc706d2",
+    "optimized-256k-cache-verified.json": "c7ea26eb5f54a85dd9face7e9610c43af33464c8072dd25048c5a06ad091b38c",
+    "optimized-daily-stability-verified.json": "f98dc45625d71fee862b189fdee4cd71db7d84cce0cf98530b9a8019a1c99298",
+    "optimized-deployment.json": "7c851545d0ff100dc73e663ad5437b377b996ea63bc5840c90a04da0ad555d5a"
+  },
+  "PortablePaths": "${WORKSPACE} is the private deployment root, replaced before publication.",
+  "Hardware": {
+    "Machine": "ASUS ROG Flow Z13 2025",
+    "CPU": "AMD Ryzen AI Max+ 395",
+    "GPU": "AMD Radeon 8060S gfx1151",
+    "InstalledRAMGiB": 128,
+    "AssignedGPUMemoryGiB": 96,
+    "WindowsVisibleRAMKiB": 33185604,
+    "OS": "Windows 11 Home 10.0.26200 build 26200",
+    "GPUDriver": "32.0.31032.1003",
+    "ROCm": "10.2.0a20260930",
+    "Storage": "KIOXIA KBG60ZNS1T02 NVMe SSD, 1024209543168 bytes",
+    "Power": "AC power, Armoury Crate Turbo; sustained watts and temperature not measured",
+    "PCIeLink": "not measured",
+    "BackgroundWorkloads": "normal desktop; not exhaustively logged"
+  },
+  "LocalAssets": [
+    {
+      "Path": "${WORKSPACE}/engines/strata/app/engine/rocm/bin/strata.exe",
+      "Bytes": 102621696,
+      "Sha256": "98d9233921291ef90373bdb41854c328e30b2f4200811d06781d433df59934fc"
+    },
+    {
+      "Path": "${WORKSPACE}/engines/strata/app/data/expert-profile.bin",
+      "Bytes": 196632,
+      "Sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+    },
+    {
+      "Path": "${WORKSPACE}/engines/strata/app/tools/hip/gfx1151-hipblaslt-100500.txt",
+      "Bytes": 1028,
+      "Sha256": "6e058dfe8ec3ca806a481f1080cad3a98b66d9787dda757239662ee767ef47b5"
+    },
+    {
+      "Path": "${WORKSPACE}/models/strata/huihui-ud-iq4-xs/tokenizer/chat_template.jinja",
+      "Bytes": 9993,
+      "Sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    }
+  ]
+}

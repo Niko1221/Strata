@@ -1,0 +1,355 @@
+[
+  {
+    "Source": "refine-refine-off.json",
+    "Sha256": "6ecaf0108f109d88f201e0b3a3afb2f1a110a5c528cd3db26f3e58db9774de6e",
+    "Status": "failed",
+    "Records": 0,
+    "Details": {
+      "StartedUtc": "2026-10-10T21:29:20.504229+00:00",
+      "Status": "failed",
+      "Profile": {
+        "Name": "refine-off",
+        "Args": {
+          "--spec": "1",
+          "--suffix-draft": "0"
+        },
+        "Thresholds": [
+          0
+        ]
+      },
+      "Manifest": {
+        "Stage": "refine",
+        "BaseConfig": "${WORKSPACE}\\tests\\strata\\optimization\\configs\\foundation-direct.json",
+        "Cases": [
+          "code_greedy",
+          "code_sampled",
+          "xhigh_throughput"
+        ],
+        "Repetitions": 3,
+        "Tokens": 512,
+        "Profiles": [
+          {
+            "Name": "refine-spec4",
+            "Args": {
+              "--spec": "4"
+            },
+            "Thresholds": [
+              0,
+              0.5
+            ]
+          },
+          {
+            "Name": "refine-spec6",
+            "Args": {
+              "--spec": "6"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec7",
+            "Args": {
+              "--spec": "7"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec8",
+            "Args": {
+              "--spec": "8"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec2",
+            "Args": {
+              "--spec": "2"
+            },
+            "Thresholds": [
+              0,
+              0.5
+            ]
+          },
+          {
+            "Name": "refine-off",
+            "Args": {
+              "--spec": "1",
+              "--suffix-draft": "0"
+            },
+            "Thresholds": [
+              0
+            ]
+          }
+        ]
+      },
+      "Configuration": {
+        "exe": "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin\\strata.exe",
+        "cwd": "${WORKSPACE}\\engines\\strata\\app",
+        "backend": "hip",
+        "gpu": 0,
+        "lib_dirs": [
+          "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin"
+        ],
+        "tokenizer": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\tokenizer",
+        "model_name": "huihui-qwen3.8-flash-next-iq4-xs",
+        "host": "127.0.0.1",
+        "port": 8081,
+        "log": "${WORKSPACE}\\tests\\strata\\optimization\\logs\\refine-off.engine.log",
+        "open_browser": false,
+        "parallel": 1,
+        "reasoning_effort": "high",
+        "engine_silence_s": 300,
+        "env": {
+          "STRATA_HIPBLASLT_TUNING": "${WORKSPACE}\\engines\\strata\\app\\tools\\hip\\gfx1151-hipblaslt-100500.txt",
+          "STRATA_PF_FUSED": "1",
+          "STRATA_PF_GEMM": "1",
+          "STRATA_HC_UPMIX": "1",
+          "STRATA_PA_FAST": "1",
+          "STRATA_HIP_WMMA": "1",
+          "STRATA_SELECT_WMMA": "1",
+          "STRATA_HC_Q8": "1",
+          "STRATA_PF_SWITCH_MIN_T": "4096",
+          "STRATA_PREFILL_STREAM_MIN": "128",
+          "HIPBLASLT_TENSILE_LIBPATH": "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin\\hipblaslt\\library\\gfx1151",
+          "STRATA_FILE_RELEASE": "1",
+          "STRATA_UNBUFFERED_LOAD": "1"
+        },
+        "sampling": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "seed": 12345
+        },
+        "args": [
+          "--pack",
+          "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs",
+          "--native",
+          "${WORKSPACE}\\models\\unsloth-UD-IQ4_XS\\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+          "--expert-profile",
+          "${WORKSPACE}\\engines\\strata\\app\\data\\expert-profile.bin",
+          "--mmap-experts",
+          "--expert-cache",
+          "24576",
+          "--prefill",
+          "8192",
+          "--spec",
+          "1",
+          "--max-context",
+          "262144",
+          "--kv",
+          "int8",
+          "--pool-workers",
+          "8",
+          "--pcie-frac",
+          "0",
+          "--adapt-every",
+          "0",
+          "--vram-reserve-mib",
+          "4096",
+          "--prompt-cache",
+          "0",
+          "--conversation-cache-mib",
+          "0",
+          "--mtp",
+          "${WORKSPACE}\\models\\strata\\mtp-rt",
+          "--mtp-window",
+          "8192",
+          "--no-prefill-borrow",
+          "--resident-budget-gib",
+          "1",
+          "--suffix-draft",
+          "0"
+        ]
+      },
+      "Error": "RuntimeError('The frontend exited during model loading')"
+    }
+  },
+  {
+    "Source": "refine-refine-spec7.json",
+    "Sha256": "fc4d63e8b7179e7e16e7615530ea5836729ba612751de7fe8f3576c7d8931353",
+    "Status": "failed",
+    "Records": 0,
+    "Details": {
+      "StartedUtc": "2026-10-10T21:15:06.534126+00:00",
+      "Status": "failed",
+      "Profile": {
+        "Name": "refine-spec7",
+        "Args": {
+          "--spec": "7"
+        },
+        "Thresholds": [
+          0.4,
+          0.5,
+          0.6
+        ]
+      },
+      "Manifest": {
+        "Stage": "refine",
+        "BaseConfig": "${WORKSPACE}\\tests\\strata\\optimization\\configs\\foundation-direct.json",
+        "Cases": [
+          "code_greedy",
+          "code_sampled",
+          "xhigh_throughput"
+        ],
+        "Repetitions": 3,
+        "Tokens": 512,
+        "Profiles": [
+          {
+            "Name": "refine-spec4",
+            "Args": {
+              "--spec": "4"
+            },
+            "Thresholds": [
+              0,
+              0.5
+            ]
+          },
+          {
+            "Name": "refine-spec6",
+            "Args": {
+              "--spec": "6"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec7",
+            "Args": {
+              "--spec": "7"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec8",
+            "Args": {
+              "--spec": "8"
+            },
+            "Thresholds": [
+              0.4,
+              0.5,
+              0.6
+            ]
+          },
+          {
+            "Name": "refine-spec2",
+            "Args": {
+              "--spec": "2"
+            },
+            "Thresholds": [
+              0,
+              0.5
+            ]
+          },
+          {
+            "Name": "refine-off",
+            "Args": {
+              "--spec": "1",
+              "--suffix-draft": "0"
+            },
+            "Thresholds": [
+              0
+            ]
+          }
+        ]
+      },
+      "Configuration": {
+        "exe": "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin\\strata.exe",
+        "cwd": "${WORKSPACE}\\engines\\strata\\app",
+        "backend": "hip",
+        "gpu": 0,
+        "lib_dirs": [
+          "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin"
+        ],
+        "tokenizer": "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs\\tokenizer",
+        "model_name": "huihui-qwen3.8-flash-next-iq4-xs",
+        "host": "127.0.0.1",
+        "port": 8081,
+        "log": "${WORKSPACE}\\tests\\strata\\optimization\\logs\\refine-spec7.engine.log",
+        "open_browser": false,
+        "parallel": 1,
+        "reasoning_effort": "high",
+        "engine_silence_s": 300,
+        "env": {
+          "STRATA_HIPBLASLT_TUNING": "${WORKSPACE}\\engines\\strata\\app\\tools\\hip\\gfx1151-hipblaslt-100500.txt",
+          "STRATA_PF_FUSED": "1",
+          "STRATA_PF_GEMM": "1",
+          "STRATA_HC_UPMIX": "1",
+          "STRATA_PA_FAST": "1",
+          "STRATA_HIP_WMMA": "1",
+          "STRATA_SELECT_WMMA": "1",
+          "STRATA_HC_Q8": "1",
+          "STRATA_PF_SWITCH_MIN_T": "4096",
+          "STRATA_PREFILL_STREAM_MIN": "128",
+          "HIPBLASLT_TENSILE_LIBPATH": "${WORKSPACE}\\engines\\strata\\app\\engine\\rocm\\bin\\hipblaslt\\library\\gfx1151",
+          "STRATA_FILE_RELEASE": "1",
+          "STRATA_UNBUFFERED_LOAD": "1"
+        },
+        "sampling": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "seed": 12345
+        },
+        "args": [
+          "--pack",
+          "${WORKSPACE}\\models\\strata\\huihui-ud-iq4-xs",
+          "--native",
+          "${WORKSPACE}\\models\\unsloth-UD-IQ4_XS\\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+          "--expert-profile",
+          "${WORKSPACE}\\engines\\strata\\app\\data\\expert-profile.bin",
+          "--mmap-experts",
+          "--expert-cache",
+          "24576",
+          "--prefill",
+          "8192",
+          "--spec",
+          "7",
+          "--max-context",
+          "262144",
+          "--kv",
+          "int8",
+          "--pool-workers",
+          "8",
+          "--pcie-frac",
+          "0",
+          "--adapt-every",
+          "0",
+          "--vram-reserve-mib",
+          "4096",
+          "--prompt-cache",
+          "0",
+          "--conversation-cache-mib",
+          "0",
+          "--mtp",
+          "${WORKSPACE}\\models\\strata\\mtp-rt",
+          "--mtp-window",
+          "8192",
+          "--no-prefill-borrow",
+          "--resident-budget-gib",
+          "1"
+        ]
+      },
+      "Error": "RuntimeError('The frontend exited during model loading')"
+    }
+  }
+]
