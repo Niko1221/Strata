@@ -51,6 +51,15 @@ class Apply(unittest.TestCase):
         new, _ = runconfig.apply({"sampling": {"top_k": 20}}, {"sampling.top_k": None})
         self.assertNotIn("sampling", new)                                 # an empty block goes
 
+    def test_the_responses_store_budget(self):
+        new, changed = runconfig.apply(CFG, {"responses_store_mib": 64})
+        self.assertEqual((changed, new["responses_store_mib"]), (["responses_store_mib"], 64))
+        new, _ = runconfig.apply(new, {"responses_store_mib": None})       # empty: off again
+        self.assertNotIn("responses_store_mib", new)
+        for bad in (-1, 1.5, True, "64"):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                runconfig.apply(CFG, {"responses_store_mib": bad})
+
     def test_refused(self):
         for changes in ({"api_key": "x"}, {"host": "0.0.0.0"}, {"mcp_servers": {}}, {"before_load": "calc.exe"},
                         {"args": []}, {"exe": "evil.exe"}, {"trusted_origins": ["*"]}, {"allowed_hosts": ["*"]},

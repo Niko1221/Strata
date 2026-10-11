@@ -169,7 +169,8 @@ line when it is ready; the engine log is `strata-<model>.log` in the Strata fold
 - **Any OpenAI-compatible app or agent:** base URL `http://127.0.0.1:8080/v1`, any API key (or the configured one),
   any model name.
 - **Anthropic-compatible apps:** `http://127.0.0.1:8080/v1/messages`.
-- **Codex CLI and other Responses API apps:** `http://127.0.0.1:8080/v1/responses` (stateless; Codex's
+- **Codex CLI and other Responses API apps:** `http://127.0.0.1:8080/v1/responses` (stateless by default; optional
+  bounded history via `--responses-store-mib`; Codex's
   `config.toml`: [DETAILS.md](DETAILS.md#the-responses-api-and-codex-cli)).
 - **Claude Code:** `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`, `ANTHROPIC_MODEL` set to a Claude model name it knows
   (Strata ignores the name), and any `ANTHROPIC_AUTH_TOKEN` (or the configured key).
