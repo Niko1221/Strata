@@ -12,7 +12,7 @@ endif()
 # same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental.
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1034 gfx1150 gfx1151)   # gfx1103: Radeon 780M iGPU, opt-in, portable kernels (no WMMA)
+set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1034 gfx1150 gfx1151 gfx1152)   # gfx1103: Radeon 780M iGPU, opt-in, portable kernels (no WMMA); gfx1152: Krackan, Radeon 860M / 840M (#1625), builds with the portable kernels, no card report yet
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")

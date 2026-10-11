@@ -7,6 +7,7 @@
 //     q8k_quant_parity --bench    ns per 2560-value row, ggml-cpu's and the AVX-2 copy
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/iq_avx2.hpp"
+#include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
 #include "ggml.h"
@@ -93,6 +94,7 @@ int main(int argc, char** argv) {
     const ggml_from_float_t ref = quantize_row_q8_K_ref;
     const ggml_from_float_t gcpu = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
     const bool avx2 = cpu::cpu_avx2_ok();
+    const bool avx1 = !avx2 && cpu::cpu_avx1_ok();   // the older CPUs' copy (checked wherever AVX exists)
     int failures = 0, checked = 0;
     for (const int n : {256, 512, 2560, 6144}) {
         const size_t bytes = ggml_row_size(GGML_TYPE_Q8_K, n);
@@ -100,6 +102,7 @@ int main(int argc, char** argv) {
         for (int ci = 0; ci < (int) cs.size(); ++ci) {
             failures += !same("ggml-cpu vs reference", n, ci, ref, gcpu, cs[(size_t) ci], bytes);
             if (avx2) failures += !same("AVX-2 vs reference", n, ci, ref, cpu::q8k_quant_avx2, cs[(size_t) ci], bytes);
+            if (avx1) failures += !same("AVX1 vs reference", n, ci, ref, cpu::q8k_quant_avx1, cs[(size_t) ci], bytes);
             ++checked;
         }
     }
@@ -115,9 +118,10 @@ int main(int argc, char** argv) {
         failures += !same("native_quant_act", 2560, 0, ref, via_act, x, ggml_row_size(GGML_TYPE_Q8_K, 2560));
     for (const auto& x : cases(512))
         failures += !same("native_quant_h", 512, 0, ref, via_h, x, ggml_row_size(GGML_TYPE_Q8_K, 512));
-    std::printf("q8k_quant_parity: %d rows x 4 sizes, AVX-2 copy %s: %s\n", checked / 4,
-                avx2 ? "checked" : "skipped (no AVX2, or STRATA_FORCE_ISA)", failures ? "FAILED" : "identical");
-    if (bench && avx2) {
+    std::printf("q8k_quant_parity: %d rows x 4 sizes, AVX-2 copy %s, AVX1 copy %s: %s\n", checked / 4,
+                avx2 ? "checked" : "skipped (no AVX2, or STRATA_FORCE_ISA)",
+                avx1 ? "checked" : "skipped (AVX2 present, no AVX, or STRATA_FORCE_ISA)", failures ? "FAILED" : "identical");
+    if (bench && (avx2 || avx1)) {
         std::mt19937 rng(3);
         std::normal_distribution<float> nd(0.f, 1.f);
         const int n = 2560, rows = 4096;
@@ -137,7 +141,7 @@ int main(int argc, char** argv) {
             return best;
         };
         const double a = time("ggml-cpu", gcpu);
-        const double b = time("AVX-2", cpu::q8k_quant_avx2);
+        const double b = avx2 ? time("AVX-2", cpu::q8k_quant_avx2) : time("AVX1", cpu::q8k_quant_avx1);
         std::printf("  %.1fx\n", a / b);
     }
     return failures ? 1 : 0;

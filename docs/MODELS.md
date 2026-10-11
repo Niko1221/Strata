@@ -62,7 +62,7 @@ in a pull request.
 | **Q2_0** | 37.6 GB | fastest | good |
 | **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
 | **IQ3_XXS** | 47.0 GB | slower | great |
-| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests (original model only) |
+| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests |
 
 The download is 66-76 GB for the three smaller sizes ([details](DETAILS.md#which-model)); the first start also
 fetches the MTP draft layer (~6 GB, +1 GB with images).
@@ -110,7 +110,7 @@ START-HERE.bat --setup --family coder
 
 **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)** - a fine-tune by UkisAI that
 thinks much shorter before answering, so you get the answer sooner, with about the same quality. Same speed per
-token, and about the same RAM as the same size of the original (no IQ3_S). Its own license applies (see its page).
+token, and about the same RAM as the same size of the original. Its own license applies (see its page).
 More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 
 ```

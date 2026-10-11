@@ -185,7 +185,7 @@ line when it is ready; the engine log is `strata-<model>.log` in the Strata fold
 | Download or install stopped | Rerun the same setup command; it continues. |
 | `port 8080 is already in use` | Strata is already running (check `/health`), or use `--port 8081`. |
 | Very slow, disk busy, or "the engine stopped unexpectedly" | Not enough free RAM: close programs, or set up a smaller size (`--setup --model Q2_0` or IQ2_XS). |
-| `ExpertCache: cudaMalloc(...) failed: out of memory` with free VRAM (Windows) | The page file is off or tiny: set it to "System managed" and restart. |
+| `ExpertCache: cudaMalloc(...) failed: out of memory` with free VRAM (Windows) | The page file is off or tiny: set a fixed size (Custom size, the same initial and maximum size, e.g. 65536 MB) and restart; a page file Windows grows on demand ("System managed") may not grow in time (#60). |
 | `prompt ... exceeds the context` | Rerun setup with `--setup --context <bigger>`. |
 | No AMD GPU found (Linux) | The amdgpu driver lists no GPU; check the card and driver. Integrated GPUs are not supported. |
 | Python or build tools could not be installed | Install what the message names (links are printed), then rerun. |

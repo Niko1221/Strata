@@ -2,6 +2,9 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#if defined(STRATA_HIP_GFX906)
+#include "strata/kernels/gfx_arch.hpp"
+#endif
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -81,7 +84,37 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
     } else load8_q4(p, value, row, d0, out);
 }
 
-template <int KV_MODE, bool LANE_CELL = false>
+// Exact-intent score reduce-scatter: the same butterfly pairs as twelve warp_sum calls,
+// with 16 shuffle exchanges instead of 60. Used only by the opt-in gfx906 INT8
+// query-swizzled specialization; softmax, value accumulation and merge are unchanged.
+__device__ __forceinline__ float reduce12_gfx906(const float (&part)[16], int lane) {
+    float r8[8];
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const bool hi = (lane & 16) != 0;
+        r8[i] = (hi ? part[i + 8] : part[i]) + __shfl_xor_sync(0xffffffffu, hi ? part[i] : part[i + 8], 16);
+    }
+    float r4[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const bool hi = (lane & 8) != 0;
+        r4[i] = (hi ? r8[i + 4] : r8[i]) + __shfl_xor_sync(0xffffffffu, hi ? r8[i] : r8[i + 4], 8);
+    }
+    float r2[2];
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const bool hi = (lane & 4) != 0;
+        r2[i] = (hi ? r4[i + 2] : r4[i]) + __shfl_xor_sync(0xffffffffu, hi ? r4[i] : r4[i + 2], 4);
+    }
+    const bool hi2 = (lane & 2) != 0;
+    const float r1 = (hi2 ? r2[1] : r2[0]) + __shfl_xor_sync(0xffffffffu, hi2 ? r2[0] : r2[1], 2);
+    return r1 + __shfl_xor_sync(0xffffffffu, r1, 1);
+}
+__device__ __forceinline__ int reduce12_head_of_lane(int lane) {
+    return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
+}
+
+template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -108,7 +141,15 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         if (t < G) { part_m[slot * G + t] = -FLT_MAX; part_l[slot * G + t] = 0.0f; }
         return;
     }
-    for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
+    // Opt-in gfx906 batched attention: a bijective XOR of query dimensions in LDS only. It swaps the two
+    // float4 halves of lanes whose bit 2 is set, retaining 16-byte alignment and the 12 KB tile.
+    // The scoring reads undo this permutation; FP operands and operation order are unchanged.
+    static_assert(!QUERY_SWIZZLE || !LANE_CELL, "query swizzle is for warp scoring only");
+    for (int i = t; i < G * HD; i += THREADS) {
+        const int d = i % HD;
+        const int sd = QUERY_SWIZZLE ? (d ^ ((d >> 3) & 4)) : d;
+        sq[i / HD][sd] = q[(size_t) (kvh * G) * HD + i];
+    }
     if (t < CHUNK) {
         long long r = -1;
         if (t < n_here) {
@@ -162,16 +203,37 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             if (lane < G) sp[lane][c] = -FLT_MAX;
             continue;
         }
+        if constexpr (REDUCE12) {
+        float k8[8];
+        load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        float part[16];
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+            const int qflip = QUERY_SWIZZLE ? (lane & 4) : 0;
+            const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + qflip]);
+            const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + (qflip ^ 4)]);
+            float s = k8[0] * qa.x + k8[1] * qa.y + k8[2] * qa.z + k8[3] * qa.w +
+                      k8[4] * qb.x + k8[5] * qb.y + k8[6] * qb.z + k8[7] * qb.w;
+            part[h] = s;
+        }
+#pragma unroll
+        for (int h = G; h < 16; ++h) part[h] = 0.0f;
+        const float score = reduce12_gfx906(part, lane);
+        const int head = reduce12_head_of_lane(lane);
+        if ((lane & 1) == 0 && head < G) sp[head][c] = score * scale;
+        } else {
         float k8[8];
         load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
 #pragma unroll
         for (int h = 0; h < G; ++h) {
-            const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8]);
-            const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + 4]);
+            const int qflip = QUERY_SWIZZLE ? (lane & 4) : 0;
+            const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + qflip]);
+            const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + (qflip ^ 4)]);
             float s = k8[0] * qa.x + k8[1] * qa.y + k8[2] * qa.z + k8[3] * qa.w +
                       k8[4] * qb.x + k8[5] * qb.y + k8[6] * qb.z + k8[7] * qb.w;
             s = warp_sum(s);
             if (lane == 0) sp[h][c] = s * scale;
+        }
         }
     }
     __syncthreads();
@@ -482,6 +544,34 @@ __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict_
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
+#if defined(STRATA_HIP_GFX906)
+// The compat backend can target other architectures. Check the calling thread's current device,
+// caching only its last ordinal so a layer split or another thread cannot reuse the wrong answer.
+bool query_swizzle_gfx906_device() {
+    static thread_local int cached_device = -1;
+    static thread_local bool cached_supported = false;
+    int device = -1;
+    if (hipGetDevice(&device) != hipSuccess || device < 0) {
+        cached_device = -1;
+        cached_supported = false;
+        (void) hipGetLastError();
+        return false;
+    }
+    if (device != cached_device) {
+        cached_device = -1;
+        cached_supported = false;
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, device) != hipSuccess) {
+            (void) hipGetLastError();
+            return false;
+        }
+        cached_supported = gfx_arch_is(prop.gcnArchName, "gfx906") && prop.warpSize == 64;
+        cached_device = device;
+    }
+    return cached_supported;
+}
+#endif
+
 #if defined(STRATA_ATTN_PRE75_BUILT)
 // CUDA: the current device is below sm_75; HIP: it is gfx103x (per device: a layer split can mix cards).
 // STRATA_ATTN_PRE75=0 turns PR #540's kernel off (A/B); on HIP =1 also runs it on another wave32 card.
@@ -546,6 +636,19 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     cudaStream_t st = (cudaStream_t) stream;
     // S25: STRATA_ATTN_LANECELL=1 - the score phase one cell per thread (bit-identical scores, no shuffle reductions)
     static const bool lane_cell = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
+#if defined(STRATA_HIP_GFX906)
+    static const bool query_swizzle = [] {
+        const char* v = std::getenv("STRATA_GFX906_ATTN_QUERY_SWIZZLE"); return v && v[0] == '1';
+    }();
+    const bool use_query_swizzle = query_swizzle && !lane_cell && kv_mode == 1 && query_swizzle_gfx906_device();
+    static const bool query_swizzle_trace = std::getenv("STRATA_GFX906_ATTN_QUERY_SWIZZLE_TRACE") != nullptr;
+    static thread_local bool query_swizzle_said = false;
+    if (query_swizzle_trace && !query_swizzle_said) {
+        query_swizzle_said = true;
+        std::fprintf(stderr, "strata attn-query-swizzle: active=%d nq=%lld cap=%lld kv_mode=%d lane_cell=%d\n",
+                     use_query_swizzle, (long long) n_q, (long long) cap, kv_mode, lane_cell);
+    }
+#endif
 #define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
         if (kv_mode == 3) STRATA_ATTN_LC(3);
@@ -554,6 +657,36 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         else STRATA_ATTN_LC(0);
     } else
 #undef STRATA_ATTN_LC
+#if defined(STRATA_HIP_GFX906)
+    // Opt-in INT8 batched attention: prefill, verification and MTP (including n_q=1).
+    // Other pool formats and lane-cell scoring keep their paths; qsa_decode_attn_step is unchanged.
+    // A k8v4 model's MTP drafter uses INT8 pools and can therefore take this path.
+    if (use_query_swizzle) {
+        // use_query_swizzle already requires INT8, warp scoring, and the calling
+        // thread's current device to be exactly gfx906 with a 64-lane wavefront.
+        static const bool reduce12 = [] {
+            const char* v = std::getenv("STRATA_GFX906_ATTN_REDUCE12");
+            return v && v[0] == '1' && v[1] == '\0';
+        }();
+        if (reduce12) {
+            attn_chunk_kernel<1, false, true, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
+                (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
+            static const bool trace = [] {
+                const char* v = std::getenv("STRATA_GFX906_ATTN_REDUCE12_TRACE");
+                return v && v[0] == '1' && v[1] == '\0';
+            }();
+            static thread_local bool said = false;
+            if (trace && !said) {
+                said = true;
+                std::fprintf(stderr, "strata attn-reduce12: selected=1 query_swizzle=1 kv_mode=1 nq=%lld cap=%lld\n",
+                             (long long) n_q, (long long) cap);
+            }
+        } else {
+            attn_chunk_kernel<1, false, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps,
+                (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
+        }
+    } else
+#endif
     if (kv_mode == 3)
         STRATA_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);

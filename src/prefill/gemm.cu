@@ -606,39 +606,63 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     }
 #endif
 #if !defined(__HIPCC__)
-    if (const int path = K > 0 ? bf16_path() : 0; path == 1 && N > 1 && beta == 0.0f) {
-        // a single output row stays cuBLAS's GEMV, faster than the conversions; beta = 1: see above
-        const int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
-        if (grow(tc_w_, tc_w_elems_, N * K) && grow(tc_x_, tc_x_elems_, x_rows * K)) {
-            bf16_to_f16(W, tc_w_, N * K, (cudaStream_t) stream_);
-            for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
-                const int64_t n = std::min<int64_t>(x_rows, T - t0);
-                bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
-                f16(tc_x_, tc_w_, Y + t0 * ldy, n, N, K, ldy, beta);
-            }
-            return;
-        }
-    }
 #if defined(STRATA_EXPERIMENTAL_SM60)
-    else if (path == 2) {
-        // Pascal: fp32 copies (2 elements of the 2-byte buffers each).  Every tile is a disjoint block of Y, so each
-        // gets the caller's beta.
-        const int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
-        if (grow(tc_w_, tc_w_elems_, 2 * N * K) && grow(tc_x_, tc_x_elems_, 2 * x_rows * K)) {
-            float* const wf = reinterpret_cast<float*>(tc_w_);
-            float* const xf = reinterpret_cast<float*>(tc_x_);
-            bf16_to_f32(W, wf, N * K, (cudaStream_t) stream_);
-            for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
-                const int64_t n = std::min<int64_t>(x_rows, T - t0);
-                bf16_to_f32(X + t0 * K, xf, n * K, (cudaStream_t) stream_);
-                ck(cublasSgemm((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) n, (int) K, &alpha,
-                               wf, (int) K, xf, (int) K, &beta, Y + t0 * ldy, (int) ldy),
-                   "cublasSgemm (bf16 on Pascal)");
+    constexpr bool kPascalPath = true;
+#else
+    constexpr bool kPascalPath = false;
+#endif
+    if (const int path = K > 0 ? bf16_path() : 0; (path == 1 && N > 1 && beta == 0.0f) || (path == 2 && kPascalPath)) {
+        // FP16 (path 1) or FP32 (path 2, Pascal) copies of the weight and of X, converted in tiles.  Issue #1757: when
+        // the buffers did not fit in the VRAM that was left (a stage of a layer split keeps ~100 MiB), this fell through
+        // to the raw BF16 cuBLAS call, which a Pascal card answers with CUBLAS_STATUS_INTERNAL_ERROR (14).  Now the
+        // weight is converted in tiles of N rows (the whole weight when it fits, as before) and X in slices; a card with
+        // no room even for a tile says so.  A single output row stays cuBLAS's GEMV for path 1 (faster than the
+        // conversions).  Every tile is a disjoint block of Y, so each gets the caller's beta.
+        const int mult = path == 2 ? 2 : 1;   // 2-byte elements per converted value
+        int64_t w_rows = N;
+        int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
+        bool fit = false;
+        for (;;) {
+            if (grow(tc_w_, tc_w_elems_, mult * w_rows * K) && grow(tc_x_, tc_x_elems_, mult * x_rows * K)) { fit = true; break; }
+            if (w_rows <= 64 && x_rows <= 64) break;
+            w_rows = std::max<int64_t>(std::min<int64_t>(w_rows, 64), w_rows / 2);
+            x_rows = std::max<int64_t>(std::min<int64_t>(x_rows, 64), x_rows / 2);
+        }
+        if (!fit && path == 2) {   // Pascal has no BF16 cuBLAS call to fall back to; Volta keeps its raw one below
+            std::fprintf(stderr, "prefill gemm: no GPU memory left for the %s conversion buffers of a %lld x %lld BF16 weight "
+                                 "(Pascal cards run the BF16 products through them); free VRAM on this card: raise "
+                                 "--vram-reserve-mib, lower --max-context or --kv-resident, or give it fewer layers\n",
+                         "FP32", (long long) N, (long long) K);
+            std::exit(1);
+        }
+        if (fit) {
+            for (int64_t n0 = 0; n0 < N; n0 += w_rows) {
+                const int64_t nn = std::min<int64_t>(w_rows, N - n0);
+                if (path == 2) {
+#if defined(STRATA_EXPERIMENTAL_SM60)
+                    float* const wf = reinterpret_cast<float*>(tc_w_);
+                    float* const xf = reinterpret_cast<float*>(tc_x_);
+                    bf16_to_f32(W + n0 * K, wf, nn * K, (cudaStream_t) stream_);
+                    for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
+                        const int64_t n = std::min<int64_t>(x_rows, T - t0);
+                        bf16_to_f32(X + t0 * K, xf, n * K, (cudaStream_t) stream_);
+                        ck(cublasSgemm((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) nn, (int) n, (int) K, &alpha,
+                                       wf, (int) K, xf, (int) K, &beta, Y + t0 * ldy + n0, (int) ldy),
+                           "cublasSgemm (bf16 on Pascal)");
+                    }
+#endif
+                } else {
+                    bf16_to_f16(W + n0 * K, tc_w_, nn * K, (cudaStream_t) stream_);
+                    for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
+                        const int64_t n = std::min<int64_t>(x_rows, T - t0);
+                        bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
+                        f16(tc_x_, tc_w_, Y + t0 * ldy + n0, n, nn, K, ldy, beta);
+                    }
+                }
             }
             return;
         }
     }
-#endif
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
@@ -674,10 +698,32 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
+#if !defined(__HIPCC__)
+    const auto f16_gemm = [&](cublasGemmAlgo_t algo) {
+        return cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha,
+                            W, CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
+                            CUBLAS_COMPUTE_32F, algo);
+    };
+    // Issue #1650: with a second CUDA device initialized in the process, cuBLAS 12 answers the default algorithm of a
+    // few shapes - narrow ones, and the set moves with K - with CUBLAS_STATUS_INTERNAL_ERROR; a fixed algorithm keeps
+    // a kernel that state does not break.  Only the shapes that fail are moved (the failing call itself is harmless);
+    // the wide shapes, for which the fixed algorithms are markedly slower, stay on the default.
+    const int64_t shape = ((int64_t) K << 32) | (uint32_t) N;
+    cublasGemmAlgo_t algo = CUBLAS_GEMM_DEFAULT;
+    for (int i = 0; i < f16_algo_n_; ++i)
+        if (f16_algo_shape_[i] == shape) { algo = CUBLAS_GEMM_ALGO2; break; }
+    cublasStatus_t st = f16_gemm(algo);
+    if (st == CUBLAS_STATUS_INTERNAL_ERROR && algo == CUBLAS_GEMM_DEFAULT) {
+        if (f16_algo_n_ < kF16AlgoSlots) f16_algo_shape_[f16_algo_n_++] = shape;
+        st = f16_gemm(CUBLAS_GEMM_ALGO2);
+    }
+    ck(st, "cublasGemmEx f16");
+#else
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
+#endif
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
