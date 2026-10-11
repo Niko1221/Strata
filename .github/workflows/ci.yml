@@ -2,9 +2,9 @@ name: CPU CI
 
 on:
   push:
-    branches: [main, codex/adaptive-background-draft]
+    branches: [main, codex/adaptive-background-draft, codex/fix-learned-profile-reload-identity]
   pull_request:
-    branches: [main]
+    branches: [main, codex/adaptive-background-draft]
   workflow_dispatch:
 
 permissions:
