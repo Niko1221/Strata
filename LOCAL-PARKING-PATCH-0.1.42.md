@@ -300,7 +300,12 @@ The non-ASCII audit of both park copies reports `non_ascii_bytes=0` and `bom=Fal
   `sycl/src/program/generate.cpp` - `git grep park_current_body v0.1.42` finds exactly these two), but no Intel
   oneAPI toolchain is installed on this machine, so `sycl/src/program/generate.cpp` was reviewed by hand and not
   compiled. The edits there are the same three as the CUDA side minus the probe, and use no SYCL-specific API.
-  HIP has no separate park copy.
+  The header fixes do reach the SYCL build: `sycl/CMakeLists.txt:110` adds `${STRATA_ROOT}/include` to the
+  include path, `sycl/include/strata` has no `core/` override, and the engine target lists
+  `src/core/conversation_memory.cpp` (L221), which `strata_resolve` falls back to the shared root copy for
+  (L98). What the SYCL park copy still lacks is only the CUDA side's richer admission wording (it prints
+  "physical RAM admission" without the probe/eviction detail); the behaviour fixes - `evictable_bytes()` in
+  `make_room` and the `put_reuse()` hand-back - are shared code. HIP has no separate park copy.
 * The Windows commit pressure itself is not removed by this patch — the engine still commits tens of GiB for
   the locked arena. What changed is that the park decision now reads the right number, stops spending
   conversations it cannot spend, keeps the K/V it already had, and says which limit refused.
