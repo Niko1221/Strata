@@ -9,7 +9,9 @@ Codex CLI is the first client.  What it needs, and what this does:
   * `instructions` and `developer` messages -> the system message (leading ones merged, so the prompt start is stable
     and the conversation cache holds across turns);
   * function tools, also inside `namespace` tools (Codex's MCP and agent tools: the model sees `namespace.name`) and
-    `custom` tools (a free-form `input` string); hosted tools (web search, ...) are left out, the model cannot run them;
+    `custom` tools (a free-form `input` string); client-side `tool_search` (Codex's deferred tool discovery) goes to
+    the model as the plain function `tool_search` and comes back as a `tool_search_call` the client answers; hosted
+    tools (web search, ...) are left out, the model cannot run them;
   * reasoning items: the model's thinking is returned as `reasoning_text` content (no summaries: this model does not
     write them, see docs/DETAILS.md) and, when `include` asks for `reasoning.encrypted_content`, also as an opaque
     `encrypted_content` string (base64, not encrypted: the client already holds the text).  Either form sent back is
@@ -30,8 +32,9 @@ import uuid
 from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
+CLIENT_TOOL_SEARCH = "tool_search"                # Codex's tool discovery: the client runs the search, the model only calls it
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
-                "code_interpreter", "image_generation", "local_shell", "mcp", "tool_search")
+                "code_interpreter", "image_generation", "local_shell", "mcp")
 
 
 class ResponsesError(ValueError):
@@ -191,6 +194,26 @@ def input_messages(req: dict) -> list[dict]:
             messages.append({"role": "tool", "content": _tool_output(item, param), "_call_id": item.get("call_id")})
             open_turn = None
             thinking.clear()
+        elif kind == "tool_search_call":
+            # Codex's tool discovery, sent back with the rest of the conversation: the model made it as the plain
+            # function `tool_search`, so it goes back as one
+            if item.get("execution") not in (None, "client"):
+                raise ResponsesError("only the client can run tool_search", param + ".execution")
+            target = open_turn if open_turn is not None and not thinking else turn()
+            target.setdefault("tool_calls", []).append({
+                "function": {"name": CLIENT_TOOL_SEARCH,
+                             "arguments": _arguments(item.get("arguments"), param + ".arguments")},
+                "_call_id": item.get("call_id")})
+        elif kind == "tool_search_output":
+            # what the search found: the tools, as the tool message a function_call_output becomes
+            if item.get("execution") not in (None, "client"):
+                raise ResponsesError("only the client can run tool_search", param + ".execution")
+            found = item.get("tools")
+            messages.append({"role": "tool", "content": json.dumps(found if isinstance(found, list) else [],
+                                                                   ensure_ascii=False),
+                             "_call_id": item.get("call_id")})
+            open_turn = None
+            thinking.clear()
         elif kind == "additional_tools":
             continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":
@@ -240,22 +263,32 @@ def request_tools(req: dict):
     if not isinstance(given, list):
         raise ResponsesError("tools must be an array", "tools")
     # #782 (Codex v0.160): `additional_tools` input items carry more tool definitions (a `tools` array, as the request
-    # has); they join the request's own, and an item without a usable array adds nothing
+    # has); they join the request's own, and an item without a usable array adds nothing. Codex's client-side
+    # `tool_search` puts what the search found in a `tool_search_output` item, and the model can only call those tools
+    # when they are declared here too.
     extra = [t for item in (req.get("input") if isinstance(req.get("input"), list) else [])
-             if isinstance(item, dict) and item.get("type") == "additional_tools" and isinstance(item.get("tools"), list)
+             if isinstance(item, dict) and item.get("type") in ("additional_tools", "tool_search_output")
+             and isinstance(item.get("tools"), list)
              for t in item["tools"]]
     given = list(given) + extra
 
     def add(tool, param, namespace=None, ns_description=""):
         kind = tool.get("type")
         name = tool.get("name")
+        if kind == "tool_search":
+            if name not in (None, CLIENT_TOOL_SEARCH):
+                raise ResponsesError(f"tool_search is declared as {CLIENT_TOOL_SEARCH}", param + ".name")
+            name = CLIENT_TOOL_SEARCH                # Codex declares its tool discovery without a name
         if not isinstance(name, str) or not name:
             raise ResponsesError("a tool needs a name", param + ".name")
         flat = f"{namespace}.{name}" if namespace else name
+        if flat in names:
+            # already declared: the first-seen one wins, the order the prompt cache holds (#1624)
+            return
         description = tool.get("description") or ""
         if ns_description:
             description = ns_description + ("\n\n" + description if description else "")
-        if kind == "function":
+        if kind in ("function", "tool_search"):
             params = tool.get("parameters") or {"type": "object", "properties": {}}
         else:                                        # custom: free-form text, maybe in a grammar the model reads
             fmt = tool.get("format") or {}
@@ -277,6 +310,16 @@ def request_tools(req: dict):
         kind = tool.get("type")
         if kind in ("function", "custom"):
             add(tool, param)
+        elif kind == "tool_search":
+            # Codex's client-side tool discovery: no host can run it, so the model gets an ordinary function the
+            # client answers, and the call goes back as a `tool_search_call`. A search some other host runs is left
+            # out, like the other hosted tools.
+            if tool.get("execution") not in (None, "client"):
+                skipped.append(kind)
+            elif CLIENT_TOOL_SEARCH in names:
+                raise ResponsesError(f"a tool named {CLIENT_TOOL_SEARCH!r} is already declared", param + ".name")
+            else:
+                add(tool, param)
         elif kind == "namespace":
             for j, member in enumerate(tool.get("tools") or []):
                 if not isinstance(member, dict) or member.get("type", "function") not in ("function", "custom"):
@@ -527,6 +570,10 @@ class Assembler:
         item, self.item = self.item, None
         if item is None:
             return []
+        if item["type"] == "tool_search_call":
+            text = item.pop("_arguments_text", "")
+            if text:
+                item["arguments"] = _arguments(text, "tool_search_call.arguments")
         at, out = self.response["output"].index(item), []
         item["status"] = status
         if item["type"] == "message":
@@ -590,6 +637,9 @@ class Assembler:
                 item["arguments"] += ev.text
                 out.append(self.event("response.function_call_arguments.delta", item_id=item["id"],
                                       output_index=self.index, delta=ev.text))
+            elif item["type"] == "tool_search_call":
+                # no argument deltas for this item: the call goes out whole when it closes
+                item["_arguments_text"] = item.get("_arguments_text", "") + ev.text
         elif kind == "tool_call":
             item = self.item
             if item is None or item.get("call_id") != ev.call.id:     # a call that was not announced while written
@@ -606,6 +656,9 @@ class Assembler:
                 item["input"] = value if isinstance(value, str) else json.dumps(ev.call.arguments, ensure_ascii=False)
                 out.append(self.event("response.custom_tool_call_input.delta", item_id=item["id"],
                                       output_index=self.index, delta=item["input"]))
+            elif item["type"] == "tool_search_call" and not item.get("_arguments_text") \
+                    and isinstance(ev.call.arguments, dict):
+                item["arguments"] = ev.call.arguments      # arrived whole: no argument text was streamed
             out += self.close()
         return out
 
@@ -636,6 +689,11 @@ class Assembler:
         if kind == "custom":
             item = {"id": new_id("ctc"), "type": "custom_tool_call", "status": "in_progress", "call_id": ev.call.id,
                     "name": name, "input": ""}
+        elif kind == "tool_search":
+            # Codex's own item: no name, the arguments as the object the client reads, and `execution` says who
+            # runs the search. Its clients expect no argument deltas for it, so the call is sent whole at its end.
+            item = {"id": new_id("tsc"), "type": "tool_search_call", "status": "in_progress", "call_id": ev.call.id,
+                    "execution": "client", "arguments": {}}
         else:
             item = {"id": new_id("fc"), "type": "function_call", "status": "in_progress", "call_id": ev.call.id,
                     "name": name, "arguments": ""}
@@ -648,7 +706,8 @@ class Assembler:
         `validate(text, finish)` checks a structured answer and returns its text (or raises)."""
         length = done.get("finish") == "length"
         # a call still open was cut off (its tool_call never came, #211): incomplete, whatever the finish
-        unfinished = self.item is not None and self.item["type"] in ("function_call", "custom_tool_call")
+        unfinished = self.item is not None and self.item["type"] in ("function_call", "custom_tool_call",
+                                                                     "tool_search_call")
         out = self.close("incomplete" if length or unfinished else "completed")
         if self.json_mode:
             text = "".join(self.json_text)

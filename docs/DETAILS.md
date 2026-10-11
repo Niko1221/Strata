@@ -1226,7 +1226,7 @@ are refused with an error that says so.
 | --- | --- |
 | `input` as a string, or as items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
 | `instructions` | The system message (with leading `developer` messages; later ones become user messages, as on the chat path) |
-| `tools` | `function` tools, `namespace` tools (the model sees `namespace.name`; calls come back with `namespace` and `name`), `custom` tools (one free-form `input` string). Hosted tools (`web_search`, `file_search`, ...) are left out: the model cannot run them |
+| `tools` | `function` tools, `namespace` tools (the model sees `namespace.name`; calls come back with `namespace` and `name`), `custom` tools (one free-form `input` string), and Codex's client-side `tool_search`: it goes to the model as the plain function `tool_search`, and its call comes back as a `tool_search_call` item (the client runs the search and sends the `tool_search_output` back). Hosted tools (`web_search`, `file_search`, ...) are left out: the model cannot run them |
 | `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the model's default (high) |
 | `max_output_tokens` | The output cap (thinking included). Running out ends the response `incomplete` (`max_output_tokens`) |
