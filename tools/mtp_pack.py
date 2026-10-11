@@ -10,8 +10,8 @@ Layout: dense tensors (attention, indexer, hyper-connections, shared expert, rou
 1-D norms), ~0.18 GB. The routed experts keep the checkpoint's fused layout - `gate_up_proj` [512, 1280, 2560] and
 `down_proj` [512, 2560, 640], quantized along the last (input) axis - in one of:
 
-    q2_0   64-element blocks, grid {-1, 0, 1, 2} x d. The scale is chosen per block to MINIMIZE squared error over
-           that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
+    q2_0   64-element blocks, grid {-1, 0, 1, 2} x d. The scale, of either sign, is chosen per block to MINIMIZE
+           squared error over that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
            model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it unchanged. ~0.71 GB.
     q4_0   ggml reference rounding. ~1.42 GB.       q8_0   ggml reference. ~2.67 GB.
 
@@ -61,18 +61,20 @@ def q2_0(w: np.ndarray) -> np.ndarray:
     amax = np.abs(x).max(axis=1, keepdims=True)
     best_err = np.full((x.shape[0], 1), np.inf, dtype=np.float32)
     best_d = np.zeros_like(amax)
-    # Candidate scales span amax/2 (the +2 level reaches the max) to amax (the ggml reference); 17 steps.
-    for f in np.linspace(0.5, 1.0, 17, dtype=np.float32):
-        d = amax * f
-        inv = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
-        q = np.clip(np.rint(x * inv), -1, 2)
-        err = ((q * d - x) ** 2).sum(axis=1, keepdims=True)
-        better = err < best_err
-        best_err = np.where(better, err, best_err)
-        best_d = np.where(better, d, best_d)
+    # Candidate scales span 0.15 x amax to amax, in both signs: a negative d mirrors the grid to {+1, 0, -1, -2} x |d|,
+    # which fits blocks whose largest weight is negative. 29 steps keep the step (0.0304) under the old 17-step 0.0313.
+    for sign in (1.0, -1.0):
+        for f in np.linspace(0.15, 1.0, 29, dtype=np.float32):
+            d = amax * (sign * f)
+            inv = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0)
+            q = np.clip(np.rint(x * inv), -1, 2)
+            err = ((q * d - x) ** 2).sum(axis=1, keepdims=True)
+            better = err < best_err
+            best_err = np.where(better, err, best_err)
+            best_d = np.where(better, d, best_d)
     d16 = best_d.astype(np.float16)
     d = d16.astype(np.float32)                                   # quantize against the STORED scale
-    inv = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 0.0)
+    inv = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0)
     codes = (np.clip(np.rint(x * inv), -1, 2) + 1).astype(np.uint8)          # 0..3
     c = codes.reshape(-1, 16, 4)
     packed = (c[:, :, 0] | (c[:, :, 1] << 2) | (c[:, :, 2] << 4) | (c[:, :, 3] << 6)).astype(np.uint8)
