@@ -13,7 +13,7 @@ succeeded with zero reused tokens. On this machine that is within run-to-run var
 
 **Why the 0.1.42 decode gain does not show here.** The route tail skip is on (`STRATA_ROUTE_TAIL_SKIP=7`, the engine
 log confirms it and counts skipped experts), but this laptop keeps 93.9–99.2% of the decode expert lookups in its
-VRAM cache (11,742 slots, 15.12 GiB), so there is little tail to skip. That matches the release notes, which put the
+VRAM cache (11,739 slots, 15.11 GiB), so there is little tail to skip. That matches the release notes, which put the
 gain on 12–16 GB cards that miss experts.
 
 ## Hardware and software
