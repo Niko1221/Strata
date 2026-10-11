@@ -426,6 +426,9 @@ struct Options {
     int pool_tasks = 0;           ///< Batched CPU expert tasks per phase; 0 keeps the existing policy
     /// #272: the pool's core layout; `all` (the default) is the layout it always had, auto / p-cores are opt-in
     strata::kernels::cpu::PoolAffinity pool_affinity = strata::kernels::cpu::PoolAffinity::All;
+    /// --pool-affinity measure (opt-in, hybrid CPUs, native packs): `all` and `p-cores` are timed on this pack's
+    /// own experts at start and the faster layout is taken (measure_pool_affinity)
+    bool pool_measure = false;
     /// --host-core first|last (STRATA_HOST_CORE): the host thread's core (see HostCore in pool.hpp)
     std::string host_core;
     /// --aux-cpus off|auto|LIST (STRATA_AUX_CPUS): where the non-pool, non-host threads run (strata/platform/aux_cpus.hpp)
@@ -902,7 +905,9 @@ void usage() {
                  "                       result.  STRATA_AUX_CPUS sets it too; a request's strata_tune aux_cpus=0|1 beats it.\n"
                  "  --pool-affinity MODE Worker CPU affinity: all (default: one worker per physical core, as\n"
                  "                       always), auto (hybrid CPUs: P-cores first, then their SMT siblings,\n"
-                 "                       then E-cores) or p-cores (P-cores and their siblings only).\n"
+                 "                       then E-cores) or p-cores (P-cores and their siblings only).  measure (opt-in,\n"
+                 "                       hybrid CPUs, native packs): all and p-cores are timed on the pack's own experts\n"
+                 "                       at start (about a second) and the faster one is taken\n"
                  "  --coupled-draft      enable coupled draft sampling for MTP drafter under sampling (STRATA_SPEC_COUPLED)\n"
                  "  --no-coupled-draft   disable coupled draft sampling (propose argmax drafts)\n"
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
@@ -1657,6 +1662,103 @@ double pcie_frac_for_gbps(double gbps, double base) {
     return gbps <= 0.0 ? base : base * std::min(1.0, gbps / 20.0);
 }
 
+// --pool-affinity measure: `all` against `p-cores` on a hybrid CPU, timed on this pack's own experts.
+//
+// The pool's default layout puts a worker on every physical core, and a layer's experts are done when the slowest
+// worker is.  Measured on a Core i7-13700K (8 P + 8 E), IQ3_XXS, RTX 5090, same prompt and build: `all` (15 workers)
+// spent 6.7 ms per verify window in the pool and decoded 148 tok/s, `p-cores` (7 workers) 2.2 ms and 188-191 tok/s;
+// in an earlier run of the same day `all` took 2.4 ms, so the difference is not constant.  Hence a measurement at
+// start and not a rule.
+//
+// What is timed is the decode's own call: two missed experts of four tokens per layer (run_split_multi_native on
+// blobs from the arena), every layer in turn, with the host spinning ~150 us between two layers as it does on the
+// GPU's flags.  The two layouts take turns in kBlocks blocks and the medians are compared; `p-cores` is taken
+// unless `all` is more than 10% faster (fewer threads wait on fewer cores when the two are close).  The layout
+// changes no result, only where threads run.  It is one reading at start and is not repeated: on the same PC one
+// server start in four read `all` as the faster layout (6.6 ms against 8.6), where the others read it 2.4 to 4 times
+// slower.
+strata::kernels::cpu::PoolAffinity measure_pool_affinity(strata::core::ExpertSource* src, int workers, bool host_works,
+                                                         int tasks) {
+    namespace cpu = strata::kernels::cpu;
+    using Clock = std::chrono::steady_clock;
+    const cpu::ExpertLayout& lay = cpu::expert_layout();
+    const cpu::CpuTopology topo = cpu::detect_cpu_topology(true, cpu::PoolAffinity::PCores);
+    if (!topo.is_hybrid) {
+        std::fprintf(stderr, "strata generate: --pool-affinity measure: this CPU is not a hybrid one; the layout stays all\n");
+        return cpu::PoolAffinity::All;
+    }
+    constexpr int kExperts = 2, kTok = 4, kRounds = 10, kBlocks = 3;
+    const int64_t nl = lay.n_layers;
+    std::vector<const uint8_t*> blobs((size_t) nl * kExperts, nullptr);
+    bool have = src != nullptr && lay.native && (int64_t) lay.fmt.size() >= nl && nl > 0;
+    uint32_t seed = 12345u;
+    for (int64_t l = 0; have && l < nl; ++l)
+        for (int j = 0; j < kExperts; ++j) {
+            seed = seed * 1664525u + 1013904223u;
+            const uint8_t* b = src->blob(l, (int64_t) ((seed >> 8) % (uint32_t) lay.n_expert));
+            if (b == nullptr) { have = false; break; }
+            blobs[(size_t) l * kExperts + (size_t) j] = b;
+        }
+    if (!have) {
+        std::fprintf(stderr, "strata generate: --pool-affinity measure needs a native pack with its experts in RAM; "
+                             "the layout stays all\n");
+        return cpu::PoolAffinity::All;
+    }
+    std::vector<uint8_t> nact((size_t) nl * kTok * cpu::kNativeActBytes);
+    std::vector<cpu::ActQ> qact((size_t) nl * kTok);
+    std::vector<float> x((size_t) cpu::H), out((size_t) kExperts * kTok * cpu::H);
+    for (int64_t l = 0; l < nl; ++l)
+        for (int t = 0; t < kTok; ++t) {
+            for (int i = 0; i < cpu::H; ++i) x[(size_t) i] = std::sin((float) (i + 13 * t + 7 * (int) l) * 0.031f);
+            const size_t at = (size_t) l * kTok + (size_t) t;
+            if (cpu::q2_native_kernels(lay.fmt[(size_t) l].gu_type)) cpu::act_quant_any(x.data(), cpu::H, qact[at]);
+            else cpu::native_quant_act(lay.fmt[(size_t) l], x.data(), nact.data() + at * cpu::kNativeActBytes);
+        }
+    int n_workers[2] = {0, 0};
+    auto block = [&](cpu::PoolAffinity aff, int which) -> double {
+        cpu::ExpertPool pool(workers, /*pin=*/true, host_works, aff, tasks);
+        n_workers[which] = pool.workers();
+        const int host = cpu::planned_host_core(aff);
+        cpu::ThreadAffinity prev;
+        if (host >= 0) prev = cpu::pin_current_thread(host);
+        cpu::ExpertJobMulti jobs[kExperts];
+        double ms = 0.0;
+        for (int r = -1; r < kRounds; ++r)   // round -1 is not timed: the workers start and the rows are touched
+            for (int64_t l = 0; l < nl; ++l) {
+                for (int j = 0; j < kExperts; ++j) {
+                    jobs[j].blob = blobs[(size_t) l * kExperts + (size_t) j];
+                    jobs[j].nt = kTok;
+                    for (int t = 0; t < kTok; ++t) {
+                        const size_t at = (size_t) l * kTok + (size_t) t;
+                        jobs[j].act[t] = &qact[at];
+                        jobs[j].nact[t] = nact.data() + at * cpu::kNativeActBytes;
+                        jobs[j].out[t] = out.data() + ((size_t) j * kTok + (size_t) t) * cpu::H;
+                    }
+                }
+                const Clock::time_point t0 = Clock::now();
+                pool.run_split_multi_native(lay.fmt[(size_t) l], jobs, kExperts);
+                const Clock::time_point t1 = Clock::now();
+                if (r >= 0) ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+                while (std::chrono::duration<double, std::micro>(Clock::now() - t1).count() < 150.0) {}
+            }
+        if (host >= 0) cpu::restore_thread_affinity(prev);
+        return ms / kRounds;
+    };
+    double all_ms[kBlocks], p_ms[kBlocks];
+    for (int b = 0; b < kBlocks; ++b) {
+        all_ms[b] = block(cpu::PoolAffinity::All, 0);
+        p_ms[b] = block(cpu::PoolAffinity::PCores, 1);
+    }
+    std::sort(all_ms, all_ms + kBlocks);
+    std::sort(p_ms, p_ms + kBlocks);
+    const double a = all_ms[kBlocks / 2], p = p_ms[kBlocks / 2];
+    const bool take_p = p <= a * 1.10;
+    std::fprintf(stderr, "strata generate: --pool-affinity measure: %d experts x %d tokens per layer over %lld layers: "
+                         "all (%d workers) %.2f ms, p-cores (%d workers) %.2f ms (medians of %d) -> %s\n",
+                 kExperts, kTok, (long long) nl, n_workers[0], a, n_workers[1], p, kBlocks, take_p ? "p-cores" : "all");
+    return take_p ? cpu::PoolAffinity::PCores : cpu::PoolAffinity::All;
+}
+
 // 0.1.42, CUDA single-GPU serve, no --pcie-frac: the share refined from what the CPU pool measures in the first decode
 // windows.  The balance share of the missed experts is link / (link + CPU rate).  The link is the start-up probe; the CPU
 // rate is the expert bytes over the pool's wall time per missed expert (ExpertDispatch::ms_run / multi_misses), which the
@@ -1914,8 +2016,9 @@ int main(int argc, char** argv) {
             if (v == "auto") o.pool_affinity = strata::kernels::cpu::PoolAffinity::Auto;
             else if (v == "p-cores" || v == "pcores") o.pool_affinity = strata::kernels::cpu::PoolAffinity::PCores;
             else if (v == "all") o.pool_affinity = strata::kernels::cpu::PoolAffinity::All;
+            else if (v == "measure") o.pool_measure = true;
             else {
-                std::fprintf(stderr, "strata generate: unknown --pool-affinity value '%s' (expected auto, p-cores, or all)\n", v.c_str());
+                std::fprintf(stderr, "strata generate: unknown --pool-affinity value '%s' (expected auto, p-cores, all or measure)\n", v.c_str());
                 return 2;
             }
         }
@@ -4741,6 +4844,8 @@ int main(int argc, char** argv) {
 #endif
         srcp = &arena_src;
     }
+    if (o.pool_measure)
+        o.pool_affinity = measure_pool_affinity(srcp, o.pool_workers, !o.no_host_worker, o.pool_tasks);
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
                                         o.pool_affinity, o.pool_tasks);
     std::fprintf(stderr, "strata generate: CPU pool tasks/phase: %d%s, participating threads: %d\n",
