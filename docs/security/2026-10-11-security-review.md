@@ -1156,22 +1156,42 @@ All items below are proposed work, not completed fixes.
 
 The project owner calls the intended PC **Jerry**. Jerry is connected to the current PC through a LAN cable. The owner wants to improve this project and customize it for Jerry.
 
-No remote connection, installation, hardware inspection, performance measurement, firewall change, or service configuration on Jerry has been performed. The physical cable connection does not establish which machine should host the model, how the LAN is addressed, or which service ports are reachable.
+The inventory below was supplied by the owner on October 11, 2026. It has not been independently verified through a remote hardware inspection.
 
-### Information Needed Before Configuration
+### Jerry Hardware Inventory
 
-| Item | Status |
+| Component | Owner-supplied inventory |
 |---|---|
-| Jerry's operating system and version | Not supplied |
-| CPU and supported instruction set | Not supplied |
-| GPU model, VRAM, driver and compute backend | Not supplied |
-| Installed and available RAM | Not supplied |
-| Available disk space and storage type | Not supplied |
-| Model host versus client roles | To be confirmed |
-| LAN addressing and reachable hostname | Not verified |
-| Intended model variant and context size | To be selected from measured hardware limits |
+| Operating system | Ubuntu 26.04.1 LTS, x86_64 |
+| CPU | AMD FX-8350 Eight-Core Processor; 8 cores / 8 threads |
+| GPUs | Two NVIDIA GeForce RTX 3060 cards |
+| VRAM | **2 × 12 GiB**; separate memory on each GPU |
+| System RAM | 30 GiB usable; approximately 28 GiB available when reported |
+| Main filesystem (`/`) | 457 GiB total; 195 GiB available when reported |
+| Swap | 8 GiB; unused when reported |
 
-Once these facts are known, we can choose the backend, model quantization, context size, memory budget and startup profile. If Jerry hosts the service, the other PC can use its compatible API over the LAN after authentication and ingress controls are verified.
+**VRAM accounting:** Jerry has two independent 12 GiB GPU memory pools. We must budget allocations per card. Multi-GPU layer splitting may distribute work and data between them, but we must not represent the system as one GPU with a single shared 24 GiB pool.
+
+Available RAM, free disk space and swap usage are point-in-time observations and should be checked again before installation or a benchmark.
+
+### Configuration Decisions and Verification
+
+| Item | Status or next check |
+|---|---|
+| CPU instruction set | Verify the effective CPU flags on Jerry before selecting a build |
+| NVIDIA driver and CUDA compatibility | Driver version and supported runtime not supplied |
+| GPU topology and PCIe links | Verify enumeration, link widths and inter-card transfer behavior |
+| Model host versus client roles | Still to be confirmed; hardware inventory does not establish the roles |
+| LAN addressing and reachable hostname | Not verified |
+| Storage type and sustained read speed | Not supplied or measured |
+| Model variant and context size | Select after compatibility and per-card/system-memory budgeting |
+| Backend | Evaluate the repository's NVIDIA/CUDA path after CPU and driver checks |
+
+The repository's [installation guide](../INSTALL.md#older-cpus-experimental) says its ready-made engine requires AVX2 and describes an experimental locally compiled path for older CPUs. Its [Docker entrypoint](../../docker-entrypoint.sh) also warns about AVX2 requirements. Jerry's instruction flags have not been verified in this session, so CPU compatibility is a prerequisite, not a completed check. The GPUs do not remove the engine's CPU requirements.
+
+The [multi-GPU guide](../MULTI_GPU.md) describes layer splitting across cards. We should validate Jerry's actual topology and budget each 12 GiB card separately before choosing split settings. No throughput, model-fit or stability claim is made for Jerry.
+
+No remote connection, installation, performance measurement, firewall change, or service configuration on Jerry has been performed. If Jerry is confirmed as the model host, the current PC can use its compatible API over the LAN after authentication and ingress controls are verified.
 
 ### Acceptance Criteria for LAN Readiness
 
