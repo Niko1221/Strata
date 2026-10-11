@@ -12,6 +12,7 @@ import json
 import math
 import os
 import platform
+import struct
 from pathlib import Path
 from statistics import median
 
@@ -20,11 +21,40 @@ def finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def runtime_key(engine):
+def _learned_profile_identity(path):
+    """Parking tolerates rank order, not a different profile layout or expert set.
+
+    Native --expert-profile-save atomically rewrites the ranking at QUIT. The
+    inverse table after the ranked pairs is not read by the native loader.
+    Calibration still uses the ordinary file metadata fingerprint below.
+    """
+    with path.open("rb") as source:
+        head = source.read(24)
+        if len(head) != 24:
+            raise ValueError("invalid learned expert profile header")
+        magic, version, layers, experts, slots, count = struct.unpack("<4s5I", head)
+        if (magic != b"STRP" or version != 1 or not 0 < layers <= 65535
+                or not 0 < experts <= 65535 or not 0 < count <= min(slots, layers * experts)
+                or os.fstat(source.fileno()).st_size < 24 + 4 * count):
+            raise ValueError("invalid learned expert profile layout")
+        pairs = source.read(4 * count)
+    if len(pairs) != 4 * count:
+        raise ValueError("truncated learned expert profile")
+    ranked = list(struct.iter_unpack("<HH", pairs))
+    if len(set(ranked)) != count or any(l >= layers or e >= experts for l, e in ranked):
+        raise ValueError("invalid learned expert profile pairs")
+    membership = b"".join(struct.pack("<HH", *pair) for pair in sorted(ranked))
+    return (str(path.resolve()), "learned-profile", version, layers, experts, slots, count,
+            hashlib.sha256(membership).hexdigest())
+
+
+def runtime_key(engine, *, for_parking=False):
     """Invalidate calibration after engine, launch configuration or asset changes.
 
     Model assets are identified by path, size and timestamp, not rehashed on every
     startup. The binary is hashed. No paths are exposed in the resulting key.
+    Parking alone normalizes a valid input profile that is also the configured
+    native save destination; a self-save is cache learning, not a new model.
     """
     spawn = engine.spawn
     if len(spawn) not in (5, 7):
@@ -33,6 +63,16 @@ def runtime_key(engine):
     # .42 stores the lazy restart flag and CPU assignment after the stable
     # launch fields. Lazy admission does not change inference; affinity can.
     cpus = spawn[6] if len(spawn) == 7 else None
+    learned = None
+    if for_parking and "--expert-profile-save" in args and "--expert-profile" in args:
+        learned = Path(args[args.index("--expert-profile-save") + 1])
+        profile = Path(args[args.index("--expert-profile") + 1])
+        if not learned.is_absolute():
+            learned = Path(cwd or ".") / learned
+        if not profile.is_absolute():
+            profile = Path(cwd or ".") / profile
+        learned = learned.resolve() if learned.resolve() == profile.resolve() else None
+    learned_identity = _learned_profile_identity(learned) if learned is not None else None
     assets = []
     for flag in ("--native", "--ple-gguf", "--expert-profile", "--pack", "--mtp", "--control-vector-scaled"):
         if flag not in args:
@@ -46,8 +86,12 @@ def runtime_key(engine):
         paths = sorted(path.rglob("*")) if path.is_dir() else [path]
         for p in paths:
             if p.is_file():
-                stat = p.stat()
-                assets.append((str(p.resolve()), stat.st_size, stat.st_mtime_ns))
+                # The profile may also be inside a recursively fingerprinted pack.
+                if learned is not None and p.resolve() == learned:
+                    assets.append(learned_identity)
+                else:
+                    stat = p.stat()
+                    assets.append((str(p.resolve()), stat.st_size, stat.st_mtime_ns))
     clean = list(args)
     if "--pcie-frac" in clean:
         i = clean.index("--pcie-frac")
