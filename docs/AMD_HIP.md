@@ -160,6 +160,11 @@ cmake -G Ninja -S tools/vision -B build-vision-vulkan -DCMAKE_BUILD_TYPE=Release
 cmake --build build-vision-vulkan --target strata-vision
 ```
 
+With an older Vulkan SDK the configure step can stop at `Could not find a package configuration file provided by
+"SPIRV-Headers"` even with `VULKAN_SDK` set: SDK 1.4.304 keeps `SPIRV-HeadersConfig.cmake` directly in `Lib\cmake`,
+where CMake's search does not look (1.4.350 has it in `Lib\cmake\SPIRV-Headers` and is found alone). Add
+`-DSPIRV-Headers_DIR="%VULKAN_SDK%\Lib\cmake"` to the first command (thanks @Hugua700, #1789).
+
 Then `START-HERE.bat --setup --vision gpu`: setup finds `build-vision-vulkan\bin\strata-vision.exe`, puts it beside
 the engine and writes `"gpu": true` and `"max_tokens": 1024` (the GPU default). Same PC, 1224 x 1584 photos of
 documents, 1024 image tokens, the first read of each picture (the server keeps a picture's encoding, so a second read
@@ -173,6 +178,14 @@ does not encode again):
 The encoding itself goes from about 23 s to about 1 s (the rest is reading the prompt and writing the answer, the same
 in both). It loads in 1.1 s and warms up at 1024 tokens in 1.8 s. Text-only requests are not affected: the engine
 keeps the `--vram-reserve-mib 700` it keeps for any encoder.
+
+**A laptop with an integrated GPU and a Radeon.** The encoder takes the first discrete GPU Vulkan lists, and the
+integrated one only when there is none. `GGML_VK_VISIBLE_DEVICES` picks the device instead (its index in `vulkaninfo
+--summary`); the config's `"env"` block reaches the encoder too, e.g. `"env": {"GGML_VK_VISIBLE_DEVICES": "0"}`.
+@Hugua700 measured it on an RX 6800M laptop with a Ryzen 5000 (Cezanne) integrated GPU, Windows 11, a 768 x 512 test
+picture: about 2 s of encoding and the same exact answer on either device, but a whole-machine peak of 313 W on the
+RX 6800M against 191 W on the integrated GPU. On a laptop whose power adapter cuts out above its rating (240 W there),
+the integrated GPU is the safer choice.
 
 ## Build
 
