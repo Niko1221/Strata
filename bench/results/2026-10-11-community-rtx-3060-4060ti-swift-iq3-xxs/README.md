@@ -4,10 +4,16 @@ Measured on 2026-10-11 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 
 ## Hardware and software
 
-- GPU and VRAM: NVIDIA GeForce RTX 3060 12 GB (CUDA0, layers 0-20) + NVIDIA GeForce RTX 4060 Ti 16 GB (CUDA1, layers 21-47 and the head), 28 GiB VRAM
-- CPU and socket: AMD Ryzen 7 3700X (Zen 2, 8 cores / 16 threads, no AVX-512) in an **AM4** socket, on an ASUS TUF GAMING B550-PLUS WIFI II
-- RAM: 64 GiB DDR4-3000 across all four DIMM slots, dual-channel, running at its rated speed (`Speed` and `ConfiguredClockSpeed` both 3000, DOCP on); storage: not measured
-- **PCIe, and the asymmetry that matters most on this machine:** the 3060 sits in a slot wired **x4** (link max width 4 against the card's 16) at **Gen3**, the second slot of a B550 board; the 4060 Ti has **x8 Gen4** (max width 8 of 8). The engine probes the host->device link itself at every start and reports **2.9 GB/s for the 3060 against 13.0 GB/s for the 4060 Ti**, then drops the 3060's expert share to `pcie_frac 0.08` (the default is 0.55). Both cards read `pcie.link.gen.current 1` at rest, which is the idle link-speed saving; the generations above are the negotiated maxima.
+| | Card | VRAM | Layers | PCIe link | Host link, measured by the engine |
+| --- | --- | ---: | --- | --- | ---: |
+| CUDA0 | NVIDIA GeForce RTX 3060 | 12 GB | 0-20 | **x4 Gen3** (max width 4 of the card's 16) | **2.9 GB/s** |
+| CUDA1 | NVIDIA GeForce RTX 4060 Ti | 16 GB | 21-47 and the head | **x8 Gen4** (max width 8 of 8) | **13.0 GB/s** |
+| | | **28 GiB** | | | **4.5x apart** |
+
+The 3060's x4 slot is the second slot of a B550 board, which is what makes this pair asymmetric. The engine probes the host->device link itself at every start and, reading 2.9 GB/s, drops the 3060's expert share to `pcie_frac 0.08` against a default of 0.55. Both cards report `pcie.link.gen.current 1` at rest (the idle link-speed saving); the generations above are the negotiated maxima.
+
+- CPU: AMD Ryzen 7 3700X (Zen 2, 8 cores / 16 threads, no AVX-512), **AM4** socket, on an ASUS TUF GAMING B550-PLUS WIFI II
+- RAM: 64 GiB DDR4-3000 across four DIMMs, dual-channel, at rated speed (`Speed` and `ConfiguredClockSpeed` both 3000, DOCP on); storage: not measured
 - OS: Windows 11 (10.0.26100); GPU driver: 616.92; CUDA 13.0 (from the engine's `BUILD.json`, not read from the driver)
 - Strata: project 0.1.43, commit 7695859a; engine 0.1.43
 - Background workloads and power limits: not recorded
