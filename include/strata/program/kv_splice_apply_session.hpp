@@ -47,8 +47,8 @@ inline SpliceStatus apply_splice(const SuffixHookOutcome& out,
     // this header, so the tests-only CPU tree never catches the use-before-decl.
     const int64_t n_qsa = g.n_qsa_layers();
     if (kv_int8_now) {
-        // ---- int8 path (Phase 3).  Uses the int8-aware guard; refuses if STRATA_KV_ROT=1
-        //      put K through a Hadamard rotation (out of scope for the daily preset).
+        // ---- int8 path (Phase 3 + the kv_rot H-sandwich).  STRATA_KV_ROT=1 is accepted:
+        //      the helper undoes and re-applies the Hadamard around the RoPE delta.
         const SpliceStatus g_status = splice_scope_guard_int8(
             /*kv_int8=*/true, /*kv_q4=*/kv_other,
             /*kv_hybrid=*/false,   // accepted since the k8v4 lift: the hybrid K half is int8
