@@ -106,15 +106,15 @@ inline void fwht256_row_host(float* x) {
     for (int i = 0; i < n; ++i) x[i] *= inv;
 }
 
-/// Phase 3 runtime scope guard for the int8 splice.  Returns Rotated/`NoOp` when the
-/// config is supported; otherwise one of the `Unsupported*` codes WITHOUT side effects.
-/// This is the int8-aware version of `splice_scope_guard` (kv_splice_apply.hpp:72-79):
-/// plain `--kv int8` (kv_rot == false) is now ACCEPTED.  Hybrid K8V4 still refuses
-/// (V is rotated Q4_0, the splice does not apply Hadamard to V); q4_0 / kv-resident /
-/// layer-split keep the same refusals.  STRATA_KV_ROT=1 is refused: when K is stored
-/// through a Hadamard rotation, the splice must undo it before applying RoPE - that
-/// scope is "int8 + Hadamard" and is a follow-up (per the dequant-rotate-requant
-/// section in plans/2026-10-11_184000-strata-suffix-reuse-phase2-v2.md).
+/// Runtime scope guard for the int8 splice.  Returns NoOp when the config is
+/// supported; otherwise one of the `Unsupported*` codes WITHOUT side effects.
+/// Accepted: plain --kv int8, int8 + STRATA_KV_ROT=1 (the H-sandwich in
+/// rotate_qsa_tail_inplace_int8), and k8v4 hybrid (the K half is byte-identical
+/// int8 storage; V is never touched).  --kv q4_0 is dispatched to the q4 helper
+/// (rotate_qsa_tail_inplace_q4) before this guard runs, but still refuses here if
+/// it reaches the int8 domain.  Still refused: kv_resident > 0, layer_split
+/// (memory layouts, not codecs); head_dim != 256 in a rotated domain refuses
+/// fail-closed inside the rotation helpers (fwht256 is order-256 only).
 inline SpliceStatus splice_scope_guard_int8(bool kv_int8, bool kv_q4, bool kv_hybrid,
                                             int64_t kv_resident, bool layer_split_active,
                                             bool kv_rot) {
