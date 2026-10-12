@@ -2,7 +2,7 @@
 
 Measured on **10–11 October 2026** by **inlanger**, through the API in Docker:
 **150–162 tok/s** on full high-reasoning responses at 2.3–2.5K input,
-**123–139 tok/s** at 122K input.
+**123–139 tok/s** at 122K input. **Peak single-response decode: 178.2 tok/s.**
 
 ## Hardware and model
 
@@ -50,6 +50,9 @@ The initial screen used four full answers per setting:
 | 7 | off | auto | 152.4 | 16.041 |
 | 7 | on | off | **160.8** | **15.487** |
 | 7 | on | auto | 145.7 | 15.535 |
+
+The **178.2 tok/s peak** was one full response with tail skip 7, aux CPUs auto,
+and split MTP batching off: 2,509 input tokens, 2,225 output tokens in 12.485 s of decode.
 
 ### P-cores
 
