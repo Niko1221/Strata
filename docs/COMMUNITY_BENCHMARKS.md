@@ -86,6 +86,12 @@ latency are measured by the client. Thinking is off for the suite so the answers
 (`--think` leaves it on). Every prompt carries a unique tag, so the fresh-prompt tests never get help from the cache.
 Close other programs first: a browser or a game changes the numbers.
 
+For repeatable results, pin a fixed `--expert-profile` and disable `--expert-profile-save` (or the
+`"expert_profile_save"` key in your `strata-*.json` config) during benchmarks. Otherwise the suite's prompts
+can change the learned profile, either at its periodic save or when the benchmark stops a server it started.
+The tool warns when its selected config enables saving. With `--url` it does not stop an already running server,
+but without `--config` it cannot inspect that server's profile-save settings.
+
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
 
 - `README.md` in the format below, with the GPU, VRAM, CPU, RAM, OS, driver, Strata and engine versions, model and

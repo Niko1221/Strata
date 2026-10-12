@@ -618,6 +618,20 @@ def is_strata(base: str, key: str) -> bool:
     return bool(h and h.get("service") == "strata")
 
 
+def saves_expert_profile(cfg: dict | None) -> bool:
+    """A benchmark using this config can mutate a learned expert profile, even just by stopping the engine."""
+    if not isinstance(cfg, dict):
+        return False
+    saved = cfg.get("expert_profile_save")
+    if isinstance(saved, str) and saved.strip():
+        return True
+    args = cfg.get("args")
+    return isinstance(args, list) and any(
+        isinstance(arg, str) and (arg == "--expert-profile-save" or arg.startswith("--expert-profile-save="))
+        for arg in args
+    )
+
+
 def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path), "--port", str(port)]
     if gpu:
@@ -872,6 +886,11 @@ def main(argv=None) -> int:
                   "or give --url of a running server.", file=sys.stderr)
             return 2
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    if saves_expert_profile(cfg):
+        print("WARNING: the selected config saves a learned expert profile. Benchmark prompts can alter that file, "
+              "periodically or when a benchmark-started server exits. For repeatable results, use a fixed "
+              "--expert-profile and disable --expert-profile-save / expert_profile_save in the bench config.",
+              file=sys.stderr)
     key = a.api_key or ((cfg or {}).get("api_key") or "")
     if a.url:
         base = a.url.rstrip("/")
@@ -883,6 +902,10 @@ def main(argv=None) -> int:
     try:
         if is_strata(base, key):
             say(f"Using the Strata server already running at {base}.")
+            if a.url and cfg is None:
+                print("WARNING: --url without --config cannot inspect the attached server's expert-profile-save settings. "
+                      "Benchmark prompts may modify a saved expert profile; disable saving for repeatable results.",
+                      file=sys.stderr)
         elif a.url:
             print(f"No Strata server answers at {base}.", file=sys.stderr)
             return 2
