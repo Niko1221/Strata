@@ -100,10 +100,13 @@ def check_external_ple(model: G.GGUFFile, ple: G.GGUFFile) -> None:
     if len(ple.tensors) != 1:
         raise ValueError("external PLE must contain exactly one tensor")
     tensor = next((t for t in ple.tensors if t.name == "per_layer_token_embd.weight"), None)
-    if tensor is None or tensor.type_name != "I8":
-        raise ValueError("external PLE must contain per_layer_token_embd.weight as I8")
-    if ple.metadata.get("strata.ple.format") != "f8_e4m3" or ple.metadata.get("strata.ple.scale", 0) <= 0:
-        raise ValueError("external PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale")
+    if tensor is None:
+        raise ValueError("external PLE must contain per_layer_token_embd.weight")
+    if tensor.type_name not in {"BF16", "I8"}:
+        raise ValueError("external PLE must contain per_layer_token_embd.weight as BF16 or FP8 (I8)")
+    if tensor.type_name == "I8" and (ple.metadata.get("strata.ple.format") != "f8_e4m3" or
+                                      ple.metadata.get("strata.ple.scale", 0) <= 0):
+        raise ValueError("external FP8 PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale")
     rows = model.metadata.get("qwen4exp.embedding_length_per_layer_input")
     offsets = model.metadata.get("qwen4exp.ple.head_offsets")
     heads = model.metadata.get("qwen4exp.ple.head_vocab_sizes")

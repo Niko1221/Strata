@@ -505,19 +505,24 @@ inline uint64_t tensor_payload_bytes(const TensorInfo& t) {
     return blocks * (uint64_t) bb;
 }
 
-// The skipped model shard is accepted only when the replacement is the exact FP8 PLE for this model.  The model's
-// PLE geometry makes the one omitted tensor falsifiable even when its shard is not present locally.
+// The skipped model shard is accepted only when the replacement is a supported external PLE for this model.  The
+// model's PLE geometry makes the one omitted tensor falsifiable even when its shard is not present locally.
 inline std::string check_external_ple(const GgufFile& model, const GgufFile& ple) {
     const auto* arch = ple.get("general.architecture");
     if (!arch || arch->s != "strata-ple") return "external PLE is not a strata-ple GGUF";
     if (ple.tensors().size() != 1) return "external PLE must contain exactly one tensor";
     const auto* tensor = ple.find("per_layer_token_embd.weight");
-    if (!tensor || std::strcmp(tensor->type_name(), "I8") != 0)
-        return "external PLE must contain per_layer_token_embd.weight as I8";
-    const auto* format = ple.get("strata.ple.format");
-    const auto* scale = ple.get("strata.ple.scale");
-    if (!format || format->s != "f8_e4m3" || !scale || !(scale->num() > 0.0))
-        return "external PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale";
+    if (!tensor) return "external PLE must contain per_layer_token_embd.weight";
+    const bool fp8 = std::strcmp(tensor->type_name(), "I8") == 0;
+    const bool bf16 = std::strcmp(tensor->type_name(), "BF16") == 0;
+    if (!fp8 && !bf16)
+        return "external PLE must contain per_layer_token_embd.weight as BF16 or FP8 (I8)";
+    if (fp8) {
+        const auto* format = ple.get("strata.ple.format");
+        const auto* scale = ple.get("strata.ple.scale");
+        if (!format || format->s != "f8_e4m3" || !scale || !(scale->num() > 0.0))
+            return "external FP8 PLE needs strata.ple.format = f8_e4m3 and a positive strata.ple.scale";
+    }
     const auto* rows = model.get("qwen4exp.embedding_length_per_layer_input");
     const auto* offsets = model.get("qwen4exp.ple.head_offsets");
     const auto* heads = model.get("qwen4exp.ple.head_vocab_sizes");

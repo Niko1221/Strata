@@ -19,14 +19,14 @@ from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
 import iq_pack
 
 
-def write_gguf(path, tensors, split=None, arch=True, arch_name="qwen4exp", ple_shape=None):
+def write_gguf(path, tensors, split=None, arch=True, arch_name="qwen4exp", ple_shape=None, ple_format="fp8"):
     """`split` = (no, count, tensors): llama.cpp's gguf-split keys (0-based split.no)."""
     writer = GGUFWriter(path, arch_name)
     if ple_shape is not None and arch:
         writer.add_embedding_length_per_layer_input(ple_shape[0])
         writer.add_ple_head_offsets([0])
         writer.add_ple_head_vocab_sizes([ple_shape[1]])
-    if arch_name == "strata-ple":
+    if arch_name == "strata-ple" and ple_format == "fp8":
         writer.add_string("strata.ple.format", "f8_e4m3")
         writer.add_float32("strata.ple.scale", 1.0)
     if not arch:                                   # a later shard of a split: no model metadata
@@ -500,6 +500,16 @@ class SplitArtifactTests(unittest.TestCase):
             rc, log = run_pack(paths[0], Path(tmp) / "pack", "--compat-bf16", "--ple-gguf", str(ple),
                                "--skip-ple-shard", "2")
             self.assertEqual(rc, 0, log)
+
+            bf16_ple = Path(tmp) / "ple-bf16.gguf"
+            write_gguf(bf16_ple, [("per_layer_token_embd.weight", np.zeros((32, 32), np.float32), Q.BF16)],
+                       arch_name="strata-ple", ple_format="bf16")
+            bf16_model = iq_pack.Model(paths[0], 2, bf16_ple)
+            self.assertEqual([p.name for p in bf16_model.paths], [paths[0].name, paths[2].name, paths[3].name])
+            rc, log = run_pack(paths[0], Path(tmp) / "pack-bf16", "--compat-bf16", "--ple-gguf", str(bf16_ple),
+                               "--skip-ple-shard", "2")
+            self.assertEqual(rc, 0, log)
+
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as bad_tmp:
                 bad_paths = ple_split_model(Path(bad_tmp))
                 bad_paths[2].unlink()
