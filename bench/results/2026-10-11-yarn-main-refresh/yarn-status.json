@@ -1,0 +1,35 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1698-configure",
+      "exit_code": 0,
+      "machine_seconds": 0.476
+    },
+    {
+      "label": "1698-build",
+      "exit_code": 0,
+      "machine_seconds": 25.618
+    },
+    {
+      "label": "1698-native-tests",
+      "exit_code": 0,
+      "machine_seconds": 1.506
+    },
+    {
+      "label": "1698-slot-api",
+      "exit_code": 0,
+      "machine_seconds": 8.464
+    },
+    {
+      "label": "1698-cuda-4k",
+      "exit_code": 0,
+      "machine_seconds": 128.788
+    },
+    {
+      "label": "1698-cuda-256k-to-1m",
+      "exit_code": 0,
+      "machine_seconds": 1186.863
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "sampling_interval_s": 5,
+  "samples": 236,
+  "sampled_peak_process_rss_gib": 54.36949157714844,
+  "peak_single_native_process_hwm_gib": 54.11064147949219,
+  "sampled_peak_gpu_used_gib": 73.7939453125,
+  "minimum_available_system_ram_gib": 66.16936111450195,
+  "monitor_sha256": "8a5c2f3b1f158fa46c3004f014f3493eff27be7cf495d965023ee284b94cfd7c",
+  "note": "Total engine/harness memory and total device usage; temporary-only allocation is not isolated. Model/page-cache memory is included where resident. GPU peaks are sampled."
+}

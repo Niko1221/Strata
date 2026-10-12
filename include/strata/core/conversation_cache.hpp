@@ -146,6 +146,9 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
 }
 
 struct SavedConversation {
+    // Experimental approximate ordinary->YaRN history: version, source/target
+    // execution fingerprints, original prefix length. Zero means no migration.
+    std::array<uint64_t, 4> rope_migration{};
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
     // The session's layer carve the image was captured from ([0, n_layers) on one GPU); restore requires the same.

@@ -1,0 +1,29 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1698-extract",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.255
+    },
+    {
+      "label": "1698-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 4.173
+    },
+    {
+      "label": "1698-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 142.069
+    },
+    {
+      "label": "1698-units",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 2.69
+    }
+  ]
+}

@@ -64,24 +64,10 @@ void build_rope_table(int n_rot, const RopeScaling& sc, int max_pos, float* cos_
         return;
     }
     const int half = n_rot / 2;
-    const double fs = sc.freq_scale();
-    const double ms = sc.mscale();
-    double cd[2];
-    sc.corr_dims(n_rot, cd);
-    const bool correct = sc.ext_factor != 0;   // ggml: the correction rides on ext_factor, not the type
     for (int p = 0; p < max_pos; ++p) {
-        for (int i = 0; i < half; ++i) {
-            const double inv = std::pow(sc.freq_base, -2.0 * (double) i / (double) n_rot);
-            const double extrap = (double) p * inv;    // the trained angle, ggml's theta_extrap
-            const double interp = fs * extrap;         // ggml's theta_interp
-            double ang = interp;
-            if (correct) {
-                const double ramp = (double) rope_yarn_ramp((float) cd[0], (float) cd[1], i) * sc.ext_factor;
-                ang = interp * (1.0 - ramp) + extrap * ramp;
-            }
-            cos_tab[(size_t) p * half + i] = (float) (std::cos(ang) * ms);
-            sin_tab[(size_t) p * half + i] = (float) (std::sin(ang) * ms);
-        }
+        for (int i = 0; i < half; ++i)
+            rope_table_coefficients(n_rot, sc, p, i,
+                cos_tab[(size_t) p * half + i], sin_tab[(size_t) p * half + i]);
     }
 }
 

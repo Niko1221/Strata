@@ -1,0 +1,41 @@
+{
+  "state": "passed",
+  "results": [
+    {
+      "label": "1698-extract",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.136
+    },
+    {
+      "label": "1698-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 18.712
+    },
+    {
+      "label": "1698-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 136.973
+    },
+    {
+      "label": "1698-host-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 12.336
+    },
+    {
+      "label": "1698-host-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 2.255
+    },
+    {
+      "label": "1698-host-tests",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.061
+    }
+  ]
+}

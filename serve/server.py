@@ -1878,10 +1878,11 @@ class StrataEngine:
         a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
         explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
         that never ends is still ended."""
-        if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
+        if action not in ("save", "restore", "migrate_yarn4") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
-            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
+            command = {"save": "SAVE", "restore": "RESTORE", "migrate_yarn4": "MIGRATE_YARN4"}[action]
+            self.proc.stdin.write(f"{command} {path}\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
@@ -1952,14 +1953,14 @@ class StrataEngine:
                 raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
             if head == want:
                 try:
-                    if len(f) != 4:
+                    if len(f) != 4 and not (len(f) == 5 and f[4] == "migrated"):
                         raise ValueError
                     tokens, size, ms = count(f[1]), count(f[2]), float(f[3])
                     if not math.isfinite(ms) or ms < 0:
                         raise ValueError
                 except ValueError:
                     raise out_of_step(line) from None
-                return {"tokens": tokens, "bytes": size, "ms": ms}
+                return {"tokens": tokens, "bytes": size, "ms": ms, **({"approximate_migrated_history": True} if len(f) == 5 else {})}
             if head == "INFO" or head == "WARN":          # engine log lines may interleave; they are not answers
                 heard = time.monotonic()
                 continue
@@ -2937,7 +2938,7 @@ class Service:
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
 
-    def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
+    def slot_action(self, slot: str, action: str, filename, source_context=None) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
         to or from a file in slot_save_path.  -> (HTTP status, body)."""
         def error(code, message):
@@ -2951,13 +2952,15 @@ class Service:
             return error(501, "slot save/restore is not available with parallel requests (\"parallel\" / --batch)")
         if slot != "0":
             return error(400, "this server has one slot: 0")
-        if action not in ("save", "restore"):
-            return error(400, "action must be save or restore")
+        if action not in ("save", "restore", "migrate_yarn4"):
+            return error(400, "action must be save, restore or migrate_yarn4")
         why = slot_filename_problem(filename)
         if why:
             return error(400, f"filename {why}")
+        if action == "migrate_yarn4" and (type(source_context) is not int or not 0 < source_context <= 1048576):
+            return error(400, "migrate_yarn4 needs integer source_context in 1..1048576")
         path = os.path.join(self.slot_save_path, filename)
-        if action == "restore":
+        if action in ("restore", "migrate_yarn4"):
             try:
                 os.lstat(path)                              # the engine opens it without following a link
             except OSError:
@@ -2982,7 +2985,7 @@ class Service:
                         from serve.session_save_retry import session_file
                         r = session_file(self, action, path, SessionRefused)
                     else:
-                        r = self.engine.session_file(action, path)
+                        r = self.engine.session_file(action, f"{source_context} {path}" if action == "migrate_yarn4" else path)
                 except SessionRefused as e:
                     body = error(e.status, str(e))
                     body[1]["error"]["kind"] = e.kind
@@ -3002,7 +3005,9 @@ class Service:
         if action == "save":
             return 200, {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
                          "timings": {"save_ms": r["ms"]}}
-        return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
+        return 200, {"id_slot": 0, "filename": filename + (".yarn4" if action == "migrate_yarn4" else ""),
+                     **({"approximate_migrated_history": True} if r.get("approximate_migrated_history") else {}),
+                     "n_restored": r["tokens"], "n_read": r["bytes"],
                      "timings": {"restore_ms": r["ms"]}}
 
     def set_aliases(self, aliases) -> None:
@@ -5226,7 +5231,7 @@ def make_handler(svc: Service):
                     query = parse_qs(self.path.partition("?")[2])
                     try:
                         code, body = svc.slot_action(path[len("/slots/"):], (query.get("action") or [""])[0],
-                                                     req.get("filename"))
+                                                     req.get("filename"), **({"source_context": req["source_context"]} if "source_context" in req else {}))
                     except EngineDied as e:                  # EngineSilent included: the engine was ended
                         code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
                                                      "the engine again", "type": "server_error"}}
