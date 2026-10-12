@@ -23,14 +23,15 @@
 //      --vision;
 //   8. a new main process waits while the served one sends messages, and takes it over once it has been silent (not
 //      closed) for STRATA_REMOTE_TAKEOVER_S (1 s here): B served, A's next message fails as a lost link; one with a
-//      wrong token or another model is refused and A stays; when the served one closes, the one waiting is served at
-//      once; which errors stage_link_lost counts as a lost link;
+//      wrong token, another model or more checkpoints than a worker keeps is refused and A stays; when the served one
+//      closes, the one waiting is served at once; which errors stage_link_lost counts as a lost link;
 //   9. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
 //      worker accepted while the served one was idle is closed when the served one sends again (and does not take
 //      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began;
-//  10. StageClient::alive: true on an idle served link, and it reads nothing (the next reply is in step); false, as
-//      a lost link, once the worker's end closed it (a take-over by another main process, the worker stopped) or sent
-//      bytes no message asked for, and the link is marked failed; no check blocks;
+//  10. StageClient::alive, the main process's check at a request's start (and a relay's of its next worker): true on
+//      an idle served link, and it reads nothing (the next reply is in step); false, as a lost link, once the
+//      worker's end closed it (a take-over by another main process, the worker stopped) or sent bytes no message
+//      asked for, and the link is marked failed; no check blocks;
 //  11. connect() with a deadline: a hello left unanswered and a connect no host answers are given up at it, as lost
 //      links; a stop flag ends the wait at once (also before a try that would fail at once), not as a lost link; a
 //      worker that answers is served as without one;
@@ -386,7 +387,7 @@ struct Mute {
 
 int main() {
     std::printf("stage_link_test\n");
-    set_takeover("1");   // (section 5: before the first worker reads it)
+    set_takeover("1");   // (section 8: before the first worker reads it)
     // 0. the worker's table from a Positions message (no link)
     {
         std::vector<int32_t> out(10 * 3, -1);
@@ -746,6 +747,11 @@ int main() {
     StageHello other = with_token(hello_of(), "tok");
     other.pack_hash ^= 1;
     check(!greet_with(bad, wk3.where, other) && contains(err, "differ"), "... and one with another model");
+    StageHello greedy_b = with_token(hello_of(), "tok");
+    greedy_b.ckpt_max = kStageCkptMax + 1;
+    check(!greet_with(bad, wk3.where, greedy_b) && contains(err, "conversation checkpoints") &&
+              disconnects.load() == disc0,
+          "... and one that would keep more checkpoints than a worker may (before it takes over)");
     err.clear();
     check(a.reset({}, err) && disconnects.load() == disc0, "... A is still served, never disconnected");
     Pending b;
