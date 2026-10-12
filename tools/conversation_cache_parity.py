@@ -42,12 +42,15 @@ def state_hashes(text):
     return hashes
 
 
-def engine_args(cfg, budget, spec):
+def engine_args(cfg, budget, spec, storage='ram', cache_dir=None):
     # Native IQ packs require verifier capacity >= 2, even for one-token decode.
-    return list(cfg['args']) + [
+    args = list(cfg['args']) + [
         '--conversation-cache-mib', str(budget), '--conversation-cache-slots', '4',
         '--prompt-cache', '6', '--adapt-swaps', '0', '--spec', str(max(2, spec)),
         '--mtp-max-t', str(spec), '--suffix-draft', '0', '--spec-min-p', '0']
+    if storage == 'disk':   # parks as session-format files in cache_dir (--conversation-cache-storage disk)
+        args += ['--conversation-cache-storage', 'disk', '--conversation-cache-dir', str(cache_dir)]
+    return args
 
 
 def pressure_budget_hint(results, budget_mib):
@@ -163,8 +166,14 @@ def main():
                     help='physical RAM floor; for admission denial choose a value above available system RAM')
     ap.add_argument('--spec', type=int, default=1, choices=range(1, 9),
                     help='decode window cap; 1 uses engine --spec 2 --mtp-max-t 1 for native IQ packs')
+    ap.add_argument('--storage', choices=('ram', 'disk'), default='ram',
+                    help='parked-conversation storage the candidate engine uses (ram keeps the previous behavior)')
+    ap.add_argument('--cache-dir', type=Path, default=Path('/tmp/strata-parity-cache'),
+                    help='the folder disk parking writes to (with --storage disk; wiped before the run)')
     ap.add_argument('--run', action='store_true')
     a = ap.parse_args()
+    if a.storage == 'disk' and a.scenario == 'exchange':
+        ap.error('the exchange scenario tests the RAM held-image accounting, which disk parking does not have')
     if a.cache_mib <= 0 or a.paragraphs < 1 or not 0 <= a.min_free_mib <= (2**63 - 1) // (1024 * 1024):
         ap.error('cache-mib/paragraphs must be positive and min-free-mib must fit the engine range')
     if not a.run:
@@ -185,12 +194,16 @@ def main():
     suffix = encode('<|im_end|>\n<|im_start|>user\nName a color from the list.<|im_end|>\n'
                     '<|im_start|>assistant\n<think>\n\n</think>\n\n')
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    if a.storage == 'disk':
+        import shutil
+        shutil.rmtree(a.cache_dir, ignore_errors=True)
+        a.cache_dir.mkdir(parents=True, exist_ok=True)
     env = child_env(cfg)
     env['STRATA_STATE_HASH'] = '1'
     results = {'engine_info': {}}
     for label, budget in [('baseline', 0), ('candidate', a.cache_mib)]:
         log = a.output / f'{label}.log'
-        args = engine_args(cfg, budget, a.spec)
+        args = engine_args(cfg, budget, a.spec, a.storage, a.cache_dir)
         args += ['--conversation-cache-min-free-mib', str(a.min_free_mib)]
         engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
         results['engine_info'][label] = dict(engine.info)

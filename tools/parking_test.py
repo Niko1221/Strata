@@ -35,7 +35,10 @@ def gen(eng, out, ids, n):
 
 def run(a, cfg, tok, with_b):
     # STRATA_SNAPSHOT_VERIFY: the engine reads the restored draft ring back (on the GPU that holds it) after a restore
-    eng = Engine(a.exe, cfg, 0, {"STRATA_IQ_MT_MIN": "1", "STRATA_SNAPSHOT_VERIFY": "1"}, a.extra.split())
+    extra = a.extra.split()
+    if a.disk:   # --conversation-cache-storage disk: parks land in a.cache_dir as session-format files
+        extra += ["--conversation-cache-storage", "disk", "--conversation-cache-dir", a.cache_dir]
+    eng = Engine(a.exe, cfg, 0, {"STRATA_IQ_MT_MIN": "1", "STRATA_SNAPSHOT_VERIFY": "1"}, extra)
     out = eng.lines()
     pa = tok.encode(chat(DOC * a.repeat + "\nSummarize this text in five sentences."), parse_special=True)
     ans, _ = gen(eng, out, pa, a.max_new)
@@ -67,6 +70,10 @@ def main():
     ap.add_argument("--repeat", type=int, default=60, help="copies of the paragraph in conversation A")
     ap.add_argument("--max-new", type=int, default=120)
     ap.add_argument("--extra", default="")
+    ap.add_argument("--disk", action="store_true",
+                    help="park through --conversation-cache-storage disk (files under --cache-dir); the retained-K/V "
+                         "reuse of the second park is a RAM-only path, so 0 reused bytes is then the pass condition")
+    ap.add_argument("--cache-dir", default="/tmp/strata-parking-test-cache")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
     tok = tokenizer(cfg["tokenizer"])
@@ -81,6 +88,9 @@ def main():
     print("follow-up tokens:", "IDENTICAL" if same else f"DIFFER at {first}", f"({len(ref[2])} / {len(park[2])})")
     print("   ", repr(tok.decode(park[2])[:200]))
     reused = park[6][-1] if park[6] else 0
+    if a.disk:
+        print(f"second park of A: {reused} bytes of K/V reused (disk storage retains no host K/V: 0 is expected)")
+        return 0 if same and park[5] and reused == 0 else 1
     print(f"second park of A: {reused} bytes of K/V reused (retained from its restore)")
     return 0 if same and park[5] and reused > 0 else 1
 
