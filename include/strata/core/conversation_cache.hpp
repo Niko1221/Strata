@@ -198,6 +198,37 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+/// Phase 3b: longest common PREFIX of a checkpoint and a prompt, up to the checkpoint's length.
+/// Returns:
+///   0:  no LCP (token 0 mismatches, or image key mismatch below the LCP, or empty checkpoint)
+///   n:  the checkpoint is a strict prefix of the prompt (== conversation_prefix, the "full match")
+///   p:  partial match - 0 < p < n (the LCP length; the checkpoint's tail [p, n) diverges)
+/// Image check mirrors conversation_prefix but bounded by the LCP (not the full checkpoint):
+/// request images at positions < p must match the checkpoint's images at the same positions; the
+/// checkpoint's images at positions >= p are irrelevant (the partial mount discards [p, n) of the
+/// checkpoint).  This is the helper the flag-gated partial-prefix mount in
+/// `best_with_partial` walks to find the longest LCP when no strict match exists.
+template<class Token>
+int64_t conversation_lcp(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
+                         const std::vector<ConversationImageKey>& images) {
+    const size_t n = c.ids.size();
+    if (n < 1 || n > prompt.size()) return 0;            // empty or larger than the prompt: no LCP
+    int64_t p = 0;
+    while (p < (int64_t) n && c.ids[(size_t) p] == (Token) prompt[(size_t) p]) ++p;
+    if (p == 0) return 0;                                // token 0 mismatches
+    // Image check: request images at positions < p must match the checkpoint's images.  The
+    // checkpoint's images at positions >= p are irrelevant (we re-prefill [p, n) on the new
+    // prompt).  The strict `conversation_prefix` check is the same logic with n -> p.
+    size_t j = 0;
+    for (const auto& image : images) {
+        if (image.start >= p) continue;
+        if (j == c.imgs.size() || !(c.imgs[j++] == image)) return 0;
+    }
+    for (size_t k = j; k < c.imgs.size(); ++k)
+        if (c.imgs[k].start < p) return 0;               // checkpoint has an image below p not in the request
+    return p;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -205,6 +236,15 @@ public:
         int64_t tokens = 0;
         bool live = false;
         uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
+        // Phase 3b: flag-on partial-prefix match.  `partial == true` means the longest LCP of any
+        // checkpoint with the request is strictly less than the checkpoint's length (a mid-prompt
+        // edit past the LCP).  In that case `tokens` is the LCP (the resume length the splice hook
+        // narrows to) and `checkpoint_length` is the full checkpoint's length (the restore anchor).
+        // Strict match (== the existing behaviour): `partial == false`, `tokens == checkpoint_length`.
+        // No match: `partial == false`, `tokens == 0`.  Off-flag (`flag <= 0`) and on-flag-with-
+        // strict-match returns are byte-identical to `best()`.
+        bool partial = false;
+        int64_t checkpoint_length = 0;   ///< the full checkpoint's length (== tokens when !partial)
     };
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
@@ -257,12 +297,55 @@ public:
             if (e.cvec != cvec) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live, serials_[i]};
+                if (n > best.tokens) best = {i, n, live, serials_[i], false, n};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         }
         return best;
+    }
+
+    /// Phase 3b: flag-gated partial-prefix match.  At `flag <= 0` (and on-flag when a strict
+    /// match exists) this is byte-identical to `best()`: same loop, same `conversation_prefix`,
+    /// same tie-break by most recently parked.  At `flag > 0` with NO strict match, falls back
+    /// to the longest LCP `p` such that `0 < p < c.ids.size()` and the image check at positions
+    /// < p matches; the returned Match has `partial = true, tokens = p, checkpoint_length = L`.
+    /// Ties: longest LCP wins, then longest checkpoint (a deeper anchor gives the splice more
+    /// K rows to rotate for the unchanged tail), then most recently parked (same as `best()`).
+    template<class Token>
+    Match best_with_partial(int64_t flag, const std::vector<Token>& prompt,
+                            const std::vector<ConversationImageKey>& images, bool cvec) const {
+        if (flag <= 0) return best(prompt, images, cvec);   // flag off: byte-identical
+        Match m;
+        // strict first (same as best()).
+        for (size_t i = entries_.size(); i-- > 0;) {
+            const auto& e = entries_[i];
+            if (e.cvec != cvec) continue;
+            auto consider = [&](const ConversationCheckpoint& c, bool live) {
+                const int64_t n = conversation_prefix(c, prompt, images);
+                if (n > m.tokens) m = {i, n, live, false, n};
+            };
+            consider(e.live, true);
+            for (const auto& c : e.checkpoints) consider(c, false);
+        }
+        if (m.tokens > 0) return m;                          // strict match wins; partial ignored
+        // No strict match: partial.  Longest LCP > 0 and < c.ids.size(); tie-break by deeper anchor
+        // (longer checkpoint) then by most recently parked (the loop iterates newest-first).
+        for (size_t i = entries_.size(); i-- > 0;) {
+            const auto& e = entries_[i];
+            if (e.cvec != cvec) continue;
+            auto consider = [&](const ConversationCheckpoint& c, bool live) {
+                const int64_t L = (int64_t) c.ids.size();
+                if (L < 1 || L > (int64_t) prompt.size()) return;   // must be <= prompt.size() (L == n is valid partial: same length, mid-file edit)
+                const int64_t p = conversation_lcp(c, prompt, images);
+                if (p <= 0 || p >= L) return;                         // 0 LCP or strict (already tried)
+                if (p > m.tokens || (p == m.tokens && L > m.checkpoint_length))
+                    m = {i, p, live, true, L};
+            };
+            consider(e.live, true);
+            for (const auto& c : e.checkpoints) consider(c, false);
+        }
+        return m;                                            // may be {0, 0, false, false, 0} (no match)
     }
 
     SavedConversation take(size_t index) {

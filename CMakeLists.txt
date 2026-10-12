@@ -702,6 +702,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata src/program/generate.cpp)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+  # 2026-10-12 splice hotfix round 2: generate.cpp is a G++ (host) TU even in a CUDA build, so
+  # the __CUDACC__ per-TU trigger in kv_splice_transport.hpp never fires for it.  Mark the
+  # whole build so the transport activates for EVERY TU of this target (NVCC or g++), and the
+  # fail-closed #error in the header catches any TU that sees it in a CUDA build without one.
+  target_compile_definitions(strata PRIVATE STRATA_HAVE_CUDA_BUILD=1)
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
   # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
@@ -1332,6 +1337,60 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conv_cache_test src/program/conv_cache_test.cpp)
   target_include_directories(conv_cache_test PRIVATE include)
   add_test(NAME conv_cache_test COMMAND conv_cache_test)
+  # the suffix-reuse plan computation: longest-common-tail splice plan over a re-edited prompt
+  # (header-only, CPU; gated by STRATA_BUILD_CONVERSATION_TESTS so the test suite can opt in standalone)
+  if(STRATA_BUILD_CONVERSATION_TESTS)
+    add_executable(suffix_reuse_test src/program/suffix_reuse_test.cpp)
+    target_include_directories(suffix_reuse_test PRIVATE include)
+    add_test(NAME suffix_reuse_test COMMAND suffix_reuse_test)
+    # A2.3: flag-off parity is a ctest, not a grep.  CPU-only; gate on the same flag as
+    # suffix_reuse_test so it can opt in alongside the conversation tests.
+    add_executable(suffix_reuse_off_parity_test src/program/suffix_reuse_off_parity_test.cpp)
+    target_include_directories(suffix_reuse_off_parity_test PRIVATE include)
+    add_test(NAME suffix_reuse_off_parity_test COMMAND suffix_reuse_off_parity_test)
+    # Phase 2 Task 3 T6: the splice-wiring test (synthesises QsaState, hand-crafts K rows,
+    # runs rotate_qsa_tail_inplace, asserts K matches fresh rotation to 1e-6 + V byte-identical
+    # + SPLICE_UNSUPPORTED guard fires for unsupported configs).
+    add_executable(suffix_reuse_apply_test src/program/suffix_reuse_apply_test.cpp)
+    target_include_directories(suffix_reuse_apply_test PRIVATE include)
+    add_test(NAME suffix_reuse_apply_test COMMAND suffix_reuse_apply_test)
+    # Phase 2 hotfix T7: the device-path regression for the 2026-10-12 SIGSEGV.  Pins the
+    # LIVE failing inputs (edit_pos=3239, old_suffix_len=1, uniform delta=+54) plus the
+    # non-uniform path and the null-deltas guard, all on a PROT_NONE "device" region
+    # (PROT_NONE faults on any host deref, exactly as a discrete-GPU address would).
+    # CPU-only: the test supplies a fake-cuda API in its own TU; no <cuda_runtime.h>.
+    # RED->GREEN: removing the transport from kv_splice_transport.hpp makes this SEGV.
+    add_executable(suffix_reuse_device_test src/program/suffix_reuse_device_test.cpp)
+    target_include_directories(suffix_reuse_device_test PRIVATE include)
+    target_compile_definitions(suffix_reuse_device_test PRIVATE
+      STRATA_SPLICE_TRANSPORT=1 STRATA_SPLICE_FAKE_CUDA=1)
+    add_test(NAME suffix_reuse_device_test COMMAND suffix_reuse_device_test)
+    add_executable(suffix_reuse_resume_narrowing_test src/program/suffix_reuse_resume_narrowing_test.cpp)
+    target_include_directories(suffix_reuse_resume_narrowing_test PRIVATE include)
+    add_test(NAME suffix_reuse_resume_narrowing_test COMMAND suffix_reuse_resume_narrowing_test)
+    # Phase 3a T9+T10: continuation-mount parity (the 0% vs 98% off-arm regression - the
+    # splice hook's suffix walk mis-IDs a pure continuation as a 1-token edit and destroys
+    # the mount) + anchor-splice engagement (the splice's K rotation is wasted because the
+    # chunk loop re-reads [anchor, n) instead of [edit, n) - the gap-read is the splice's
+    # saved work).  CPU-only header test on the pure helpers in suffix_reuse.hpp.
+    add_executable(suffix_reuse_continuation_and_anchor_test src/program/suffix_reuse_continuation_and_anchor_test.cpp)
+    target_include_directories(suffix_reuse_continuation_and_anchor_test PRIVATE include)
+    add_test(NAME suffix_reuse_continuation_and_anchor_test COMMAND suffix_reuse_continuation_and_anchor_test)
+    # Phase 3 T11: the INT8 KV splice (dequant -> rotate -> requant).  Exercises
+    # kv_splice_apply_int8.hpp + kv_q8_quant.hpp on a synthesised int8 QsaState;
+    # mirrors the writer's quant math (src/kernels/cuda/kv_q8.cu:47-67) so a
+    # requant(dequant(block)) is BIT-IDENTICAL and the rotated cell is bounded by
+    # the writer's per-group half-step.  Header-only / CPU.
+    add_executable(suffix_reuse_int8_test src/program/suffix_reuse_int8_test.cpp)
+    target_include_directories(suffix_reuse_int8_test PRIVATE include)
+    add_test(NAME suffix_reuse_int8_test COMMAND suffix_reuse_int8_test)
+    # Phase 3b T12-T15: the partial-prefix mount (flag-gated longest-LCP fallback when the strict
+    # mount fails).  Exercises `ConversationCache::best_with_partial` and the pure
+    # `suffix_reuse_partial_apply` helper in suffix_reuse.hpp.  Header-only / CPU - no CUDA.
+    add_executable(suffix_reuse_partial_prefix_test src/program/suffix_reuse_partial_prefix_test.cpp)
+    target_include_directories(suffix_reuse_partial_prefix_test PRIVATE include)
+    add_test(NAME suffix_reuse_partial_prefix_test COMMAND suffix_reuse_partial_prefix_test)
+  endif()
   # which path computes the draft layer's prompt K/V, and STRATA_SPLIT_MTP_BATCH's parsing (header-only, CPU)
   add_executable(draft_kv_plan_test src/program/draft_kv_plan_test.cpp)
   target_include_directories(draft_kv_plan_test PRIVATE include)
