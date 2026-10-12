@@ -9,6 +9,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -22,6 +23,28 @@ namespace {
 enum class Form { F32, BF16, F16 };
 enum class Xf { Id, T, Swap, Conv1d, SplitQ, SplitK };
 
+/// The v-head reorder of `llama.cpp`'s converter (`conversion/qwen.py`, `_LinearAttentionVReorderBase`).
+///
+/// HF stores the v heads grouped by k head, `[G0_v0 G0_v1 G0_v2 G1_v0 ...]`; the engine's GDN kernels pair
+/// v head `h` with k head `h % n_k` (`gdn_step_kernel`'s `src = h % h_k`), which is the tiled order
+/// `[G0_v0 G1_v0 ... G15_v0 G0_v1 ...]`.  The GGUF converter reorders, so every GDN weight the engine has
+/// ever read is tiled; an EXL3 model is a straight quantization of the HF checkpoint, so this loader has to
+/// do the same or every GDN layer pairs q/k/v from the wrong heads.
+enum class Vr {
+    None,   ///< no reorder
+    Out,    ///< the whole output dim is v: rows of the projection, or the 1-D A/dt parameters
+    OutV,   ///< only the v part of the output dim (q and k stay as stored): in_proj_qkv
+    In,     ///< the input dim is v: out_proj's columns
+    Conv,   ///< the v channels of the conv kernel, after the q|k channels
+};
+
+/// The value transforms the converter applies on top of the name mapping.
+enum class Vt {
+    None,
+    Norm1,    ///< zero-centred gamma: HF stores `w` and the engine's RMSNorm reads `1 + w`
+    NegExp,   ///< `A_log` -> `-exp(A_log)`, the decay the GDN gate multiplies the softplus by
+};
+
 // One engine role.  `hf` is the module path under `model.language_model.layers.<L>.` unless `global`.
 struct RoleSpec {
     const char* engine;   // "{L}" for the layer; else a fixed engine name (blk.1.ple_*)
@@ -33,7 +56,20 @@ struct RoleSpec {
     Xf xf;
     bool global;
     bool deq = false;   // reconstruct an EXL3 linear and store it as BF16 (the indexer, read directly)
+    Vr vr = Vr::None;
+    Vt vt = Vt::None;
 };
+
+/// Grouped -> tiled: tiled v head `t` is stored at grouped head `(t % n_k) * v_per_k + t / n_k`.
+int64_t v_src_head(int64_t t, int64_t n_k, int64_t v_per_k) { return (t % n_k) * v_per_k + t / n_k; }
+
+/// Reorder `n_v` head blocks of `block` elements each, starting at element `off`, from grouped to tiled.
+template <typename T>
+void reorder_v_blocks(T* p, int64_t off, int64_t n_v, int64_t block, int64_t n_k, int64_t v_per_k) {
+    std::vector<T> tmp(p + off, p + off + n_v * block);
+    for (int64_t t = 0; t < n_v; ++t)
+        std::memcpy(p + off + t * block, tmp.data() + v_src_head(t, n_k, v_per_k) * block, block * sizeof(T));
+}
 
 const RoleSpec kCommon[] = {
     {"hc_attn_down.weight", "attn_hyper_connection.input_mix_weight_down.weight", false, false, false, Form::BF16, Xf::Swap, false},
@@ -46,20 +82,20 @@ const RoleSpec kCommon[] = {
     {"ffn_gate_shexp.weight", "mlp.shared_expert.gate_proj", true, false, false, Form::F16, Xf::Id, false},
     {"ffn_up_shexp.weight", "mlp.shared_expert.up_proj", true, false, false, Form::F16, Xf::Id, false},
     {"ffn_down_shexp.weight", "mlp.shared_expert.down_proj", true, false, false, Form::F16, Xf::Id, false},
-    {"hc_attn_norm.weight", "attn_hyper_connection.hc_norm.weight", false, false, false, Form::F32, Xf::Id, false},
-    {"hc_ffn_norm.weight", "mlp_hyper_connection.hc_norm.weight", false, false, false, Form::F32, Xf::Id, false},
+    {"hc_attn_norm.weight", "attn_hyper_connection.hc_norm.weight", false, false, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
+    {"hc_ffn_norm.weight", "mlp_hyper_connection.hc_norm.weight", false, false, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
     {"ffn_gate_inp_shexp.weight", "mlp.shared_expert_gate.weight", false, false, false, Form::BF16, Xf::Id, false},
 };
 
 const RoleSpec kGdn[] = {
-    {"attn_qkv.weight", "linear_attn.in_proj_qkv", true, false, true, Form::F16, Xf::Id, false},
-    {"attn_gate.weight", "linear_attn.in_proj_z", true, false, true, Form::F16, Xf::Id, false},
-    {"ssm_out.weight", "linear_attn.out_proj", true, false, true, Form::F16, Xf::Id, false},
-    {"ssm_conv1d.weight", "linear_attn.conv1d.weight", false, false, true, Form::F32, Xf::Conv1d, false},
-    {"ssm_alpha.weight", "linear_attn.in_proj_a.weight", false, false, true, Form::BF16, Xf::Swap, false},
-    {"ssm_beta.weight", "linear_attn.in_proj_b.weight", false, false, true, Form::BF16, Xf::Swap, false},
-    {"ssm_a", "linear_attn.A_log", false, false, true, Form::F32, Xf::Id, false},
-    {"ssm_dt.bias", "linear_attn.dt_bias", false, false, true, Form::F32, Xf::Id, false},
+    {"attn_qkv.weight", "linear_attn.in_proj_qkv", true, false, true, Form::F16, Xf::Id, false, false, Vr::OutV},
+    {"attn_gate.weight", "linear_attn.in_proj_z", true, false, true, Form::F16, Xf::Id, false, false, Vr::Out},
+    {"ssm_out.weight", "linear_attn.out_proj", true, false, true, Form::F16, Xf::Id, false, false, Vr::In},
+    {"ssm_conv1d.weight", "linear_attn.conv1d.weight", false, false, true, Form::F32, Xf::Conv1d, false, false, Vr::Conv},
+    {"ssm_alpha.weight", "linear_attn.in_proj_a.weight", false, false, true, Form::BF16, Xf::Swap, false, false, Vr::Out},
+    {"ssm_beta.weight", "linear_attn.in_proj_b.weight", false, false, true, Form::BF16, Xf::Swap, false, false, Vr::Out},
+    {"ssm_a", "linear_attn.A_log", false, false, true, Form::F32, Xf::Id, false, false, Vr::Out, Vt::NegExp},
+    {"ssm_dt.bias", "linear_attn.dt_bias", false, false, true, Form::F32, Xf::Id, false, false, Vr::Out},
     {"ssm_norm.weight", "linear_attn.norm.weight", false, false, true, Form::F32, Xf::Id, false},
 };
 
@@ -68,18 +104,18 @@ const RoleSpec kQsa[] = {
     {"attn_k.weight", "self_attn.k_proj", true, true, false, Form::F16, Xf::Id, false},
     {"attn_v.weight", "self_attn.v_proj", true, true, false, Form::F16, Xf::Id, false},
     {"attn_output.weight", "self_attn.o_proj", true, true, false, Form::F16, Xf::Id, false},
-    {"attn_q_norm.weight", "self_attn.q_norm.weight", false, true, false, Form::F32, Xf::Id, false},
-    {"attn_k_norm.weight", "self_attn.k_norm.weight", false, true, false, Form::F32, Xf::Id, false},
+    {"attn_q_norm.weight", "self_attn.q_norm.weight", false, true, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
+    {"attn_k_norm.weight", "self_attn.k_norm.weight", false, true, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
     {"indexer.q_proj.weight", "self_attn.indexer.index_qk_proj", false, true, false, Form::BF16, Xf::SplitQ, false, true},
     {"indexer.k_proj.weight", "self_attn.indexer.index_qk_proj", false, true, false, Form::BF16, Xf::SplitK, false, true},
-    {"indexer.q_norm.weight", "self_attn.indexer.q_layernorm.weight", false, true, false, Form::F32, Xf::Id, false},
-    {"indexer.k_norm.weight", "self_attn.indexer.k_layernorm.weight", false, true, false, Form::F32, Xf::Id, false},
+    {"indexer.q_norm.weight", "self_attn.indexer.q_layernorm.weight", false, true, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
+    {"indexer.k_norm.weight", "self_attn.indexer.k_layernorm.weight", false, true, false, Form::F32, Xf::Id, false, false, Vr::None, Vt::Norm1},
 };
 
 const RoleSpec kGlobal[] = {
     {"token_embd.weight", "model.language_model.embed_tokens.weight", false, false, false, Form::BF16, Xf::Swap, true},
     {"output.weight", "lm_head", true, false, false, Form::F16, Xf::Id, true},
-    {"output_hc_norm.weight", "model.language_model.hyper_connection_mixer.hc_norm.weight", false, false, false, Form::F32, Xf::Id, true},
+    {"output_hc_norm.weight", "model.language_model.hyper_connection_mixer.hc_norm.weight", false, false, false, Form::F32, Xf::Id, true, false, Vr::None, Vt::Norm1},
     {"output_hc_down.weight", "model.language_model.hyper_connection_mixer.input_mix_weight_down.weight", false, false, false, Form::BF16, Xf::Swap, true},
     {"output_hc_up.weight", "model.language_model.hyper_connection_mixer.input_mix_weight_up.weight", false, false, false, Form::BF16, Xf::Swap, true},
 };
@@ -87,9 +123,9 @@ const RoleSpec kGlobal[] = {
 const RoleSpec kPle[] = {
     {"blk.1.ple_key.weight", "model.language_model.layers.1.ple.key_proj.weight", false, false, false, Form::BF16, Xf::Swap, true},
     {"blk.1.ple_value.weight", "model.language_model.layers.1.ple.value_proj.weight", false, false, false, Form::BF16, Xf::Swap, true},
-    {"blk.1.ple_norm_key.weight", "model.language_model.layers.1.ple.norm_key.weight", false, false, false, Form::F32, Xf::Id, true},
-    {"blk.1.ple_norm_query.weight", "model.language_model.layers.1.ple.norm_query.weight", false, false, false, Form::F32, Xf::Id, true},
-    {"blk.1.ple_norm_conv.weight", "model.language_model.layers.1.ple.norm_conv.weight", false, false, false, Form::F32, Xf::Id, true},
+    {"blk.1.ple_norm_key.weight", "model.language_model.layers.1.ple.norm_key.weight", false, false, false, Form::F32, Xf::Id, true, false, Vr::None, Vt::Norm1},
+    {"blk.1.ple_norm_query.weight", "model.language_model.layers.1.ple.norm_query.weight", false, false, false, Form::F32, Xf::Id, true, false, Vr::None, Vt::Norm1},
+    {"blk.1.ple_norm_conv.weight", "model.language_model.layers.1.ple.norm_conv.weight", false, false, false, Form::F32, Xf::Id, true, false, Vr::None, Vt::Norm1},
     {"blk.1.ple_conv1d.weight", "model.language_model.layers.1.ple.conv1d.weight", false, false, false, Form::F16, Xf::Conv1d, true},
 };
 
@@ -180,8 +216,8 @@ Exl3Pack::~Exl3Pack() = default;
 namespace {
 
 // Stage one non-EXL3 role into `dst` (arena cursor) in engine form; returns the WeightRef and advances dst.
-bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_name, const std::string& engine_name,
-                uint8_t*& dst, WeightRef& out, std::string& err) {
+bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const ModelGeometry& g, const std::string& hf_name,
+                const std::string& engine_name, uint8_t*& dst, WeightRef& out, std::string& err) {
     int64_t out_ne0 = 0, out_ne1 = 0;
     if (r.deq) {
         // the engine reads the indexer projections directly as BF16; reconstruct the EXL3 index_qk_proj
@@ -193,12 +229,14 @@ bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_nam
         const bool q = r.xf == Xf::SplitQ;
         const int oc = q ? L.out() * 4 / 5 : L.out() / 5;   // 512 / 128
         const int c0 = q ? 0 : oc * 4;
+        // `bf16_gemv` walks a row of `n_in` per output (`row = w + o * n_in`), so the engine form is
+        // [out][in]: row j is HF's output j, the input index contiguous inside it.  The reconstruct gives
+        // [in][out], so this is where the transpose is taken - a [in][out] buffer reads as the transpose
+        // and nothing faults.
         std::vector<float> eng((size_t) L.in() * oc);
         for (int i = 0; i < L.in(); ++i)
-            for (int j = 0; j < oc; ++j) {
-                const uint16_t h = w[(size_t) i * L.out() + c0 + j];
-                eng[(size_t) i * oc + j] = f16_to_f32(h);
-            }
+            for (int j = 0; j < oc; ++j)
+                eng[(size_t) j * L.in() + i] = f16_to_f32(w[(size_t) i * L.out() + c0 + j]);
         out_ne0 = L.in(); out_ne1 = oc;
         const int64_t elems = (int64_t) eng.size();
         const size_t bytes = (size_t) elems * 2;
@@ -210,6 +248,9 @@ bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_nam
     }
     std::vector<float> f;
     try { im.read_f32(hf_name, f); } catch (const std::exception& e) { err = e.what(); return false; }
+    // the converter's value transforms (elementwise, so before the shape handling)
+    if (r.vt == Vt::Norm1) for (float& x : f) x += 1.0f;
+    else if (r.vt == Vt::NegExp) for (float& x : f) x = -std::exp(x);
     const StTensor* t = nullptr;
     im.raw_data(hf_name, &t);
     const std::vector<int64_t>& sh = t->shape;
@@ -232,6 +273,28 @@ bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_nam
         eng = f;
     }
     const int64_t elems = (int64_t) eng.size();
+    // the v-head reorder, on the staged values: `Vr::Out` blocks are one head of the output dim (a whole
+    // row of the [n_v, n_embd] gates, one element of the 1-D A/dt), `Vr::Conv` is one head of the v
+    // channels, after the q|k ones.
+    if (r.vr != Vr::None) {
+        const int64_t n_k = g.ssm_k_heads, n_v = g.ssm_v_heads, v_per_k = n_v / n_k;
+        int64_t off = 0, block = 0;
+        if (r.vr == Vr::Out) {
+            block = elems / n_v;
+        } else if (r.vr == Vr::Conv) {
+            const int64_t K = elems / g.ssm_conv_channels;
+            block = (g.ssm_value_dim / n_v) * K;
+            off = (g.ssm_conv_channels - g.ssm_value_dim) * K;
+        } else {
+            err = engine_name + ": this role's v reorder is EXL3-only";
+            return false;
+        }
+        if (block <= 0 || elems != off + n_v * block) {
+            err = engine_name + ": the v reorder does not tile the staged tensor";
+            return false;
+        }
+        reorder_v_blocks(eng.data(), off, n_v, block, n_k, v_per_k);
+    }
     size_t bytes;
     if (r.form == Form::F32) {
         bytes = (size_t) elems * 4;
@@ -264,8 +327,8 @@ bool stage_role(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_nam
 }
 
 // Upload one EXL3 linear and attach an Exl3Mat.
-bool stage_exl3(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_base, const std::string& engine_name,
-                WeightTable& wt, std::string& err, uint64_t& bytes_out) {
+bool stage_exl3(Exl3Pack::Impl& im, const RoleSpec& r, const ModelGeometry& g, const std::string& hf_base,
+                const std::string& engine_name, WeightTable& wt, std::string& err, uint64_t& bytes_out) {
     if (!im.model.has(hf_base)) { err = "exl3: no EXL3 linear " + hf_base; return false; }
     Exl3Linear L;
     try { L = im.model.linear(hf_base); } catch (const std::exception& e) { err = e.what(); return false; }
@@ -291,12 +354,35 @@ bool stage_exl3(Exl3Pack::Impl& im, const RoleSpec& r, const std::string& hf_bas
         nj = nj_new;
         svh = d_svh;
     } else {
+        // host copies, permuted where the converter reorders: the trellis carries the weights, so the
+        // reorder is done on it, at whole 16-row tiles (a v head is 128 = 8 tiles, so a head boundary is
+        // always a tile boundary).
+        std::vector<uint16_t> h_trellis(L.trellis, L.trellis + (size_t) L.ki * L.nj * words);
+        std::vector<uint16_t> h_suh(L.suh, L.suh + (size_t) L.in());
+        std::vector<uint16_t> h_svh(L.svh, L.svh + (size_t) L.out());
+        const int64_t n_k = g.ssm_k_heads, n_v = g.ssm_v_heads, v_per_k = n_v / n_k;
+        const int64_t tiles_per_head = g.ssm_state_size / 16;
+        if (r.vr == Vr::Out || r.vr == Vr::OutV) {
+            // the output dim: `Vr::OutV` keeps q and k as stored and moves only the v tiles after them
+            const int64_t j0 = r.vr == Vr::OutV ? (g.ssm_conv_channels - g.ssm_value_dim) / 16 : 0;
+            for (int i = 0; i < L.ki; ++i)
+                reorder_v_blocks(h_trellis.data() + (size_t) i * L.nj * words, j0 * words, n_v,
+                                 tiles_per_head * words, n_k, v_per_k);
+            reorder_v_blocks(h_svh.data(), j0 * 16, n_v, g.ssm_state_size, n_k, v_per_k);
+        } else if (r.vr == Vr::In) {
+            // the input dim: whole groups of `tiles_per_head` i-tiles, and the input scales
+            reorder_v_blocks(h_trellis.data(), 0, n_v, tiles_per_head * (int64_t) L.nj * words, n_k, v_per_k);
+            reorder_v_blocks(h_suh.data(), 0, n_v, g.ssm_state_size, n_k, v_per_k);
+        } else if (r.vr != Vr::None) {
+            err = engine_name + ": this role's v reorder is not implemented for an EXL3 linear";
+            return false;
+        }
         d_trellis = (uint16_t*) im.alloc((size_t) L.ki * L.nj * words * 2);
         d_suh = (uint16_t*) im.alloc((size_t) L.in() * 2);
         d_svh = (uint16_t*) im.alloc((size_t) L.out() * 2);
-        (void) cudaMemcpy(d_trellis, L.trellis, (size_t) L.ki * L.nj * words * 2, cudaMemcpyHostToDevice);
-        (void) cudaMemcpy(d_suh, L.suh, (size_t) L.in() * 2, cudaMemcpyHostToDevice);
-        (void) cudaMemcpy(d_svh, L.svh, (size_t) L.out() * 2, cudaMemcpyHostToDevice);
+        (void) cudaMemcpy(d_trellis, h_trellis.data(), h_trellis.size() * 2, cudaMemcpyHostToDevice);
+        (void) cudaMemcpy(d_suh, h_suh.data(), h_suh.size() * 2, cudaMemcpyHostToDevice);
+        (void) cudaMemcpy(d_svh, h_svh.data(), h_svh.size() * 2, cudaMemcpyHostToDevice);
     }
     bytes_out += (uint64_t) L.ki * nj * words * 2 + (uint64_t) L.in() * 2 + (uint64_t) nj * 16 * 2;
     auto* m = new strata::kernels::Exl3Mat;
@@ -318,6 +404,7 @@ bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
     (void) stream;
     Impl& im = *impl_;
     try {
+        const ModelGeometry g;
         // ---- size the non-EXL3 arena by walking the roles once (all staged tensors), then upload.
         struct Staged { const RoleSpec* r; std::string hf, engine; };
         std::vector<Staged> staged;
@@ -362,7 +449,7 @@ bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
         std::vector<std::pair<std::string, uint64_t>> placed;
         for (const Staged& s : staged) {
             WeightRef w;
-            if (!stage_role(im, *s.r, s.hf, s.engine, dst, w, err)) return false;
+            if (!stage_role(im, *s.r, g, s.hf, s.engine, dst, w, err)) return false;
             placed.emplace_back(s.engine, (uint64_t) ((const uint8_t*) w.data - host_arena.data()));
             w.data = nullptr;   // filled in after the upload
             wt.set(s.engine, w);
@@ -380,26 +467,27 @@ bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
 
         // ---- EXL3 linears (attached, not staged)
         for (const RoleSpec& r : kGlobal)
-            if (r.exl3 && !stage_exl3(im, r, r.hf, r.engine, wt, err, exl3_bytes_)) return false;
+            if (r.exl3 && !stage_exl3(im, r, g, r.hf, r.engine, wt, err, exl3_bytes_)) return false;
         for (int layer = 0; layer < 48; ++layer) {
             const bool qsa = (layer % 4) == 3;
-            auto for_each = [&](const RoleSpec* arr, size_t n) {
+            auto for_each = [&](const RoleSpec* arr, size_t n) -> bool {
                 for (size_t i = 0; i < n; ++i) {
                     const RoleSpec& r = arr[i];
                     if (!r.exl3) continue;
                     if (r.qsa_only && !qsa) continue;
                     if (r.gdn_only && qsa) continue;
                     std::string eng = "blk." + std::to_string(layer) + "." + r.engine;
-                    if (!stage_exl3(im, r, kLayerPrefix + std::to_string(layer) + "." + r.hf, eng, wt, err, exl3_bytes_))
+                    if (!stage_exl3(im, r, g, kLayerPrefix + std::to_string(layer) + "." + r.hf, eng, wt, err, exl3_bytes_))
                         return false;
                 }
+                return true;
             };
-            for_each(kCommon, sizeof kCommon / sizeof kCommon[0]);
-            for_each(qsa ? kQsa : kGdn, qsa ? sizeof kQsa / sizeof kQsa[0] : sizeof kGdn / sizeof kGdn[0]);
+            if (!for_each(kCommon, sizeof kCommon / sizeof kCommon[0])) return false;
+            if (!for_each(qsa ? kQsa : kGdn, qsa ? sizeof kQsa / sizeof kQsa[0] : sizeof kGdn / sizeof kGdn[0]))
+                return false;
         }
 
         // ---- validate against the engine's own shape contract
-        ModelGeometry g;
         if (!check_all(wt, g, err)) return false;
         LoadReport rep;
         rep.tensors = wt.all().size();
