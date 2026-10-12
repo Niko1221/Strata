@@ -91,7 +91,9 @@ connect returns: the server's frozen-engine check (`ENGINE_STALL_S`, 90 s withou
 engine first, and the request would get "frozen" instead of the link's error. Not at the engine's start: the server
 then waits for READY and reads INFO lines as settings. A worker
 down for longer is still found: the engine ends with the error, and the server's next request starts it again,
-which tries anew. A link lost in the middle of a request still ends the main engine. A
+which tries anew. A link lost in the middle of a request still ends the main engine; the server answers an
+`ERR remote stage: ...`, and the worker's own `ERR remote stage (worker): ...`, with 503 `server_error` and
+`Retry-After: 30` (`RemoteStageLost` in `serve/server.py`; an error event once a stream has started), not a 400. A
 Commit's error that the next Reset drops is written on the worker's stderr first. `stage_link_test` covers the
 take-over over loopback with `STRATA_REMOTE_TAKEOVER_S=1` (a second main not served while the first sends a message
 every 0.5 s, served once the first is silent past 1 s, served at once when the first closes; a wrong token or
