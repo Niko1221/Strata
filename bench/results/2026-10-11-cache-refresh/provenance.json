@@ -1,0 +1,16 @@
+{
+  "source_commit": "5d8be3316c59bc16eb6b3f3b6c309dec183a8f59",
+  "engine_sha256": "151a1ea30b7ddd92782fb98809febfdbb7f7ff3977c19dc5f119c60985526202",
+  "combined_source_after_python_fix": "c11af10c59b91a3135ca23bf3d704e753669ccc6",
+  "hardware": "RTX PRO 6000 Blackwell 96GB, CUDA sm120, ISTA IQ3_XXS",
+  "serving_tests": {
+    "run": 750,
+    "skipped": 12,
+    "passed": true
+  },
+  "post_fix_tests": {
+    "run": 30,
+    "passed": true
+  },
+  "integration_scope": "combined #1667 + #1810; native binary unchanged by Python-only checkpoint identity correction"
+}

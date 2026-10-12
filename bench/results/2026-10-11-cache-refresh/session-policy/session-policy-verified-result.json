@@ -1,0 +1,46 @@
+{
+  "complete": true,
+  "binaries": {
+    "pre-policy-version-strata": "9e3292bec15e91ecd043a1de21a46b586dc4a9b3737b387c6421f741451879b6",
+    "build/strata": "cd0efebf01f5a8058ece0e596f634f8cf8b701d27949cb4cd67008d5b5a33835"
+  },
+  "checks": [
+    {
+      "label": "old-default",
+      "save": {
+        "tokens": 26,
+        "bytes": 236555484,
+        "ms": 190.8
+      }
+    },
+    {
+      "label": "old-repro",
+      "save": {
+        "tokens": 26,
+        "bytes": 236555484,
+        "ms": 189.7
+      }
+    },
+    {
+      "label": "old-default-compatible",
+      "restore": {
+        "tokens": 26,
+        "bytes": 236555484,
+        "ms": 262.8
+      }
+    },
+    {
+      "label": "unversioned-repro-refused",
+      "kind": "invalid",
+      "reason": "session file: saved with another engine configuration (config fingerprint differs)"
+    },
+    {
+      "label": "new-repro-roundtrip",
+      "restore": {
+        "tokens": 26,
+        "bytes": 236555484,
+        "ms": 262.5
+      }
+    }
+  ]
+}

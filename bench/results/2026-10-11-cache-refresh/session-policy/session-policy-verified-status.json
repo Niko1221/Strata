@@ -1,0 +1,21 @@
+{
+  "state": "passed",
+  "pid": 2664172,
+  "results": [
+    {
+      "label": "session-policy-verified-build",
+      "exit_code": 0,
+      "machine_seconds": 0.14
+    },
+    {
+      "label": "session-policy-verified-disk",
+      "exit_code": 0,
+      "machine_seconds": 28.892
+    },
+    {
+      "label": "session-policy-verified-ram-fallback",
+      "exit_code": 0,
+      "machine_seconds": 28.998
+    }
+  ]
+}

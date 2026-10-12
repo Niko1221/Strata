@@ -1,0 +1,36 @@
+{
+  "state": "passed",
+  "pid": 185022,
+  "results": [
+    {
+      "label": "1810-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 4.675
+    },
+    {
+      "label": "1810-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 18.45
+    },
+    {
+      "label": "1810-host-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 3.854
+    },
+    {
+      "label": "1810-host-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.141
+    },
+    {
+      "label": "1810-host-tests",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 1.369
+    }
+  ]
+}

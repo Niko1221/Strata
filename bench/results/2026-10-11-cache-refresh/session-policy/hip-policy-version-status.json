@@ -1,0 +1,24 @@
+{
+  "state": "passed",
+  "pid": 21837,
+  "results": [
+    {
+      "label": "1810-configure",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 0.697
+    },
+    {
+      "label": "1810-build",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 34.884
+    },
+    {
+      "label": "1810-units",
+      "exit_code": 0,
+      "expected": 0,
+      "machine_seconds": 2.624
+    }
+  ]
+}
