@@ -667,7 +667,11 @@ static_assert(kHcPlain == detail::kGrVariantPlain && kHcSplit == detail::kGrVari
 constexpr detail::GrBackend kGrBackend = detail::GrBackend::Hip;
 static_assert(hipErrorInvalidValue == detail::kGrErrInvalidValue, "hipErrorInvalidValue");
 static_assert(hipErrorMemoryAllocation == detail::kGrErrMemoryAllocation, "hipErrorMemoryAllocation");
+static_assert(hipErrorInvalidDevicePointer == detail::kGrErrInvalidDevicePointer, "hipErrorInvalidDevicePointer");
+static_assert(hipErrorInvalidMemcpyDirection == detail::kGrErrInvalidMemcpyDirection, "hipErrorInvalidMemcpyDirection");
 static_assert(hipErrorInvalidConfiguration == detail::kGrErrInvalidConfiguration, "hipErrorInvalidConfiguration");
+static_assert(hipErrorNoDevice == detail::kGrErrNoDevice, "hipErrorNoDevice");
+static_assert(hipErrorInvalidDevice == detail::kGrErrInvalidDevice, "hipErrorInvalidDevice");
 static_assert(hipErrorInvalidDeviceFunction == detail::kGrErrInvalidDeviceFunction, "hipErrorInvalidDeviceFunction");
 static_assert(hipErrorInvalidImage == detail::kGrErrInvalidKernelImage, "hipErrorInvalidImage");
 static_assert(hipErrorNoBinaryForGpu == detail::kGrErrNoKernelImageForDevice, "hipErrorNoBinaryForGpu");
@@ -684,6 +688,9 @@ static_assert(hipErrorCooperativeLaunchTooLarge == detail::kGrErrCooperativeLaun
 static_assert(hipErrorStreamCaptureUnsupported == detail::kGrErrStreamCaptureUnsupported,
               "hipErrorStreamCaptureUnsupported");
 static_assert(hipErrorUnknown == detail::kGrErrUnknown, "hipErrorUnknown");
+static_assert(hipErrorECCNotCorrectable == detail::kGrErrECCNotCorrectable, "hipErrorECCNotCorrectable");
+static_assert(hipErrorUnsupportedLimit == detail::kGrErrUnsupportedLimit, "hipErrorUnsupportedLimit");
+static_assert(hipErrorNotSupported == detail::kGrErrNotSupported, "hipErrorNotSupported");
 static_assert(hipErrorRuntimeMemory == detail::kGrHipErrRuntimeMemory, "hipErrorRuntimeMemory");
 static_assert(hipErrorRuntimeOther == detail::kGrHipErrRuntimeOther, "hipErrorRuntimeOther");
 // HIP's 911/912 are its own API errors, not CUDA's external-device fault / cluster-size error: the policy
@@ -694,19 +701,26 @@ static_assert(hipErrorInvalidTexture == detail::kGrCudaErrInvalidClusterSize,
               "HIP's 912 is hipErrorInvalidTexture, not CUDA's cudaErrorInvalidClusterSize");
 static_assert(!detail::fused_gr_context_fatal(detail::kGrCudaErrExternalDevice, kGrBackend),
               "HIP's 911 is a plain API error: not context-fatal here");
-static_assert(!detail::fused_gr_context_fatal(detail::kGrCudaErrIllegalInstruction, kGrBackend),
-              "HIP has no 715: the CUDA-only device faults are not this backend's codes");
+static_assert(detail::fused_gr_context_fatal(detail::kGrCudaErrIllegalInstruction, kGrBackend) &&
+                  detail::fused_gr_context_fatal(detail::kGrCudaErrLaunchIncompatibleTexturing, kGrBackend),
+              "unclassified HIP status values fail closed");
 static_assert(!detail::fused_gr_context_fatal(detail::kGrHipErrRuntimeMemory, kGrBackend) &&
                   !detail::fused_gr_context_fatal(detail::kGrHipErrRuntimeOther, kGrBackend),
               "HIP documents 1052/1053 as a runtime call failing, not as the context going bad");
 static_assert(detail::fused_gr_context_fatal(detail::kGrErrIllegalAddress, kGrBackend) &&
-                  detail::fused_gr_context_fatal(detail::kGrErrLaunchFailure, kGrBackend),
-              "HIP's illegal address and device exception are context-fatal");
+                  detail::fused_gr_context_fatal(detail::kGrErrLaunchFailure, kGrBackend) &&
+                  detail::fused_gr_context_fatal(hipErrorECCNotCorrectable, kGrBackend) &&
+                  detail::fused_gr_context_fatal(hipErrorUnknown, kGrBackend),
+              "HIP's illegal address, device exception, uncorrectable ECC, and unknown statuses fail closed");
 #else
 constexpr detail::GrBackend kGrBackend = detail::GrBackend::Cuda;
 static_assert(cudaErrorInvalidValue == detail::kGrErrInvalidValue, "cudaErrorInvalidValue");
 static_assert(cudaErrorMemoryAllocation == detail::kGrErrMemoryAllocation, "cudaErrorMemoryAllocation");
+static_assert(cudaErrorInvalidDevicePointer == detail::kGrErrInvalidDevicePointer, "cudaErrorInvalidDevicePointer");
+static_assert(cudaErrorInvalidMemcpyDirection == detail::kGrErrInvalidMemcpyDirection, "cudaErrorInvalidMemcpyDirection");
 static_assert(cudaErrorInvalidConfiguration == detail::kGrErrInvalidConfiguration, "cudaErrorInvalidConfiguration");
+static_assert(cudaErrorNoDevice == detail::kGrErrNoDevice, "cudaErrorNoDevice");
+static_assert(cudaErrorInvalidDevice == detail::kGrErrInvalidDevice, "cudaErrorInvalidDevice");
 static_assert(cudaErrorInvalidDeviceFunction == detail::kGrErrInvalidDeviceFunction, "cudaErrorInvalidDeviceFunction");
 static_assert(cudaErrorInvalidKernelImage == detail::kGrErrInvalidKernelImage, "cudaErrorInvalidKernelImage");
 static_assert(cudaErrorNoKernelImageForDevice == detail::kGrErrNoKernelImageForDevice,
@@ -717,7 +731,7 @@ static_assert(cudaErrorNotReady == detail::kGrErrNotReady, "cudaErrorNotReady");
 static_assert(cudaErrorIllegalAddress == detail::kGrErrIllegalAddress, "cudaErrorIllegalAddress");
 static_assert(cudaErrorLaunchOutOfResources == detail::kGrErrLaunchOutOfResources, "cudaErrorLaunchOutOfResources");
 static_assert(cudaErrorLaunchTimeout == detail::kGrErrLaunchTimeout, "cudaErrorLaunchTimeout");
-static_assert(cudaErrorLaunchIncompatibleTexturing == detail::kGrErrLaunchIncompatibleTexturing,
+static_assert(cudaErrorLaunchIncompatibleTexturing == detail::kGrCudaErrLaunchIncompatibleTexturing,
               "cudaErrorLaunchIncompatibleTexturing");
 static_assert(cudaErrorContextIsDestroyed == detail::kGrErrContextIsDestroyed, "cudaErrorContextIsDestroyed");
 static_assert(cudaErrorAssert == detail::kGrErrAssert, "cudaErrorAssert");
@@ -736,10 +750,15 @@ static_assert(cudaErrorStreamCaptureUnsupported == detail::kGrErrStreamCaptureUn
 static_assert(cudaErrorExternalDevice == detail::kGrCudaErrExternalDevice, "cudaErrorExternalDevice");
 static_assert(cudaErrorInvalidClusterSize == detail::kGrCudaErrInvalidClusterSize, "cudaErrorInvalidClusterSize");
 static_assert(cudaErrorUnknown == detail::kGrErrUnknown, "cudaErrorUnknown");
+static_assert(cudaErrorECCUncorrectable == detail::kGrErrECCNotCorrectable, "cudaErrorECCUncorrectable");
+static_assert(cudaErrorUnsupportedLimit == detail::kGrErrUnsupportedLimit, "cudaErrorUnsupportedLimit");
+static_assert(cudaErrorNotSupported == detail::kGrErrNotSupported, "cudaErrorNotSupported");
 static_assert(detail::fused_gr_context_fatal(detail::kGrCudaErrContained, kGrBackend) &&
                   detail::fused_gr_context_fatal(detail::kGrCudaErrIllegalInstruction, kGrBackend) &&
-                  detail::fused_gr_context_fatal(detail::kGrCudaErrExternalDevice, kGrBackend),
-              "CUDA's device-fault and containment codes are context-fatal");
+                  detail::fused_gr_context_fatal(detail::kGrCudaErrExternalDevice, kGrBackend) &&
+                  detail::fused_gr_context_fatal(cudaErrorECCUncorrectable, kGrBackend) &&
+                  detail::fused_gr_context_fatal(cudaErrorUnknown, kGrBackend),
+              "CUDA's device faults, uncorrectable ECC, and unknown statuses fail closed");
 static_assert(!detail::fused_gr_context_fatal(cudaErrorLaunchOutOfResources, kGrBackend) &&
                   !detail::fused_gr_context_fatal(cudaErrorInvalidConfiguration, kGrBackend) &&
                   !detail::fused_gr_context_fatal(cudaErrorInvalidResourceHandle, kGrBackend) &&
@@ -2566,33 +2585,41 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     // A fault from a kernel whose sync was skipped (the loop broke early) surfaces at this last sync. Classify
     // every teardown result before the next GPU call: a context-fatal error must not be followed by cleanup/fallback.
     std::string cleanup_why;
+    std::string p4_cleanup_why;
+    auto record_cleanup_status = [&](cudaError_t err, const char* label, const char* message, std::string& why_out) {
+        fused_gr_leave_if_context_fatal(err, label);
+        if (err != cudaSuccess) {
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, label);
+            if (why_out.empty()) why_out = message;
+        }
+    };
     if (p4_st != nullptr) {
-        const cudaError_t p4_final_sync_err = cudaStreamSynchronize(p4_st);
-        fused_gr_leave_if_context_fatal(p4_final_sync_err, "the P4 candidate's final sync");
-        if (p4_final_sync_err != cudaSuccess) cleanup_why = "the P4 candidate's final sync failed";
-        const cudaError_t p4_destroy_err = cudaStreamDestroy(p4_st);
-        fused_gr_leave_if_context_fatal(p4_destroy_err, "the P4 candidate stream destruction");
-        if (p4_destroy_err != cudaSuccess && cleanup_why.empty())
-            cleanup_why = "destroying the P4 candidate stream failed";
+        record_cleanup_status(cudaStreamSynchronize(p4_st), "the P4 candidate's final sync",
+                              "the P4 candidate's final sync failed", p4_cleanup_why);
+        record_cleanup_status(cudaStreamDestroy(p4_st), "the P4 candidate stream destruction",
+                              "destroying the P4 candidate stream failed", p4_cleanup_why);
     }
     if (st != nullptr) {
-        const cudaError_t final_sync_err = cudaStreamSynchronize(st);
-        fused_gr_leave_if_context_fatal(final_sync_err, "the check's final sync");
-        if (final_sync_err != cudaSuccess && cleanup_why.empty()) cleanup_why = "the check's final sync failed";
-        const cudaError_t destroy_err = cudaStreamDestroy(st);
-        fused_gr_leave_if_context_fatal(destroy_err, "the check stream destruction");
-        if (destroy_err != cudaSuccess && cleanup_why.empty()) cleanup_why = "destroying the check stream failed";
+        record_cleanup_status(cudaStreamSynchronize(st), "the check's final sync",
+                              "the check's final sync failed", cleanup_why);
+        record_cleanup_status(cudaStreamDestroy(st), "the check stream destruction",
+                              "destroying the check stream failed", cleanup_why);
     }
-    const cudaError_t free_err = cudaFree(base);
-    fused_gr_leave_if_context_fatal(free_err, "the self-test allocation cleanup");
-    if (free_err != cudaSuccess && cleanup_why.empty()) cleanup_why = "freeing the self-test buffer failed";
+    record_cleanup_status(cudaFree(base), "the self-test allocation cleanup",
+                          "freeing the self-test buffer failed", cleanup_why);
     const cudaError_t final_error = cudaGetLastError();
     fused_gr_leave_if_context_fatal(final_error, "the self-test's final error state");
     if (final_error != cudaSuccess && cleanup_why.empty()) cleanup_why = "the self-test ended with a pending GPU error";
-    if (!cleanup_why.empty()) {
+
+    const auto cleanup_policy = detail::fused_gr_cleanup_policy(cleanup_why.empty(), ok_variant[kP4SelfTest],
+                                                               p4_cleanup_why.empty());
+    if (!p4_cleanup_why.empty() && why[kP4SelfTest].empty()) why[kP4SelfTest] = p4_cleanup_why;
+    if (!cleanup_policy.selftest_ok) {
         ok = false;
         if (why[0].empty()) why[0] = cleanup_why;
     }
+    ok_variant[kP4SelfTest] = cleanup_policy.p4_ok;
     if (!ok) {
         ok_variant[2] = ok_variant[3] = false;
         ok_variant[4] = false;

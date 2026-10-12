@@ -53,20 +53,28 @@ enum class GrBackend : unsigned char { Cuda, Hip };
 constexpr int kGrErrSuccess = 0;
 constexpr int kGrErrInvalidValue = 1;
 constexpr int kGrErrMemoryAllocation = 2;
+constexpr int kGrErrInvalidDevicePointer = 17;
+constexpr int kGrErrInvalidMemcpyDirection = 21;
 constexpr int kGrErrInvalidConfiguration = 9;
 constexpr int kGrErrInvalidDeviceFunction = 98;
+constexpr int kGrErrNoDevice = 100;
+constexpr int kGrErrInvalidDevice = 101;
 constexpr int kGrErrInvalidKernelImage = 200;      // HIP names it hipErrorInvalidImage
 constexpr int kGrErrNoKernelImageForDevice = 209;  // HIP names it hipErrorNoBinaryForGpu
+constexpr int kGrErrECCNotCorrectable = 214;       // CUDA cudaErrorECCUncorrectable / HIP hipErrorECCNotCorrectable, both fatal
+constexpr int kGrErrUnsupportedLimit = 215;
 constexpr int kGrErrInvalidResourceHandle = 400;
 constexpr int kGrErrNotReady = 600;
+
 constexpr int kGrErrIllegalAddress = 700;
 constexpr int kGrErrLaunchOutOfResources = 701;
 constexpr int kGrErrLaunchTimeout = 702;           // HIP names it hipErrorLaunchTimeOut
-constexpr int kGrErrLaunchIncompatibleTexturing = 703;
+constexpr int kGrCudaErrLaunchIncompatibleTexturing = 703;
 constexpr int kGrErrContextIsDestroyed = 709;
 constexpr int kGrErrAssert = 710;
 constexpr int kGrErrLaunchFailure = 719;
 constexpr int kGrErrCooperativeLaunchTooLarge = 720;
+constexpr int kGrErrNotSupported = 801;
 constexpr int kGrErrStreamCaptureUnsupported = 900;
 constexpr int kGrErrUnknown = 999;
 constexpr int kGrCudaErrContained = 226;
@@ -82,38 +90,102 @@ constexpr int kGrCudaErrInvalidClusterSize = 912;  // HIP's 912 is hipErrorInval
 constexpr int kGrHipErrRuntimeMemory = 1052;       // the HSA runtime's own memory call failed
 constexpr int kGrHipErrRuntimeOther = 1053;        // the HSA runtime's own other call failed
 
-// True when a launch/sync error leaves the shared GPU context unusable for the rest of the process, so the
-// fallback kernels would only return the same error.  The set is the codes whose own header says so: CUDA's
-// `driver_types.h` states of each of 226, 700, 702, 714-718, 719, 721, 810 and 911 that it "leaves the process
-// in an inconsistent state and any further CUDA work will return the same error.  To continue using CUDA, the
-// process must be terminated and relaunched" (of 710, that "the device cannot be used again.  All existing
-// allocations are invalid"; of 709, that the context "has been destroyed"), and HIP's header names the same
-// numbers 700, 702, 709, 710 and 719 for the same faults.  Everything a launch/sync can return here that is not
-// one of these - a refused launch (701, 703, 720, CUDA's 912), a bad handle (400), an allocation (2), an
-// invalid value (1), a not-ready query (600), a capture refusal (900), HIP's HSA runtime call failures (1052,
-// 1053: its header documents them as a runtime call failing, not as the context going bad) - leaves the context
-// usable, so the fallback self-test can still run after it.
+// Return true when it is unsafe to issue more GPU work after a runtime error. The runtime headers identify the
+// context-fatal device faults below; uncorrectable ECC is also fatal because the device reported corrupted
+// execution state. Only explicitly enumerated, documented API/launch-refusal statuses are recoverable. Unknown or
+// unclassified values fail closed: the fallback self-test must not assume the context is usable without evidence.
+// Codes are checked against the selected backend's runtime header in fused_gr.cu; CUDA's 911 is fatal, while HIP's
+// 911/912 name ordinary invalid-channel/texture errors and are explicitly recoverable for HIP.
 constexpr bool fused_gr_context_fatal(int err, GrBackend backend) noexcept {
-    switch (err) {
-        case kGrErrIllegalAddress:       // 700, both headers
-        case kGrErrLaunchTimeout:        // 702, both
-        case kGrErrContextIsDestroyed:   // 709, both
-        case kGrErrAssert:               // 710, both
-        case kGrErrLaunchFailure:        // 719, both
-            return true;
-        case kGrCudaErrContained:
-        case kGrCudaErrHardwareStackError:
-        case kGrCudaErrIllegalInstruction:
-        case kGrCudaErrMisalignedAddress:
-        case kGrCudaErrInvalidAddressSpace:
-        case kGrCudaErrInvalidPc:
-        case kGrCudaErrTensorMemoryLeak:
-        case kGrCudaErrMpsClientTerminated:
-        case kGrCudaErrExternalDevice:
-            return backend == GrBackend::Cuda;
-        default:
-            return false;
+    if (backend == GrBackend::Cuda) {
+        switch (err) {
+            case kGrErrECCNotCorrectable:
+            case kGrErrIllegalAddress:
+            case kGrErrLaunchTimeout:
+            case kGrErrContextIsDestroyed:
+            case kGrErrAssert:
+            case kGrErrLaunchFailure:
+            case kGrCudaErrContained:
+            case kGrCudaErrHardwareStackError:
+            case kGrCudaErrIllegalInstruction:
+            case kGrCudaErrMisalignedAddress:
+            case kGrCudaErrInvalidAddressSpace:
+            case kGrCudaErrInvalidPc:
+            case kGrCudaErrTensorMemoryLeak:
+            case kGrCudaErrMpsClientTerminated:
+            case kGrCudaErrExternalDevice:
+                return true;
+            case kGrErrSuccess:
+            case kGrErrInvalidValue:
+            case kGrErrMemoryAllocation:
+            case kGrErrInvalidDevicePointer:
+            case kGrErrInvalidMemcpyDirection:
+            case kGrErrInvalidConfiguration:
+            case kGrErrInvalidDeviceFunction:
+            case kGrErrNoDevice:
+            case kGrErrInvalidDevice:
+            case kGrErrUnsupportedLimit:
+            case kGrErrNotSupported:
+            case kGrErrInvalidKernelImage:
+            case kGrErrNoKernelImageForDevice:
+            case kGrErrInvalidResourceHandle:
+            case kGrErrNotReady:
+            case kGrErrLaunchOutOfResources:
+            case kGrCudaErrLaunchIncompatibleTexturing:
+            case kGrErrCooperativeLaunchTooLarge:
+            case kGrErrStreamCaptureUnsupported:
+            case kGrCudaErrInvalidClusterSize:
+                return false;
+            default:
+                return true;
+        }
     }
+
+    switch (err) {
+        case kGrErrECCNotCorrectable:
+        case kGrErrIllegalAddress:
+        case kGrErrLaunchTimeout:
+        case kGrErrContextIsDestroyed:
+        case kGrErrAssert:
+        case kGrErrLaunchFailure:
+            return true;
+        case kGrErrSuccess:
+        case kGrErrInvalidValue:
+        case kGrErrMemoryAllocation:
+        case kGrErrInvalidDevicePointer:
+        case kGrErrInvalidMemcpyDirection:
+        case kGrErrInvalidConfiguration:
+        case kGrErrInvalidDeviceFunction:
+        case kGrErrNoDevice:
+        case kGrErrInvalidDevice:
+        case kGrErrUnsupportedLimit:
+        case kGrErrNotSupported:
+        case kGrErrInvalidKernelImage:
+        case kGrErrNoKernelImageForDevice:
+        case kGrErrInvalidResourceHandle:
+        case kGrErrNotReady:
+        case kGrErrLaunchOutOfResources:
+        case kGrErrCooperativeLaunchTooLarge:
+        case kGrErrStreamCaptureUnsupported:
+        case kGrCudaErrExternalDevice:     // HIP's 911 is hipErrorInvalidChannelDescriptor
+        case kGrCudaErrInvalidClusterSize: // HIP's 912 is hipErrorInvalidTexture
+        case kGrHipErrRuntimeMemory:
+        case kGrHipErrRuntimeOther:
+            return false;
+        default:
+            return true;
+    }
+}
+
+struct GrCleanupPolicy {
+    bool selftest_ok;
+    bool p4_ok;
+};
+
+// Candidate-stream cleanup failures disable P4 only; shared-stream/allocation cleanup failures invalidate the test.
+constexpr GrCleanupPolicy fused_gr_cleanup_policy(bool shared_cleanup_ok, bool p4_check_ok,
+                                                  bool p4_cleanup_ok) noexcept {
+    return {shared_cleanup_ok, shared_cleanup_ok && p4_check_ok && p4_cleanup_ok};
 }
 
 }  // namespace strata::kernels::detail

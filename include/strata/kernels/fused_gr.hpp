@@ -68,11 +68,12 @@ void fused_gr_set_fast(int on);
 /// register-half down kernel, and only on runtime gfx1200/gfx1201: it runs the self-test and selects P4 iff its
 /// bitwise parity passes against staged AND staged passes against plain, and falls back staged -> split -> plain
 /// otherwise.  The check covers T=1..8, apply on/off, inject weights present/null, and (when compiled) q8_1 /
-/// QFUSE_HC up-kernel outputs.  A context-fatal status from device/property/attribute queries, copies/memsets,
-/// launch/sync, read-back, allocation, stream setup/teardown or cleanup ends the process before further GPU work, as
-/// #224 does in the generate path.  Recoverable P4-only
-/// launch/stream errors disable P4 and preserve staged/split results; recoverable shared self-test resource errors
-/// fail the self-test and prevent P4 selection.  `fused_gr_check` runs once per card and latches its choice, and
+/// QFUSE_HC up-kernel outputs.  Context-fatal statuses from queries, copies/memsets, shared-memory setup,
+/// launch/sync, read-back, allocation, stream setup/teardown or cleanup end the process before further GPU work;
+/// uncorrectable ECC and unknown/unclassified runtime statuses fail closed, with the fatal exit following #224's
+/// generate-path precedent.  Recoverable P4-only launch, sync, read-back or candidate-stream cleanup errors disable
+/// P4 while preserving staged/split checks; recoverable shared self-test resource errors fail the self-test and
+/// prevent P4 selection.  `fused_gr_check` runs once per card and latches its choice,
 /// `fused_gr_variant` reports the requested path capped at staged until it has.
 void fused_gr_check();
 int fused_gr_variant();
