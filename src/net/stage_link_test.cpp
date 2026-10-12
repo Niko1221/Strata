@@ -18,7 +18,15 @@
 //      once; which errors stage_link_lost counts as a lost link;
 //   6. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
 //      worker accepted while the served one was idle is closed when the served one sends again (and does not take
-//      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began.
+//      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began;
+//   7. StageClient::alive: true on an idle served link, and it reads nothing (the next reply is in step); false, as
+//      a lost link, once the worker's end closed it (a take-over by another main process, the worker stopped) or sent
+//      bytes no message asked for, and the link is marked failed; no check blocks;
+//   8. connect() with a deadline: a hello left unanswered and a connect no host answers are given up at it, as lost
+//      links; a stop flag ends the wait at once (also before a try that would fail at once), not as a lost link; a
+//      worker that answers is served as without one;
+//   9. StageHandlers::idle (a relay's look at its next worker): not while the served main process sends, about once
+//      a second while it is idle; false ends that connection, and the main process's next message finds it lost.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
 #include "strata/net/stage_link.hpp"
 
@@ -193,6 +201,92 @@ struct Silent {
         s = kNone;
     }
     ~Silent() { close(); }
+};
+
+// a worker that answers a hello with hello_of() and then sends `extra`, bytes no message asked for (a link out of
+// step); it keeps the connection open until stop().  The sockets are started: a StageClient connected before.
+struct Chatty {
+#if defined(_WIN32)
+    using sock_len = int;
+#else
+    using sock_len = socklen_t;
+#endif
+    Silent::sock l = Silent::kNone, s = Silent::kNone;
+    std::thread t;
+    std::string where;
+    static bool recv_n(Silent::sock fd, void* p, size_t n) {
+        char* c = (char*) p;
+        while (n > 0) {
+            const long long r = ::recv(fd, c, (int) n, 0);
+            if (r <= 0) return false;
+            c += r;
+            n -= (size_t) r;
+        }
+        return true;
+    }
+    static void send_n(Silent::sock fd, const void* p, size_t n) {
+#if defined(_WIN32)
+        (void) ::send(fd, (const char*) p, (int) n, 0);
+#else
+        (void) ::send(fd, p, n, MSG_NOSIGNAL);
+#endif
+    }
+    // a loopback port of its own, listening: `where`
+    static Silent::sock listen_any(std::string& where) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = 0;   // any free port
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        Silent::sock l = ::socket(AF_INET, SOCK_STREAM, 0);
+        sock_len len = (sock_len) sizeof a;
+        if (l == Silent::kNone || ::bind(l, (const sockaddr*) &a, sizeof a) != 0 || ::listen(l, 4) != 0 ||
+            ::getsockname(l, (sockaddr*) &a, &len) != 0) {
+            if (l != Silent::kNone) Silent::close_(l);
+            return Silent::kNone;
+        }
+        where = "127.0.0.1:" + std::to_string(ntohs(a.sin_port));
+        return l;
+    }
+    bool start(const std::string& extra) {
+        if ((l = listen_any(where)) == Silent::kNone) return false;
+        t = std::thread([this, extra] {
+            s = ::accept(l, nullptr, nullptr);
+            if (s == Silent::kNone) return;
+            StageHeader h;
+            StageHello theirs;
+            if (!recv_n(s, &h, sizeof h) || !recv_n(s, &theirs, sizeof theirs)) return;
+            StageHeader r;
+            r.type = (uint32_t) StageMsg::HelloOk;
+            r.bytes = sizeof(StageHello);
+            const StageHello mine = hello_of();
+            send_n(s, &r, sizeof r);
+            send_n(s, &mine, sizeof mine);
+            if (!extra.empty()) send_n(s, extra.data(), extra.size());
+        });
+        return true;
+    }
+    void stop() {
+        if (l != Silent::kNone) {   // first: an accept still waiting (no client came) ends, not the test
+            Silent::shut(l);
+            Silent::close_(l);
+            l = Silent::kNone;
+        }
+        if (t.joinable()) t.join();
+        if (s != Silent::kNone) Silent::close_(s);
+        s = Silent::kNone;
+    }
+    ~Chatty() { stop(); }
+};
+
+// a port that takes connections (the system completes them in its backlog) and never answers one: a worker that
+// leaves a hello unanswered, as one serving another main process does
+struct Mute {
+    Silent::sock l = Silent::kNone;
+    std::string where;
+    bool start() { return (l = Chatty::listen_any(where)) != Silent::kNone; }
+    ~Mute() {
+        if (l != Silent::kNone) Silent::close_(l);
+    }
 };
 }  // namespace
 
@@ -566,6 +660,157 @@ int main() {
     b6.cl.close();
     a.close();
     wk6.stop();
+
+    // 7. alive(): the link between requests, checked with nothing sent and without blocking
+    Worker wk7;
+    if (!wk7.start(h, buf, "tok")) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    double alive_worst_ms = 0;
+    auto alive_timed = [&](StageClient& cl) {
+        const auto t0 = SteadyClock::now();
+        const bool up = cl.alive(err);
+        alive_worst_ms = std::max(alive_worst_ms, ms_between(t0, SteadyClock::now()));
+        return up;
+    };
+    // the first check that finds it down, within 2 s (the worker's end may take a moment to arrive)
+    auto alive_until_down = [&](StageClient& cl) {
+        for (int i = 0; i < 200; ++i) {
+            if (!alive_timed(cl)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    };
+    err.clear();
+    bool up = greet(a, wk7.where, with_token(hello_of(), "tok")) && a.reset(err);
+    for (int i = 0; i < 20 && up; ++i) up = alive_timed(a);
+    check(up && err.empty(), "an idle served link is alive (20 checks)");
+    check(a.reset(err) && a.alive(err) && a.reset(err),
+          "... the check sends nothing: the next messages and their replies are in step");
+    Pending b7;
+    connect_later(b7, with_token(hello_of(), "tok"), wk7.where);
+    for (int i = 0; i < 500 && !b7.done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    b7.t.join();
+    check(b7.ok, "main B takes the worker over once A is silent past 1 s");
+    check(alive_until_down(a) && stage_link_lost(err),
+          "A's check finds its connection ended, as a lost link (nothing sent)");
+    check(!a.connected() && !a.alive(err) && stage_link_lost(err) && !a.reset(err) && stage_link_lost(err),
+          "... and marks the link failed: later calls fail at once, as lost");
+    check(b7.cl.alive(err) && b7.cl.reset(err), "B, served, is alive");
+    wk7.stop();
+    check(alive_until_down(b7.cl) && stage_link_lost(err), "the worker stopped: B's check finds the link lost");
+    b7.cl.close();
+    a.close();
+    Chatty idle_peer, chatty;
+    err.clear();
+    up = idle_peer.start("") && greet(a, idle_peer.where, hello_of());
+    for (int i = 0; i < 20 && up; ++i) {
+        up = alive_timed(a);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(up, "a peer that sends nothing after its hello: alive (20 checks over 0.2 s)");
+    a.close();
+    idle_peer.stop();
+    err.clear();
+    check(chatty.start(std::string("\x01\x02\x03", 3)) && greet(a, chatty.where, hello_of()) &&
+              alive_until_down(a) && contains(err, "out of step") && stage_link_lost(err) && !a.connected(),
+          "a peer that sends bytes no message asked for: not alive, as lost (out of step)");
+    a.close();
+    chatty.stop();
+    check(alive_worst_ms < 100, "no check above blocked (each under 100 ms)");
+
+    // 8. connect() with a deadline (timeout_s) and a stop flag: the connect and the hello's reply together
+    Mute mute;
+    if (!mute.start()) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    auto timed_connect = [&](StageClient& cl, const std::string& at, StageHello mine, int timeout_s,
+                             const std::atomic<bool>* stop, double& ms) {
+        cl.close();
+        err.clear();
+        const auto t0 = SteadyClock::now();
+        const bool ok = cl.connect(at, mine, peer, err, timeout_s, stop);
+        ms = ms_between(t0, SteadyClock::now());
+        return ok;
+    };
+    double ms = 0;
+    check(!timed_connect(a, mute.where, hello_of(), 1, nullptr, ms) && ms >= 900 && ms < 3000 &&
+              contains(err, "no reply to the hello") && stage_link_lost(err),
+          "a hello left unanswered: given up after the 1 s, as a lost link (worth trying again)");
+    std::atomic<bool> stop_now{false};
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        stop_now = true;
+    });
+    const bool stopped_ok = timed_connect(a, mute.where, hello_of(), 30, &stop_now, ms);
+    stopper.join();
+    check(!stopped_ok && ms >= 250 && ms < 1500 && contains(err, "cancelled") && !stage_link_lost(err),
+          "... a stop flag set 0.3 s in ends a 30 s wait at once, and is not a lost link");
+    check(!timed_connect(a, mute.where, hello_of(), 0, &stop_now, ms) && ms < 1000 && contains(err, "cancelled"),
+          "... one set before the call: no wait (a stop flag without a deadline)");
+    // a try that fails at once (a name that does not resolve: .invalid, RFC 6761) never reaches a poll that looks at
+    // the flag: a caller that tries again every few seconds must still see its STOP
+    check(!timed_connect(a, "stage-link-test.invalid:9", hello_of(), 5, &stop_now, ms) && ms < 1000 &&
+              stage_wait_cancelled(err) && !stage_link_lost(err),
+          "... and before a try that would fail at once (a name that does not resolve): cancelled");
+    // SYNs no host answers (TEST-NET-1): given up at the deadline, not after the system's tries (20 s to 2 min); a
+    // network that refuses it at once ends sooner, also as a lost link (the line after the check says which it was)
+    check(!timed_connect(a, "192.0.2.1:9", hello_of(), 1, nullptr, ms) && ms < 3000 && stage_link_lost(err),
+          "a connect no host answers: given up within the 1 s, as a lost link");
+    std::printf("    (%s)\n", contains(err, "timed out") ? "it timed out: the deadline ended it"
+                                                         : "the network refused it at once: the deadline not reached");
+    Worker wk8;
+    if (!wk8.start(h, buf, "tok")) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    std::atomic<bool> never{false};
+    check(timed_connect(a, wk8.where, with_token(hello_of(), "tok"), 5, &never, ms) && a.reset(err) &&
+              a.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && std::memcmp(rows, back, sizeof rows) == 0,
+          "a worker that answers: served within the deadline, the link blocking again for its messages");
+    a.close();
+    wk8.stop();
+
+    // 9. h.idle (a relay's look at its next worker): only while the served main process is idle, about once a
+    //    second; false ends that connection, which the main process's next message finds lost
+    std::atomic<int> idle_looks{0};
+    std::atomic<bool> next_gone{false};
+    StageHandlers relay_h = h;
+    relay_h.idle = [&](std::string& e) {
+        ++idle_looks;
+        if (!next_gone.load()) return true;
+        e = "the next worker went away (test)";
+        return false;
+    };
+    Worker wk9;
+    if (!wk9.start(relay_h, buf, "tok")) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    check(greet(a, wk9.where, with_token(hello_of(), "tok")) && a.reset(err), "a relay's main A is served");
+    bool busy_ok = true;
+    for (int i = 0; i < 6; ++i) {   // a message every 0.3 s, for 1.8 s
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        busy_ok = busy_ok && a.reset(err);
+    }
+    check(busy_ok && idle_looks.load() == 0, "no look while A sends a message every 0.3 s");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2600));
+    const int looks = idle_looks.load();
+    check(looks >= 1 && looks <= 3 && a.reset(err), "A idle for 2.6 s: about one look a second, and A still served");
+    disc = disconnects.load();
+    next_gone = true;
+    const auto gone_at = SteadyClock::now();
+    for (int i = 0; i < 300 && disconnects.load() == disc; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    check(disconnects.load() == disc + 1 && ms_between(gone_at, SteadyClock::now()) < 2500,
+          "the next worker gone while A is idle: A's connection ends within the next look");
+    err.clear();
+    check(!a.reset(err) && stage_link_lost(err), "... A's next message finds it lost (its main process connects again)");
+    next_gone = false;
+    check(greet(a, wk9.where, with_token(hello_of(), "tok")) && a.reset(err), "... and connected again, A is served");
+    a.close();
+    wk9.stop();
 
     if (g_fail == 0) std::printf("stage_link_test: all passed\n");
     else std::printf("stage_link_test: %d FAILED\n", g_fail);

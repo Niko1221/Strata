@@ -88,6 +88,9 @@ int io_timeout_s();
 /// ("remote stage (worker): ...").
 bool stage_link_lost(const std::string& err);
 
+/// Whether a StageClient's error is the end of a wait its stop flag cancelled (StageClient::connect).
+bool stage_wait_cancelled(const std::string& err);
+
 /// Running totals of one side's traffic (STRATA_REMOTE_TIMING=1 prints them).
 struct StageStats {
     uint64_t runs = 0, commits = 0, prefills = 0, resets = 0;
@@ -106,9 +109,20 @@ public:
     StageClient& operator=(const StageClient&) = delete;
 
     /// "host:port".  Sends `mine`, receives the worker's hello into `peer` and checks it against `mine`.
-    bool connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err);
+    /// `timeout_s` > 0: the connection and the hello's reply take that long at most, together; an address that does
+    /// not answer leaves the next one of the name's addresses the rest (each but the last gets 10 s at most).  0: the
+    /// system's connect time-out, then STRATA_REMOTE_TIMEOUT_S for the reply.  `stop`, set by another thread, ends the
+    /// wait for either: "remote stage: the wait was cancelled" (stage_wait_cancelled), which stage_link_lost does not
+    /// count.  The name's lookup is not cut short by either.
+    bool connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err,
+                 int timeout_s = 0, const std::atomic<bool>* stop = nullptr);
     bool connected() const { return fd_ >= 0 && !broken_; }
     void close();
+    /// Between requests (no reply outstanding): whether the link still stands, without sending anything and without
+    /// blocking.  The worker sends nothing unasked, so a readable socket means its end closed or failed, or bytes
+    /// came that no message asked for (the link is out of step): false, with an error stage_link_lost counts, and
+    /// the link is marked failed.
+    bool alive(std::string& err);
 
     /// One verify window: send T tokens and T rows (in_floats floats), receive T rows (out_floats floats).
     bool run(int T, const int32_t* tokens, int64_t pos0, const float* rows_in, size_t in_floats, float* rows_out,
@@ -182,6 +196,10 @@ struct StageHandlers {
     /// identity).  Unset: a Positions message is an error.
     std::function<bool(const int32_t* table, int64_t cells, std::string& err)> positions;
     std::function<void()> disconnected;   ///< the main process went away (the session is stale)
+    /// optional (a relay worker): about once a second while the served main process is idle (no message read or being
+    /// read, no reply going out), on the serving thread.  False ends that connection with `err`, as a closed one ends:
+    /// its main process finds the link lost at its next request and connects again.
+    std::function<bool(std::string& err)> idle;
 };
 
 struct StageBuffers {

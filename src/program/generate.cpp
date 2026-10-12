@@ -11554,13 +11554,18 @@ int main(int argc, char** argv) {
         };
         // remote-stage main: the link to the worker, made at the start and again when a request finds it lost (the
         // worker or its PC started again, the network went away while idle), with the same hello.  A worker that does
-        // not listen yet, a network that does not reach it or a name that does not resolve yet is tried every 2 s for
-        // STRATA_REMOTE_CONNECT_S (180 s; 0: once), plus the last try's own wait; a refusal (token, model, layers,
-        // chunk, protocol) does not change by waiting.  The hello's checks of the worker are connect()'s.
+        // not listen yet, a network that does not reach it or a name that does not resolve yet is tried every 2 s
+        // until STRATA_REMOTE_CONNECT_S (180 s; 0: one try, with the link's own time-outs) have passed since the first
+        // try.  Each try's connect and hello reply get what is left of it, so a worker that takes the connection but
+        // leaves the hello unanswered (it serves another main process that is not idle) is not waited for past it
+        // either; a refusal (token, model, layers, chunk, protocol) does not change by waiting.  The hello's checks of
+        // the worker are connect()'s.
         // `in_request`: a request waits for it - `INFO remote_stage_wait=S` on stdout every 10 s meanwhile (also while
         // one try blocks), so the server does not take the silence for a frozen engine (its ENGINE_STALL_S: no line,
-        // no CPU, no I/O) and the request ends with the link's own error.  Not at the start: there the server waits
-        // for READY and reads INFO lines as the engine's settings.
+        // no CPU, no I/O) and the request ends with the link's own error.  A STOP (the client went away) ends that
+        // wait at once: `remote_cancelled`, and the request ends there with the engine kept - the link stays closed,
+        // so the next request connects again.  Not at the start: there the server waits for READY and reads INFO
+        // lines as the engine's settings.
         strata::net::StageHello remote_hello;
         strata::net::StageHello remote_peer;
         struct RemoteWaitLines {   // the heartbeat's thread, stopped and joined when the wait ends, on every path
@@ -11589,6 +11594,7 @@ int main(int argc, char** argv) {
                 t.join();
             }
         };
+        bool remote_cancelled = false;   // the last remote_connect ended on a STOP (in a request)
         auto remote_connect = [&](std::string& e, bool in_request) -> bool {
             static const int wait_s = [] {
                 const char* v = std::getenv("STRATA_REMOTE_CONNECT_S");
@@ -11596,15 +11602,26 @@ int main(int argc, char** argv) {
             }();
             const RemoteWaitLines lines(in_request);
             const Clock::time_point t0 = Clock::now();
+            auto spent = [&] { return std::chrono::duration<double>(Clock::now() - t0).count(); };
+            const std::atomic<bool>* stop = in_request ? &stop_req : nullptr;
+            remote_cancelled = false;
             bool said = false;
             for (;;) {
                 // each try can block (a connect's SYN tries, the hello's reply): its own allowance (as a relay's
                 // connect_next), not a stall
                 strata::core::progress_allow(strata::net::io_timeout_s() + 150);
                 remote_link.close();
-                if (remote_link.connect(o.remote_stage, remote_hello, remote_peer, e)) break;
-                if (!strata::net::stage_link_lost(e) ||
-                    std::chrono::duration<double>(Clock::now() - t0).count() + 2 > (double) wait_s) {
+                // what is left of wait_s (at least a second), and never past the allowance above
+                const int left = wait_s > 0 ? std::min(strata::net::io_timeout_s(),
+                                                       std::max(1, (int) std::ceil((double) wait_s - spent())))
+                                            : 0;
+                if (remote_link.connect(o.remote_stage, remote_hello, remote_peer, e, left, stop)) break;
+                // the stop flag's own error, or a lost link while a STOP is in (a try the flag could not cut short:
+                // the name's lookup, a connect refused at once); the worker refusing the hello meanwhile still ends
+                // the engine
+                remote_cancelled = strata::net::stage_wait_cancelled(e) ||
+                                   (stop != nullptr && stop->load() && strata::net::stage_link_lost(e));
+                if (remote_cancelled || !strata::net::stage_link_lost(e) || spent() + 2 > (double) wait_s) {
                     strata::core::progress_allow(0);
                     return false;
                 }
@@ -11614,7 +11631,8 @@ int main(int argc, char** argv) {
                     std::fflush(stderr);
                     said = true;
                 }
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                for (int i = 0; i < 8 && !(stop != nullptr && stop->load()); ++i)   // 2 s, or until a STOP
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
             }
             strata::core::progress_allow(0);
             return true;
@@ -11692,6 +11710,26 @@ int main(int argc, char** argv) {
                 // ... and whether it reads images (a relay's next worker must too); until a hello this worker's own,
                 // so a relay started with --vision checks at its start that the next worker has it
                 int32_t main_vision = o.vision ? 1 : 0;
+                // The chunk this worker's prompts lend for: the main process's, unless lend() would not lend it whole.
+                // The loan a chunk needs is not monotonic in the chunk (#2090), so a chunk smaller than this worker's
+                // own can need more slots than it may lend, and lend() then halves it; on a multi-GPU worker a chunk
+                // up to STRATA_SPLIT_SMALL_MAX reads in its small-request chunks (#340) - but this worker reads the
+                // main process's chunks whole (on_chunk writes one T-row reply, a relay forwards one chunk).  Then it
+                // lends for its own chunk, which fit at its start: larger buffers, still one T-row reply per chunk.
+                // The slots do not change after the start, so the hello decides it.  (lend_whole: lend()'s own test,
+                // for a prompt of `tokens`.)
+                int64_t lend_chunk = pf_chunk;
+                auto lend_whole = [&](int64_t tokens) {
+                    const int64_t want_full = planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk);   // (as lend())
+                    const int64_t want = split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
+                                                                                      : want_full;
+                    for (const PfPart& p : pf_parts) {
+                        if (p.first < 0) continue;
+                        const int64_t need = part_slots(p, want);
+                        if (need <= 0 || need + 128 > p.cache->slots()) return false;
+                    }
+                    return want >= tokens;
+                };
                 hs.hello = [&](const strata::net::StageHello& theirs, strata::net::StageHello& mine, std::string& e) {
                     mine = me;   // (the worker's own hello carries no token)
                     // another protocol: the link refuses it for its number (its fields may sit elsewhere)
@@ -11721,6 +11759,14 @@ int main(int argc, char** argv) {
                     mine.chunk = theirs.chunk;   // informational
                     main_chunk = theirs.chunk;
                     main_vision = theirs.vision;
+                    lend_chunk = theirs.chunk;
+                    if (!pf_parts.empty() && !lend_whole(theirs.chunk) && lend_whole(pf_chunk)) {
+                        lend_chunk = pf_chunk;
+                        std::fprintf(stderr, "strata stage worker: this worker cannot lend the buffers for the main "
+                                             "process's prompt chunk (%lld tokens) whole (#2090, #340): its prompts lend "
+                                             "for this worker's own chunk (%lld)\n", (long long) theirs.chunk,
+                                     (long long) pf_chunk);
+                    }
                     // STRATA_ROUTE_TAIL_SKIP changes answers, so this worker's layers skip as the main process's do (the
                     // stages of an in-process split share one rank); its default differs by build (CUDA 7, HIP off)
                     if (theirs.tail_skip != strata::core::tail_skip_rank()) {
@@ -11848,11 +11894,11 @@ int main(int argc, char** argv) {
                     const WkBusy busy("stage worker prompt chunk");
                     pf_cur_out = rows_out;
                     relay_skip = skip;   // a relay worker passes the main process's skip on
-                    // the prompt path's buffers out of this worker's cache, for the main process's chunk size (a
-                    // loan that covers it stays for the rest of the prompt)
-                    if (!lend(std::max<int64_t>(T, main_chunk), e, 0)) return false;
-                    // #2090 halves a chunk whose loan does not fit; this worker reads the main process's chunk whole
-                    // (on_chunk writes one T-row reply, a relay forwards one chunk), so a smaller one is an error
+                    // the prompt path's buffers out of this worker's cache, for the main process's chunk size or this
+                    // worker's own (lend_chunk, the hello's choice; a loan that covers it stays for the rest of the
+                    // prompt)
+                    if (!lend(std::max<int64_t>(T, lend_chunk), e, 0)) return false;
+                    // a chunk lend() halved anyway (#2090) would leave rows out: an error, not a wrong reply
                     if (sp.chunk() < T) {
                         e = "this worker lends the prompt path buffers for " + std::to_string(sp.chunk()) +
                             " tokens, the main process sends chunks of " + std::to_string(T) +
@@ -11866,6 +11912,18 @@ int main(int argc, char** argv) {
                 if (stage_relay)   // the next worker's rows of a chunk, in chunk order, on the replying thread
                     hs.prefill_reply = [&next_link, D](float* rows_out, int64_t T, int64_t skip, std::string& e) {
                         return next_link.prefill_recv(rows_out, (size_t) D, T, skip, e);
+                    };
+                // a relay whose next worker went away while idle (it started again, its PC or the network went):
+                // the main process is let go, so its next request finds its own link lost and connects again (else
+                // the first message this relay forwarded failed, and the main engine ended).  Its hello then has this
+                // relay link the next worker again at the next reset, as after any hello.
+                if (stage_relay)
+                    hs.idle = [&next_link](std::string& e) {
+                        if (!next_link.connected()) return true;   // (linked again at the next reset)
+                        std::string le;
+                        if (next_link.alive(le)) return true;
+                        e = "relay: the next worker's link was lost while idle (" + le + ")";
+                        return false;
                     };
                 // a relay worker's link to the next worker (it must be listening; tried for a minute)
                 auto connect_next = [&](std::string& e) -> bool {
@@ -13234,6 +13292,7 @@ int main(int argc, char** argv) {
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             remote_pos_cells = -1;
+            remote_cancelled = false;
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
                 std::string ve;
@@ -13325,17 +13384,22 @@ int main(int argc, char** argv) {
                 }();
                 if (ve.empty() && remote_main && send_positions &&
                     !remote_positions(geni, geni ? std::min<int64_t>(cells, n + max_new + 64) : 0, err)) {
-                    std::printf("ERR %s\n", err.c_str());   // the link is gone (as a failed reset)
-                    std::fflush(stdout);
-                    return 1;
+                    if (!remote_cancelled) {
+                        std::printf("ERR %s\n", err.c_str());   // the link is gone (as a failed reset)
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                    ve = err;   // a STOP while connecting again: this request ends below, the engine stays
                 }
                 if (!ve.empty()) {
                     // leave the table as the identity so the next text request is untouched (the worker's as well:
-                    // it may still hold an earlier picture's, and a text request sends nothing)
+                    // it may still hold an earlier picture's, and a text request sends nothing; after a STOP while
+                    // connecting again the link stays closed, and the worker's table went back with its connection)
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                     upload_mrope();
                     mrope_identity = true;
-                    if (remote_main && send_positions && !remote_positions(false, 0, err)) {
+                    if (remote_main && send_positions && !remote_cancelled && !remote_positions(false, 0, err) &&
+                        !remote_cancelled) {
                         std::printf("ERR %s\n", err.c_str());
                         std::fflush(stdout);
                         return 1;
@@ -13816,9 +13880,12 @@ int main(int argc, char** argv) {
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
-                // (a link lost while idle: made again, then the reset again; else the engine ends, as mid-request)
+                // (a link lost while idle: made again, then the reset again; else the engine ends, as mid-request -
+                // but for a STOP while connecting again: the link stays closed, and the next request starts from 0 too)
                 if (remote_main && !remote_link.reset(err) && !(remote_relink(err) && remote_link.reset(err))) {
                     std::printf("ERR %s\n", err.c_str());
+                    std::fflush(stdout);
+                    if (remote_cancelled) continue;
                     return 1;
                 }
                 for (auto& st : stages) {

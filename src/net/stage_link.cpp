@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <cerrno>
+#include <fcntl.h>
 #endif
 
 namespace strata::net {
@@ -82,6 +83,7 @@ int sock_shutdown(sock_t s) { return ::shutdown(s, SD_BOTH); }
 int sock_errno() { return WSAGetLastError(); }
 bool sock_eintr(int e) { return e == WSAEINTR; }
 bool sock_timedout(int e) { return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK; }
+bool sock_wouldblock(int e) { return e == WSAEWOULDBLOCK; }
 int sock_poll(poll_fd* p, int n, int ms) { return ::WSAPoll(p, (ULONG) n, ms); }
 std::string sock_errstr(int e) {
     char buf[256] = {};
@@ -124,6 +126,7 @@ int sock_shutdown(sock_t s) { return ::shutdown(s, SHUT_RDWR); }
 int sock_errno() { return errno; }
 bool sock_eintr(int e) { return e == EINTR; }
 bool sock_timedout(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+bool sock_wouldblock(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
 int sock_poll(poll_fd* p, int n, int ms) { return ::poll(p, (nfds_t) n, ms); }
 std::string sock_errstr(int e) { return std::strerror(e); }
 void set_timeout(sock_t s, int opt, int seconds) {
@@ -227,6 +230,87 @@ bool drain(sock_t fd, uint64_t n, std::string& err) {
     return true;
 }
 
+// ---- StageClient::connect with a deadline or a stop flag: the connect and the hello's reply are looked at every
+// quarter second instead of blocking for the system's time-outs
+constexpr const char* kCancelled = "remote stage: the wait was cancelled";
+constexpr int kGaveUp = -1, kStopped = -2;   // connect_within: the deadline passed / `stop` was set
+
+void set_blocking(sock_t s, bool on) {
+#if defined(_WIN32)
+    u_long nb = on ? 0 : 1;
+    (void) ioctlsocket(s, FIONBIO, &nb);
+#else
+    const int f = fcntl(s, F_GETFL, 0);
+    if (f >= 0) (void) fcntl(s, F_SETFL, on ? (f & ~O_NONBLOCK) : (f | O_NONBLOCK));
+#endif
+}
+
+// the milliseconds of the next wait: a quarter second, or what is left before `deadline` (0: none left)
+int slice_ms(bool timed, Clock::time_point deadline) {
+    if (!timed) return 250;
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+    return (int) std::clamp<long long>(left, 0, 250);
+}
+
+// 0 once connected, else the error number, kGaveUp or kStopped.  Without a deadline or a stop flag: the blocking
+// connect, as always.
+int connect_within(sock_t s, const sockaddr* a, sock_len n, bool timed, Clock::time_point deadline,
+                   const std::atomic<bool>* stop) {
+    if (!timed && stop == nullptr) return ::connect(s, a, n) == 0 ? 0 : sock_errno();
+    set_blocking(s, false);
+    if (::connect(s, a, n) != 0) {
+        const int e = sock_errno();
+#if defined(_WIN32)
+        if (e != WSAEWOULDBLOCK) return e;
+#else
+        if (e != EINPROGRESS) return e;
+#endif
+        for (;;) {
+            if (stop != nullptr && stop->load()) return kStopped;
+            const int ms = slice_ms(timed, deadline);
+            if (timed && ms == 0) return kGaveUp;
+#if defined(_WIN32)
+            // select, not WSAPoll: WSAPoll does not report a failed connect before Windows 10 2004
+            fd_set w, x;
+            FD_ZERO(&w);
+            FD_ZERO(&x);
+            FD_SET(s, &w);
+            FD_SET(s, &x);
+            timeval tv{ms / 1000, (ms % 1000) * 1000};
+            const int r = ::select(0, nullptr, &w, &x, &tv);
+#else
+            poll_fd p{};
+            p.fd = s;
+            p.events = POLLOUT;
+            const int r = sock_poll(&p, 1, ms);
+#endif
+            if (r > 0) break;   // connected or failed: SO_ERROR says which
+            if (r < 0 && !sock_eintr(sock_errno())) return sock_errno();
+        }
+        int so = 0;
+        sock_len sl = (sock_len) sizeof so;
+        if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*) &so, &sl) != 0) return sock_errno();
+        if (so != 0) return so;
+    }
+    set_blocking(s, true);
+    return 0;
+}
+
+// until `s` has something to read (data, its end, an error: the read that follows says which): true; false with the
+// reason when the deadline passes or `stop` is set first
+bool wait_readable(sock_t s, Clock::time_point deadline, const std::atomic<bool>* stop, std::string& err) {
+    for (;;) {
+        if (stop != nullptr && stop->load()) { err = kCancelled; return false; }
+        const int ms = slice_ms(true, deadline);
+        if (ms == 0) { err = "remote stage: receive failed: timed out (no reply to the hello)"; return false; }
+        poll_fd p{};
+        p.fd = s;
+        p.events = POLLIN;
+        const int r = sock_poll(&p, 1, ms);
+        if (r > 0 || (r < 0 && !sock_eintr(sock_errno()))) return true;
+    }
+}
+
 // the link failures a StageClient reports (stage_link_lost: what connecting again can mend; a name the name service
 // cannot answer yet, after a reboot, is one)
 constexpr const char* kLost[] = {"remote stage: cannot resolve ", "remote stage: cannot connect to ",
@@ -261,6 +345,8 @@ bool stage_link_lost(const std::string& err) {
     return false;
 }
 
+bool stage_wait_cancelled(const std::string& err) { return err == kCancelled; }
+
 // ------------------------------------------------------------------------------------------------ StageClient
 
 StageClient::~StageClient() { close(); }
@@ -276,7 +362,14 @@ void StageClient::break_() {
     broken_ = true;
 }
 
-bool StageClient::connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err) {
+bool StageClient::connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err,
+                          int timeout_s, const std::atomic<bool>* stop) {
+    const bool timed = timeout_s > 0;
+    const Clock::time_point deadline = Clock::now() + std::chrono::seconds(std::max(timeout_s, 0));
+    // (a try that fails at once - a name that does not resolve yet, a network that is unreachable - never reaches the
+    // polls below, so a stop flag that is already set is looked at here: a caller trying again every few seconds
+    // stops at its next try instead of spinning through tries until its time is up)
+    if (stop != nullptr && stop->load()) { err = kCancelled; return false; }
     if (!net_init()) { err = "remote stage: the sockets did not start (WSAStartup)"; return false; }
     const size_t colon = host_port.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= host_port.size()) {
@@ -293,17 +386,26 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
     }
     sock_t fd = kNoSock;
     int last = 0;
-    for (addrinfo* ai = res; ai != nullptr && fd == kNoSock; ai = ai->ai_next) {
+    for (addrinfo* ai = res; ai != nullptr && fd == kNoSock && last != kStopped; ai = ai->ai_next) {
+        // (kGaveUp comes with a deadline only; slice_ms counts whole milliseconds, so less than one left is none)
+        if (last == kGaveUp && Clock::now() + std::chrono::milliseconds(1) > deadline) break;
         fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd == kNoSock) { last = sock_errno(); continue; }
-        if (::connect(fd, ai->ai_addr, (sock_len) ai->ai_addrlen) != 0) {
-            last = sock_errno();
+        // an address that does not answer leaves the ones after it the rest of the deadline: 10 s at most each but
+        // the last (a name whose first address has no route - an IPv6 one - while the next one works)
+        const Clock::time_point by =
+            ai->ai_next != nullptr ? std::min(deadline, Clock::now() + std::chrono::seconds(10)) : deadline;
+        if ((last = connect_within(fd, ai->ai_addr, (sock_len) ai->ai_addrlen, timed, by, stop)) != 0) {
             (void) sock_close(fd);
             fd = kNoSock;
         }
     }
     freeaddrinfo(res);
-    if (fd == kNoSock) { err = "remote stage: cannot connect to " + host_port + ": " + sock_errstr(last); return false; }
+    if (last == kStopped) { err = kCancelled; return false; }
+    if (fd == kNoSock) {
+        err = "remote stage: cannot connect to " + host_port + ": " + (last == kGaveUp ? "timed out" : sock_errstr(last));
+        return false;
+    }
     tune_socket(fd);
     fd_ = (std::intptr_t) fd;
     peer_ = host_port;
@@ -315,7 +417,15 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
     h.type = (uint32_t) StageMsg::Hello;
     h.bytes = sizeof mine;
     StageHeader r;
-    if (!send_msg(S(fd_), h, &mine, sizeof mine, nullptr, 0, err) || !recv_header(S(fd_), r, err)) { close(); return false; }
+    // (the reply waits while the worker serves another main process: a take-over waits for its idle time.)  With a
+    // stop flag but no deadline the reply is polled too, within STRATA_REMOTE_TIMEOUT_S as the blocking read would be.
+    const Clock::time_point reply_by = timed ? deadline : Clock::now() + std::chrono::seconds(io_timeout_s());
+    if (!send_msg(S(fd_), h, &mine, sizeof mine, nullptr, 0, err) ||
+        ((timed || stop != nullptr) && !wait_readable(S(fd_), reply_by, stop, err)) ||
+        !recv_header(S(fd_), r, err)) {
+        close();
+        return false;
+    }
     if (r.type == (uint32_t) StageMsg::Error) {
         std::string m((size_t) r.bytes, '\0');
         std::string e2;
@@ -336,6 +446,42 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
         return false;
     }
     return true;
+}
+
+bool StageClient::alive(std::string& err) {
+    std::lock_guard<std::mutex> ls(send_mu_);
+    std::lock_guard<std::mutex> lr(recv_mu_);
+    if (broken_) { err = "remote stage: the link failed earlier"; return false; }
+    if (fd_ < 0) { err = "remote stage: not connected"; return false; }
+    for (;;) {
+        poll_fd pfd{};
+        pfd.fd = S(fd_);
+        pfd.events = POLLIN;
+        const int pr = sock_poll(&pfd, 1, 0);
+        if (pr == 0) return true;   // nothing to read: the link stands (a peer gone without a word: not yet seen)
+        if (pr < 0) {
+            const int e = sock_errno();
+            if (sock_eintr(e)) continue;
+            err = std::string("remote stage: receive failed: ") + sock_errstr(e);
+            break_();
+            return false;
+        }
+        // readable, closed or failed: the peek says which, and does not block (poll said it would not)
+        char c = 0;
+        const long long r = ::recv(S(fd_), &c, 1, MSG_PEEK);
+        if (r == 0) {
+            err = "remote stage: the peer closed the connection";
+        } else if (r < 0) {
+            const int e = sock_errno();
+            if (sock_eintr(e)) continue;
+            if (sock_wouldblock(e)) return true;   // (nothing there after all; a keepalive's time-out is a failure)
+            err = std::string("remote stage: receive failed: ") + sock_errstr(e);
+        } else {
+            err = "remote stage: receive failed: data no message asked for (the link is out of step)";
+        }
+        break_();
+        return false;
+    }
 }
 
 // the next reply: `want` with exactly reply_bytes of payload, or the worker's error (the connection then stays)
@@ -852,6 +998,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
         double idle_s = 0;   // (the take-over's log line)
         auto next_message = [&](Inbox& in) -> bool {
             Clock::time_point quiet_from = Clock::now();   // the last message is served
+            Clock::time_point idle_looked = quiet_from;    // h.idle's last look
             for (;;) {
                 bool reading_now;
                 {
@@ -876,6 +1023,16 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                     (reply_out.valid() && reply_out.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
                     quiet_from = Clock::now();
                 idle_s = ms_since(quiet_from) / 1000.0;
+                // a relay's look at its next worker: one lost while idle ends this connection (h.idle)
+                if (greeted && h.idle && idle_s >= 1.0 && ms_since(idle_looked) >= 1000.0) {
+                    idle_looked = Clock::now();
+                    std::string ie;
+                    if (!h.idle(ie)) {
+                        in.closed = true;
+                        in.err = ie;
+                        return true;
+                    }
+                }
                 if (!greeted || takeover == 0 || idle_s < (double) takeover) continue;
                 if (cand == kNoSock) {
                     poll_fd pfd{};
