@@ -38,6 +38,8 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/ep_mem.hpp"
+#include "strata/kernels/ep_kernels.hpp"
 #include "strata/prefill/kernels.hpp"
 
 #include <algorithm>
@@ -536,6 +538,25 @@ struct Stager {
 // are laid out local-first, so the peer's are one contiguous block at the end.
 struct PeerPrefill {
     core::PeerExperts* peer = nullptr;
+    // expert parallel (set_ep_peer): the activations and rows cross through regions on the peer opened on the primary
+    // (dpct gives each card its own context, so there is no P2P copy between them)
+    core::ExpertCache* ep = nullptr;
+    core::EpRegion x_reg, rows_reg;
+    std::vector<int32_t> src_ipc;   // src_h may be the primary's mapped memory
+    // ipc: the primary's FP16 expert path (no MMQ in this build)
+    uint16_t *mixed_h = nullptr, *Xs = nullptr, *Hh = nullptr, *dq_gu = nullptr, *dq_d = nullptr;
+    float* GUf = nullptr;
+    std::unique_ptr<Gemm> gemm;
+    bool ipc() const { return ep != nullptr; }
+    bool holds(int64_t l, int64_t e) const {
+        if (peer) return peer->has(l, e);
+        return ep && ep->slot_of(l, e) != core::kNotResident;
+    }
+    const uint8_t* slot_ptr(int64_t l, int64_t e) {
+        if (peer) return peer->slot_ptr(l, e);
+        const int32_t sl = ep ? ep->slot_of(l, e) : core::kNotResident;
+        return sl != core::kNotResident ? ep->device_slot(sl) : nullptr;
+    }
     int dev = -1;
     int64_t cap_rows = 0, T_max = 0;
     dpct::queue_ptr s = &dpct::get_in_order_queue();
@@ -610,6 +631,9 @@ struct PeerPrefill {
         dpct::select_device(dev);
         if (s) s->wait();
         ctx.reset();
+        gemm.reset();
+        core::ep_region_free(x_reg);
+        core::ep_region_free(rows_reg);
         for (void *p : owned)
             DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
         if (ev_done) dpct::destroy_event(ev_done);
@@ -1838,6 +1862,66 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
+bool Prefill::set_ep_peer(int device, core::ExpertCache* cache, std::string& err) try {
+    Impl& m = *impl_;
+    m.pp.reset();
+    if (cache == nullptr || device < 0) return true;
+    if (!strata::kernels::cpu::expert_layout().native) { err = "prefill expert parallel: needs a native pack"; return false; }
+    auto pp = std::make_unique<PeerPrefill>();
+    pp->ep = cache;
+    pp->dev = device;
+    pp->p2p = true;          // no host-mapped buffers
+    pp->out_pipe = false;
+    pp->T_max = m.T_max;
+    pp->cap_rows = m.T_max * K;
+    const int primary = dpct::get_current_device_id();
+    bool ok = core::ep_region_alloc(device, primary, (size_t) m.T_max * N * 2, pp->x_reg, err) &&
+              core::ep_region_alloc(device, primary, (size_t) m.T_max * K * N * 4, pp->rows_reg, err);
+    if (!ok) return false;
+    const core::OnDevice on(device);
+    ok = DPCT_CHECK_ERROR(pp->s = dpct::get_current_device().create_queue(true)) == 0 &&
+         DPCT_CHECK_ERROR(pp->s_out = dpct::get_current_device().create_queue(true)) == 0 &&
+         DPCT_CHECK_ERROR(pp->s_cp = dpct::get_current_device().create_queue(true)) == 0;
+    auto take = [&](size_t bytes) -> void* {
+        void* p = nullptr;
+        if (!ok || DPCT_CHECK_ERROR(p = (void*) strata::malloc_device_guarded(bytes, dpct::get_in_order_queue())) != 0) {
+            ok = false;
+            return nullptr;
+        }
+        pp->owned.push_back(p);
+        return p;
+    };
+    const int64_t T = m.T_max;   // one expert never has more rows than the chunk has tokens
+    pp->mixed_h = (uint16_t*) take((size_t) T * N * 2);
+    pp->Xs = (uint16_t*) take((size_t) T * N * 2);
+    pp->GUf = (float*) take((size_t) T * 1280 * 4);
+    pp->Hh = (uint16_t*) take((size_t) T * 640 * 2);
+    pp->dq_gu = (uint16_t*) take((size_t) 1280 * N * 2);
+    pp->dq_d = (uint16_t*) take((size_t) N * 640 * 2);
+    pp->src = (int32_t*) take((size_t) pp->cap_rows * 4);
+    if (ok) {
+        pp->gemm = std::make_unique<Gemm>();
+        ok = pp->gemm->init(pp->s, 1 << 20, err);
+        if (ok) pp->gemm->set_f16_io(m.f16_io);
+    }
+    size_t fb = 0, tb = 0;
+    dpct::get_current_device().get_memory_info(fb, tb);
+    if (!ok) {
+        if (err.empty()) err = "prefill expert parallel: card " + std::to_string(device) + "'s buffers do not fit";
+        return false;
+    }
+    std::fprintf(stderr, "strata prefill: expert parallel: card %d computes its experts' rows of each prompt chunk "
+                         "(%.0f MiB of exchange regions); %zu MiB left free on it\n", device,
+                 (double) ((size_t) T * N * 2 + (size_t) T * K * N * 4) / 1048576.0, fb >> 20);
+    m.pp = std::move(pp);
+    return true;
+}
+catch (sycl::exception const &exc) {
+  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+            << ", line:" << __LINE__ << std::endl;
+  std::exit(1);
+}
+
 void Prefill::set_pinned_share(double share) { g_pinned_share = share; }
 void set_nonresident_share(double share) { g_nonres_share = share; }   // SYCL port (see ring_slots)
 void Prefill::set_ring_override(int slots) { g_ring_override = slots > 0 ? slots : 0; }
@@ -2531,7 +2615,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                    if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
+                    if (m.pp && m.pp->holds(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
                     int job = -1;
                     const uint8_t* b = nullptr;
                     if (gsrc != nullptr) {   // read by the stager's thread when its turn comes (see Stager::Job)
@@ -3326,6 +3410,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         */
                         else m.cs->memcpy(m.ids_host.data(), m.ids,
                                           (size_t)T * K * 4);
+                        // before the wait below, which covers it; a kernel, as the region is not USM of this context
+                        if (m.pp && m.pp->ipc()) copy_f32_wide((float*) m.pp->x_reg.remote, (const float*) m.mixed_h, T * N / 2, m.cs);   // FP16 bits
                         // #579: a stall here is the GPU (this layer's attention and router, or the previous layer's
                         // work), not the host: the watchdog's report says so (only its text changes)
                         core::progress_at("reading the prompt (batched): waiting for the GPU (attention, router) at layer",
@@ -3358,7 +3444,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         const bool pre_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                         std::vector<char> on_peer;
                         int64_t rows_local = T * K, rows_peer = 0;
-                        if (m.pp && pre_mmq) {
+                        if (m.pp && (pre_mmq || m.pp->ipc())) {
                             on_peer.assign((size_t) m.g->n_expert, 0);
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                 const int32_t c = m.cnt[(size_t) e];
@@ -3368,7 +3454,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     continue;
                                 }
                                 if (c == 0 || (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) ||
-                                    !m.pp->peer || !m.pp->peer->has(l, e))
+                                    !m.pp->holds(l, e))
                                     continue;
                                 if (rows_peer + c > m.pp->cap_rows) { ++m.pp->over_cap; continue; }
                                 on_peer[(size_t) e] = 1;
@@ -3467,10 +3553,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                              m.bounds_host.size() * 4);
                             }
                         } else {
-                            gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
+                            gather_rows16(m.mixed_h, m.src_dev, m.Xs, rows_local, N, m.cs);   // the peer gathers its own rows
                         }
                         // multi-GPU: the peer's share, enqueued before the primary's own experts so both cards work at once
-                        peer_now = use_mmq && !order_peer.empty();
+                        peer_now = (use_mmq || (m.pp && m.pp->ipc())) && !order_peer.empty();
                         if (peer_now) {
                             PeerPrefill& P = *m.pp;
                             /*
@@ -3483,7 +3569,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             */
                             if (!P.p2p) m.cs->memcpy(P.host_x, m.mixed,
                                                      (size_t)T * N * 4);
-                            dpct::sync_barrier(P.ev_in, m.cs);
+                            if (!P.ipc()) dpct::sync_barrier(P.ev_in, m.cs);
                             int prevd = 0;
                             prevd = dpct::get_current_device_id();
                             /*
@@ -3493,7 +3579,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             */
                             dpct::select_device(P.dev);
                             const dpct::queue_ptr ps = P.s;
-                            ps->ext_oneapi_submit_barrier({*P.ev_in});
+                            // ipc: the host waited for the copy (no events across the two contexts)
+                            if (!P.ipc()) ps->ext_oneapi_submit_barrier({*P.ev_in});
                             if (P.out_pending) {
                                 ps->ext_oneapi_submit_barrier({*P.ev_done});
                                 P.out_pending = false;
@@ -3507,13 +3594,18 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             return by memcpy API to ensure synchronization
                             behavior.
                             */
-                            if (P.p2p) dpct::async_dpct_memcpy(
+                            // ipc: inbound PCIe writes do not invalidate this card's caches
+                            if (P.ipc()) strata::kernels::ep_copy_uncached(P.mixed_h, P.x_reg.local, (size_t) T * N * 2, ps);
+                            else if (P.p2p) dpct::async_dpct_memcpy(
                                 P.mixed, P.dev, m.mixed, prevd,
                                 (size_t)T * N * 4, *ps);
                             else copy_f32_wide(P.mixed, P.host_x, T * N, ps);
                             P.back_at = rows_local;
                             P.back_rows = rows_peer;
-                            if (P.p2p) {
+                            if (P.ipc()) {
+                                P.src_ipc.assign(src_h + rows_local, src_h + rows_local + rows_peer);
+                                ps->memcpy(P.src, P.src_ipc.data(), (size_t) rows_peer * 4);
+                            } else if (P.p2p) {
                                 /*
                                 DPCT1124: cudaMemcpyAsync is migrated to
                                 asynchronous memcpy API. While the origin API
@@ -3532,7 +3624,24 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 copy_i32(P.src, P.host_src, rows_peer, ps);
                             }
                             const size_t n = order_peer.size();
-                            if (P.compact) {
+                            if (P.ipc()) {
+                                // compute()'s FP16 path on the same rows, so the rows are bit-identical
+                                pe.mark(kPeMoeGemm, ps);
+                                const auto& f = lay.fmt[(size_t) l];
+                                float* rows = (float*) P.rows_reg.local;
+                                for (size_t j = 0; j < n; ++j) {
+                                    const int32_t e = order_peer[j];
+                                    const int64_t o = m.off[(size_t) e] - rows_local, ne = m.cnt[(size_t) e];
+                                    const uint8_t* bd = P.slot_ptr(l, e);
+                                    gather_rows16(P.mixed_h, P.src + o, P.Xs, ne, N, ps);
+                                    strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, bd, bd + f.up_off,
+                                                                           bd + f.down_off, f.n_ff, f.n_embd, P.dq_gu,
+                                                                           P.dq_d, ps);
+                                    P.gemm->f16(P.Xs, P.dq_gu, P.GUf, ne, 1280, N);
+                                    swiglu_interleaved(P.GUf, P.Hh, ne, ps);
+                                    P.gemm->f16(P.Hh, P.dq_d, rows + o * N, ne, N, 640);
+                                }
+                            } else if (P.compact) {
                                 // groups of up to MMQ_GROUP experts and at most G rows, each computed from its own rows
                                 P.groups.clear();
                                 {
@@ -3599,7 +3708,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                             bd = P.pstage[(size_t) psl];
                                             ++P.ps_experts;
                                         } else {
-                                            bd = P.peer->slot_ptr(l, e);
+                                            bd = P.slot_ptr(l, e);
                                         }
                                         const size_t q = j - j0;
                                         if (lay.native)
@@ -3704,7 +3813,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 const auto& f = lay.fmt[(size_t) l];
                                 for (size_t j = 0; j < n; ++j) {
                                     const int32_t e = order_peer[j];
-                                    const uint8_t* bd = P.peer->slot_ptr(l, e);
+                                    const uint8_t* bd = P.slot_ptr(l, e);
                                     const size_t q = j % MMQ_GROUP;
                                     if (lay.native)
                                         mmq::gather_native(bd, bd + f.up_off, mmq_gub / 2, bd + f.down_off, mmq_db,
@@ -3756,7 +3865,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 }
                             }
                             pe.mark(kPeMoeOut, ps);
-                            if (P.out_pipe) {
+                            if (P.ipc()) {
+                                // the combine waits for this stream on the host
+                            } else if (P.out_pipe) {
                                 dpct::sync_barrier(P.ev_done, P.s_out);
                                 P.out_pending = true;
                             } else {
@@ -4217,7 +4328,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 } else {
                                     const bool r0 = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                                     const uint8_t* bp = r0 ? m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e])
-                                                           : (m.pp && m.pp->peer ? m.pp->peer->slot_ptr(l, e) : nullptr);   // over the cap: P2P
+                                                           : (m.pp && !m.pp->ipc() ? m.pp->slot_ptr(l, e) : nullptr);   // over the cap: P2P
                                     if (bp == nullptr) { err = "prefill: an expert is neither resident, streamed nor on the peer"; return false; }
                                     ++stats_.experts_resident;
                                     if (!compute(j, bp, -1)) return false;
@@ -4230,7 +4341,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         }
                     }
                     pt.mark(kPfCombine, cs);
-                    if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
+                    if (peer_now && m.pp->ipc()) {
+                        // uncached: this card read the previous layer's rows from the same region
+                        {
+                            const core::OnDevice d(m.pp->dev);
+                            m.pp->s->wait();
+                        }
+                        strata::kernels::ep_copy_uncached(m.Dm + (size_t) m.pp->back_at * N, m.pp->rows_reg.remote,
+                                                          (size_t) m.pp->back_rows * N * 4, m.cs);
+                    } else if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
                         (m.cs)->ext_oneapi_submit_barrier({*m.pp->ev_done});
                         if (!m.pp->p2p)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);

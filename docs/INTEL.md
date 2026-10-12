@@ -756,8 +756,9 @@ loans, no adaptive swaps).
   `"ONEAPI_DEVICE_SELECTOR": "level_zero:*"` in `"env"` (setup writes the last for a list of cards). The server adds
   no `--layer-split` beside the option. With every expert in VRAM nothing is mirrored in RAM.
 - `--batch N` works with it: 4 requests at once give the same outputs as one at a time.
-- The prompt path reads card N's experts from the GGUF on card 0 (a 1,996-token prompt: 719 tok/s against 768 on one
-  card with the mirror). `STRATA_EP_MIRROR=1` mirrors them in pinned RAM as well (18 GB for IQ3_XXS).
+- The prompt path computes card N's experts on card N, with card 0's FP16 expert path (byte-identical rows).
+  `STRATA_EP_PREFILL=0` reads them from the GGUF on card 0 instead; `STRATA_EP_MIRROR=1` then mirrors them in pinned
+  RAM (18 GB for IQ3_XXS).
 - Checks: `STRATA_EP_VERIFY=1` (with `STRATA_EP_MIRROR=1`) has card 0 compute every row itself and compare card N's
   rows with them word for word: no row differed in the 448 windows the three runs reported. `STRATA_EP_SELF=1` runs
   the window on card 0's own rows only; its output is byte-identical to the expert-parallel one.
