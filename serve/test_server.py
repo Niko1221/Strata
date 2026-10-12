@@ -660,6 +660,33 @@ class VideoParts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without the vision encoder.*videos"):
             self.svc.prepare([{"role": "user", "content": [{"type": "video", "source": "a.mp4"}]}], None, {})
 
+    def test_video_preparation_status_has_bounded_progress(self):
+        request_id = object()
+        with self.svc.status_lock:
+            self.svc.video_preparing = 1
+            self.svc.video_progress[request_id] = {"stage": "encoding", "done": 4, "total": 10,
+                                                   "unit": "frames", "updated_at": time.monotonic()}
+        live = self.svc.metrics()["live"]
+        self.assertEqual(live["state"], "preparing_video")
+        self.assertEqual(live["video_progress"], {"stage": "encoding", "done": 4, "total": 10, "unit": "frames"})
+        with self.svc.status_lock:
+            self.svc.video_preparing = 0
+            self.svc.video_progress.clear()
+
+    def test_cancelled_video_wait_gives_back_preparation_queue(self):
+        slot = self.svc._prep_slots()
+        self.assertTrue(slot.acquire())
+        try:
+            cancel = threading.Event()
+            cancel.set()
+            with self.assertRaisesRegex(ValueError, "video request cancelled"):
+                self.svc.prepare([{"role": "user", "content": [{"type": "video", "source": "a.mp4"}]}],
+                                 None, {}, cancel=cancel)
+            self.assertEqual(self.svc.status["queued"], 0)
+            self.assertEqual(self.svc.video_preparing, 0)
+        finally:
+            slot.release()
+
     def test_request_shapes(self):
         from serve.frontend import anthropic_to_messages, openai_to_messages, videos_of
         msgs, _, _ = openai_to_messages({"messages": [{"role": "user", "content": [
