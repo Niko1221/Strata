@@ -222,6 +222,50 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual(c.poll(str(log), log.stat().st_size)["parked"], 0)   # the engine started again
             self.assertEqual(c.poll(None, None)["parked"], 0)
 
+    def test_disk_only_log(self):
+        """#1480: with --conversation-cache-disk-only the card counts the spill directory's events (the lines below are
+        the engine's own), keeps the directory's totals and counts refusals - a refusal keeps the file."""
+        from serve.server import ConvCacheLog
+        import tempfile
+        lines = [
+            "strata serve: conversation cache: spill dir ready (2 conversations, 900 MiB, 0 stale files wiped, 0 disk evictions)\n",
+            "strata serve: conversation cache: disk-saved 12000 tokens (420 MiB, switch) in 190.0 ms; 1 older copy dropped; "
+            "disk=1320 MiB in 3 files\n",
+            "strata serve: conversation cache: prefix-saved the 13434-token root (420 MiB) in 150.0 ms; 1 prefixes on disk\n",
+            "strata serve: conversation cache: disk hit skipped (session file: not enough RAM for the read pass: 400 MiB "
+            "plus the 2560 MiB --conversation-cache-min-free-mib floor)\n",
+            "strata serve: conversation cache: discard unusable disk conversation (session file: payload checksum mismatch)\n",
+            "strata serve: conversation cache: disk-restored 11000 tokens (live, 400 MiB) in 300.0 ms (read pass 150.0 ms)\n",
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("".join(lines), encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["disk_ready"], st["disk_files"], st["disk_mib"]), (True, 3, 1320))
+            self.assertEqual((st["disk_saves"], st["disk_restores"], st["disk_saved_tokens"]), (1, 1, 12000))
+            self.assertEqual((st["disk_written_mib"], st["prefixes"]), (840, 1))
+            self.assertEqual((st["disk_refused"], st["disk_discarded"]), (1, 1))
+            self.assertIn("not enough RAM for the read pass", st["last_refusal"])
+            self.assertEqual((st["last_event"], st["last_tokens"]), ("disk-restored", 11000))
+            self.assertEqual((st["parks"], st["restores"]), (0, 0))   # the RAM cache's counters stay apart
+            log.write_text("strata serve: conversation cache: disk tier disabled (cannot create spill dir)\n", encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["disk_ready"], st["disk_error"]), (False, "cannot create spill dir"))
+
+    def test_metrics_disk_only(self):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "Thought.</think>\nHello.", max_context=4096)
+        engine.info = {"conversation_cache_mib": 0, "conversation_cache_disk_only": 1, "conversation_cache_disk_mib": 16384}
+        svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/metrics", timeout=10) as r:
+                c = json.loads(r.read())["conversation_cache"]
+            self.assertEqual((c["enabled"], c["disk_only"], c["disk_budget_mib"], c["disk_saves"]), (True, True, 16384, 0))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_metrics(self):
         tok = ByteTokenizer()
         engine = MockEngine(tok, "Thought.</think>\nHello.", max_context=4096)
