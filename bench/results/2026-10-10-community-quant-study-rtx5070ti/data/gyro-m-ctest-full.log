@@ -1,0 +1,120 @@
+Internal ctest changing into directory: <study-home>/agentionai-Strata/build
+Test project <study-home>/agentionai-Strata/build
+      Start  1: file_expert_source_test
+ 1/52 Test  #1: file_expert_source_test ..........   Passed    0.79 sec
+      Start  2: vmm_test
+ 2/52 Test  #2: vmm_test .........................   Passed    0.68 sec
+      Start  3: expert_profile_save_test
+ 3/52 Test  #3: expert_profile_save_test .........   Passed    0.00 sec
+      Start  4: expert_profile_version_test
+ 4/52 Test  #4: expert_profile_version_test ......   Passed    0.00 sec
+      Start  5: dequant_s2_parity
+ 5/52 Test  #5: dequant_s2_parity ................   Passed    0.57 sec
+      Start  6: s2_gemv_parity
+ 6/52 Test  #6: s2_gemv_parity ...................   Passed    0.16 sec
+      Start  7: iq_parity_fixtures
+ 7/52 Test  #7: iq_parity_fixtures ...............***Skipped   0.14 sec
+      Start  8: iq_parity
+ 8/52 Test  #8: iq_parity ........................***Skipped   0.16 sec
+      Start  9: mmvq_multi_parity
+ 9/52 Test  #9: mmvq_multi_parity ................   Passed    0.49 sec
+      Start 10: mmvq_il_parity
+10/52 Test #10: mmvq_il_parity ...................   Passed    3.35 sec
+      Start 11: pdl_parity
+11/52 Test #11: pdl_parity .......................   Passed    0.61 sec
+      Start 12: iq_multi_parity
+12/52 Test #12: iq_multi_parity ..................   Passed    1.15 sec
+      Start 13: dma_batch_parity
+13/52 Test #13: dma_batch_parity .................   Passed    2.83 sec
+      Start 14: gdn_rec_parity
+14/52 Test #14: gdn_rec_parity ...................   Passed    0.20 sec
+      Start 15: gemm_bf16_parity
+15/52 Test #15: gemm_bf16_parity .................   Passed    2.70 sec
+      Start 16: native_grouped_parity
+16/52 Test #16: native_grouped_parity ............   Passed    1.23 sec
+      Start 17: shared_expert_parity
+17/52 Test #17: shared_expert_parity .............   Passed    0.17 sec
+      Start 18: verify_parity
+18/52 Test #18: verify_parity ....................   Passed    0.21 sec
+      Start 19: gr_parity
+19/52 Test #19: gr_parity ........................   Passed    0.31 sec
+      Start 20: gdn_parity
+20/52 Test #20: gdn_parity .......................   Passed    0.31 sec
+      Start 21: s2_gemv_q8_parity
+21/52 Test #21: s2_gemv_q8_parity ................   Passed    0.22 sec
+      Start 22: sampler_parity
+22/52 Test #22: sampler_parity ...................   Passed    2.36 sec
+      Start 23: spec_verify_parity
+23/52 Test #23: spec_verify_parity ...............   Passed    2.63 sec
+      Start 24: sampler_parity_one_block
+24/52 Test #24: sampler_parity_one_block .........   Passed    2.67 sec
+      Start 25: sampler_parity_old
+25/52 Test #25: sampler_parity_old ...............   Passed    4.79 sec
+      Start 26: decode_cluster_parity
+26/52 Test #26: decode_cluster_parity ............   Passed    1.94 sec
+      Start 27: rope_parity
+27/52 Test #27: rope_parity ......................   Passed    0.19 sec
+      Start 28: quantize_act_parity
+28/52 Test #28: quantize_act_parity ..............   Passed    0.20 sec
+      Start 29: route_window_parity
+29/52 Test #29: route_window_parity ..............   Passed    0.33 sec
+      Start 30: router_top10_parity
+30/52 Test #30: router_top10_parity ..............   Passed    0.19 sec
+      Start 31: native_multi_parity
+31/52 Test #31: native_multi_parity ..............   Passed    0.23 sec
+      Start 32: kv_steps_parity
+32/52 Test #32: kv_steps_parity ..................   Passed    0.24 sec
+      Start 33: resident_plan_parity
+33/52 Test #33: resident_plan_parity .............   Passed    0.25 sec
+      Start 34: gr_multi_parity
+34/52 Test #34: gr_multi_parity ..................   Passed    0.34 sec
+      Start 35: s_gemv_parity
+35/52 Test #35: s_gemv_parity ....................   Passed    2.04 sec
+      Start 36: elementwise_parity
+36/52 Test #36: elementwise_parity ...............   Passed    0.23 sec
+      Start 37: bf16_gemv_parity
+37/52 Test #37: bf16_gemv_parity .................   Passed    0.24 sec
+      Start 38: s_gemv_q8k_parity
+38/52 Test #38: s_gemv_q8k_parity ................   Passed    0.18 sec
+      Start 39: qsa_parity
+39/52 Test #39: qsa_parity .......................   Passed    0.54 sec
+      Start 40: qsa_topk_parity
+40/52 Test #40: qsa_topk_parity ..................   Passed    0.61 sec
+      Start 41: ple_parity
+41/52 Test #41: ple_parity .......................***Failed    0.02 sec
+ple_parity: required PLE table is missing or incompatible: ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf (cannot open ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf)
+
+      Start 42: kv_q8_parity
+42/52 Test #42: kv_q8_parity .....................   Passed    0.21 sec
+      Start 43: kv_stream_parity
+43/52 Test #43: kv_stream_parity .................   Passed   11.96 sec
+      Start 44: kv_hybrid_parity
+44/52 Test #44: kv_hybrid_parity .................   Passed    0.36 sec
+      Start 45: kv_q4_parity
+45/52 Test #45: kv_q4_parity .....................   Passed    0.17 sec
+      Start 46: verify_batch_parity
+46/52 Test #46: verify_batch_parity ..............   Passed    0.18 sec
+      Start 47: cvec_parity
+47/52 Test #47: cvec_parity ......................   Passed    0.24 sec
+      Start 48: s2_expert_grouped_parity
+48/52 Test #48: s2_expert_grouped_parity .........   Passed    0.28 sec
+      Start 49: platform_memory_test
+49/52 Test #49: platform_memory_test .............   Passed    0.08 sec
+      Start 50: pinned_shared_test
+50/52 Test #50: pinned_shared_test ...............   Passed    0.14 sec
+      Start 51: ple_reader_selftest
+51/52 Test #51: ple_reader_selftest ..............   Passed   60.97 sec
+      Start 52: cuda_device_selftest
+52/52 Test #52: cuda_device_selftest .............   Passed    0.17 sec
+
+98% tests passed, 1 tests failed out of 52
+
+Total Test time (real) = 111.31 sec
+
+The following tests did not run:
+	  7 - iq_parity_fixtures (Skipped)
+	  8 - iq_parity (Skipped)
+
+The following tests FAILED:
+	 41 - ple_parity (Failed)
+Errors while running CTest

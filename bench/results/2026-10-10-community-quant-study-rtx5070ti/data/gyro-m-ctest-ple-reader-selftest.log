@@ -1,0 +1,8 @@
+Internal ctest changing into directory: <study-home>/agentionai-Strata/build
+Test project <study-home>/agentionai-Strata/build
+    Start 51: ple_reader_selftest
+1/1 Test #51: ple_reader_selftest ..............   Passed   68.76 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  68.76 sec
