@@ -34,6 +34,11 @@ struct GroupArgs {
     const uint8_t* blob[kGatherGroupMax];
     int64_t up_off, down_off, gu_stride, d_stride;   // in uint4
 };
+__global__ void group_ptrs_kernel(GroupArgs ga, int first, int n, const uint8_t* gu_dst, int64_t gu_stride, bool copied,
+                                  const void** table) {
+    const int q = first + (int) threadIdx.x;
+    if (q < n) table[q] = copied ? (const void*) (gu_dst + (int64_t) q * gu_stride) : (const void*) ga.blob[q];
+}
 __global__ void copy16_group_kernel(GroupArgs ga, int first, int64_t na, int64_t nc, uint4* __restrict__ gu_dst,
                                     uint4* __restrict__ d_dst) {
     const int q = first + (int) blockIdx.y;
@@ -193,9 +198,14 @@ void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
     const ggml_type t = (ggml_type) p.type;
     const int64_t qk = ggml_blck_size(t), bpr = p.w_cols / qk;
-    const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, nullptr,
-                        p.w_cols, p.w_rows, p.total_rows, bpr, p.total_rows, p.ld_dst,
-                        p.n, p.n, (int64_t) (p.expert_bytes / ggml_type_size(t)), 0, 0,
+    if (p.w_ptrs != nullptr && !inplace_ok()) {
+        std::fprintf(stderr, "prefill mmq: a pointer table needs the patched mmq.cuh (STRATA_MMQ_X_PTRS)\n");
+        std::exit(1);
+    }
+    // the patched kernels read x as a table of expert pointers when the expert stride is negative
+    const mmq_args a = {p.w_ptrs ? (const char*) p.w_ptrs : (const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds,
+                        p.dst, nullptr, p.w_cols, p.w_rows, p.total_rows, bpr, p.total_rows, p.ld_dst,
+                        p.n, p.n, p.w_ptrs ? (int64_t) -1 : (int64_t) (p.expert_bytes / ggml_type_size(t)), 0, 0,
                         1, 1, 0, 0, 0,
                         p.max_rows, p.max_rows};
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
@@ -262,6 +272,23 @@ bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_byt
         ga, g.first, na, nc, (uint4*) gu_dst, (uint4*) d_dst);
     ck(cudaGetLastError(), "gather_native_group");
     return true;
+}
+
+bool inplace_ok() {
+#if defined(STRATA_MMQ_X_PTRS)
+    return true;
+#else
+    return false;
+#endif
+}
+
+void group_ptrs(const GatherGroup& g, const void* gu_dst, size_t gu_stride, bool copied, const void** table, void* stream) {
+    if (g.first < 0 || g.n <= g.first || g.n > kGatherGroupMax) return;
+    GroupArgs ga{};
+    for (int q = g.first; q < g.n; ++q) ga.blob[q] = g.blob[q];
+    group_ptrs_kernel<<<1, kGatherGroupMax, 0, (cudaStream_t) stream>>>(ga, g.first, g.n, (const uint8_t*) gu_dst,
+                                                                      (int64_t) gu_stride, copied, table);
+    ck(cudaGetLastError(), "group_ptrs");
 }
 
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
