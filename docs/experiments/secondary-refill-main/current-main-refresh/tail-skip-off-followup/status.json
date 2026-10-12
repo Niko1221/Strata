@@ -1,0 +1,40 @@
+{
+  "state": "completed",
+  "pid": 2665379,
+  "results": [
+    {
+      "label": "refill-i32768-t1-arm0",
+      "exit_code": 0,
+      "machine_seconds": 102.824
+    },
+    {
+      "label": "refill-i32768-t1-arm1",
+      "exit_code": 0,
+      "machine_seconds": 116.741
+    },
+    {
+      "label": "refill-i131072-t1-arm0",
+      "exit_code": 0,
+      "machine_seconds": 129.659
+    },
+    {
+      "label": "refill-i131072-t1-arm1",
+      "exit_code": 0,
+      "machine_seconds": 127.398
+    }
+  ],
+  "comparisons": [
+    {
+      "input_tokens": 32768,
+      "complete": true,
+      "exact_ids": true,
+      "first_difference": null
+    },
+    {
+      "input_tokens": 131072,
+      "complete": true,
+      "exact_ids": false,
+      "first_difference": 7
+    }
+  ]
+}

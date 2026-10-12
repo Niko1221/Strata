@@ -1,0 +1,31 @@
+{
+  "state": "completed",
+  "pid": 2669862,
+  "results": [
+    {
+      "label": "trace-refill-i131072-t1-arm0",
+      "exit_code": 0,
+      "machine_seconds": 128.506
+    },
+    {
+      "label": "trace-refill-i131072-t1-arm1",
+      "exit_code": 0,
+      "machine_seconds": 127.21
+    }
+  ],
+  "comparison": {
+    "complete": true,
+    "exact_ids": false,
+    "first_token_difference": 7,
+    "trace_rows": [
+      0,
+      0
+    ],
+    "first_residency_difference": null,
+    "trace_at_difference": null,
+    "first_twenty_rows": [
+      [],
+      []
+    ]
+  }
+}

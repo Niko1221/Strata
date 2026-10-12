@@ -1,0 +1,23 @@
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 5e08303a..26912c72 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -8518,7 +8518,17 @@ int main(int argc, char** argv) {
+         // between verdicts) moves it on without counting a window.  False when a copy failed.
+         auto adapt_tick = [&](bool drain, bool count = true) -> bool {
+             if (!ajob) return true;
+-            if (!drain && count) ++a_win;   // one tick per window
++            if (!drain && count) {
++                static const bool trace = std::getenv("STRATA_TRACE_ASYNC_RESIDENCY") != nullptr;
++                if (trace) {
++                    uint64_t h = 1469598103934665603ULL;
++                    for (int32_t slot : host_res) { h ^= (uint32_t) slot; h *= 1099511628211ULL; }
++                    std::fprintf(stderr, "strata async residency: window=%lld state=%d round=%lld swaps=%lld hash=%016llx\n",
++                        (long long) a_win, (int) astate, (long long) a_rounds,
++                        (long long) a_swapped, (unsigned long long) h);
++                }
++                ++a_win;
++            }   // one tick per window
+             const bool pl = (bool) a_pl_idle;
+             if (pl)
+                 for (int st = 0; st < (int) ahomes.size(); ++st) a_gap(st);

@@ -1,0 +1,52 @@
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 5e08303a..4225dc91 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -8338,6 +8338,19 @@ int main(int argc, char** argv) {
+         std::vector<float> a_usage;
+         std::vector<int32_t> a_res;
+         int64_t a_win = 0, a_last = 0, a_rounds = 0, a_swapped = 0;
++        const bool trace_async = std::getenv("STRATA_TRACE_ASYNC_ADMISSIONS") != nullptr;
++        std::vector<std::array<uint64_t, 5>> async_trace;
++        if (trace_async) async_trace.reserve(4096);
++        auto trace_admission = [&](uint64_t kind) {
++            if (!trace_async) return;
++            uint64_t h = 1469598103934665603ULL;
++            for (const ASwap& w : aswaps) {
++                for (uint32_t v : {(uint32_t) w.layer, (uint32_t) w.in, (uint32_t) w.out, (uint32_t) w.slot}) {
++                    h ^= v; h *= 1099511628211ULL;
++                }
++            }
++            async_trace.push_back({(uint64_t) a_win, kind, (uint64_t) a_rounds, (uint64_t) aswaps.size(), h});
++        };
+         double a_ms = 0;                  // wall time from a round's start to its flip, summed (the "ms/round" stat)
+         Clock::time_point a_t0;
+         std::atomic<bool> a_err{false};
+@@ -8569,6 +8582,7 @@ int main(int argc, char** argv) {
+                         aswaps[k++] = w;
+                     }
+                     aswaps.resize(k);
++                    trace_admission(0);  // evicted experts leave the plan
+                     if (aswaps.empty()) {   // nothing to move (converged, or the table moved since the snapshot): the round ends here
+                         a_ms += std::chrono::duration<double, std::milli>(Clock::now() - a_t0).count();
+                         astate = AState::Idle;
+@@ -8615,6 +8629,7 @@ int main(int argc, char** argv) {
+                     if (pl) a_res_dirty = true;
+                     else res_upload();
+                     a_swapped += (int64_t) aswaps.size();
++                    trace_admission(1);  // copied experts join the plan
+                     if (pl)   // the RAM moves wait for a gap after this step on every card whose layers exchanged
+                         for (const ASwap& w : aswaps)
+                             if (w.exchange) {
+@@ -12077,6 +12092,11 @@ int main(int argc, char** argv) {
+                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
+                              over ? " - OVERFLOW (too few resident cells)" : "");
+             }
++            for (const auto& t : async_trace)
++                std::fprintf(stderr, "strata async admission: window=%llu kind=%llu round=%llu count=%llu hash=%016llx\n",
++                    (unsigned long long)t[0], (unsigned long long)t[1], (unsigned long long)t[2],
++                    (unsigned long long)t[3], (unsigned long long)t[4]);
++            async_trace.clear();
+             if (secondary_refills)
+                 std::fprintf(stderr,"strata secondary refill payload: H2D=%llu D2D=%llu (cumulative)\n",
+                     (unsigned long long)secondary_h2d_bytes,(unsigned long long)secondary_d2d_bytes);

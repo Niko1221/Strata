@@ -28,6 +28,7 @@
 #define cudaSuccess hipSuccess
 #define cudaErrorNotReady hipErrorNotReady
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
+#define cudaErrorInvalidValue hipErrorInvalidValue
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaStream_t hipStream_t

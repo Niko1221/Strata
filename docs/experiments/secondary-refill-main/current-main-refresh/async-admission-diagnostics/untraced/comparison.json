@@ -1,0 +1,15 @@
+{
+  "complete": true,
+  "exact_ids": false,
+  "first_token_difference": 7,
+  "trace_rows": [
+    0,
+    0
+  ],
+  "first_residency_difference": null,
+  "trace_at_difference": null,
+  "first_twenty_rows": [
+    [],
+    []
+  ]
+}

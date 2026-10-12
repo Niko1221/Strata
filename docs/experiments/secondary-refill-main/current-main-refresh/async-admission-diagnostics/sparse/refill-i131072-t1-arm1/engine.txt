@@ -1,0 +1,642 @@
+[strata] 2026-10-11 07:01:48 engine started: <HOME>/pr-refresh-20261011/refill-sparse/build/strata --serve --pack <HOME>/fleet-downloads/q8-ple-prototype-2be5cf1/pack-q8 --native <HOME>/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf --expert-cache 15216 --expert-profile <HOME>/fleet-downloads/q8-pdl-branches-20261005/source/data/expert-profile.bin --adapt-every 4 --adapt-swaps 96 --adapt-decay 0.7 --pcie-frac 0.55 --spec 8 --mtp <HOME>/Strata-data/mtp/rt --suffix-draft 0 --kv fp16 --prompt-cache 0 --conversation-cache-mib 0 --prefill 8192 --no-prefill-borrow --vram-reserve-mib 2048 --ple-io mmap --ple-row-cache 1048576 --eos-ids 2147483647 --stats --spec-min-p 0.5 --mtp-max-t 1 --max-context 139264 --resident-budget-gib 56 --adapt-async 1
+strata generate: memory guard: limit 124.9 GiB (source: meminfo), current 4.1 GiB, reclaimable cache credited 0.0 GiB; available 120.8 GiB (MemAvailable 120.8 GiB), floor 2560 MiB
+strata generate: native pack: <HOME>/fleet-downloads/q8-ple-prototype-2be5cf1/pack-q8 experts (largest blob 5.22 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.7 s)
+strata generate: 1416 MiB of weights loaded from <HOME>/fleet-downloads/q8-ple-prototype-2be5cf1/pack-q8 in 0.3 s (303 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 2975.00 MiB of weights, in 0.9 s
+strata generate: profile <HOME>/fleet-downloads/q8-pdl-branches-20261005/source/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of <HOME>/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf
+strata mtp: draft layer loaded, 1093 MiB of VRAM (experts 675, dense 111), files read in 0.21 s (3726 MiB/s)
+strata generate: experimental native Q5_K head, 675430400 bytes, in 0.1 s
+strata generate: GPU 0: NVIDIA RTX PRO 6000 Blackwell Workstation Edition, compute capability 12.0
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: the file tier reads through the file cache (119.8 GiB available, 56.0 GiB of it still to be taken by the RAM copy, 63.5 GiB of experts read from the files: the file cache can keep the ones that come back)
+strata generate: CPU pool tasks/phase: 48 (automatic), participating threads: 16
+strata generate: 15 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 16 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache 15216 slots, 74.01 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 256 pairs ahead (STRATA_FILL_AHEAD)
+strata generate: pre-filled 15216 of 15216 slots from the profile in 25.4 s (3125 MB/s); slot 0 verified
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 15 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.42)
+strata generate: token graph hit path: 15216 resident experts, decided on the device
+FileExpertSource: RAM budget 56.00 GiB: 9360 of the 45.52 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 45.52 GiB page-locked cache complement
+FileExpertSource: 0.85 GiB really free for a 45.52 GiB page-locked complement; the model files' cached pages were released: 111.75 GiB free
+FileExpertSource: copied cache complement through layer 8/48 (6.41 GiB, 3 s)
+FileExpertSource: copied cache complement through layer 16/48 (16.71 GiB, 6 s)
+FileExpertSource: copied cache complement through layer 24/48 (24.26 GiB, 8 s)
+FileExpertSource: copied cache complement through layer 32/48 (30.19 GiB, 10 s)
+FileExpertSource: copied cache complement through layer 40/48 (38.51 GiB, 12 s)
+FileExpertSource: copied cache complement through layer 48/48 (45.52 GiB, 14 s)
+FileExpertSource: mapped pinned cache complement ready: resident 45.52 GiB, pinned 45.52 GiB in 41 s; page-locked and mapped
+FileExpertSource: exchange buffer rotation enabled: 192 buffers, 5222400 bytes each; no host commit memcpy
+strata generate: resident RAM mode: 45.52 GiB of experts in RAM (page-locked), 15216 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata generate: the file tier reads through the file cache (re-checked with the RAM copy built (45.52 GiB): 71.2 GiB available, 0.0 GiB of it still to be taken by the RAM copy, 74.0 GiB of experts read from the files: the file cache can keep the ones that come back)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata readonly miss cache: enabled, ways=16 layers=48 bytes=4010803200; immutable secondary copies, no writebacks
+strata miss cache tag snapshot: enabled, bytes=3072; copy before existing end-of-window synchronization
+strata verify: window up to 8 tokens, 3950.7 MiB of device buffers
+strata mtp: draft head over 40525 tokens (105.1 MiB)
+strata serve: adaptive tier asynchronous (--adapt-async 1): up to 96 swaps per round, a round every 4 windows
+strata serve: 2744 MiB of VRAM free with everything loaded
+strata verify: capturing the 8-token window (2744 MiB of VRAM free)
+strata verify: captured the 8-token window (upload no error, sync no error)
+strata verify: capturing the 3-token window (2740 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata verify: capturing the 1-token window (2732 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 286 ms (154.0 tok/s), 128 generated in 2226 ms (57.5 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 89.1% (51322 hits / 57581 lookups); 3859 more read by the GPU over PCIe or from another GPU (6.3% of all 61440 routed)
+strata serve: resident RAM: 45.52 GiB of experts in RAM, 1403 exchanged with the VRAM tier, 0 blob reads from the file
+strata serve: asynchronous adaptive tier: 32 rounds, 1403 experts swapped in, 50.5 ms per round (start to flip, between windows)
+strata serve: exchange rotation: 1403 blocks, 7327027200 host memcpy bytes avoided (cumulative payload)
+strata serve: expert tiers: GPU 51322 hits this request; since the start RAM 11631 blobs, files 0 blobs 79469.3 MB read (the GGUF in place)
+strata serve: file tier I/O this request: the OS read 132702.7 MB from storage (143 major faults) for 79469.3 MB of expert reads
+strata async admission: window=5 kind=0 round=1 count=96 hash=ca7155eb2a353b93
+strata async admission: window=6 kind=1 round=1 count=96 hash=ca7155eb2a353b93
+strata async admission: window=9 kind=0 round=2 count=96 hash=66cbbb8838b55c6b
+strata async admission: window=10 kind=1 round=2 count=96 hash=66cbbb8838b55c6b
+strata async admission: window=13 kind=0 round=3 count=96 hash=99e66414205ae017
+strata async admission: window=14 kind=1 round=3 count=96 hash=99e66414205ae017
+strata async admission: window=17 kind=0 round=4 count=96 hash=14a04d263c09223f
+strata async admission: window=18 kind=1 round=4 count=96 hash=14a04d263c09223f
+strata async admission: window=21 kind=0 round=5 count=96 hash=d60f8e70f89b0382
+strata async admission: window=22 kind=1 round=5 count=96 hash=d60f8e70f89b0382
+strata async admission: window=25 kind=0 round=6 count=96 hash=618e473a869e9e8c
+strata async admission: window=26 kind=1 round=6 count=96 hash=618e473a869e9e8c
+strata async admission: window=29 kind=0 round=7 count=92 hash=32ffc89c00b237a9
+strata async admission: window=30 kind=1 round=7 count=92 hash=32ffc89c00b237a9
+strata async admission: window=33 kind=0 round=8 count=55 hash=c5476d15ba35119a
+strata async admission: window=34 kind=1 round=8 count=55 hash=c5476d15ba35119a
+strata async admission: window=37 kind=0 round=9 count=96 hash=4f0ddf8b0819c141
+strata async admission: window=38 kind=1 round=9 count=96 hash=4f0ddf8b0819c141
+strata async admission: window=41 kind=0 round=10 count=79 hash=9701f28481c7547b
+strata async admission: window=42 kind=1 round=10 count=79 hash=9701f28481c7547b
+strata async admission: window=45 kind=0 round=11 count=10 hash=b2c0712063720134
+strata async admission: window=46 kind=1 round=11 count=10 hash=b2c0712063720134
+strata async admission: window=49 kind=0 round=12 count=11 hash=93aa495d1a739901
+strata async admission: window=50 kind=1 round=12 count=11 hash=93aa495d1a739901
+strata async admission: window=53 kind=0 round=13 count=17 hash=21b0aac5b03f883c
+strata async admission: window=54 kind=1 round=13 count=17 hash=21b0aac5b03f883c
+strata async admission: window=57 kind=0 round=14 count=27 hash=17b6159a079ad7c2
+strata async admission: window=58 kind=1 round=14 count=27 hash=17b6159a079ad7c2
+strata async admission: window=61 kind=0 round=15 count=29 hash=a9e87285832cb4a3
+strata async admission: window=62 kind=1 round=15 count=29 hash=a9e87285832cb4a3
+strata async admission: window=65 kind=0 round=16 count=54 hash=d816d84ff9ab2865
+strata async admission: window=66 kind=1 round=16 count=54 hash=d816d84ff9ab2865
+strata async admission: window=69 kind=0 round=17 count=30 hash=655a90ec19030dea
+strata async admission: window=70 kind=1 round=17 count=30 hash=655a90ec19030dea
+strata async admission: window=73 kind=0 round=18 count=56 hash=500728a8ba6a89fd
+strata async admission: window=74 kind=1 round=18 count=56 hash=500728a8ba6a89fd
+strata async admission: window=77 kind=0 round=19 count=21 hash=4688f13b7e95a199
+strata async admission: window=78 kind=1 round=19 count=21 hash=4688f13b7e95a199
+strata async admission: window=81 kind=0 round=20 count=10 hash=3776f533d0bf7061
+strata async admission: window=82 kind=1 round=20 count=10 hash=3776f533d0bf7061
+strata async admission: window=85 kind=0 round=21 count=17 hash=d0e36bbe0e31149e
+strata async admission: window=86 kind=1 round=21 count=17 hash=d0e36bbe0e31149e
+strata async admission: window=89 kind=0 round=22 count=5 hash=488e02bb302ca1b7
+strata async admission: window=90 kind=1 round=22 count=5 hash=488e02bb302ca1b7
+strata async admission: window=93 kind=0 round=23 count=20 hash=ad73b94428c65ed2
+strata async admission: window=94 kind=1 round=23 count=20 hash=ad73b94428c65ed2
+strata async admission: window=97 kind=0 round=24 count=14 hash=9532b9600d46b3fe
+strata async admission: window=98 kind=1 round=24 count=14 hash=9532b9600d46b3fe
+strata async admission: window=101 kind=0 round=25 count=44 hash=0166d3046621fb70
+strata async admission: window=102 kind=1 round=25 count=44 hash=0166d3046621fb70
+strata async admission: window=105 kind=0 round=26 count=38 hash=db192ca0b40aaa3f
+strata async admission: window=106 kind=1 round=26 count=38 hash=db192ca0b40aaa3f
+strata async admission: window=109 kind=0 round=27 count=44 hash=5a4ae30539373d49
+strata async admission: window=110 kind=1 round=27 count=44 hash=5a4ae30539373d49
+strata async admission: window=113 kind=0 round=28 count=26 hash=487527e7b51be56f
+strata async admission: window=114 kind=1 round=28 count=26 hash=487527e7b51be56f
+strata async admission: window=117 kind=0 round=29 count=4 hash=ca3eb0c566743672
+strata async admission: window=118 kind=1 round=29 count=4 hash=ca3eb0c566743672
+strata async admission: window=121 kind=0 round=30 count=25 hash=a8682aefc10bc76d
+strata async admission: window=122 kind=1 round=30 count=25 hash=a8682aefc10bc76d
+strata async admission: window=125 kind=0 round=31 count=3 hash=39696ee1392acaa0
+strata async admission: window=126 kind=1 round=31 count=3 hash=39696ee1392acaa0
+strata secondary refill payload: H2D=2558976000 D2D=4768051200 (cumulative)
+strata serve: prompt 131072 tokens = 0 reused + 131072 read in 32519 ms (4030.6 tok/s), 1024 generated in 13768 ms (74.4 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 95.9% (465146 hits / 485046 lookups); 6474 more read by the GPU over PCIe or from another GPU (1.3% of all 491520 routed)
+strata serve: resident RAM: 45.52 GiB of experts in RAM, 4368 exchanged with the VRAM tier, 0 blob reads from the file
+strata serve: asynchronous adaptive tier: 288 rounds, 4368 experts swapped in, 41.5 ms per round (start to flip, between windows)
+strata serve: exchange rotation: 4368 blocks, 22811443200 host memcpy bytes avoided (cumulative payload)
+strata serve: expert tiers: GPU 465146 hits this request; since the start RAM 187748 blobs, files 0 blobs 79469.3 MB read (the GGUF in place)
+strata serve: file tier I/O this request: the OS read 5309.9 MB from storage (2556 major faults) for 0.0 MB of expert reads
+strata async admission: window=128 kind=0 round=32 count=13 hash=70ad416c12a6cdb4
+strata async admission: window=128 kind=1 round=32 count=13 hash=70ad416c12a6cdb4
+strata async admission: window=133 kind=0 round=33 count=6 hash=005c24f42afcbc61
+strata async admission: window=134 kind=1 round=33 count=6 hash=005c24f42afcbc61
+strata async admission: window=137 kind=0 round=34 count=76 hash=abd03ed5ec466493
+strata async admission: window=138 kind=1 round=34 count=76 hash=abd03ed5ec466493
+strata async admission: window=141 kind=0 round=35 count=70 hash=be91c93d5821a1cf
+strata async admission: window=142 kind=1 round=35 count=70 hash=be91c93d5821a1cf
+strata async admission: window=145 kind=0 round=36 count=45 hash=4eb9377d9819d6be
+strata async admission: window=146 kind=1 round=36 count=45 hash=4eb9377d9819d6be
+strata async admission: window=149 kind=0 round=37 count=23 hash=713b46118f3cb394
+strata async admission: window=150 kind=1 round=37 count=23 hash=713b46118f3cb394
+strata async admission: window=153 kind=0 round=38 count=15 hash=1ac5ca3eac2628c2
+strata async admission: window=154 kind=1 round=38 count=15 hash=1ac5ca3eac2628c2
+strata async admission: window=157 kind=0 round=39 count=30 hash=107986122e839b8c
+strata async admission: window=158 kind=1 round=39 count=30 hash=107986122e839b8c
+strata async admission: window=161 kind=0 round=40 count=10 hash=aeb0ccc08d62bb72
+strata async admission: window=162 kind=1 round=40 count=10 hash=aeb0ccc08d62bb72
+strata async admission: window=165 kind=0 round=41 count=14 hash=48335bdff6e5ca45
+strata async admission: window=166 kind=1 round=41 count=14 hash=48335bdff6e5ca45
+strata async admission: window=169 kind=0 round=42 count=9 hash=321276529e8aab6f
+strata async admission: window=170 kind=1 round=42 count=9 hash=321276529e8aab6f
+strata async admission: window=173 kind=0 round=43 count=12 hash=fe2532a1aeec7da0
+strata async admission: window=174 kind=1 round=43 count=12 hash=fe2532a1aeec7da0
+strata async admission: window=177 kind=0 round=44 count=8 hash=92ff3776dad029c2
+strata async admission: window=178 kind=1 round=44 count=8 hash=92ff3776dad029c2
+strata async admission: window=181 kind=0 round=45 count=15 hash=9ce27021a60f7a90
+strata async admission: window=182 kind=1 round=45 count=15 hash=9ce27021a60f7a90
+strata async admission: window=185 kind=0 round=46 count=13 hash=d29aba53138c5038
+strata async admission: window=186 kind=1 round=46 count=13 hash=d29aba53138c5038
+strata async admission: window=189 kind=0 round=47 count=33 hash=abca0d8545168744
+strata async admission: window=190 kind=1 round=47 count=33 hash=abca0d8545168744
+strata async admission: window=193 kind=0 round=48 count=32 hash=e1843e964d225f14
+strata async admission: window=194 kind=1 round=48 count=32 hash=e1843e964d225f14
+strata async admission: window=197 kind=0 round=49 count=26 hash=a2ba62f8dbec51d7
+strata async admission: window=198 kind=1 round=49 count=26 hash=a2ba62f8dbec51d7
+strata async admission: window=201 kind=0 round=50 count=34 hash=00d764c68c048f38
+strata async admission: window=202 kind=1 round=50 count=34 hash=00d764c68c048f38
+strata async admission: window=205 kind=0 round=51 count=24 hash=45bb790db77b9830
+strata async admission: window=206 kind=1 round=51 count=24 hash=45bb790db77b9830
+strata async admission: window=209 kind=0 round=52 count=20 hash=a6926bd40f336651
+strata async admission: window=210 kind=1 round=52 count=20 hash=a6926bd40f336651
+strata async admission: window=213 kind=0 round=53 count=12 hash=d353dba8f1a0ca7c
+strata async admission: window=214 kind=1 round=53 count=12 hash=d353dba8f1a0ca7c
+strata async admission: window=217 kind=0 round=54 count=13 hash=bbf14bf80fc08364
+strata async admission: window=218 kind=1 round=54 count=13 hash=bbf14bf80fc08364
+strata async admission: window=221 kind=0 round=55 count=13 hash=09a461f1aad2f30a
+strata async admission: window=222 kind=1 round=55 count=13 hash=09a461f1aad2f30a
+strata async admission: window=225 kind=0 round=56 count=16 hash=a5d8da5dd9ea862b
+strata async admission: window=226 kind=1 round=56 count=16 hash=a5d8da5dd9ea862b
+strata async admission: window=229 kind=0 round=57 count=14 hash=63d979fe2a6b8ee9
+strata async admission: window=230 kind=1 round=57 count=14 hash=63d979fe2a6b8ee9
+strata async admission: window=233 kind=0 round=58 count=24 hash=e835cc259beb208f
+strata async admission: window=234 kind=1 round=58 count=24 hash=e835cc259beb208f
+strata async admission: window=237 kind=0 round=59 count=13 hash=93e2cf5f5f8e9bb8
+strata async admission: window=238 kind=1 round=59 count=13 hash=93e2cf5f5f8e9bb8
+strata async admission: window=241 kind=0 round=60 count=7 hash=03ef1060eaab5ad8
+strata async admission: window=242 kind=1 round=60 count=7 hash=03ef1060eaab5ad8
+strata async admission: window=245 kind=0 round=61 count=22 hash=ef7958d0f555e4f7
+strata async admission: window=246 kind=1 round=61 count=22 hash=ef7958d0f555e4f7
+strata async admission: window=249 kind=0 round=62 count=27 hash=cd81cd3f6b07b3ee
+strata async admission: window=250 kind=1 round=62 count=27 hash=cd81cd3f6b07b3ee
+strata async admission: window=253 kind=0 round=63 count=23 hash=2371c7529c44ce8e
+strata async admission: window=254 kind=1 round=63 count=23 hash=2371c7529c44ce8e
+strata async admission: window=257 kind=0 round=64 count=8 hash=f937219e9d205e56
+strata async admission: window=258 kind=1 round=64 count=8 hash=f937219e9d205e56
+strata async admission: window=261 kind=0 round=65 count=15 hash=a4200c41ad4ce538
+strata async admission: window=262 kind=1 round=65 count=15 hash=a4200c41ad4ce538
+strata async admission: window=265 kind=0 round=66 count=9 hash=1361e60e2ba8ddc5
+strata async admission: window=266 kind=1 round=66 count=9 hash=1361e60e2ba8ddc5
+strata async admission: window=269 kind=0 round=67 count=19 hash=42b7a7728bce6966
+strata async admission: window=270 kind=1 round=67 count=19 hash=42b7a7728bce6966
+strata async admission: window=273 kind=0 round=68 count=26 hash=9b9c06569bb799b5
+strata async admission: window=274 kind=1 round=68 count=26 hash=9b9c06569bb799b5
+strata async admission: window=277 kind=0 round=69 count=10 hash=4be5530a923b7cbc
+strata async admission: window=278 kind=1 round=69 count=10 hash=4be5530a923b7cbc
+strata async admission: window=281 kind=0 round=70 count=4 hash=077a78d62ad506af
+strata async admission: window=282 kind=1 round=70 count=4 hash=077a78d62ad506af
+strata async admission: window=285 kind=0 round=71 count=32 hash=f6b1737d9c84b149
+strata async admission: window=286 kind=1 round=71 count=32 hash=f6b1737d9c84b149
+strata async admission: window=289 kind=0 round=72 count=4 hash=5cb43244dc1256d3
+strata async admission: window=290 kind=1 round=72 count=4 hash=5cb43244dc1256d3
+strata async admission: window=293 kind=0 round=73 count=11 hash=4e84c76f29d3cd4d
+strata async admission: window=294 kind=1 round=73 count=11 hash=4e84c76f29d3cd4d
+strata async admission: window=297 kind=0 round=74 count=6 hash=42ab5770df67288c
+strata async admission: window=298 kind=1 round=74 count=6 hash=42ab5770df67288c
+strata async admission: window=301 kind=0 round=75 count=6 hash=3642d62b366ab2d9
+strata async admission: window=302 kind=1 round=75 count=6 hash=3642d62b366ab2d9
+strata async admission: window=305 kind=0 round=76 count=10 hash=8833e9095be9d7db
+strata async admission: window=306 kind=1 round=76 count=10 hash=8833e9095be9d7db
+strata async admission: window=309 kind=0 round=77 count=11 hash=24c8bbbdc6a07c29
+strata async admission: window=310 kind=1 round=77 count=11 hash=24c8bbbdc6a07c29
+strata async admission: window=313 kind=0 round=78 count=7 hash=efbb916c89841b84
+strata async admission: window=314 kind=1 round=78 count=7 hash=efbb916c89841b84
+strata async admission: window=317 kind=0 round=79 count=7 hash=e2d3835c4666939b
+strata async admission: window=318 kind=1 round=79 count=7 hash=e2d3835c4666939b
+strata async admission: window=321 kind=0 round=80 count=10 hash=edeae0f619d74ed5
+strata async admission: window=322 kind=1 round=80 count=10 hash=edeae0f619d74ed5
+strata async admission: window=325 kind=0 round=81 count=16 hash=f626787b2348ba7b
+strata async admission: window=326 kind=1 round=81 count=16 hash=f626787b2348ba7b
+strata async admission: window=329 kind=0 round=82 count=2 hash=28534142935c0c6c
+strata async admission: window=330 kind=1 round=82 count=2 hash=28534142935c0c6c
+strata async admission: window=333 kind=0 round=83 count=8 hash=aba269bc85376aae
+strata async admission: window=334 kind=1 round=83 count=8 hash=aba269bc85376aae
+strata async admission: window=337 kind=0 round=84 count=4 hash=5cf40e07369bde3b
+strata async admission: window=338 kind=1 round=84 count=4 hash=5cf40e07369bde3b
+strata async admission: window=341 kind=0 round=85 count=16 hash=10050aefc80a749f
+strata async admission: window=342 kind=1 round=85 count=16 hash=10050aefc80a749f
+strata async admission: window=345 kind=0 round=86 count=8 hash=27fa0ea1361c8e10
+strata async admission: window=346 kind=1 round=86 count=8 hash=27fa0ea1361c8e10
+strata async admission: window=349 kind=0 round=87 count=20 hash=f767c62fad285144
+strata async admission: window=350 kind=1 round=87 count=20 hash=f767c62fad285144
+strata async admission: window=353 kind=0 round=88 count=29 hash=b40fbb3a2c0ad231
+strata async admission: window=354 kind=1 round=88 count=29 hash=b40fbb3a2c0ad231
+strata async admission: window=357 kind=0 round=89 count=43 hash=ff9735951fcac301
+strata async admission: window=358 kind=1 round=89 count=43 hash=ff9735951fcac301
+strata async admission: window=361 kind=0 round=90 count=14 hash=f60e2698c7983a1e
+strata async admission: window=362 kind=1 round=90 count=14 hash=f60e2698c7983a1e
+strata async admission: window=365 kind=0 round=91 count=39 hash=a276b2c53826a225
+strata async admission: window=366 kind=1 round=91 count=39 hash=a276b2c53826a225
+strata async admission: window=369 kind=0 round=92 count=33 hash=1c7c39024d64db46
+strata async admission: window=370 kind=1 round=92 count=33 hash=1c7c39024d64db46
+strata async admission: window=373 kind=0 round=93 count=21 hash=2fb31bf9a6c7be51
+strata async admission: window=374 kind=1 round=93 count=21 hash=2fb31bf9a6c7be51
+strata async admission: window=377 kind=0 round=94 count=15 hash=6600d72f3ee758b9
+strata async admission: window=378 kind=1 round=94 count=15 hash=6600d72f3ee758b9
+strata async admission: window=381 kind=0 round=95 count=24 hash=c31032de6f8ca7ee
+strata async admission: window=382 kind=1 round=95 count=24 hash=c31032de6f8ca7ee
+strata async admission: window=385 kind=0 round=96 count=22 hash=73bdd03e0f37e572
+strata async admission: window=386 kind=1 round=96 count=22 hash=73bdd03e0f37e572
+strata async admission: window=389 kind=0 round=97 count=11 hash=834ed98a32e43800
+strata async admission: window=390 kind=1 round=97 count=11 hash=834ed98a32e43800
+strata async admission: window=393 kind=0 round=98 count=43 hash=cf5cee95ed9a7f46
+strata async admission: window=394 kind=1 round=98 count=43 hash=cf5cee95ed9a7f46
+strata async admission: window=397 kind=0 round=99 count=14 hash=70ad9aed18fe185c
+strata async admission: window=398 kind=1 round=99 count=14 hash=70ad9aed18fe185c
+strata async admission: window=401 kind=0 round=100 count=8 hash=474087410d17cd78
+strata async admission: window=402 kind=1 round=100 count=8 hash=474087410d17cd78
+strata async admission: window=405 kind=0 round=101 count=4 hash=daf38d37c4f31a2f
+strata async admission: window=406 kind=1 round=101 count=4 hash=daf38d37c4f31a2f
+strata async admission: window=409 kind=0 round=102 count=4 hash=7efd3d0ccef3987c
+strata async admission: window=410 kind=1 round=102 count=4 hash=7efd3d0ccef3987c
+strata async admission: window=413 kind=0 round=103 count=16 hash=86208fa8e12e7c80
+strata async admission: window=414 kind=1 round=103 count=16 hash=86208fa8e12e7c80
+strata async admission: window=417 kind=0 round=104 count=13 hash=b4ebdb8aebe28692
+strata async admission: window=418 kind=1 round=104 count=13 hash=b4ebdb8aebe28692
+strata async admission: window=421 kind=0 round=105 count=21 hash=5f0e7b1c3040e9f7
+strata async admission: window=422 kind=1 round=105 count=21 hash=5f0e7b1c3040e9f7
+strata async admission: window=425 kind=0 round=106 count=10 hash=91cc23cefefdd5f8
+strata async admission: window=426 kind=1 round=106 count=10 hash=91cc23cefefdd5f8
+strata async admission: window=429 kind=0 round=107 count=17 hash=88fdb8b6d80a5c5f
+strata async admission: window=430 kind=1 round=107 count=17 hash=88fdb8b6d80a5c5f
+strata async admission: window=433 kind=0 round=108 count=13 hash=a60f345c7ae8468d
+strata async admission: window=434 kind=1 round=108 count=13 hash=a60f345c7ae8468d
+strata async admission: window=437 kind=0 round=109 count=27 hash=182124757d861585
+strata async admission: window=438 kind=1 round=109 count=27 hash=182124757d861585
+strata async admission: window=441 kind=0 round=110 count=12 hash=906c030db6a28005
+strata async admission: window=442 kind=1 round=110 count=12 hash=906c030db6a28005
+strata async admission: window=445 kind=0 round=111 count=3 hash=451466e71aee2146
+strata async admission: window=446 kind=1 round=111 count=3 hash=451466e71aee2146
+strata async admission: window=449 kind=0 round=112 count=6 hash=3983ac8cd475b14e
+strata async admission: window=450 kind=1 round=112 count=6 hash=3983ac8cd475b14e
+strata async admission: window=453 kind=0 round=113 count=14 hash=9613458a3e06cc2c
+strata async admission: window=454 kind=1 round=113 count=14 hash=9613458a3e06cc2c
+strata async admission: window=457 kind=0 round=114 count=8 hash=51d3863a9f0fa083
+strata async admission: window=458 kind=1 round=114 count=8 hash=51d3863a9f0fa083
+strata async admission: window=461 kind=0 round=115 count=2 hash=cb2fd54c5b985374
+strata async admission: window=462 kind=1 round=115 count=2 hash=cb2fd54c5b985374
+strata async admission: window=465 kind=0 round=116 count=6 hash=8e0bed6ee7860599
+strata async admission: window=466 kind=1 round=116 count=6 hash=8e0bed6ee7860599
+strata async admission: window=469 kind=0 round=117 count=10 hash=12307fe3b6b2d7fe
+strata async admission: window=470 kind=1 round=117 count=10 hash=12307fe3b6b2d7fe
+strata async admission: window=473 kind=0 round=118 count=8 hash=82922e66aa61aef3
+strata async admission: window=474 kind=1 round=118 count=8 hash=82922e66aa61aef3
+strata async admission: window=477 kind=0 round=119 count=13 hash=20a90cf0bb7fecbd
+strata async admission: window=478 kind=1 round=119 count=13 hash=20a90cf0bb7fecbd
+strata async admission: window=481 kind=0 round=120 count=6 hash=eb13a3a83ad25365
+strata async admission: window=482 kind=1 round=120 count=6 hash=eb13a3a83ad25365
+strata async admission: window=485 kind=0 round=121 count=2 hash=2193caf391d23b6d
+strata async admission: window=486 kind=1 round=121 count=2 hash=2193caf391d23b6d
+strata async admission: window=489 kind=0 round=122 count=9 hash=a82b4bb81d77e101
+strata async admission: window=490 kind=1 round=122 count=9 hash=a82b4bb81d77e101
+strata async admission: window=493 kind=0 round=123 count=2 hash=b3d0e940dc73513c
+strata async admission: window=494 kind=1 round=123 count=2 hash=b3d0e940dc73513c
+strata async admission: window=497 kind=0 round=124 count=3 hash=2614c1e8e70f5afc
+strata async admission: window=498 kind=1 round=124 count=3 hash=2614c1e8e70f5afc
+strata async admission: window=501 kind=0 round=125 count=3 hash=a15fb995aa43c42c
+strata async admission: window=502 kind=1 round=125 count=3 hash=a15fb995aa43c42c
+strata async admission: window=505 kind=0 round=126 count=6 hash=ad35d00a1e1fe987
+strata async admission: window=506 kind=1 round=126 count=6 hash=ad35d00a1e1fe987
+strata async admission: window=509 kind=0 round=127 count=7 hash=44f6b50099c87ee6
+strata async admission: window=510 kind=1 round=127 count=7 hash=44f6b50099c87ee6
+strata async admission: window=513 kind=0 round=128 count=5 hash=6fdadd5f5936d171
+strata async admission: window=514 kind=1 round=128 count=5 hash=6fdadd5f5936d171
+strata async admission: window=517 kind=0 round=129 count=7 hash=3164551a5bf6793c
+strata async admission: window=518 kind=1 round=129 count=7 hash=3164551a5bf6793c
+strata async admission: window=521 kind=0 round=130 count=1 hash=32a4d244b7b1cedd
+strata async admission: window=522 kind=1 round=130 count=1 hash=32a4d244b7b1cedd
+strata async admission: window=525 kind=0 round=131 count=3 hash=d741fff351fcc6ac
+strata async admission: window=526 kind=1 round=131 count=3 hash=d741fff351fcc6ac
+strata async admission: window=529 kind=0 round=132 count=2 hash=48655be01053e305
+strata async admission: window=530 kind=1 round=132 count=2 hash=48655be01053e305
+strata async admission: window=533 kind=0 round=133 count=2 hash=95c198fad7fe4c7a
+strata async admission: window=534 kind=1 round=133 count=2 hash=95c198fad7fe4c7a
+strata async admission: window=537 kind=0 round=134 count=4 hash=a13e1f76440dbdcb
+strata async admission: window=538 kind=1 round=134 count=4 hash=a13e1f76440dbdcb
+strata async admission: window=541 kind=0 round=135 count=4 hash=b1b9b0779d2a138b
+strata async admission: window=542 kind=1 round=135 count=4 hash=b1b9b0779d2a138b
+strata async admission: window=545 kind=0 round=136 count=7 hash=573f43fdba513a89
+strata async admission: window=546 kind=1 round=136 count=7 hash=573f43fdba513a89
+strata async admission: window=549 kind=0 round=137 count=5 hash=f8d31aa0c4927f5e
+strata async admission: window=550 kind=1 round=137 count=5 hash=f8d31aa0c4927f5e
+strata async admission: window=553 kind=0 round=138 count=4 hash=1132effd8cda2730
+strata async admission: window=554 kind=1 round=138 count=4 hash=1132effd8cda2730
+strata async admission: window=557 kind=0 round=139 count=4 hash=1ec7d0723bbddccc
+strata async admission: window=558 kind=1 round=139 count=4 hash=1ec7d0723bbddccc
+strata async admission: window=561 kind=0 round=140 count=10 hash=8f175be13491390b
+strata async admission: window=562 kind=1 round=140 count=10 hash=8f175be13491390b
+strata async admission: window=565 kind=0 round=141 count=11 hash=417e6550c62e2b56
+strata async admission: window=566 kind=1 round=141 count=11 hash=417e6550c62e2b56
+strata async admission: window=569 kind=0 round=142 count=16 hash=e5d24441cb22244b
+strata async admission: window=570 kind=1 round=142 count=16 hash=e5d24441cb22244b
+strata async admission: window=573 kind=0 round=143 count=8 hash=3db6fbee8ee56230
+strata async admission: window=574 kind=1 round=143 count=8 hash=3db6fbee8ee56230
+strata async admission: window=577 kind=0 round=144 count=7 hash=938313c39a2b2e98
+strata async admission: window=578 kind=1 round=144 count=7 hash=938313c39a2b2e98
+strata async admission: window=581 kind=0 round=145 count=26 hash=6157d9f34f0df8b9
+strata async admission: window=582 kind=1 round=145 count=26 hash=6157d9f34f0df8b9
+strata async admission: window=585 kind=0 round=146 count=17 hash=4db127b6bc4852a0
+strata async admission: window=586 kind=1 round=146 count=17 hash=4db127b6bc4852a0
+strata async admission: window=589 kind=0 round=147 count=7 hash=d61e4ea689dcd768
+strata async admission: window=590 kind=1 round=147 count=7 hash=d61e4ea689dcd768
+strata async admission: window=593 kind=0 round=148 count=14 hash=e70f645a9fc89632
+strata async admission: window=594 kind=1 round=148 count=14 hash=e70f645a9fc89632
+strata async admission: window=597 kind=0 round=149 count=7 hash=63d326297ccbe911
+strata async admission: window=598 kind=1 round=149 count=7 hash=63d326297ccbe911
+strata async admission: window=601 kind=0 round=150 count=7 hash=297ca4e04122bdc9
+strata async admission: window=602 kind=1 round=150 count=7 hash=297ca4e04122bdc9
+strata async admission: window=605 kind=0 round=151 count=4 hash=fe06facdfa10db61
+strata async admission: window=606 kind=1 round=151 count=4 hash=fe06facdfa10db61
+strata async admission: window=609 kind=0 round=152 count=4 hash=3811013c70e32de2
+strata async admission: window=610 kind=1 round=152 count=4 hash=3811013c70e32de2
+strata async admission: window=613 kind=0 round=153 count=4 hash=1340efb460561f00
+strata async admission: window=614 kind=1 round=153 count=4 hash=1340efb460561f00
+strata async admission: window=617 kind=0 round=154 count=11 hash=c5609fc370718deb
+strata async admission: window=618 kind=1 round=154 count=11 hash=c5609fc370718deb
+strata async admission: window=621 kind=0 round=155 count=4 hash=8891ee30a7ee9c9b
+strata async admission: window=622 kind=1 round=155 count=4 hash=8891ee30a7ee9c9b
+strata async admission: window=625 kind=0 round=156 count=10 hash=3feee53ec399542e
+strata async admission: window=626 kind=1 round=156 count=10 hash=3feee53ec399542e
+strata async admission: window=629 kind=0 round=157 count=9 hash=1096df4ef84e7270
+strata async admission: window=630 kind=1 round=157 count=9 hash=1096df4ef84e7270
+strata async admission: window=633 kind=0 round=158 count=5 hash=bdfe2a95ad2aaef9
+strata async admission: window=634 kind=1 round=158 count=5 hash=bdfe2a95ad2aaef9
+strata async admission: window=637 kind=0 round=159 count=6 hash=71604f1696793c45
+strata async admission: window=638 kind=1 round=159 count=6 hash=71604f1696793c45
+strata async admission: window=641 kind=0 round=160 count=7 hash=66b630e8c5480392
+strata async admission: window=642 kind=1 round=160 count=7 hash=66b630e8c5480392
+strata async admission: window=645 kind=0 round=161 count=3 hash=290629f4151227d7
+strata async admission: window=646 kind=1 round=161 count=3 hash=290629f4151227d7
+strata async admission: window=649 kind=0 round=162 count=4 hash=981d3876b1593995
+strata async admission: window=650 kind=1 round=162 count=4 hash=981d3876b1593995
+strata async admission: window=653 kind=0 round=163 count=0 hash=14650fb0739d0383
+strata async admission: window=657 kind=0 round=164 count=9 hash=83da9f60ee4802f7
+strata async admission: window=658 kind=1 round=164 count=9 hash=83da9f60ee4802f7
+strata async admission: window=661 kind=0 round=165 count=14 hash=4dad877020c80a9a
+strata async admission: window=662 kind=1 round=165 count=14 hash=4dad877020c80a9a
+strata async admission: window=665 kind=0 round=166 count=8 hash=9733b6927b829c43
+strata async admission: window=666 kind=1 round=166 count=8 hash=9733b6927b829c43
+strata async admission: window=669 kind=0 round=167 count=10 hash=aa47db320a77b859
+strata async admission: window=670 kind=1 round=167 count=10 hash=aa47db320a77b859
+strata async admission: window=673 kind=0 round=168 count=8 hash=bdefa794ae2f85a2
+strata async admission: window=674 kind=1 round=168 count=8 hash=bdefa794ae2f85a2
+strata async admission: window=677 kind=0 round=169 count=8 hash=2ebbafbe485e9044
+strata async admission: window=678 kind=1 round=169 count=8 hash=2ebbafbe485e9044
+strata async admission: window=681 kind=0 round=170 count=13 hash=ddc3beb06eb53f56
+strata async admission: window=682 kind=1 round=170 count=13 hash=ddc3beb06eb53f56
+strata async admission: window=685 kind=0 round=171 count=17 hash=8d033c8f61b4d29d
+strata async admission: window=686 kind=1 round=171 count=17 hash=8d033c8f61b4d29d
+strata async admission: window=689 kind=0 round=172 count=11 hash=edc413ecb830f049
+strata async admission: window=690 kind=1 round=172 count=11 hash=edc413ecb830f049
+strata async admission: window=693 kind=0 round=173 count=5 hash=e1e2908e60c74290
+strata async admission: window=694 kind=1 round=173 count=5 hash=e1e2908e60c74290
+strata async admission: window=697 kind=0 round=174 count=14 hash=8ca9b892ffbdd1bb
+strata async admission: window=698 kind=1 round=174 count=14 hash=8ca9b892ffbdd1bb
+strata async admission: window=701 kind=0 round=175 count=9 hash=a300fd9899779723
+strata async admission: window=702 kind=1 round=175 count=9 hash=a300fd9899779723
+strata async admission: window=705 kind=0 round=176 count=12 hash=f336bb6b7d4acd85
+strata async admission: window=706 kind=1 round=176 count=12 hash=f336bb6b7d4acd85
+strata async admission: window=709 kind=0 round=177 count=5 hash=cac17cfde8411f16
+strata async admission: window=710 kind=1 round=177 count=5 hash=cac17cfde8411f16
+strata async admission: window=713 kind=0 round=178 count=22 hash=2c9e64a886b1d80a
+strata async admission: window=714 kind=1 round=178 count=22 hash=2c9e64a886b1d80a
+strata async admission: window=717 kind=0 round=179 count=9 hash=72b104cb863ef0c3
+strata async admission: window=718 kind=1 round=179 count=9 hash=72b104cb863ef0c3
+strata async admission: window=721 kind=0 round=180 count=8 hash=08c862c318743599
+strata async admission: window=722 kind=1 round=180 count=8 hash=08c862c318743599
+strata async admission: window=725 kind=0 round=181 count=22 hash=648c95495749abc9
+strata async admission: window=726 kind=1 round=181 count=22 hash=648c95495749abc9
+strata async admission: window=729 kind=0 round=182 count=4 hash=8a5fbdeeb8adff0e
+strata async admission: window=730 kind=1 round=182 count=4 hash=8a5fbdeeb8adff0e
+strata async admission: window=733 kind=0 round=183 count=7 hash=38b3c8ef7a49f76a
+strata async admission: window=734 kind=1 round=183 count=7 hash=38b3c8ef7a49f76a
+strata async admission: window=737 kind=0 round=184 count=11 hash=33b110e5c3ac1c80
+strata async admission: window=738 kind=1 round=184 count=11 hash=33b110e5c3ac1c80
+strata async admission: window=741 kind=0 round=185 count=1 hash=d98a07c7a0eaa850
+strata async admission: window=742 kind=1 round=185 count=1 hash=d98a07c7a0eaa850
+strata async admission: window=745 kind=0 round=186 count=2 hash=4aca4fa331c25634
+strata async admission: window=746 kind=1 round=186 count=2 hash=4aca4fa331c25634
+strata async admission: window=749 kind=0 round=187 count=7 hash=1a83b3ec1f8b1bad
+strata async admission: window=750 kind=1 round=187 count=7 hash=1a83b3ec1f8b1bad
+strata async admission: window=753 kind=0 round=188 count=9 hash=e5d4ff14c0f9dc8f
+strata async admission: window=754 kind=1 round=188 count=9 hash=e5d4ff14c0f9dc8f
+strata async admission: window=757 kind=0 round=189 count=14 hash=232400519af05013
+strata async admission: window=758 kind=1 round=189 count=14 hash=232400519af05013
+strata async admission: window=761 kind=0 round=190 count=13 hash=2c4a04b657b14767
+strata async admission: window=762 kind=1 round=190 count=13 hash=2c4a04b657b14767
+strata async admission: window=765 kind=0 round=191 count=11 hash=596febb8815cd81b
+strata async admission: window=766 kind=1 round=191 count=11 hash=596febb8815cd81b
+strata async admission: window=769 kind=0 round=192 count=11 hash=c0fb3093e76bc72a
+strata async admission: window=770 kind=1 round=192 count=11 hash=c0fb3093e76bc72a
+strata async admission: window=773 kind=0 round=193 count=3 hash=f87a45756c488902
+strata async admission: window=774 kind=1 round=193 count=3 hash=f87a45756c488902
+strata async admission: window=777 kind=0 round=194 count=7 hash=1c769a8b11ce90ab
+strata async admission: window=778 kind=1 round=194 count=7 hash=1c769a8b11ce90ab
+strata async admission: window=781 kind=0 round=195 count=8 hash=262ad56f776d0e32
+strata async admission: window=782 kind=1 round=195 count=8 hash=262ad56f776d0e32
+strata async admission: window=785 kind=0 round=196 count=9 hash=d6b3b19ac0b597eb
+strata async admission: window=786 kind=1 round=196 count=9 hash=d6b3b19ac0b597eb
+strata async admission: window=789 kind=0 round=197 count=16 hash=e464ca37666fe7d4
+strata async admission: window=790 kind=1 round=197 count=16 hash=e464ca37666fe7d4
+strata async admission: window=793 kind=0 round=198 count=5 hash=064ce43816579f3e
+strata async admission: window=794 kind=1 round=198 count=5 hash=064ce43816579f3e
+strata async admission: window=797 kind=0 round=199 count=6 hash=234587d540768125
+strata async admission: window=798 kind=1 round=199 count=6 hash=234587d540768125
+strata async admission: window=801 kind=0 round=200 count=13 hash=5b7d8ea5f81a96e8
+strata async admission: window=802 kind=1 round=200 count=13 hash=5b7d8ea5f81a96e8
+strata async admission: window=805 kind=0 round=201 count=15 hash=637995f1ee5be3cb
+strata async admission: window=806 kind=1 round=201 count=15 hash=637995f1ee5be3cb
+strata async admission: window=809 kind=0 round=202 count=40 hash=618abab62c2dbe90
+strata async admission: window=810 kind=1 round=202 count=40 hash=618abab62c2dbe90
+strata async admission: window=813 kind=0 round=203 count=18 hash=54c53b54474921b9
+strata async admission: window=814 kind=1 round=203 count=18 hash=54c53b54474921b9
+strata async admission: window=817 kind=0 round=204 count=6 hash=a77883cdcf566f63
+strata async admission: window=818 kind=1 round=204 count=6 hash=a77883cdcf566f63
+strata async admission: window=821 kind=0 round=205 count=5 hash=86608bbf303d9390
+strata async admission: window=822 kind=1 round=205 count=5 hash=86608bbf303d9390
+strata async admission: window=825 kind=0 round=206 count=18 hash=fe2c62f07a26038b
+strata async admission: window=826 kind=1 round=206 count=18 hash=fe2c62f07a26038b
+strata async admission: window=829 kind=0 round=207 count=14 hash=b4b6e195d90c53ae
+strata async admission: window=830 kind=1 round=207 count=14 hash=b4b6e195d90c53ae
+strata async admission: window=833 kind=0 round=208 count=5 hash=3d7f061fec771b7c
+strata async admission: window=834 kind=1 round=208 count=5 hash=3d7f061fec771b7c
+strata async admission: window=837 kind=0 round=209 count=8 hash=dbbf9572e7e5da77
+strata async admission: window=838 kind=1 round=209 count=8 hash=dbbf9572e7e5da77
+strata async admission: window=841 kind=0 round=210 count=10 hash=ef4d058a0d38f71c
+strata async admission: window=842 kind=1 round=210 count=10 hash=ef4d058a0d38f71c
+strata async admission: window=845 kind=0 round=211 count=6 hash=dd15ce6e42c56f24
+strata async admission: window=846 kind=1 round=211 count=6 hash=dd15ce6e42c56f24
+strata async admission: window=849 kind=0 round=212 count=6 hash=84808cb309e56671
+strata async admission: window=850 kind=1 round=212 count=6 hash=84808cb309e56671
+strata async admission: window=853 kind=0 round=213 count=10 hash=d6927a5d2cd09efa
+strata async admission: window=854 kind=1 round=213 count=10 hash=d6927a5d2cd09efa
+strata async admission: window=857 kind=0 round=214 count=3 hash=3d5ae242dd4547bb
+strata async admission: window=858 kind=1 round=214 count=3 hash=3d5ae242dd4547bb
+strata async admission: window=861 kind=0 round=215 count=12 hash=9498e82f24539998
+strata async admission: window=862 kind=1 round=215 count=12 hash=9498e82f24539998
+strata async admission: window=865 kind=0 round=216 count=8 hash=7139a3ab67ddaeb3
+strata async admission: window=866 kind=1 round=216 count=8 hash=7139a3ab67ddaeb3
+strata async admission: window=869 kind=0 round=217 count=8 hash=43b0a51b16b987be
+strata async admission: window=870 kind=1 round=217 count=8 hash=43b0a51b16b987be
+strata async admission: window=873 kind=0 round=218 count=8 hash=07a8da5c7acc0667
+strata async admission: window=874 kind=1 round=218 count=8 hash=07a8da5c7acc0667
+strata async admission: window=877 kind=0 round=219 count=8 hash=a97fbb0217bcc993
+strata async admission: window=878 kind=1 round=219 count=8 hash=a97fbb0217bcc993
+strata async admission: window=881 kind=0 round=220 count=4 hash=5540e5bb7651c350
+strata async admission: window=882 kind=1 round=220 count=4 hash=5540e5bb7651c350
+strata async admission: window=885 kind=0 round=221 count=6 hash=fdbca68dd9301d98
+strata async admission: window=886 kind=1 round=221 count=6 hash=fdbca68dd9301d98
+strata async admission: window=889 kind=0 round=222 count=9 hash=abdf98e81a1d6fd7
+strata async admission: window=890 kind=1 round=222 count=9 hash=abdf98e81a1d6fd7
+strata async admission: window=893 kind=0 round=223 count=12 hash=b75166d372a51987
+strata async admission: window=894 kind=1 round=223 count=12 hash=b75166d372a51987
+strata async admission: window=897 kind=0 round=224 count=2 hash=9ee69cd2c2b9091f
+strata async admission: window=898 kind=1 round=224 count=2 hash=9ee69cd2c2b9091f
+strata async admission: window=901 kind=0 round=225 count=12 hash=0d557e8a6fdbceee
+strata async admission: window=902 kind=1 round=225 count=12 hash=0d557e8a6fdbceee
+strata async admission: window=905 kind=0 round=226 count=10 hash=d5204fbfebaaf037
+strata async admission: window=906 kind=1 round=226 count=10 hash=d5204fbfebaaf037
+strata async admission: window=909 kind=0 round=227 count=18 hash=d3165174d3f3fa56
+strata async admission: window=910 kind=1 round=227 count=18 hash=d3165174d3f3fa56
+strata async admission: window=913 kind=0 round=228 count=30 hash=4d058c6efcf74406
+strata async admission: window=914 kind=1 round=228 count=30 hash=4d058c6efcf74406
+strata async admission: window=917 kind=0 round=229 count=27 hash=3fbfa950b7011684
+strata async admission: window=918 kind=1 round=229 count=27 hash=3fbfa950b7011684
+strata async admission: window=921 kind=0 round=230 count=6 hash=59b9e8fef030e6ec
+strata async admission: window=922 kind=1 round=230 count=6 hash=59b9e8fef030e6ec
+strata async admission: window=925 kind=0 round=231 count=7 hash=d5c4b650cc941828
+strata async admission: window=926 kind=1 round=231 count=7 hash=d5c4b650cc941828
+strata async admission: window=929 kind=0 round=232 count=24 hash=fede6662363523b8
+strata async admission: window=930 kind=1 round=232 count=24 hash=fede6662363523b8
+strata async admission: window=933 kind=0 round=233 count=8 hash=f99fba99735abd39
+strata async admission: window=934 kind=1 round=233 count=8 hash=f99fba99735abd39
+strata async admission: window=937 kind=0 round=234 count=2 hash=07e2786ffddf62f3
+strata async admission: window=938 kind=1 round=234 count=2 hash=07e2786ffddf62f3
+strata async admission: window=941 kind=0 round=235 count=10 hash=91d1a27680fa9f53
+strata async admission: window=942 kind=1 round=235 count=10 hash=91d1a27680fa9f53
+strata async admission: window=945 kind=0 round=236 count=7 hash=52ecbc1379f32531
+strata async admission: window=946 kind=1 round=236 count=7 hash=52ecbc1379f32531
+strata async admission: window=949 kind=0 round=237 count=9 hash=5148c6d8b41b9bf4
+strata async admission: window=950 kind=1 round=237 count=9 hash=5148c6d8b41b9bf4
+strata async admission: window=953 kind=0 round=238 count=11 hash=80543a1354a5ac35
+strata async admission: window=954 kind=1 round=238 count=11 hash=80543a1354a5ac35
+strata async admission: window=957 kind=0 round=239 count=12 hash=dff7d8e5fcbf1ad6
+strata async admission: window=958 kind=1 round=239 count=12 hash=dff7d8e5fcbf1ad6
+strata async admission: window=961 kind=0 round=240 count=3 hash=934d35658b926a00
+strata async admission: window=962 kind=1 round=240 count=3 hash=934d35658b926a00
+strata async admission: window=965 kind=0 round=241 count=8 hash=d194149d8ef0d6ba
+strata async admission: window=966 kind=1 round=241 count=8 hash=d194149d8ef0d6ba
+strata async admission: window=969 kind=0 round=242 count=10 hash=1462656ab471c042
+strata async admission: window=970 kind=1 round=242 count=10 hash=1462656ab471c042
+strata async admission: window=973 kind=0 round=243 count=8 hash=165ce0f911562868
+strata async admission: window=974 kind=1 round=243 count=8 hash=165ce0f911562868
+strata async admission: window=977 kind=0 round=244 count=3 hash=370a346dbc97933a
+strata async admission: window=978 kind=1 round=244 count=3 hash=370a346dbc97933a
+strata async admission: window=981 kind=0 round=245 count=7 hash=bcec7c0cb695fccf
+strata async admission: window=982 kind=1 round=245 count=7 hash=bcec7c0cb695fccf
+strata async admission: window=985 kind=0 round=246 count=6 hash=f40e0b9880cb2670
+strata async admission: window=986 kind=1 round=246 count=6 hash=f40e0b9880cb2670
+strata async admission: window=989 kind=0 round=247 count=8 hash=f77c90dc263ce824
+strata async admission: window=990 kind=1 round=247 count=8 hash=f77c90dc263ce824
+strata async admission: window=993 kind=0 round=248 count=5 hash=cd0f5b3e72542c75
+strata async admission: window=994 kind=1 round=248 count=5 hash=cd0f5b3e72542c75
+strata async admission: window=997 kind=0 round=249 count=2 hash=379e10758f0aa675
+strata async admission: window=998 kind=1 round=249 count=2 hash=379e10758f0aa675
+strata async admission: window=1001 kind=0 round=250 count=50 hash=383a144d81748287
+strata async admission: window=1002 kind=1 round=250 count=50 hash=383a144d81748287
+strata async admission: window=1005 kind=0 round=251 count=17 hash=5ef189e7d285fd7e
+strata async admission: window=1006 kind=1 round=251 count=17 hash=5ef189e7d285fd7e
+strata async admission: window=1009 kind=0 round=252 count=11 hash=8271d3f1c09e87db
+strata async admission: window=1010 kind=1 round=252 count=11 hash=8271d3f1c09e87db
+strata async admission: window=1013 kind=0 round=253 count=11 hash=cac2852589377c7f
+strata async admission: window=1014 kind=1 round=253 count=11 hash=cac2852589377c7f
+strata async admission: window=1017 kind=0 round=254 count=15 hash=495e85717ba2a62b
+strata async admission: window=1018 kind=1 round=254 count=15 hash=495e85717ba2a62b
+strata async admission: window=1021 kind=0 round=255 count=8 hash=6851100b81131268
+strata async admission: window=1022 kind=1 round=255 count=8 hash=6851100b81131268
+strata async admission: window=1025 kind=0 round=256 count=3 hash=ab45e04f56231bc8
+strata async admission: window=1026 kind=1 round=256 count=3 hash=ab45e04f56231bc8
+strata async admission: window=1029 kind=0 round=257 count=3 hash=c8c0047ac37870d5
+strata async admission: window=1030 kind=1 round=257 count=3 hash=c8c0047ac37870d5
+strata async admission: window=1033 kind=0 round=258 count=8 hash=4a7664a97b57aed6
+strata async admission: window=1034 kind=1 round=258 count=8 hash=4a7664a97b57aed6
+strata async admission: window=1037 kind=0 round=259 count=4 hash=fe5c8ffe856dfef0
+strata async admission: window=1038 kind=1 round=259 count=4 hash=fe5c8ffe856dfef0
+strata async admission: window=1041 kind=0 round=260 count=3 hash=b8c055f2c6fa80af
+strata async admission: window=1042 kind=1 round=260 count=3 hash=b8c055f2c6fa80af
+strata async admission: window=1045 kind=0 round=261 count=1 hash=399a08ff25afc3d1
+strata async admission: window=1046 kind=1 round=261 count=1 hash=399a08ff25afc3d1
+strata async admission: window=1049 kind=0 round=262 count=5 hash=5c6067e4d5393857
+strata async admission: window=1050 kind=1 round=262 count=5 hash=5c6067e4d5393857
+strata async admission: window=1053 kind=0 round=263 count=16 hash=c0c254ad941c5ec5
+strata async admission: window=1054 kind=1 round=263 count=16 hash=c0c254ad941c5ec5
+strata async admission: window=1057 kind=0 round=264 count=4 hash=eb8fa3757e6966f0
+strata async admission: window=1058 kind=1 round=264 count=4 hash=eb8fa3757e6966f0
+strata async admission: window=1061 kind=0 round=265 count=10 hash=23cc92edf5e7dd60
+strata async admission: window=1062 kind=1 round=265 count=10 hash=23cc92edf5e7dd60
+strata async admission: window=1065 kind=0 round=266 count=5 hash=b4b71d8dfcaeaa43
+strata async admission: window=1066 kind=1 round=266 count=5 hash=b4b71d8dfcaeaa43
+strata async admission: window=1069 kind=0 round=267 count=19 hash=59e647cbc93fa4ee
+strata async admission: window=1070 kind=1 round=267 count=19 hash=59e647cbc93fa4ee
+strata async admission: window=1073 kind=0 round=268 count=6 hash=cd6c40b4b16ce877
+strata async admission: window=1074 kind=1 round=268 count=6 hash=cd6c40b4b16ce877
+strata async admission: window=1077 kind=0 round=269 count=15 hash=32dff7c6a67a2269
+strata async admission: window=1078 kind=1 round=269 count=15 hash=32dff7c6a67a2269
+strata async admission: window=1081 kind=0 round=270 count=10 hash=d39f87e9567623a7
+strata async admission: window=1082 kind=1 round=270 count=10 hash=d39f87e9567623a7
+strata async admission: window=1085 kind=0 round=271 count=3 hash=d5863b79ec1178b3
+strata async admission: window=1086 kind=1 round=271 count=3 hash=d5863b79ec1178b3
+strata async admission: window=1089 kind=0 round=272 count=4 hash=992e9daae898ebfc
+strata async admission: window=1090 kind=1 round=272 count=4 hash=992e9daae898ebfc
+strata async admission: window=1093 kind=0 round=273 count=9 hash=9216eb4130041b55
+strata async admission: window=1094 kind=1 round=273 count=9 hash=9216eb4130041b55
+strata async admission: window=1097 kind=0 round=274 count=8 hash=41198a40e6c7860c
+strata async admission: window=1098 kind=1 round=274 count=8 hash=41198a40e6c7860c
+strata async admission: window=1101 kind=0 round=275 count=2 hash=73d2cf53b496346f
+strata async admission: window=1102 kind=1 round=275 count=2 hash=73d2cf53b496346f
+strata async admission: window=1105 kind=0 round=276 count=9 hash=fd1f1aa0c184c9a0
+strata async admission: window=1106 kind=1 round=276 count=9 hash=fd1f1aa0c184c9a0
+strata async admission: window=1109 kind=0 round=277 count=7 hash=1e7494844f977d40
+strata async admission: window=1110 kind=1 round=277 count=7 hash=1e7494844f977d40
+strata async admission: window=1113 kind=0 round=278 count=10 hash=d4e5657ce2fc8e11
+strata async admission: window=1114 kind=1 round=278 count=10 hash=d4e5657ce2fc8e11
+strata async admission: window=1117 kind=0 round=279 count=10 hash=4e59c0cf289b3690
+strata async admission: window=1118 kind=1 round=279 count=10 hash=4e59c0cf289b3690
+strata async admission: window=1121 kind=0 round=280 count=9 hash=3aa4434768fba950
+strata async admission: window=1122 kind=1 round=280 count=9 hash=3aa4434768fba950
+strata async admission: window=1125 kind=0 round=281 count=8 hash=27d8c84f2496a976
+strata async admission: window=1126 kind=1 round=281 count=8 hash=27d8c84f2496a976
+strata async admission: window=1129 kind=0 round=282 count=4 hash=03c2e0ffe47c2c2f
+strata async admission: window=1130 kind=1 round=282 count=4 hash=03c2e0ffe47c2c2f
+strata async admission: window=1133 kind=0 round=283 count=0 hash=14650fb0739d0383
+strata async admission: window=1137 kind=0 round=284 count=4 hash=4e46a829c4e4a3c5
+strata async admission: window=1138 kind=1 round=284 count=4 hash=4e46a829c4e4a3c5
+strata async admission: window=1141 kind=0 round=285 count=4 hash=668cd5f494efd78b
+strata async admission: window=1142 kind=1 round=285 count=4 hash=668cd5f494efd78b
+strata async admission: window=1145 kind=0 round=286 count=0 hash=14650fb0739d0383
+strata async admission: window=1149 kind=0 round=287 count=4 hash=bdff581259735ff5
+strata async admission: window=1150 kind=1 round=287 count=4 hash=bdff581259735ff5
+strata secondary refill payload: H2D=10084454400 D2D=12726988800 (cumulative)
