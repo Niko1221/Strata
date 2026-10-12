@@ -50,6 +50,40 @@
 
 namespace strata::program::suffix_reuse {
 
+/// Host Q4_0 dequant of one 32-value block (the writer's exact math, kv_q4.cu's writer /
+/// quantize_block_q4_0_host in kv_q4_parity.cpp:64-87).  x must hold 32 floats.
+inline void kv_q4_dequant_block_host(const strata::kernels::block_q4_0& blk, float* x) {
+    const float d = strata::kernels::f32_from_f16(blk.d);
+    for (int i = 0; i < 16; ++i) {
+        const int q0 = blk.qs[i] & 0xF;
+        const int q1 = blk.qs[i] >> 4;
+        x[i]      = (q0 - 8.0f) * d;
+        x[i + 16] = (q1 - 8.0f) * d;
+    }
+}
+
+/// Host Q4_0 quant of one 32-value block - byte-identical to quantize_block_q4_0_host
+/// (the parity reference the CUDA writer is pinned to).  x must hold 32 floats.
+inline void kv_q4_quant_block_host(const float* x, strata::kernels::block_q4_0& blk) {
+    float amax = 0.0f, max_val = 0.0f;
+    for (int i = 0; i < 32; ++i) {
+        const float v = x[i];
+        if (amax < std::fabs(v)) { amax = std::fabs(v); max_val = v; }
+    }
+    const float d = max_val / -8.0f;
+    const float id = d != 0.0f ? 1.0f / d : 0.0f;
+    blk.d = strata::kernels::f16_from_f32(d);
+    for (int i = 0; i < 16; ++i) {
+        const float x0 = x[i] * id;
+        const float x1 = x[i + 16] * id;
+        const int q0 = (int) (x0 + 8.5f);
+        const int q1 = (int) (x1 + 8.5f);
+        const uint8_t xi0 = (uint8_t) std::min(15, std::max(0, q0));
+        const uint8_t xi1 = (uint8_t) std::min(15, std::max(0, q1));
+        blk.qs[i] = (uint8_t) (xi0 | (xi1 << 4));
+    }
+}
+
 /// Host FWHT-256 (Sylvester construction, 1/sqrt(256) normalized) - bit-exact same math
 /// as the engine's kv_q4.hpp fwht256_cuda (kv_q4_parity.cpp:46-62 is the reference the
 /// parity test pins it to).  H is its own inverse (H*H = I), which is what the kv_rot
@@ -91,12 +125,11 @@ inline SpliceStatus splice_scope_guard_int8(bool kv_int8, bool kv_q4, bool kv_hy
         if (layer_split_active) return SpliceStatus::UnsupportedSplit;
         return SpliceStatus::NoOp;   // fp16 K is the OTHER helper's domain
     }
-    // int8 path.  kv_rot on == STRATA_KV_ROT=1: K rows are stored Hadamard-rotated; the
-    // splice now handles it with the H -> R(delta) -> H sandwich (kv_splice_apply_int8.hpp;
-    // H*H = I so the math is exact, and the requant count is unchanged).  The only refusal
-    // left for kv_rot is head_dim != 256, enforced fail-closed INSIDE the rotation helper
-    // (fwht256 is order-256 only) - not a config-level refusal.
-    if (kv_q4) return SpliceStatus::UnsupportedFormat;
+    // int8 path.  kv_rot on == STRATA_KV_ROT=1 and k8v4 hybrid are accepted (see above and
+    // the H-sandwich).  q4_0 is accepted too: the q4 helper below does the same sandwich
+    // with Q4_0 dequant/requant blocks (K rows are stored H*R(p)*k in Q4_0; the fwht and
+    // rope math are identical, only the storage codec differs).  Refusals that remain:
+    // kv_resident > 0 and layer split (memory layouts, not quant formats).
     if (kv_resident > 0) return SpliceStatus::UnsupportedResident;
     if (layer_split_active) return SpliceStatus::UnsupportedSplit;
     return SpliceStatus::NoOp;   // contract gate; the caller also checks fired + old_suffix_len
@@ -239,6 +272,93 @@ inline bool rotate_qsa_tail_inplace_int8(strata::core::QsaState& st,
     // ---- Commit: copy the host-staged codes + scales back to the device on a CUDA build ----
     transport::commit(codes_s,  k_codes_bytes);
     transport::commit(scales_s, k_scales_bytes);
+    return true;
+}
+
+/// Q4_0 K splice: the same H -> R(delta) -> H sandwich, with Q4_0 as the storage codec.
+/// `--kv q4_0` stores the WHOLE K row as Q4_0 blocks after the Hadamard rotation
+/// (kv_q4.hpp), so dequant is per-32-value block (18 B each: f16 d + 16 offset nibbles),
+/// and the requant re-encodes with the writer's exact math (kv_q4_quant_block_host, the
+/// parity-reference quantizer).  Same structure and guards as the int8 helper; returns
+/// true on success, false fail-closed with no side effects.  Measured noise (T11.f):
+/// double-quant code-steps ~1.9x the int8 path's - Q4_0's 16-level codes are coarser than
+/// int8's 254, so the requant after rotation is lossier; parity vs a fresh write is
+/// asserted in code-steps, and the engine's q4 path itself accepts that codec's noise.
+inline bool rotate_qsa_tail_inplace_q4(strata::core::QsaState& st,
+                                       int head_dim, int n_rot, int n_head_kv, int max_pos,
+                                       int64_t page_size,
+                                       int64_t edit_pos, int64_t old_suffix_len,
+                                       bool uniform, int delta, const int64_t* deltas,
+                                       int64_t pool_rows = 0) {
+    if (st.k_q4 == nullptr) return false;
+    if (st.cos_tab == nullptr || st.sin_tab == nullptr) return false;
+    if (st.kv_mode != 0) return false;
+    if (edit_pos < 0 || old_suffix_len <= 0) return false;
+    if (!uniform && deltas == nullptr) return false;
+    if (page_size <= 0) page_size = 1;
+    if (head_dim % strata::kernels::QK4_0 != 0) return false;   // writer's invariant (whole-row blocks)
+    if (st.kv_q4 && head_dim != 256) return false;              // fwht256 is order-256 only (fail-closed)
+    if ((int64_t) n_rot > head_dim) return false;
+    const int blocks_per_head = head_dim / strata::kernels::QK4_0;
+    const int64_t last_pos = edit_pos + old_suffix_len - 1;
+    if (pool_rows > 0) {
+        const int64_t last_page = last_pos / page_size;
+        const int64_t last_row = last_page * n_head_kv * page_size + (int64_t) (n_head_kv - 1) * page_size
+                               + last_pos % page_size;
+        if (last_row >= pool_rows) return false;
+    }
+    int64_t max_abs_delta = 0;
+    for (int64_t k = 0; k < old_suffix_len; ++k)
+        max_abs_delta = std::max<int64_t>(max_abs_delta,
+            uniform ? (delta < 0 ? -(int64_t) delta : (int64_t) delta)
+                    : (deltas[k] < 0 ? -deltas[k] : deltas[k]));
+    const int half = n_rot / 2;
+    const int64_t tab_rows = std::min<int64_t>(max_pos, max_abs_delta + 1);
+    if (tab_rows <= 0 || half <= 0) return false;
+    const size_t tab_floats = (size_t) tab_rows * (size_t) half;
+    transport::Staged cos_s = transport::stage_for_readwrite(st.cos_tab, tab_floats * 4);
+    transport::Staged sin_s = transport::stage_for_readwrite(st.sin_tab, tab_floats * 4);
+    if (cos_s.host == nullptr || sin_s.host == nullptr) return false;
+    const size_t first_row = (size_t) (edit_pos / page_size) * (size_t) n_head_kv * (size_t) page_size;
+    const size_t row_count = (size_t) ((last_pos / page_size) - (edit_pos / page_size) + 1)
+                           * (size_t) n_head_kv * (size_t) page_size;
+    // K Q4 blocks: the writer's layout (kv_q4.cu:94,114) is one packed row of
+    // head_dim/QK4_0 blocks per (page, head, off) - the row id encodes the head, so the
+    // per-row byte stride is blocks_per_head * 18 B with NO per-head sub-array.
+    const size_t q4_bytes_per_row = (size_t) blocks_per_head * sizeof(strata::kernels::block_q4_0);
+    const size_t k_bytes = row_count * q4_bytes_per_row;
+    transport::Staged kq4_s = transport::stage_for_readwrite(
+        (uint8_t*) st.k_q4 + first_row * q4_bytes_per_row, k_bytes);
+    if (kq4_s.host == nullptr) return false;
+    strata::kernels::block_q4_0* blocks = (strata::kernels::block_q4_0*) kq4_s.host;
+    const float* cos_tab = (const float*) cos_s.host;
+    const float* sin_tab = (const float*) sin_s.host;
+    float row_scratch[4096];
+    if (head_dim > 4096) return false;
+    for (int64_t k = 0; k < old_suffix_len; ++k) {
+        const int64_t p = edit_pos + k;
+        const int64_t page = p / page_size;
+        const int64_t off  = p % page_size;
+        const int delta_row = uniform ? delta : (int) deltas[(size_t) k];
+        for (int h = 0; h < n_head_kv; ++h) {
+            const int64_t row_idx = page * n_head_kv * page_size + (int64_t) h * page_size + off;
+            const size_t local_row = (size_t)(row_idx - (int64_t) first_row);
+            // one packed block row per (page, head, off) - the writer's kv_q4.cu layout
+            strata::kernels::block_q4_0* row_blocks = blocks + local_row * (size_t) blocks_per_head;
+            // 1. dequant the whole row (per 32-value block)
+            for (int b = 0; b < blocks_per_head; ++b)
+                kv_q4_dequant_block_host(row_blocks[b], &row_scratch[b * strata::kernels::QK4_0]);
+            // 2. the exact sandwich: stored = Q4(H*R(p)*k), so dequant ~ H*R(p)*k
+            fwht256_row_host(row_scratch);
+            strata::program::suffix_reuse::rotate_k_by_delta(
+                row_scratch, 1, head_dim, n_rot, (int) p, delta_row, cos_tab, sin_tab, max_pos);
+            fwht256_row_host(row_scratch);
+            // 3. requant with the writer's exact math
+            for (int b = 0; b < blocks_per_head; ++b)
+                kv_q4_quant_block_host(&row_scratch[b * strata::kernels::QK4_0], row_blocks[b]);
+        }
+    }
+    transport::commit(kq4_s, k_bytes);
     return true;
 }
 
