@@ -3459,6 +3459,40 @@ const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
     return blob(layer, expert);
 }
 
+int FileExpertSource::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
+    // the GGUF mapped in place only (three tensors per expert); the RAM copy, an exchange override, the unbuffered
+    // reads, a closed mapping and the I/O prefetch (STRATA_IO_PREFETCH: it preads the ranges the page cache lacks, which a copy out
+    // of the mapping would fault in one page at a time) keep going through blob(), which knows them
+    if (role_ptr_.empty() || !direct_.empty() || io_pf_ || unmapped_ || base_ == nullptr || layer < 0 || expert < 0 ||
+        layer >= n_layers_ || expert >= n_expert_)
+        return 0;
+    const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+    if (complement_ready_ && (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) return 0;
+    Span sp[3];
+    const int ns = spans(layer, expert, sp);
+    for (int i = 0; i < ns; ++i) out[i] = {sp[i].p, sp[i].n, sp[i].at};
+    if (ns > 0) {   // counted as blob() counts a read out of the mapping
+        count_mapped_read(layer, expert);
+        if (complement_ready_) file_reads_.fetch_add(1, std::memory_order_relaxed);
+        ++reads_;
+    }
+    return ns;
+}
+
+void FileExpertSource::count_mapped_read(int64_t layer, int64_t expert) {
+    file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
+#if defined(__linux__)
+    if (io_stats_) {   // STRATA_IO_STATS=1: what the page cache held when the kernels were handed the blob
+        uint64_t total = 0;
+        const uint64_t c = cached_bytes(layer, expert, total);
+        io_cached_.fetch_add(c, std::memory_order_relaxed);
+        io_uncached_.fetch_add(total - c, std::memory_order_relaxed);
+    }
+#else
+    (void) expert;
+#endif
+}
+
 const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
     if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
@@ -3481,17 +3515,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
             result = staged_blob(layer, expert);          // counts its bytes
         } else {
             result = mapped_blob(layer, expert);
-            if (result != nullptr) {
-                file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
-#if defined(__linux__)
-                if (io_stats_) {   // STRATA_IO_STATS=1: what the page cache held when the kernels were handed the blob
-                    uint64_t total = 0;
-                    const uint64_t c = cached_bytes(layer, expert, total);
-                    io_cached_.fetch_add(c, std::memory_order_relaxed);
-                    io_uncached_.fetch_add(total - c, std::memory_order_relaxed);
-                }
-#endif
-            }
+            if (result != nullptr) count_mapped_read(layer, expert);
         }
         if (complement_ready_ && result != nullptr) file_reads_.fetch_add(1, std::memory_order_relaxed);
     }

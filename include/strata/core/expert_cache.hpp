@@ -78,6 +78,9 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
 size_t device_free_bytes();
 
+/// One piece of an expert blob that lives contiguously in a source's own memory: `n` bytes at `p`, to land `at` bytes into the blob.
+struct BlobPart { const uint8_t* p; uint64_t n; uint64_t at; };
+
 class ExpertCache {
 public:
     ExpertCache() = default;
@@ -191,6 +194,9 @@ public:
     /// perf-review D-4: `fill_slot_blocking`'s copy on the same (legacy) stream, but queued: many slots are refilled
     /// with one `sync_queued` at the end instead of a wait per slot. Same ordering against earlier work, same bytes.
     bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    /// `fill_slot_queued` for a blob that is not in one piece: each `parts[i].n` bytes at `parts[i].p` go to byte `parts[i].at`
+    /// of the slot (the pieces tile the blob).  Same queue, same `sync_queued`.
+    bool fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err);
     bool sync_queued(std::string& err);
 
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
