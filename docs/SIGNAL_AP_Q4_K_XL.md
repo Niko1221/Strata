@@ -1,4 +1,7 @@
-# agentionai Signal AP-Q4_K_XL (manual setup)
+# agentionai Signal AP-Q4_K_XL
+
+Setup installs Signal (`--family signal`, sizes AP-Q4_K_XL and AP-IQ4_XS, images included): see
+[What setup does](#what-setup-does). The rest of this page is the manual workflow setup automates, and what was checked.
 
 Packed, loaded and run on Linux with an RTX 4090 (24 GB), Ryzen 9 7950X3D and 93 GB RAM on 2026-10-11. The engine
 starts on this pack and answers requests; the speeds quoted here were measured with `tools/strata_bench.py` on the
@@ -105,8 +108,8 @@ twice - it is a single file, and it carries the PLE table):
 
 The web interface is at `http://127.0.0.1:12223`, API clients use `http://127.0.0.1:12223/v1`. The port is the one
 `--port` asks for (8095 if you leave it out); a launcher can pass its own, so the `port` entry in the file is only a
-note to the reader. Vision is not configured in this text-only example, and one graphics card runs one engine: stop
-another server before starting this one.
+note to the reader. Images are not configured in this example (see [Images](#images)), and one graphics card runs one
+engine: stop another server before starting this one.
 
 The last four settings belong to one machine (RTX 4090, Ryzen 9 7950X3D, 93 GiB RAM) and are not general defaults.
 `--pcie-frac` and `--spec-min-p` are what `setup.py`'s calibration chose for Signal there on 2026-10-11, each the
@@ -148,6 +151,68 @@ no game was running.
 `tools/mtp_rt.py` as in the [OrcaRouter setup](ORCA.md); without `--mtp` the server drafts by lookup only. Signal
 verifies every draft, and a fine-tune's acceptance is not the base model's. It has not been measured for Signal.
 
+## What setup does
+
+`setup.py --family signal --model AP-Q4_K_XL` (or `AP-IQ4_XS`) does the steps above by itself: it downloads the file
+from a pinned revision and checks its SHA-256, packs it with `--compat-bf16`, writes the BF16 embedding beside the
+pack (`token-embd-bf16.gguf`) and adds `--embd-gguf` to the config. With images on, it downloads Signal's own encoder
+(`mmproj-F16.gguf`, 904 MB), saved as `mmproj-Signal-3.8-Flash-Next-F16.gguf`. On an AMD card setup asks before it
+installs AP-Q4_K_XL, as it does for UD-Q4_K_XL: the HIP engine has no prompt kernels for Q4_K experts.
+
+Run on the machine above on 2026-10-11 with the file already downloaded:
+`./setup.sh --family signal --model AP-Q4_K_XL --gguf-dir <its folder> --vision gpu --build --yes --no-start`. It took
+5 minutes, including the SHA-256 check of the 101 GB file and compiling the image encoder. The pack, the tokenizer and
+the embedding file it wrote are byte for byte the ones built by hand above. Its config is not the one above: 32K
+context (setup's default on this card), a 63 GiB RAM budget, images on, and none of the calibrated settings; the KV
+cache is 8-bit in both. The server was ready 86 s after start, and `tools/strata_bench.py` (3 runs per test,
+thinking off, temperature 0) measured:
+
+| test | median | range |
+|---|---|---|
+| short chat, decode (up to 100 tokens) | 59.9 tokens/s | 48.1-70.8 (9 answers) |
+| short chat, first token | 0.38 s | 0.33-0.45 |
+| 4K prompt | 1400 tokens/s, first token 2.89 s | 960-1402 tokens/s |
+| 16K prompt | 2301 tokens/s, first token 7.00 s | 1834-2317 tokens/s |
+| agent session, decode | 71.2 tokens/s | 44.4-89.8 (15 turns) |
+| agent session, first token | 2.95 s | 2.44-4.12 |
+| agent session, prompt reused from the cache | 68.7% | 68.6-68.8% |
+
+Every speed here is higher than in the table above, but the two configurations differ in five settings at once
+(context, RAM budget, the three calibrated settings), plus images, so this does not say which of them makes the
+difference.
+
+AP-IQ4_XS has not been downloaded or run. Its header, read from the first 32 MB of the file, differs from
+AP-Q4_K_XL's only in the routed experts' gate and up projections: IQ3_S instead of Q4_K, 57,252,249,600 bytes of
+experts. IQ3_S gate/up with IQ4_NL downs is the pair Unsloth's UD-IQ4_XS uses, which setup already runs on NVIDIA and
+AMD cards.
+
+## Images
+
+Signal ships its own image encoder, `mmproj-F16.gguf`: a `qwen3vl_merger` projector to 2560 wide, the model's width,
+in F16. With the configuration setup wrote, `strata-vision` loaded it in 0.7 s, and Signal answered (thinking off,
+temperature 0):
+
+- a drawn test picture (the number 7341 at the top, a red circle on the left, a blue square on the right, the word
+  LIGHTHOUSE at the bottom), asked for each of them: "7341 red circle blue square lighthouse", 2.8 s; asked how many
+  colored shapes: "2", 1.6 s;
+- `docs/media/pagoda-preview.webp`, asked for two sentences: "This image shows a pixelated, isometric 3D scene
+  featuring a multi-tiered pagoda on a floating island with cherry blossom trees and a small pond. A control panel on
+  the left allows users to adjust settings like time, weather, and camera angle for this voxel-style environment.",
+  2.7 s.
+
+By hand: build the image encoder (setup does it with `--vision gpu`), add `"--vision", "--vram-reserve-mib", "700"`
+to `args`, and give the config a block:
+
+```json
+"vision": {
+  "exe": "engine/strata-vision",
+  "mmproj": "/path/to/mmproj-F16.gguf",
+  "model": "/path/to/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf",
+  "gpu": true,
+  "max_tokens": 1024
+}
+```
+
 ## Scope and validation
 
 Checked on 2026-10-11 on the machine above:
@@ -177,8 +242,10 @@ Not checked:
 - Output quality against the base model is not measured, and neither is the draft head's acceptance rate on this
   fine-tune - Signal verifies every draft, but how often it accepts one is unknown here. The speeds above are one
   machine's; on other hardware, calibrate and watch the log for the engine's own complaints.
-- Only AP-Q4_K_XL from that repository was downloaded and packed; the other quantizations there were not examined.
-- The installer's model menu is unchanged. This is an explicit local packing workflow.
+- Only AP-Q4_K_XL from that repository was downloaded and run. AP-IQ4_XS's header was read, not its weights; Q8_0
+  was not examined.
+- Setup's download of the 101 GB file (the run above used `--gguf-dir`), setup on Windows, AMD cards, several GPUs,
+  and the image encoder on the CPU.
 - `tools/embd_bf16_pack.py --gguf` is new with this setup and has no test of its own. For `--model`, the header was
   compared byte for byte with the one the previous code built, and the table is copied by the same loop, moved into a
   function; it was not run end to end, because no safetensors checkpoint was on the machine.

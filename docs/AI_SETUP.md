@@ -14,8 +14,8 @@ Work through the steps in order. Tell the user what you are doing in plain words
   user the key. Never put a tunnel or port forward in front of a server without a key.
 - Do not change the user's system beyond what setup does (setup installs Python for the user account if needed,
   and everything else inside the Strata folder and its `Strata-data` folder). Ask before installing drivers.
-- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with that before you
-  start, especially on a metered connection.
+- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL, 90 GB for Signal's AP-IQ4_XS,
+  101 GB for AP-Q4_K_XL). Confirm the user is fine with that before you start, especially on a metered connection.
 - Setup is long-running (an hour or more on a slow connection). Run it in the background or with a long timeout and
   poll its output; do not kill it because it is quiet for a while. It is resumable: running the same command again
   continues where it stopped.
@@ -76,7 +76,9 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 | 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
-`qwen`. With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
+`qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two ~4-bit sizes for 48 GB
+or more: `AP-Q4_K_XL` (101 GB, NVIDIA only so far; part of the experts read from the SSD under ~90 GB of RAM) and
+`AP-IQ4_XS` (90 GB, under ~80 GB; not run by us yet). With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
 
 ## 4. Run setup without questions
 
@@ -92,8 +94,8 @@ The flags (all of them: `START-HERE.bat --help`):
 | Flag | Meaning |
 | --- | --- |
 | `--yes` | take the recommended answer to every question (no prompts) |
-| `--family qwen\|swift\|coder\|unsloth` | the model version |
-| `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-IQ4_XS\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-IQ4_XS or UD-Q4_K_XL) |
+| `--family qwen\|swift\|coder\|unsloth\|signal` | the model version |
+| `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-IQ4_XS\|UD-Q4_K_XL\|AP-Q4_K_XL\|AP-IQ4_XS` | the size (the Coder is IQ1_M, Unsloth UD-IQ4_XS or UD-Q4_K_XL, Signal AP-Q4_K_XL or AP-IQ4_XS) |
 | `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
 | `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
 | `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
