@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <system_error>
@@ -14,9 +15,12 @@
 namespace strata::core {
 namespace {
 
-constexpr std::uint32_t kMagic = 0x31424B53U;   // "SKB1" 小端
+constexpr std::uint32_t kMagic       = 0x32424B53U;   // "SKB2" 小端：头与条目都带 profile 标签
+constexpr std::uint32_t kMagicLegacy = 0x31424B53U;   // "SKB1"：没有版本门的老格式，永不读取
 
 void put_u64(std::uint8_t* p, std::uint64_t v) { std::memcpy(p, &v, 8); }
+void put_u32(std::uint8_t* p, std::uint32_t v) { std::memcpy(p, &v, 4); }
+std::uint32_t get_u32(const std::uint8_t* p) { std::uint32_t v = 0; std::memcpy(&v, p, 4); return v; }
 
 bool pwrite_all(int fd, const void* src, std::size_t n, std::uint64_t off) {
     const auto* p = static_cast<const std::uint8_t*>(src);
@@ -43,7 +47,7 @@ bool pread_all(int fd, void* dst, std::size_t n, std::uint64_t off) {
 }
 
 constexpr std::size_t kChunk = 1u << 20;
-constexpr std::size_t kMetaHeader = 16;         // 文件头：magic(4) + version(4) + 预留(8)
+constexpr std::size_t kMetaHeader = 16;         // 文件头：magic(4) + 格式版本(4) + 标签(4) + 预留(4)
 // 条目头：magic(4) + version(4) + key.lo(8) + key.hi(8) + payload 长度(8) = 32
 constexpr std::size_t kEntryHeader = 32;
 
@@ -59,42 +63,76 @@ DiskParkBlobStream::DiskParkBlobStream(Options options) : options_(std::move(opt
         std::filesystem::create_directories(p.parent_path(), ec);
         if (ec) { std::fprintf(stderr, "strata serve: disk park blob: 建目录失败\n"); return; }
     }
-    fd_ = ::open(options_.path.c_str(), O_RDWR | O_CREAT, 0644);
-    if (fd_ < 0) {
-        std::fprintf(stderr, "strata serve: disk park blob: 打不开 %s\n", options_.path.c_str());
-        return;
-    }
-    struct stat st {};
-    if (::fstat(fd_, &st) != 0) { ::close(fd_); fd_ = -1; return; }
-    size_ = static_cast<std::uint64_t>(st.st_size);
-
-    if (size_ == 0) {
-        const std::uint32_t magic = kMagic, ver = 1;
+    // 打开；没有文件 / 文件比头还短 ⇒ 建一份带头的新文件
+    bool fresh = false;                                   // 这份头是我们自己刚写的吗
+    auto open_or_create = [&]() -> bool {
+        fd_ = ::open(options_.path.c_str(), O_RDWR | O_CREAT, 0644);
+        if (fd_ < 0) {
+            std::fprintf(stderr, "strata serve: disk park blob: 打不开 %s\n", options_.path.c_str());
+            return false;
+        }
+        struct stat st {};
+        if (::fstat(fd_, &st) != 0) { ::close(fd_); fd_ = -1; return false; }
+        size_ = static_cast<std::uint64_t>(st.st_size);
+        if (size_ >= kMetaHeader) return true;
         std::uint8_t h[kMetaHeader] = {};
-        std::memcpy(h + 0, &magic, 4);
-        std::memcpy(h + 4, &ver, 4);
+        put_u32(h + 0, kMagic);
+        put_u32(h + 4, 2);                          // 文件格式版本 2 = 带标签
+        put_u32(h + 8, options_.tag);
         if (!pwrite_all(fd_, h, sizeof h, 0) || ::fsync(fd_) != 0) {
             std::fprintf(stderr, "strata serve: disk park blob: 写头失败\n");
-            ::close(fd_); fd_ = -1; return;
+            ::close(fd_); fd_ = -1; return false;
         }
         size_ = kMetaHeader;
-        return;
-    }
-    if (size_ < kMetaHeader) { ::close(fd_); fd_ = -1; return; }
+        fresh = true;
+        return true;
+    };
+    if (!open_or_create()) return;
+    if (fresh) return;                             // 刚建的一份：没有条目可扫
+
     {
         std::uint8_t h[kMetaHeader] = {};
-        std::uint32_t magic = 0;
         if (!pread_all(fd_, h, sizeof h, 0)) { ::close(fd_); fd_ = -1; return; }
-        std::memcpy(&magic, h, 4);
+        const std::uint32_t magic = get_u32(h + 0);
+        const std::uint32_t have  = get_u32(h + 8);
         if (magic != kMagic) {
-            std::fprintf(stderr, "strata serve: disk park blob: magic 不符，忽略\n");
+            std::fprintf(stderr, "strata serve: disk park blob: %s 是%s（magic %08X）"
+                                 " \u21d2 这一层当作没有\n", options_.path.c_str(),
+                         magic == kMagicLegacy ? "没有版本门的老格式 SKB1" : "不认识的格式", magic);
             ::close(fd_); fd_ = -1; return;
+        }
+        if (options_.tag != 0 && have != options_.tag) {
+            // ★★★ §7.2 版本门：这份 blob 是【另一套数值】写下的（另一个引擎版本）。它的
+            //   GDN 递归状态是上一套路由算出来的，喂给这一套就是错。整层不读也不追加；
+            //   老文件【挪开】而不是删掉（一次 rename，18 GB 也不会被动），另起当前标签的一份。
+            ::close(fd_); fd_ = -1;
+            const char* mode = std::getenv("STRATA_BLOB_STALE");
+            if (mode && std::string(mode) == "off") {
+                std::fprintf(stderr, "strata serve: disk park blob: ★ 这份的标签 %08X ≠ 本次 %08X"
+                             " ⇒ 整层关闭（STRATA_BLOB_STALE=off）\n", have, options_.tag);
+                return;
+            }
+            char aside[1200];
+            std::snprintf(aside, sizeof aside, "%s.tag-%08X.stale", options_.path.c_str(), have);
+            std::error_code ec;
+            std::filesystem::rename(options_.path, aside, ec);
+            if (ec) {
+                std::fprintf(stderr, "strata serve: disk park blob: ★ 标签 %08X ≠ 本次 %08X，"
+                             "且挪开失败（%s）⇒ 整层关闭\n", have, options_.tag, ec.message().c_str());
+                return;
+            }
+            std::fprintf(stderr, "strata serve: disk park blob: ★ 这份是标签 %08X 写下的，本次是 %08X"
+                         " ⇒ 已挪开成 %s（%llu 字节一个没动），另起当前标签的一份\n",
+                         have, options_.tag, aside, (unsigned long long) size_);
+            if (!open_or_create()) return;
+            return;
         }
     }
     // ★★ 扫一遍重建索引 —— 去重必须跨重启有效，否则这一层白做。
     //    坏条目（半写）⇒ 停在它之前：后面的字节都不认，与"只追加 + 尾部可能残缺"一致。
     std::uint64_t at = kMetaHeader;
     std::uint8_t h[kEntryHeader];
+    std::size_t skipped_foreign = 0;
     while (at + kEntryHeader <= size_) {
         if (!pread_all(fd_, h, sizeof h, at)) break;
         std::uint32_t m = 0; std::uint64_t len = 0, lo = 0, hi = 0;
@@ -103,6 +141,14 @@ DiskParkBlobStream::DiskParkBlobStream(Options options) : options_(std::move(opt
         std::memcpy(&hi, h + 16, 8);
         std::memcpy(&len, h + 24, 8);
         if (m != kMagic || len == 0 || at + kEntryHeader + len > size_) break;
+        // ★ 条目头 @+4（老格式在那儿写 version=1）现在是【写下它的标签】：被压缩工具
+        //   混进来的别套数值记录，扫到就跳过，不进索引（条目自带长度 ⇒ 跳过是安全的）。
+        const std::uint32_t etag = get_u32(h + 4);
+        if (options_.tag != 0 && etag != options_.tag) {
+            ++skipped_foreign;
+            at += kEntryHeader + len;
+            continue;
+        }
         tracked_[DiskParkBlobKey{lo, hi}] = Track{DiskParkBlobRef{at + kEntryHeader, len}, ++clock_};
         at += kEntryHeader + len;
     }
@@ -112,10 +158,24 @@ DiskParkBlobStream::DiskParkBlobStream(Options options) : options_(std::move(opt
                      (unsigned long long) (size_ - at), tracked_.size());
         size_ = at;                                   // 后续追加从这个位置接上
     }
+    if (skipped_foreign != 0)
+        std::fprintf(stderr, "strata serve: disk park blob: ★ %zu 条记录是别的标签写下的，已跳过\n",
+                     skipped_foreign);
 }
 
 DiskParkBlobStream::~DiskParkBlobStream() {
     if (fd_ >= 0) ::close(fd_);
+}
+
+std::uint32_t DiskParkBlobStream::file_tag(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+    std::uint8_t h[16] = {};
+    const ssize_t n = ::read(fd, h, sizeof h);
+    ::close(fd);
+    if (n < (ssize_t) sizeof h) return 0;
+    if (get_u32(h + 0) != kMagic) return 0;          // 老格式（无门）或别的文件 ⇒ 0 = 不检查
+    return get_u32(h + 8);
 }
 
 DiskParkBlobRef DiskParkBlobStream::find(const DiskParkBlobKey& key) const {
@@ -141,9 +201,9 @@ DiskParkBlobRef DiskParkBlobStream::put(const DiskParkBlobKey& key, std::uint64_
 
     const std::uint64_t at = size_;
     std::uint8_t h[kEntryHeader] = {};
-    const std::uint32_t magic = kMagic, ver = 1;
-    std::memcpy(h + 0, &magic, 4);
-    std::memcpy(h + 4, &ver, 4);
+    // @+4：老格式在这里写 version=1，现在写【写下它的标签】（§7.2 版本门）
+    put_u32(h + 0, kMagic);
+    put_u32(h + 4, options_.tag);
     put_u64(h + 8, key.lo);
     put_u64(h + 16, key.hi);
     put_u64(h + 24, bytes);

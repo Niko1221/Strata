@@ -46,10 +46,13 @@ struct P13CompactStats {
     std::uint64_t payload = 0;      // 存活记录的净载荷（不含 blob 自己的头/索引）
     bool dry_run = true;
     bool wrote = false;
+    std::uint32_t blob_tag = 0;     // 这次压缩认定的标签（0 = 文件没有版本门）
 };
 
 // 扫出（root/tag-*/*/）下的会话目录。root 为空 = 关闭。
-inline std::vector<std::string> p13_session_dirs(const std::string& root) {
+// ★ tag != 0 ⇒ 只看那一个标签目录：blob 已经按标签分家，跨标签混键会把别的数值路径
+//   写下的记录抄进这一份（§7.2）。
+inline std::vector<std::string> p13_session_dirs(const std::string& root, std::uint32_t profile_tag = 0) {
     std::vector<std::string> out;
     std::error_code ec;
     if (root.empty() || !std::filesystem::is_directory(root, ec)) return out;
@@ -57,6 +60,11 @@ inline std::vector<std::string> p13_session_dirs(const std::string& root) {
         if (!tag.is_directory()) continue;
         const std::string tname = tag.path().filename().string();
         if (tname.rfind("tag-", 0) != 0) continue;
+        if (profile_tag != 0) {          // ★ 循环变量叫 tag（目录条目），别和参数混了
+            unsigned long v = 0xFFFFFFFFUL;
+            try { v = std::stoul(tname.substr(4), nullptr, 16); } catch (...) { v = 0xFFFFFFFFUL; }
+            if (tname.size() != 12 || v != (unsigned long) profile_tag) continue;
+        }
         for (const auto& sess : std::filesystem::directory_iterator(tag.path(), ec)) {
             if (sess.is_directory()) out.push_back(sess.path().string());
         }
@@ -108,10 +116,13 @@ inline bool p13_session_keys(const std::string& dir, P13SessionKeys& out, std::s
 
 // 压缩。root = 停放层根目录（park-stream），blob_path = checkpoints.bin 的完整路径。
 inline bool p13_compact_blob(const std::string& root, const std::string& blob_path, int days,
-                             bool dry_run, P13CompactStats& out, std::string& error) {
+                             bool dry_run, P13CompactStats& out, std::string& error,
+                             std::uint32_t tag = 0) {
     out = P13CompactStats{};
     out.dry_run = dry_run;
-    const std::vector<std::string> dirs = p13_session_dirs(root);
+    if (tag == 0) tag = DiskParkBlobStream::file_tag(blob_path);   // 标签从文件头自己认
+    out.blob_tag = tag;
+    const std::vector<std::string> dirs = p13_session_dirs(root, tag);
     out.session_dirs = dirs.size();
     if (blob_path.empty()) { error = "p13 compact: empty blob path"; return false; }
 
@@ -150,6 +161,7 @@ inline bool p13_compact_blob(const std::string& root, const std::string& blob_pa
     // ② 打开旧 blob（不存在 = 没什么可压）
     DiskParkBlobStream::Options oo;
     oo.path = blob_path;
+    oo.tag = tag;                                   // §7.2：标签不符 ⇒ 不读
     DiskParkBlobStream old_blob(oo);
     if (!old_blob.enabled()) {
         out.before = 0;
@@ -203,6 +215,7 @@ inline bool p13_compact_blob(const std::string& root, const std::string& blob_pa
     {
         DiskParkBlobStream::Options no;
         no.path = tmp;
+        no.tag = tag;                               // 抄出来的新文件带上同一个标签
         DiskParkBlobStream new_blob(no);
         if (!new_blob.enabled()) { error = "p13 compact: 无法创建 " + tmp; return false; }
         for (const auto& f : found) {

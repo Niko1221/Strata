@@ -94,7 +94,7 @@ int main() {
     {
         DiskParkProfile base;
         base.model = "Qwen3.8-Flash-Next"; base.kv_format = "int8";
-        base.max_context = 262144; base.rope = "none";
+        base.max_context = 262144; base.rope = "none"; base.engine = "0.1.43";
         const std::uint32_t t0 = base.tag();
 
         auto chg = [&](auto f) { DiskParkProfile p = base; f(p); return p.tag(); };
@@ -105,6 +105,9 @@ int main() {
         CHECK(chg([](DiskParkProfile& p){ p.rope = "yarn:4"; }) != t0, "★ yarn:4 ≠ yarn:2");
         CHECK(chg([](DiskParkProfile& p){ p.max_context = 524288; }) != t0, "★ 档位 → 标签变");
         CHECK(chg([](DiskParkProfile& p){ p.model = "Other"; }) != t0, "★ 模型 → 标签变");
+        CHECK(chg([](DiskParkProfile& p){ p.engine = "0.1.44"; }) != t0, "★ 引擎版本 → 标签变（§7.2 版本门）");
+        CHECK(chg([](DiskParkProfile& p){ p.engine = "0.1.43-tail0"; }) != t0, "★ 手动数值键 → 标签变");
+        CHECK(chg([](DiskParkProfile& p){ p.engine = ""; }) != t0, "★ 没有版本 ≠ 有版本");
 
         DiskParkProfile same = base;
         CHECK(same.tag() == t0, "同样 profile → 同样标签（跨重启稳定）");

@@ -78,6 +78,10 @@ struct DiskParkProfile {
     std::string kv_format;      // "int8" / "q4_0" / "k8v4" / "fp16"
     std::int64_t max_context = 0;
     std::string rope;           // "none" / "yarn:2" / "yarn:4" …
+    // §7.2 版本门：引擎版本（以及手动加的数值摘要）也进标签。
+    //   0.1.41 写的页不许被 0.1.43 读，反过来也一样：版本不同 = 数值路径不同
+    //   = 同一批 token 的 K/V 字节不同。以前 tag 里没有版本，跨版本静默命中。
+    std::string engine;         // "0.1.43"，或 "0.1.43-tail0" 这类手动摘要键
 
     // FNV-1a 32 位，作用在规范化字符串上。
     // ★ 任何字段变化都会改变标签；不同标签的页永不互相读取。

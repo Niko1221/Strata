@@ -48,6 +48,10 @@ public:
     struct Options {
         std::string path;             // checkpoints.bin 的完整路径；空 = 关闭
         std::size_t max_tracked = 4096;   // 记住多少个键（超出就淘汰最久未用的）
+        // ★★★ §7.2 版本门：写下这份 blob 的 profile 标签（标签里含引擎版本）。
+        //   文件头 + 每条条目头都带上它；对不上就整层当作没有 —— 0.1.41 落盘的
+        //   GDN 递归状态不许被 0.1.43 读回，反过来也不行。0 = 不检查（工具用）。
+        std::uint32_t tag = 0;
     };
 
     struct Stats {
@@ -77,6 +81,11 @@ public:
     [[nodiscard]] bool enabled() const noexcept { return fd_ >= 0; }
     [[nodiscard]] Stats stats() const { return stats_; }
     [[nodiscard]] std::uint64_t bytes_on_disk() const noexcept { return size_; }
+    [[nodiscard]] std::uint32_t tag() const noexcept { return options_.tag; }
+    [[nodiscard]] std::size_t tracked_entries() const noexcept { return tracked_.size(); }
+
+    // 只读文件头，问"这份 blob 是哪个标签写下的"。0 = 读不出 / 没有版本门的老格式。
+    [[nodiscard]] static std::uint32_t file_tag(const std::string& path);
 
     // 把一份 blob 放进去：命中已有键就直接返回旧区间（零写入）。
     // 未命中则追加整份（分块从 fill 取）。

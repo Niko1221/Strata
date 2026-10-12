@@ -277,6 +277,39 @@ int main() {
 
     fs::remove_all(root);
     std::printf("\n========================================\n");
+    std::printf("\n=== 9. ★★★ §7.2 版本门：别的标签写下的 blob 读不到 ===\n");
+    {
+        const std::string pg = (root / "gated.bin").string();
+        constexpr std::uint32_t TA = 0x11111111U, TB = 0x22222222U;
+        const DiskParkBlobKey k{1234, 5678};
+        auto fill = [](std::uint64_t off, std::uint8_t* dst, std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) dst[i] = (std::uint8_t) (off + i);
+            return true;
+        };
+        {   DiskParkBlobStream a({pg, 64, TA});
+            CHECK(a.enabled(), "带标签的一份能开");
+            CHECK(a.put(k, 4096, fill).present(), "标签 A 写进去了");
+        }
+        CHECK(DiskParkBlobStream::file_tag(pg) == TA, "★ file_tag 读回 A");
+        {   DiskParkBlobStream b({pg, 64, TB});
+            CHECK(b.enabled(), "标签不符 ⇒ 挪开老的、另起一份（这一层还活着）");
+            CHECK(!b.find(k).present(), "★★ A 的那条记录 B 读不到");
+            CHECK(std::filesystem::exists(pg + ".tag-11111111.stale"), "★ 老数据被挪开，没有被删");
+        }
+        CHECK(DiskParkBlobStream::file_tag(pg) == TB, "新的一份带的是当前标签");
+        {   const std::string po = (root / "legacy.bin").string();
+            std::FILE* f = std::fopen(po.c_str(), "wb");
+            const unsigned char h[16] = {'S','K','B','1', 1,0,0,0, 0,0,0,0, 0,0,0,0};
+            if (f) { std::fwrite(h, 1, 16, f); std::fclose(f); }
+            DiskParkBlobStream s({po, 64, TA});
+            CHECK(!s.enabled(), "★★ 老格式 SKB1（没有版本门）⇒ 整层不读");
+        }
+        {   const std::string pn = (root / "brand-new.bin").string();
+            DiskParkBlobStream s({pn, 64, TA});
+            CHECK(s.enabled() && s.tracked_entries() == 0, "新文件：建头 + 零条目");
+        }
+    }
+
     std::printf("  检查 %d 项，失败 %d 项\n", g_checks, g_failed);
     std::printf("========================================\n\n");
     return g_failed == 0 ? 0 : 1;

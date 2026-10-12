@@ -67,6 +67,7 @@ static std::string human(std::uintmax_t b) {
 int main(int argc, char** argv) {
     std::string root, blob, days_s = "7";
     bool apply = false, do_blob = true;
+    std::uint32_t tag_opt = 0;                        // --tag：不给就从 blob 文件头自己认
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&]() -> std::string { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -76,9 +77,12 @@ int main(int argc, char** argv) {
         else if (a == "--apply")  apply = true;
         else if (a == "--dry-run") apply = false;
         else if (a == "--no-blob") do_blob = false;
+        else if (a == "--tag") { const std::string v = val(); tag_opt = (std::uint32_t) std::strtoul(v.c_str(), nullptr, 16); }
         else if (a == "-h" || a == "--help") {
             std::printf("用法: park-gc --root <park-stream> [--blob <checkpoints.bin>]"
-                        " [--days N] [--apply] [--no-blob]\n");
+                        " [--days N] [--apply] [--no-blob] [--tag XXXXXXXX]\n"
+                        "      （blob 现在带 profile 标签：不给 --tag 就从文件头认，"
+                        "并且只压那一个标签的会话目录）\n");
             return 0;
         } else {
             std::fprintf(stderr, "未知参数: %s（--help 看用法）\n", a.c_str());
@@ -121,7 +125,11 @@ int main(int argc, char** argv) {
     if (do_blob) {
         strata::core::P13CompactStats st;
         std::string err;
-        const bool ok = strata::core::p13_compact_blob(root, blob, days, /*dry_run=*/!apply, st, err);
+        const std::uint32_t use_tag = tag_opt ? tag_opt
+                                              : strata::core::DiskParkBlobStream::file_tag(blob);
+        std::printf("  blob 标签: %08X%s\n", use_tag,
+                    tag_opt ? "（--tag 指定）" : "（从 blob 文件头读到；0 = 没有版本门的老格式）");
+        const bool ok = strata::core::p13_compact_blob(root, blob, days, /*dry_run=*/!apply, st, err, use_tag);
         if (!ok) {
             std::fprintf(stderr, "  ✗ blob 压缩失败: %s\n", err.c_str());
             return 1;

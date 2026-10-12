@@ -88,7 +88,7 @@ std::string DiskParkProfile::describe() const {
     // ★ 顺序固定，字段用 '|' 分隔，值里不允许出现 '|'（由调用方保证）。
     std::string s;
     s.reserve(96);
-    s += "v1|";
+    s += "v2|";        // v2 = 带引擎版本的字段表（§7.2）
     s += model.empty() ? "?" : model;
     s += '|';
     s += kv_format.empty() ? "?" : kv_format;
@@ -96,6 +96,8 @@ std::string DiskParkProfile::describe() const {
     s += std::to_string(max_context);
     s += '|';
     s += rope.empty() ? "none" : rope;
+    s += '|';
+    s += engine.empty() ? "unversioned" : engine;   // §7.2：版本进标签
     return s;
 }
 

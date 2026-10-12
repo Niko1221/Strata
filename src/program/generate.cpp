@@ -8167,6 +8167,14 @@ int main(int argc, char** argv) {
         disk_park_opts.profile.rope        = o.rope_scaling.empty()
             ? std::string("none")
             : (o.rope_scaling + ":" + std::to_string((long long) o.rope_scale));
+        // ★ §7.2 版本门：引擎版本进 profile → 进 tag() → 进 tag-XXXXXXXX/ 目录名。
+        //   换引擎版本就换一整个目录，跨版本永不互相读取。
+        disk_park_opts.profile.engine      = STRATA_VERSION;
+        // 手动摘要键：跑 A/B、或临时关掉某项改变数值的默认
+        // （STRATA_ROUTE_TAIL_SKIP=0 / STRATA_PCIE_FRAC_DEFAULT=old …）时用它把这份
+        // 缓存标成"另一套数值"，别让另一套数值写下的页被读回来。
+        if (const char* k = std::getenv("STRATA_DISK_PARK_KEY"))
+            disk_park_opts.profile.engine += std::string("-") + k;
         disk_park_opts.state_stride = (size_t) 8 << 20;
         // ★ P7：把「前缀去重」显式关掉 —— 现有实现默认 true
         //   （~/Strata-0141/src/core/disk_park_spool.cpp 的 supersede_prefixes），
@@ -8264,6 +8272,9 @@ int main(int argc, char** argv) {
                         strata::core::DiskParkBlobStream::Options bopt;
                         bopt.path = o.disk_park_stream_dir + "/checkpoints.bin";
                         bopt.max_tracked = 4096;
+                        // §7.2 版本门：blob 放在 tag 目录【外面】（所有标签共用一个文件名），
+                        //   但它自己带标签 —— 头与每条条目头都有 ⇒ 别的引擎版本读不到
+                        bopt.tag = disk_park.profile().tag();
                         disk_park_blob = std::make_unique<strata::core::DiskParkBlobStream>(std::move(bopt));
                         if (disk_park_blob != nullptr && !disk_park_blob->enabled()) {
                             std::fprintf(stderr, "strata serve: disk park blob: OFF (打不开 %s)\n",
