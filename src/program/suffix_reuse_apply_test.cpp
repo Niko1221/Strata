@@ -340,7 +340,8 @@ int main() {
           "T6.z: kv_q4=true -> SPLICE_UNSUPPORTED: kv format != fp16 (q4_0 rotated)");
     check(splice_scope_guard(false, false, true, 0, false)
           == SpliceStatus::UnsupportedFormat,
-          "T6.z: kv_hybrid=true -> SPLICE_UNSUPPORTED: kv format != fp16 (k8v4)");
+          "T6.z: kv_hybrid=true -> the fp16-path predicate still refuses (correct: hybrid "
+          "dispatches to the int8 path, whose guard accepts it - see suffix_reuse_int8_test)");
     check(splice_scope_guard(false, false, false, 32, false)
           == SpliceStatus::UnsupportedResident,
           "T6.z: kv_resident=32 -> SPLICE_UNSUPPORTED: kv_resident (streaming ring)");
