@@ -1,0 +1,278 @@
+[
+  {
+    "tag": "base-11",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "11,25,37",
+    "ready": true,
+    "ready_s": 50,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      40.962566844919785,
+      37.48571428571429,
+      35.307781649245065,
+      38.64959254947613
+    ],
+    "e2e_med": 38.06765341759521,
+    "dec_med": 139.9,
+    "dec_all": [
+      130.6,
+      147.4,
+      139.9,
+      125.2,
+      172.7
+    ],
+    "pre_med": 397.9,
+    "pre_all": [
+      398.0,
+      396.5,
+      385.4,
+      410.5,
+      397.9
+    ],
+    "wdec_all": [
+      116.19738317757012,
+      118.868626924454,
+      121.2990067908682,
+      114.11414217598332,
+      133.4766792742368
+    ],
+    "wdec_med": 118.868626924454,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 11-24, expert cache 4411 slots (12.62 GiB), 4411 of its 7168 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-36, expert cache 4432 slots (12.87 GiB), 4432 of its 6144 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 37-47, expert cache 3898 slots (11.51 GiB), 3898 of its 5632 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 17111 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1635 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4411 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1680 of its 4432 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1650 of its 3898 slots (4.87 GiB)"
+  },
+  {
+    "tag": "f10",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "10,25,37",
+    "ready": true,
+    "ready_s": 50,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      36.310223266745005,
+      38.46153846153846,
+      34.589800443458984,
+      41.201716738197426
+    ],
+    "e2e_med": 37.38588086414173,
+    "dec_med": 124.9,
+    "dec_all": [
+      134.4,
+      135.9,
+      80.3,
+      111.1,
+      124.9
+    ],
+    "pre_med": 400.4,
+    "pre_all": [
+      400.4,
+      402.7,
+      407.6,
+      395.3,
+      398.0
+    ],
+    "wdec_all": [
+      113.21739130434784,
+      116.9778775141358,
+      89.34669851887242,
+      104.58772289472446,
+      112.25690676215399
+    ],
+    "wdec_med": 112.25690676215399,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 10-24, expert cache 4379 slots (12.53 GiB), 4379 of its 7680 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-36, expert cache 4432 slots (12.87 GiB), 4432 of its 6144 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 37-47, expert cache 3898 slots (11.51 GiB), 3898 of its 5632 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 17099 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1629 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4379 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1680 of its 4432 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1650 of its 3898 slots (4.87 GiB)"
+  },
+  {
+    "tag": "f9",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "9,25,37",
+    "ready": true,
+    "ready_s": 50,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      39.72911963882619,
+      40.14675052410902,
+      38.65546218487395,
+      39.83402489626556
+    ],
+    "e2e_med": 39.781572267545876,
+    "dec_med": 116.6,
+    "dec_all": [
+      107.8,
+      141.6,
+      116.6,
+      155.9,
+      99.0
+    ],
+    "pre_med": 421.0,
+    "pre_all": [
+      419.7,
+      406.1,
+      423.5,
+      424.4,
+      421.0
+    ],
+    "wdec_all": [
+      102.94907422658699,
+      116.23189308744277,
+      102.47669233887312,
+      128.67250355380432,
+      99.3686125139091
+    ],
+    "wdec_med": 102.94907422658699,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 9-24, expert cache 4345 slots (12.43 GiB), 4345 of its 8192 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-36, expert cache 4432 slots (12.87 GiB), 4432 of its 6144 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 37-47, expert cache 3898 slots (11.51 GiB), 3898 of its 5632 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 17080 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1623 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4345 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1680 of its 4432 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1650 of its 3898 slots (4.87 GiB)"
+  },
+  {
+    "tag": "f8",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "8,25,37",
+    "ready": true,
+    "ready_s": 50,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      35.09561304836895,
+      37.60479041916168,
+      37.27161997563946,
+      42.95302013422819
+    ],
+    "e2e_med": 37.43820519740057,
+    "dec_med": 150.3,
+    "dec_all": [
+      126.6,
+      114.6,
+      150.3,
+      160.0,
+      160.6
+    ],
+    "pre_med": 417.7,
+    "pre_all": [
+      417.7,
+      424.5,
+      407.5,
+      412.3,
+      427.0
+    ],
+    "wdec_all": [
+      109.63558806898502,
+      106.08728202004687,
+      126.21722642061594,
+      123.3182503770739,
+      124.4723696892994
+    ],
+    "wdec_med": 123.3182503770739,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 8-24, expert cache 4312 slots (12.34 GiB), 4312 of its 8704 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-36, expert cache 4432 slots (12.87 GiB), 4432 of its 6144 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 37-47, expert cache 3898 slots (11.51 GiB), 3898 of its 5632 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 16738 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1608 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4312 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1680 of its 4432 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1650 of its 3898 slots (4.87 GiB)"
+  },
+  {
+    "tag": "bw-9-16-9-14",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "9,25,34",
+    "ready": true,
+    "ready_s": 80,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      40.28950542822678,
+      43.14420803782505,
+      40.94775212636695,
+      41.91616766467066
+    ],
+    "e2e_med": 41.4319598955188,
+    "dec_med": 147.3,
+    "dec_all": [
+      110.5,
+      147.3,
+      152.8,
+      152.6,
+      139.1
+    ],
+    "pre_med": 449.2,
+    "pre_all": [
+      435.8,
+      442.2,
+      449.2,
+      455.3,
+      458.5
+    ],
+    "wdec_all": [
+      105.55956405693951,
+      120.19985407977697,
+      118.14393507191024,
+      119.21875000000001,
+      117.9238349392843
+    ],
+    "wdec_med": 118.14393507191024,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 9-24, expert cache 4345 slots (12.43 GiB), 4345 of its 8192 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-33, expert cache 4532 slots (13.21 GiB), 4532 of its 4608 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 34-47, expert cache 3808 slots (11.17 GiB), 3808 of its 7168 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 17090 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1623 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4345 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1676 of its 4532 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1659 of its 3808 slots (4.87 GiB)"
+  },
+  {
+    "tag": "bw-9-16-10-13",
+    "order": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "split": "9,25,35",
+    "ready": true,
+    "ready_s": 130,
+    "cold_rows": 5,
+    "rows": 10,
+    "e2e": [
+      41.394825646794146,
+      38.613861386138616,
+      34.0153452685422,
+      43.986254295532646
+    ],
+    "e2e_med": 40.00434351646638,
+    "dec_med": 138.0,
+    "dec_all": [
+      130.5,
+      139.9,
+      140.1,
+      124.5,
+      138.0
+    ],
+    "pre_med": 440.8,
+    "pre_all": [
+      445.7,
+      440.8,
+      448.8,
+      437.4,
+      433.0
+    ],
+    "wdec_all": [
+      113.09486465975209,
+      108.65883991530127,
+      119.74563425034012,
+      111.84231119199272,
+      116.05753803342074
+    ],
+    "wdec_med": 113.09486465975209,
+    "diag": "43:strata generate: layer split: CUDA1 runs layers 9-24, expert cache 4345 slots (12.43 GiB), 4345 of its 8192 profiled pairs; slot 0 verified\n45:strata generate: layer split: CUDA2 runs layers 25-34, expert cache 4507 slots (13.11 GiB), 4507 of its 5120 profiled pairs; slot 0 verified\n47:strata generate: layer split: CUDA3 runs layers 35-47, expert cache 3831 slots (11.27 GiB), 3831 of its 6656 profiled pairs; slot 0 verified\n49:strata generate: R4 hit path ON - resident experts are computed on the GPU\n52:strata generate: token graph hit path: 17088 resident experts, decided on the device\n54:strata serve: the prompt path borrows 1623 CUDA0 cache slots (4.87 GiB)\n55:strata serve:   CUDA1 prompt path borrows 1703 of its 4345 slots (4.87 GiB)\n56:strata serve:   CUDA2 prompt path borrows 1677 of its 4507 slots (4.87 GiB)\n57:strata serve:   CUDA3 prompt path borrows 1655 of its 3831 slots (4.87 GiB)"
+  }
+]
