@@ -721,7 +721,7 @@ public:
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
-    int64_t reads() const override { return reads_; }
+    int64_t reads() const override { return reads_.load(std::memory_order_relaxed); }
 
     // ---- the Linux I/O path of the mapped file tier (STRATA_IO_PREFETCH=1, opt in; no effect on Windows)
     //
@@ -735,6 +735,9 @@ public:
     // The bytes are the same bytes, so the output is the same.  `threads` = I/O threads (0: default 4).
     void set_io_prefetch(bool on, int threads);
     bool io_prefetch() const { return io_pf_; }
+    /// blob() hands out stage buffers it recycles (the GGUF in place, an unbuffered source, the I/O read-ahead): one
+    /// thread at a time (STRATA_PIPED_CONCURRENT is off with such a source)
+    bool stages_blobs() const { return staged(); }
     /// Counts the cached / uncached bytes of every blob read from the files (mincore, page-granular).  Free with
     /// io_prefetch; otherwise opt in with STRATA_IO_STATS=1 (the check costs a few microseconds per blob).
     void set_io_stats(bool on) { io_stats_ = on || io_pf_; }
@@ -891,7 +894,7 @@ private:
     uint64_t xstage_blob_ = 0;
     int64_t exchanges_ = 0;
     std::atomic<int64_t> file_reads_{0};
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
 #if defined(_WIN32)
     void* file_ = nullptr;
     void* mapping_ = nullptr;
@@ -939,9 +942,9 @@ public:
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
-    /// tier's job thread, which must not touch the non-atomic `reads_`)
+    /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
-    int64_t reads() const { return reads_; }
+    int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
@@ -985,7 +988,7 @@ private:
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
     std::string note_;
     std::string ram_warning_;
     double gib_per_s_ = 0.0;

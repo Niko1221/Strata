@@ -1390,7 +1390,13 @@ bool MtpDrafter::reserve_prefill(int64_t n, std::string& err) {
     }
     if (!prepare_prefill(err)) return false;
     const int64_t per_row = 1 + 4 + g_->n_head;
-    if (n <= 0 || pf_cap_ >= n * per_row) return true;
+    if (n <= 0) return true;
+    // the records' pinned upload slots too (#1996's ring grows a slot at its first larger upload: a pinned free and
+    // allocation, which take the driver's lock)
+    if (!pf_ring_.reserve((size_t) (n * per_row) * sizeof(int32_t)))
+        std::fprintf(stderr, "strata mtp: the prompt records' pinned upload slots could not be reserved (they grow at "
+                             "first use)\n");
+    if (pf_cap_ >= n * per_row) return true;
     if (pf_dev_) cudaFree(pf_dev_);
     pf_dev_ = nullptr;
     pf_cap_ = 0;

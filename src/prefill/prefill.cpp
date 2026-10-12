@@ -4342,6 +4342,22 @@ bool Prefill::drain_pipeline(std::string& err) {
     return ok;
 }
 
+bool Prefill::reserve_uploads(int64_t T) {
+    bool ok = true;
+    if (impl_ != nullptr && T > 0) {
+        Impl& m = *impl_;
+        const core::OnDevice on_device(m.device);   // (the ring is the device's that is current at its first use)
+        // a text chunk's largest pageable uploads through the ring: the routing tables (and their ids down, T x K
+        // each); the PLE rows when they could not be pinned (T x N).  A picture's rows are not covered.
+        size_t bytes = (size_t) (T * K) * sizeof(int32_t);
+        if (!m.ple_pageable[0].empty() || !m.ple_pageable[1].empty())
+            bytes = std::max(bytes, (size_t) (T * N) * sizeof(float));
+        ok = m.up_ring.reserve(bytes);
+    }
+    if (next_ != nullptr) ok = next_->reserve_uploads(T) && ok;
+    return ok;
+}
+
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
 #if defined(STRATA_GPU_METAL)
     {

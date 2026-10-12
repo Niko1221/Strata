@@ -354,7 +354,16 @@ private:
     std::atomic<int64_t> b_k_{0};
     int64_t b_steps_ = 0;
     std::atomic<bool> ext_serve_{false};
-    std::chrono::steady_clock::time_point b_last_;
+    // when a layer was last served (steady clock ticks): the serving thread writes it, batch_poll's checks read it
+    std::atomic<int64_t> b_last_{0};
+    void ring_now() {
+        b_last_.store((int64_t) std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+    }
+    std::chrono::steady_clock::time_point last_ring() const {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(b_last_.load(std::memory_order_acquire)));
+    }
+    std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window

@@ -154,6 +154,11 @@ public:
     /// (STRATA_PIPED_CONCURRENT) gives way to a waiting shorter request there.
     std::function<bool()> stop_at_chunk;
     int64_t stopped_at() const { return stopped_at_; }
+    /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
+    /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's
+    /// thread takes the driver's lock).  Before the run, with nothing of this path in flight.  False: a slot could
+    /// not be had (it then grows at first use, as before).
+    bool reserve_uploads(int64_t T);
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
