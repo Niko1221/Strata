@@ -3068,8 +3068,8 @@ int main(int argc, char** argv) {
                                   (o.stage_end >= 0 && (o.stage_end <= o.stage_begin ||
                                                         o.stage_end >= strata::core::ModelGeometry{}.n_layers))))
             why = "a relay worker needs both --stage-end K2 (--stage-begin < K2 < the layer count) and --stage-next HOST:PORT";
-        else if (o.batch > 0 || o.pipeline_windows > 0 || o.vision || o.peer_device >= 0)
-            why = "it does not support --batch, --pipeline-windows, --vision or --peer-device";
+        else if (o.batch > 0 || o.pipeline_windows > 0 || o.peer_device >= 0)
+            why = "it does not support --batch, --pipeline-windows or --peer-device";
         // a control vector (and the speed projection, which is one) and helper-GPU expert caches act on every layer:
         // the worker would not apply them to its layers
         else if (!o.cvec_files.empty())
@@ -11547,6 +11547,7 @@ int main(int argc, char** argv) {
             me.chunk = sp.chunk();
             me.handoff_floats = HBF;
             me.tail_skip = (int32_t) strata::core::tail_skip_rank();   // a worker's: informational
+            me.vision = o.vision ? 1 : 0;   // images: the worker's layers need the position table (StageMsg::Positions)
             std::snprintf(me.build, sizeof me.build, "strata remote-stage %s", stage_worker ? "worker" : "main");
             // the model pack's fingerprint: its tensor index and expert table (the same model on both PCs)
             for (const char* f : {"/index.txt", "/native_experts.txt"}) {
@@ -11601,6 +11602,9 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> wk_outv((size_t) strata::kernels::kVerifyMaxT, 0);
                 strata::net::StageHandlers hs;
                 int64_t main_chunk = pf_chunk;   // the main process's prompt chunk (its hello)
+                // ... and whether it reads images (a relay's next worker must too); until a hello this worker's own,
+                // so a relay started with --vision checks at its start that the next worker has it
+                int32_t main_vision = o.vision ? 1 : 0;
                 hs.hello = [&](const strata::net::StageHello& theirs, strata::net::StageHello& mine, std::string& e) {
                     mine = me;   // (the worker's own hello carries no token)
                     // another protocol: the link refuses it for its number (its fields may sit elsewhere)
@@ -11616,6 +11620,11 @@ int main(int argc, char** argv) {
                             std::to_string(theirs.chunk) + ")";
                         return false;
                     }
+                    if (theirs.vision != 0 && !o.vision) {
+                        e = "the main process reads images (--vision): start this worker with --vision too (its "
+                            "layers rotate by the images' positions)";
+                        return false;
+                    }
                     if (theirs.max_context > o.max_context || theirs.max_t > me.max_t) {
                         e = "the main process's context (" + std::to_string(theirs.max_context) + ") or window (" +
                             std::to_string(theirs.max_t) + ") is larger than this worker's (" +
@@ -11624,6 +11633,7 @@ int main(int argc, char** argv) {
                     }
                     mine.chunk = theirs.chunk;   // informational
                     main_chunk = theirs.chunk;
+                    main_vision = theirs.vision;
                     // STRATA_ROUTE_TAIL_SKIP changes answers, so this worker's layers skip as the main process's do (the
                     // stages of an in-process split share one rank); its default differs by build (CUDA 7, HIP off)
                     if (theirs.tail_skip != strata::core::tail_skip_rank()) {
@@ -11728,6 +11738,7 @@ int main(int argc, char** argv) {
                     mine_next.layer_begin = (int32_t) own_hi;
                     mine_next.chunk = main_chunk;   // the main process's (this worker's own until its hello)
                     mine_next.tail_skip = (int32_t) strata::core::tail_skip_rank();   // the main process's, as above
+                    mine_next.vision = main_vision;   // the main process's (a worker started with --vision has it)
                     std::memcpy(mine_next.token, stage_token.data(), stage_token.size());
                     for (int i = 0;; ++i) {
                         next_link.close();
@@ -11756,9 +11767,54 @@ int main(int argc, char** argv) {
                     strata::core::session_zero(ss, g, nullptr, main_cs);
                     return cudaStreamSynchronize(main_stream) == cudaSuccess;
                 };
+                // --vision: the main process's position table for its next request.  A picture's cells rotate by
+                // their (t, h, w) and every cell after it by the picture's extent, not its token count, so this
+                // worker's rope kernels need the same table the main process built (they read their own copy).
+                // Cells past the table sent continue from its last one, as the main process's do past its prompt.
+                // The table outlives a connection: the next main process starts from the identity and sends nothing
+                // for text, so a picture's table goes back to the identity when its main process goes away.
+                bool wk_mrope_identity = true;
+                auto wk_positions_set = [&](const int32_t* table, int64_t cells_in, std::string& e) -> bool {
+                    // no kernel of an earlier request may still read the table
+                    if (!ver.wait_commit(e)) return false;
+                    if (cudaDeviceSynchronize() != cudaSuccess) {
+                        e = std::string("stage worker: ") + cudaGetErrorString(cudaGetLastError());
+                        return false;
+                    }
+                    wk_mrope_identity = false;   // (until the upload has landed)
+                    strata::net::stage_positions_fill(mrope_host.data(), (int64_t) mrope_host.size() / 3, table,
+                                                      cells_in);
+                    if (cudaMemcpy(d_mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        e = "stage worker: the image position upload failed";
+                        return false;
+                    }
+                    wk_mrope_identity = table == nullptr;
+                    return true;
+                };
+                if (o.vision)
+                    hs.positions = [&](const int32_t* table, int64_t cells_in, std::string& e) -> bool {
+                        const int64_t cells = (int64_t) mrope_host.size() / 3;
+                        if (table != nullptr && cells_in > cells) {
+                            e = "the main process's position table (" + std::to_string(cells_in) +
+                                " cells) is longer than this worker's context";
+                            return false;
+                        }
+                        if (stage_relay) {   // the next worker's layers too (its link is made again after a hello)
+                            if (!relay.wait(e) && next_link.connected()) return false;
+                            if (!next_link.connected() && !connect_next(e)) return false;
+                            if (!next_link.positions(table, cells_in, e)) return false;
+                        }
+                        return wk_positions_set(table, cells_in, e);
+                    };
                 hs.disconnected = [&] {
                     std::string e;
                     (void) ver.wait_commit(e);
+                    // a picture's positions do not reach the next main process's text (a relay's next worker resets
+                    // its own when this relay closes the link below)
+                    if (o.vision && !wk_mrope_identity && !wk_positions_set(nullptr, 0, e))
+                        std::fprintf(stderr, "strata stage worker: the image positions did not go back to the "
+                                             "identity: %s\n", e.c_str());
                     // a relay: replies the next worker still owes (chunks the main process will not read) must not
                     // meet the next main process's reset - the link is made again at that reset
                     if (stage_relay) {
@@ -13091,11 +13147,32 @@ int main(int argc, char** argv) {
                     return ok;
                 };
                 if (ve.empty() && !upload_mrope()) ve = "the image position upload failed";
+                // a remote stage's layers rotate by the same positions: the worker's table follows this one (the
+                // cells this request can reach, the rest continuing from the last; a text request after a picture
+                // sends the identity).  STRATA_STAGE_POSITIONS=0 (a test switch) leaves the worker's table alone, to
+                // show what the positions change.
+                static const bool send_positions = [] {
+                    const char* v = std::getenv("STRATA_STAGE_POSITIONS");
+                    return v == nullptr || std::atoi(v) != 0;
+                }();
+                if (ve.empty() && remote_main && send_positions &&
+                    !remote_link.positions(geni ? mrope_host.data() : nullptr,
+                                           geni ? std::min<int64_t>(cells, n + max_new + 64) : 0, err)) {
+                    std::printf("ERR %s\n", err.c_str());   // the link is gone (as a failed reset)
+                    std::fflush(stdout);
+                    return 1;
+                }
                 if (!ve.empty()) {
-                    // leave the table as the identity so the next text request is untouched
+                    // leave the table as the identity so the next text request is untouched (the worker's as well:
+                    // it may still hold an earlier picture's, and a text request sends nothing)
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                     upload_mrope();
                     mrope_identity = true;
+                    if (remote_main && send_positions && !remote_link.positions(nullptr, 0, err)) {
+                        std::printf("ERR %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
                     std::printf("ERR %s\n", ve.c_str());
                     std::fflush(stdout);
                     continue;

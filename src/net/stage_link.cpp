@@ -303,6 +303,11 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
         return false;
     }
     if (!hello_matches(mine, peer, err)) { close(); return false; }
+    if (mine.vision != 0 && peer.vision == 0) {   // (a worker of this protocol refuses such a hello itself)
+        err = "remote stage: the worker was started without --vision (its layers need the image positions too)";
+        close();
+        return false;
+    }
     return true;
 }
 
@@ -434,6 +439,20 @@ bool StageClient::reset(std::string& err) {
     return read_reply_(StageMsg::ResetOk, nullptr, 0, wus, err);
 }
 
+bool StageClient::positions(const int32_t* table, int64_t cells, std::string& err) {
+    std::lock_guard<std::mutex> lk(send_mu_);
+    if (!connected()) { err = "remote stage: not connected"; return false; }
+    StageHeader h;
+    h.type = (uint32_t) StageMsg::Positions;
+    h.a = table != nullptr ? cells : 0;
+    h.b = table != nullptr ? 0 : 1;
+    h.bytes = table != nullptr ? (uint64_t) cells * 3 * sizeof(int32_t) : 0;
+    if (table != nullptr && cells < 1) { err = "remote stage: an empty position table"; return false; }
+    if (!send_msg(S(fd_), h, table, (size_t) h.bytes, nullptr, 0, err)) { break_(); return false; }
+    stats_.bytes_out += sizeof h + h.bytes;
+    return true;
+}
+
 // ------------------------------------------------------------------------------------------------ serve_stage
 
 namespace {
@@ -477,7 +496,7 @@ bool StageRelay::send(const int64_t* tokens, int64_t T, int64_t pos0, int64_t fl
 }
 
 int serve_stage(const std::string& bind_addr, int port, const std::string& token, const StageHandlers& h,
-                const StageBuffers& buf, StageStats& stats, const bool* stop) {
+                const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop) {
     if (!net_init()) {
         std::fprintf(stderr, "strata stage worker: the sockets did not start (WSAStartup)\n");
         return 1;
@@ -588,6 +607,18 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                                 !recv_all(fd, buf.pf_in[in.slot], rows * 4, in.err))
                                 in.closed = true;
                         }
+                    } else if (type == StageMsg::Positions) {
+                        // (t, h, w) per cell; at most 4M cells (the handler checks it against the context)
+                        const int64_t cells = in.h.a;
+                        const bool identity = in.h.b == 1;
+                        if (identity ? in.h.bytes != 0
+                                     : (cells < 1 || cells > ((int64_t) 1 << 22) || in.h.bytes != (uint64_t) cells * 12)) {
+                            in.bad = "bad position table size";
+                            if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
+                        } else if (!identity) {
+                            in.tok32.resize((size_t) cells * 3);
+                            if (!recv_all(fd, in.tok32.data(), (size_t) cells * 12, in.err)) in.closed = true;
+                        }
                     } else if (type != StageMsg::Commit && type != StageMsg::Reset) {
                         in.bad = "unknown message type " + std::to_string(in.h.type);
                         if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
@@ -604,7 +635,17 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
         });
 
         // ---- the serving thread (this one): the messages in order
-        std::string err, pending_err;   // pending_err: a failed one-way message, reported on the next reply
+        // a failed one-way message, reported on the next reply: pending_err a Commit's (a Reset drops it: it was the
+        // request before), pos_err the position table's (the request the next Reset starts: it is reported there; a
+        // later table replaces it, as the main process sent no Reset for a request it refused)
+        std::string err, pending_err, pos_err;
+        // both pending errors, cleared: what the next Run or Prefill answers instead
+        auto take_pending = [&]() {
+            std::string e = pending_err.empty() ? pos_err : pos_err.empty() ? pending_err : pending_err + "; " + pos_err;
+            pending_err.clear();
+            pos_err.clear();
+            return e;
+        };
         bool greeted = false;
         // a prompt chunk's reply goes out on its own thread while the next chunk is read; every later send waits
         // for it (the replies keep their order), and so does the reuse of its output buffer
@@ -648,6 +689,12 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             if (!greeted && type != StageMsg::Hello) { (void) reply_error("hello first"); release(); break; }
             if (!in.bad.empty()) {
                 release();
+                // a one-way message gets no reply of its own: a malformed table is the next reply's error, as its
+                // failure would be (an immediate Error would answer the next request in its place)
+                if (type == StageMsg::Positions) {
+                    pos_err = in.bad;
+                    continue;
+                }
                 if (!reply_error(in.bad)) break;
                 continue;
             }
@@ -684,7 +731,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 std::memcpy(buf.run_in, in.rows.data(), in.rows.size() * 4);
                 std::string e;
                 bool ok;
-                if (!pending_err.empty()) { e = pending_err; pending_err.clear(); ok = false; }
+                if (!pending_err.empty() || !pos_err.empty()) { e = take_pending(); ok = false; }
                 else ok = h.run(T, in.tok32.data(), in.h.b, e);
                 if (!ok) { keep = reply_error(e); break; }
                 StageHeader r;
@@ -711,7 +758,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 // this chunk's output buffer: the one whose reply went out two chunks ago - the reply in flight (the
                 // last chunk's) uses the other
                 float* const out = buf.pf_out[out_buf];
-                if (!pending_err.empty()) { e = pending_err; pending_err.clear(); ok = false; }
+                if (!pending_err.empty() || !pos_err.empty()) { e = take_pending(); ok = false; }
                 else ok = h.prefill(in.tok64.data(), T, in.h.b, in.h.c & 0xff, skip, buf.pf_in[in.slot], out, e);
                 release();   // the chunk is read (its rows were uploaded before `prefill` returned)
                 if (!ok) { keep = reply_error(e); break; }
@@ -747,15 +794,35 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             }
             case StageMsg::Reset: {
                 std::string e;
-                pending_err.clear();
+                pending_err.clear();   // an earlier prompt's commit; not this request's table
                 // a chunk's reply still going out finishes first (a relay's reply thread reads the next worker's
                 // link, which the reset may make again)
                 if (!replies_out()) { keep = false; break; }
+                if (!pos_err.empty()) {
+                    e = pos_err;
+                    pos_err.clear();
+                    keep = reply_error(e);
+                    break;
+                }
                 if (!h.reset(e)) { keep = reply_error(e); break; }
                 StageHeader r;
                 r.type = (uint32_t) StageMsg::ResetOk;
                 if (!send_msg(fd, r, nullptr, 0, nullptr, 0, err)) keep = false;
                 ++stats.resets;
+                break;
+            }
+            case StageMsg::Positions: {
+                // one way, like a commit: a failure is the next reply's error.  A chunk's reply still going out
+                // finishes first (a relay forwards the table on the next worker's link, which it may make again).
+                // The table is applied even with a Commit's error pending (a reset drops that), and its own failure
+                // outlives a reset: the request it belongs to must not run on the old positions.  It replaces an
+                // earlier table's failure (that request never started).
+                std::string e;
+                if (!replies_out()) { keep = false; break; }
+                bool ok = false;
+                if (!h.positions) e = "this worker takes no image positions (start it with --vision)";
+                else ok = h.positions(in.h.b == 1 ? nullptr : in.tok32.data(), in.h.a, e);
+                pos_err = ok ? std::string() : e.empty() ? std::string("the image positions failed") : e;
                 break;
             }
             default:

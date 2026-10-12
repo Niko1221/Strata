@@ -11,9 +11,13 @@
 // runs [K, K2) and hands its rows to the next worker as the main process hands them to it; the next worker's reply
 // is its reply (main -> A -> B -> A -> main), so the main process sees one worker either way.  Prompt chunks are pipelined: the main process sends chunk c + 1 while the
 // worker reads chunk c (the worker receives on its own thread into two buffers), and takes the replies in order on
-// another thread.  POSIX sockets on Linux, Winsock on Windows.
+// another thread.  Images (--vision on both sides): a request with a picture rotates its tokens by M-RoPE positions
+// that are not the cell index, so the main process sends its position table before the request (and a reset to the
+// identity before the next text request); the worker's layers read their own copy.  POSIX sockets on Linux, Winsock on
+// Windows.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +31,7 @@
 namespace strata::net {
 
 inline constexpr uint32_t kStageMagic = 0x4d525453u;   // "STRM"
-inline constexpr uint32_t kStageProtocol = 4;
+inline constexpr uint32_t kStageProtocol = 5;
 
 enum class StageMsg : uint32_t {
     Hello = 1,
@@ -42,6 +46,8 @@ enum class StageMsg : uint32_t {
     Reset = 8,      // a fresh prompt from position 0
     ResetOk = 9,
     Error = 10,     // payload: the message
+    Positions = 11, // a = cells, b = 1: the identity (no payload); payload: int32 table[cells * 3], each cell's
+                    // M-RoPE (t, h, w), for the next request; no reply (an error comes back on the next reply)
 };
 
 #pragma pack(push, 1)
@@ -64,7 +70,8 @@ struct StageHello {
     int64_t handoff_floats = 0;   ///< floats per verify-window row
     uint64_t pack_hash = 0;       ///< the model pack's fingerprint (both sides must load the same model)
     int32_t tail_skip = 0;        ///< the main process's STRATA_ROUTE_TAIL_SKIP rank (0: off); a worker uses it
-    char build[60] = {};          ///< engine build id (informational)
+    int32_t vision = 0;           ///< started with --vision (a main process with it needs a worker with it)
+    char build[56] = {};          ///< engine build id (informational)
     char token[64] = {};          ///< the shared secret (STRATA_STAGE_TOKEN); the worker refuses a wrong one
 };
 #pragma pack(pop)
@@ -105,6 +112,9 @@ public:
     bool prefill_recv(float* rows_out, size_t row_floats, int64_t T, int64_t skip, std::string& err);
     /// A fresh prompt: the worker zeroes its session.
     bool reset(std::string& err);
+    /// The positions of the next request's cells [0, cells): `table` is (t, h, w) per cell; nullptr: the identity
+    /// (every cell its own index, as a text request has).  One way.
+    bool positions(const int32_t* table, int64_t cells, std::string& err);
 
     const StageStats& stats() const { return stats_; }
     std::string peer_name() const { return peer_; }
@@ -158,6 +168,9 @@ struct StageHandlers {
     /// thread, in chunk order - the serving thread reads the next chunk meanwhile.  A failure sends an error instead.
     std::function<bool(float* rows_out, int64_t T, int64_t skip, std::string& err)> prefill_reply;
     std::function<bool(std::string& err)> reset;
+    /// optional (--vision): the next request's positions, as StageClient::positions sends them (table nullptr: the
+    /// identity).  Unset: a Positions message is an error.
+    std::function<bool(const int32_t* table, int64_t cells, std::string& err)> positions;
     std::function<void()> disconnected;   ///< the main process went away (the session is stale)
 };
 
@@ -172,10 +185,28 @@ struct StageBuffers {
     int64_t pf_row_floats = 0;  ///< floats per prompt row (D)
 };
 
+/// A worker's position table (`cells` x (t, h, w)) from a Positions message: cells [0, cells_in) from `table`, the
+/// rest continuing from the last one sent, as the main process's own table continues past its prompt; `table` nullptr:
+/// the identity (every cell its own index).
+inline void stage_positions_fill(int32_t* out, int64_t cells, const int32_t* table, int64_t cells_in) {
+    for (int64_t c = 0; c < cells; ++c) {
+        int32_t* p = out + c * 3;
+        if (table == nullptr) {
+            p[0] = p[1] = p[2] = (int32_t) c;
+        } else if (c < cells_in) {
+            p[0] = table[c * 3];
+            p[1] = table[c * 3 + 1];
+            p[2] = table[c * 3 + 2];
+        } else {
+            p[0] = p[1] = p[2] = (int32_t) ((int64_t) table[(cells_in - 1) * 3] + (c - cells_in + 1));
+        }
+    }
+}
+
 /// Listens on `bind_addr`:`port` (empty: every interface) and serves one main process at a time until `stop` is set
 /// or listening fails.  `token`: the secret a main process's hello must carry (empty: none - any host that reaches
 /// the port can drive the worker).  Returns 0 when stopped, nonzero on a listen error (the reason on stderr).
 int serve_stage(const std::string& bind_addr, int port, const std::string& token, const StageHandlers& h,
-                const StageBuffers& buf, StageStats& stats, const bool* stop);
+                const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop);
 
 }  // namespace strata::net

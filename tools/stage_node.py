@@ -85,7 +85,8 @@ from urllib.parse import parse_qs, urlparse
 # engine flags a /start may add (the tuner's): no flag that names a file to write or read
 EXTRA_ALLOWED = {"--max-context", "--stage-bind", "--vram-reserve-mib", "--vram-reserve-later-mib", "--spec",
                  "--kv", "--kv-resident", "--pcie-frac", "--pool-workers", "--adapt-every", "--adapt-swaps",
-                 "--adapt-decay", "--spec-min-p"}
+                 "--adapt-decay", "--spec-min-p",
+                 "--vision"}   # a main process that reads images needs its workers' position tables (no file named)
 PLAIN_NAME = re.compile(r"[A-Za-z0-9._-]+")   # a /start's model names: no separator, no drive, no space
 DEVICE_NAME = re.compile(r"(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?", re.I)   # a Windows device in any directory
 LISTEN_TIMEOUT_S = 600     # loading a worker's experts: up to ~30 GB from disk on a cold cache
