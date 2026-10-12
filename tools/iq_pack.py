@@ -435,7 +435,14 @@ def expert_layout(model: Model, src: pathlib.Path):
     exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
-    n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
+    # A model with an MTP/nextn prediction block carries ffn_*_exps in that block too
+    # (qwen4exp.nextn_predict_layers > 0).  The engine's expert table is TRUNK-only: its
+    # parser bounds-checks l < n_layers, its layout arrays are sized n_layers, and the MTP
+    # drafter loads its own 512 experts from tools/mtp_rt.py's rt/experts.bin.  Emitting a
+    # nextn row therefore only makes the pack unloadable ("a malformed line").  Subtract the
+    # declared nextn blocks so native_experts.txt covers the trunk exactly.  Absent key -> 0.
+    nextn = int(model.files[0].metadata.get("qwen4exp.nextn_predict_layers", 0) or 0)
+    n_layers = 1 + max(int(n.split(".")[1]) for n in exps) - nextn
     n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
     if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
         return "the routers disagree on the expert count; a per-layer pruned model cannot be packed"
