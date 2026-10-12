@@ -102,6 +102,9 @@ public:
                                        bool src = true);
     static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                          bool src = true);
+    /// Per-owner persistent allocations on the current device, never part of the borrowed region.
+    /// Reserve before sizing expert caches, including when prompt buffers are borrowed.
+    static uint64_t persistent_bytes_needed();
 
     /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
     /// max_blob, never past ring_cap()):
