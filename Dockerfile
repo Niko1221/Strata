@@ -13,7 +13,7 @@
 # Build:
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
-#   docker build -t strata --build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 #CUDA12 
+#   docker build -t strata --build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 . #CUDA12 
 #
 # Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
 #   docker run --rm --gpus all \
