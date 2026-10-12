@@ -11577,12 +11577,79 @@ int main(int argc, char** argv) {
                     return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 8;
                 }();
                 const int64_t C = std::max<int64_t>(sp.chunk(), 1);
-                const int64_t piece = strata::program::batch_read_piece(o.batch > 0, piped, !stages.empty(), batch_on(), C, yield_chunks);
+                // Opt-in (#1906): on the pipelined slot groups a read goes in pieces of STRATA_PIPED_READ_PIECE tokens
+                // (whole chunks).  A piece's end has the pipeline drained, so a waiting shorter request can take
+                // over there (BYIELD); with slots decoding, the groups then decode through the pipeline (pump) for
+                // STRATA_BATCH_DECODE_SHARE x the piece's time, capped / floored by STRATA_PIPED_DECODE_MAX_MS /
+                // _MIN_MS, and are drained (pipe_drain) before the next piece, as before any read.  Unset: one run.
+                static const int64_t pr_piece = [] {
+                    const char* v = std::getenv("STRATA_PIPED_READ_PIECE");
+                    return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 0;
+                }();
+                static const double pr_cap = [] {
+                    const char* v = std::getenv("STRATA_PIPED_DECODE_MAX_MS");
+                    return v != nullptr ? std::max(0.0, std::atof(v)) : 0.0;
+                }();
+                static const double pr_floor = [] {
+                    const char* v = std::getenv("STRATA_PIPED_DECODE_MIN_MS");
+                    return v != nullptr ? std::max(0.0, std::atof(v)) : 0.0;
+                }();
+                const bool pr_on = piped && pr_piece > 0;
+                auto piece_now = [&]() -> int64_t {
+                    return pr_on ? strata::program::piped_read_piece(pr_piece, C)
+                                 : strata::program::batch_read_piece(o.batch > 0, piped, !stages.empty(), batch_on(), C,
+                                                                     yield_chunks);
+                };
+                // the slots decode through the pipeline for budget_ms, drained before the next read
+                auto piped_decode = [&](double budget_ms, std::string& err) -> bool {
+                    const auto td = Clock::now();
+                    in_prompt_read = true;
+                    do {
+                        if (!pump(true)) {
+                            in_prompt_read = false; batch_fatal = true; err = "a pipelined batch window failed";
+                            return false;
+                        }
+                    } while (batch_on() &&
+                             std::chrono::duration<double, std::milli>(Clock::now() - td).count() < budget_ms);
+                    if (!pipe_drain()) {
+                        in_prompt_read = false; batch_fatal = true; err = "a pipelined batch window failed";
+                        return false;
+                    }
+                    in_prompt_read = false;
+                    ++il_parts;
+                    il_ms += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                    return true;
+                };
+                // prompts arriving back to back: one decode budget before a read that follows a piecewise read
+                static Clock::time_point pr_prev_end{};
+                static bool pr_have_prev = false;
+                static double pr_prev_piece_ms = 0.0;   // the previous read's last full piece
+                if (pr_on) {
+                    const double lead =
+                        pr_prev_piece_ms > 0.0
+                            ? strata::program::piped_decode_budget_ms(pr_prev_piece_ms, decode_share, pr_cap, pr_floor)
+                            : (pr_cap > 0.0 ? pr_cap : std::max(pr_floor, 200.0));
+                    const double since =
+                        pr_have_prev ? std::chrono::duration<double, std::milli>(Clock::now() - pr_prev_end).count()
+                                     : -1.0;
+                    if (strata::program::piped_read_lead_in(true, batch_on(), since, lead)) {
+                        const int64_t rows0 = bt_rows;
+                        const auto tl = Clock::now();
+                        if (!piped_decode(lead, e)) return false;
+                        std::fprintf(stderr, "strata batch: a read right after a read: the slots decoded %lld rows in "
+                                             "%.0f ms first\n", (long long) std::max<int64_t>(0, bt_rows - rows0),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - tl).count());
+                    }
+                }
+                int64_t piece = piece_now();
                 if (piece <= 0) return sp.run(ids.data() + a0, b0 - a0, a0, e);
                 for (int64_t q = a0; q < b0;) {
                     const int64_t r = std::min(b0, q + piece);
                     const auto tq = Clock::now();
                     if (!sp.run(ids.data() + q, r - q, q, e)) return false;
+                    const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
+                    if (pr_on && r < b0) pr_prev_piece_ms = piece_ms;
+                    const int64_t piece_tokens = r - q;
                     q = r;
                     if (q >= b0) continue;
                     int ys = -1;
@@ -11601,6 +11668,8 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                    // (on the pipelined path a piece's end has the pipeline drained - nothing runs during a piece and
+                    // every decode budget ends in pipe_drain - so the part read can give way there as off the pipeline)
                     if (ys >= 0) {
                         // only where the rest is read the same way after it (more than a chunk and more than a short
                         // read left), text only, and into a slot that is not decoding
@@ -11634,6 +11703,24 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata batch: BYIELD %d not taken at %lld of %lld%s%s\n", ys, (long long) q,
                                      (long long) n, ye.empty() ? "" : ": ", ye.c_str());
                     }
+                    if (pr_on) {   // the pipelined pieces: the slots decode through the pipeline, then it is drained
+                        if (!batch_on()) {
+                            std::fprintf(stderr, "strata batch: piped read %lld tokens in %.0f ms (to %lld of %lld)\n",
+                                         (long long) piece_tokens, piece_ms, (long long) q, (long long) n);
+                            continue;
+                        }
+                        const double budget =
+                            strata::program::piped_decode_budget_ms(piece_ms, decode_share, pr_cap, pr_floor);
+                        const int64_t rows0 = bt_rows;
+                        const auto td = Clock::now();
+                        if (!piped_decode(budget, e)) return false;
+                        std::fprintf(stderr, "strata batch: piped read %lld tokens in %.0f ms (to %lld of %lld), "
+                                             "then the slots decoded %lld rows in %.0f ms\n", (long long) piece_tokens,
+                                     piece_ms, (long long) q, (long long) n,
+                                     (long long) std::max<int64_t>(0, bt_rows - rows0),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - td).count());
+                        continue;
+                    }
                     if (decode_share <= 0.0 || !batch_on()) continue;
                     const double budget = decode_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     const auto td = Clock::now();
@@ -11650,6 +11737,7 @@ int main(int argc, char** argv) {
                         std::fflush(stderr);
                     }
                 }
+                if (pr_on) { pr_prev_end = Clock::now(); pr_have_prev = true; }   // for the next read's lead-in
                 return true;
             };
             apply_pending(true);

@@ -27,4 +27,35 @@ inline int64_t batch_read_piece(bool batch, bool piped, bool layer_split, bool b
     return chunks_per_piece > 0 ? chunk * chunks_per_piece : 0;
 }
 
+/// Tokens of the next piece of a prompt read on the pipelined slot groups (--batch-groups > 1 on a layer split, #1906),
+/// or 0 for "the whole rest in one run" (the opt-in is off).
+///   piece_tokens: STRATA_PIPED_READ_PIECE, rounded down to whole chunks (at least one, at most kPipedMaxChunks)
+/// A piece is one pipelined run over its chunks, so the stages stay overlapped inside it and only its end drains the
+/// pipeline.  At a piece's end the decoding slots decode, and a waiting shorter request can take over (BYIELD), as
+/// between the pieces of a read off the pipeline.
+inline constexpr int64_t kPipedMaxChunks = 32;
+inline int64_t piped_read_piece(int64_t piece_tokens, int64_t chunk) {
+    if (piece_tokens <= 0) return 0;
+    chunk = std::max<int64_t>(chunk, 1);
+    return std::clamp<int64_t>(piece_tokens / chunk, 1, kPipedMaxChunks) * chunk;
+}
+
+/// The slots' decode time between two pieces: share x the piece's time (STRATA_BATCH_DECODE_SHARE, the rule the
+/// one-GPU path uses between chunks), at most cap_ms (STRATA_PIPED_DECODE_MAX_MS; <= 0: no cap), at least floor_ms
+/// (STRATA_PIPED_DECODE_MIN_MS).
+inline double piped_decode_budget_ms(double piece_ms, double share, double cap_ms, double floor_ms) {
+    double b = std::max(0.0, share) * std::max(0.0, piece_ms);
+    if (cap_ms > 0.0) b = std::min(b, cap_ms);
+    return std::max(b, std::max(0.0, floor_ms));
+}
+
+/// Prompts arriving back to back: a piecewise read that starts within kPipedLeadInWindowMs + budget_ms of the
+/// previous piecewise read's end first gives the slots one decode budget (otherwise they stop for both reads).
+///   ms_since_prev_end: < 0 when there was no piecewise read yet
+inline constexpr double kPipedLeadInWindowMs = 1000.0;
+inline bool piped_read_lead_in(bool enabled, bool beside_slots, double ms_since_prev_end, double budget_ms) {
+    return enabled && beside_slots && ms_since_prev_end >= 0.0 &&
+           ms_since_prev_end <= kPipedLeadInWindowMs + std::max(0.0, budget_ms);
+}
+
 }  // namespace strata::program

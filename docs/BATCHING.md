@@ -141,6 +141,74 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
+## A prompt read beside pipelined groups (opt-in)
+
+With a layer split and `--batch-groups` above 1 a prompt is read in one run: every decoding slot stops until it is read,
+however long it is, `STRATA_BATCH_DECODE_SHARE` does not apply and no `BYIELD` is taken (`batch_read_piece` returns 0
+for the pipelined groups; #1906). One GPU does not have this problem: there the slots decode between the prompt's chunks
+for `STRATA_BATCH_DECODE_SHARE` x the chunk's time. These variables give the pipelined groups the same choice:
+
+- `STRATA_PIPED_READ_PIECE=N`: a prompt read on the pipelined groups goes in pieces of N tokens, rounded down to whole
+  chunks (at least one, at most 32), so a piece reads exactly the chunks a single run would, the two stages stay
+  overlapped inside it and only the piece's end drains the pipeline. Between two pieces the slot groups decode through
+  the pipeline for `STRATA_BATCH_DECODE_SHARE` x the piece's time, at most `STRATA_PIPED_DECODE_MAX_MS` and at least
+  `STRATA_PIPED_DECODE_MIN_MS`, and every group in flight finishes before the next piece, as before any prompt read.
+- At a piece's end the pipeline is drained, so a waiting request with a prompt under half as long can take over there
+  (`BYIELD`, as between the chunks of a read off the pipeline): the part read waits in a slot and the read goes on from
+  it after the short request is in. The pieces are also taken when no slot decodes, for this reason (off the pipeline
+  the same read goes in `STRATA_BATCH_YIELD_CHUNKS` pieces then).
+- A read that starts within a second (plus the decode budget) of the previous such read's end - prompts arriving back to
+  back - first gives the slots one decode budget (the same rule, from the previous read's last full piece); otherwise
+  the slots would stop for both reads.
+
+With the variables unset the read is one run as before. One log line per piece (`strata batch: piped read N tokens in X
+ms (to Q of T)`, with `, then the slots decoded R rows in Y ms` when slots decode), per give-way (`the prompt read gives
+way at Q of T tokens; slot S holds it`) and per lead-in (`a read right after a read: the slots decoded R rows in Y ms
+first`).
+
+**What it trades.** Every piece ends by draining the pipeline, so a long read takes longer - also on an idle server,
+since the pieces are what lets a short request in - and the decoding streams get tokens where they had none. It is a
+latency choice, not a throughput gain: leave it off where throughput or the long prompt's own TTFT matters most, use it
+where a stream that stops for several seconds, or a short question stuck behind a long read, is worse than a long prompt
+that waits a little longer.
+
+Measured on 2x RTX 5090 (Swift 1.5 IQ3_S, `--layer-split 25 --trim-stage-weights --batch 6 --batch-groups 2
+--resident-experts`, k8v4 KV, 262K context, `--kv-resident 32768`, `STRATA_ARENA_PIN_GIB=24`, Windows 11; a CUDA 13.0
+sm_120 build of this change on 0.1.43, "release" = 0.1.43 built the same way; a fresh engine for every run, all from one
+window, `tools/piped_read_join_bench.py`). Four streams decode greedy coding answers (thinking off, up to 2048 tokens)
+when cold prompts of this repository's own source text join. "Longest stop": the longest time any stream received no
+token, from the first prompt's arrival to the last one's first token + 1 s (client-side, SSE); "stream tokens": what the
+four streams received in that window; "token rate": the streams' tokens over the run's wall time.
+
+Two cold prompts, 64K then 32K, arriving 6 s apart (`--scenarios two_joiners`; release and 32K pieces: median of 5 runs
+each, interleaved; 16K pieces: one run):
+
+| arm | prompts' TTFT | longest stop of a stream | stream tokens | token rate |
+| --- | ---: | ---: | ---: | ---: |
+| release (one run per prompt) | 6.9 s / 6.1 s | 12.2 s | 289 | 173 tok/s |
+| `PIECE=32768 DECODE_MAX_MS=400` | 8.1 s / 8.5 s | 4.2 s | 527 | 166 tok/s |
+| `PIECE=16384 DECODE_MAX_MS=400` | 10.5 s / 12.0 s | 2.6 s | 793 | 154 tok/s |
+
+The longest stop was 12.16-12.23 s for the release in all five runs and 4.19-4.22 s for 32K pieces in four; in the fifth
+the first 32K piece of the 64K prompt took 9.3 s instead of 3.95 s (one uninterrupted run before any slot decoded),
+which made that run's stop 9.5 s. The token rate varied 169-180 tok/s (release) and 136-174 tok/s (32K) between runs.
+
+A short request behind a long read, nothing decoding (#1504's test, `--scenarios followup,read_alone --repeat 3`, median
+of 3): a one-line question sent 1 s after a cold 45K prompt, and the same 45K prompt read alone:
+
+| arm | the question's TTFT | the 45K prompt's TTFT | the 45K prompt alone |
+| --- | ---: | ---: | ---: |
+| release | 5.4 s | 6.0 s | 5.7 s |
+| `PIECE=32768 DECODE_MAX_MS=400` | 3.6 s | 7.3 s | 6.4 s |
+| `PIECE=16384 DECODE_MAX_MS=400` | 1.8 s | 8.0 s | 7.1 s |
+
+With the variables unset this change ran as the release in the same window (the 45K read alone 5.66 vs 5.69 s, the two
+joiners' longest stop 12.2 s on both) and gave the same SHA-256 for six greedy answers under `--prompt-cache 0
+--adapt-swaps 0 --pcie-frac 0`. For reference, one RTX 5090 (the same model and flags without the split, 6 slots) with
+one cold 64K prompt joining four streams: `STRATA_BATCH_DECODE_SHARE=2.0` 2.4 s longest stop and 37.2 s TTFT, `=0` 14.0
+s and 13.8 s. Pieces of one chunk (`PIECE=8192`) cost the long prompt the most. Not measured: other GPU pairs, three or
+more stages, HIP and SYCL (built for CUDA only), sampled decoding, prompts with pictures.
+
 ## The VRAM expert tier keeps adapting in batch windows
 
 Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the
@@ -278,7 +346,7 @@ tests the server's side with a scripted engine (no GPU).
 | Script | What it checks |
 | --- | --- |
 | `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
-| `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. |
+| `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
