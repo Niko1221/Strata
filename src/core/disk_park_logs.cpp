@@ -152,27 +152,10 @@ DiskParkSession* DiskParkLogs::session_for_layer(const std::string& dir_name, st
     return &ins.first->second;
 }
 
-namespace {
-
-// ★★★ 逐层逐 part 的搬运，【按 cell 边界分块】。
-//   为什么必须分块：附着在 part 上的回调（如引擎的 p9_read_host_pool）是按
-//   "一个 cell 内的一段连续字节"寻址的 —— 一次跨 cell（尤其跨 page）就会越界。
-//   实测：尺度区每页只有 ps*heads*bpc = 4*2*8 = 64 字节，而调用方一次要 64 字节，
+// ★★★ fill 回调按【一个 cell 内的一段连续字节】寻址（引擎的 p9_read_host_pool 就是这样），
+//   所以一次调用【不能跨 cell，尤其不能跨 page】，最多搬 bytes_per_cell 字节。
+//   实测：尺度区每页只有 ps*heads*bpc = 4*2*8 = 64 字节，调用方一次要 64 字节，
 //   正好越过第一页 ⇒ 回调返回 false ⇒ 整条日志一个字节都写不进。
-//   （单 cell 的字节数 = bpc；一次最多搬 bpc。）
-bool transfer_cells(const DiskParkSessionPlan& plan, std::uint64_t from, std::uint64_t to,
-                    std::size_t part, std::uint8_t* buf,
-                    const std::function<bool(std::size_t off, std::uint8_t* dst, std::size_t n)>& op) {
-    const auto& p = plan.parts[part];
-    if (p.bytes_per_cell == 0) return true;                 // 该 part 不存在
-    for (std::uint64_t c = from; c < to; ++c) {
-        const std::size_t off = static_cast<std::size_t>(c - from) * p.bytes_per_cell;
-        if (!op(off, buf, p.bytes_per_cell)) return false;
-    }
-    return true;
-}
-
-} // namespace
 
 std::uint64_t DiskParkLogs::append_layers(const Request& req, std::size_t layers,
                                           const DiskParkLayerFill& fill) {

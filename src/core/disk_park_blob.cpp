@@ -17,7 +17,6 @@ namespace {
 constexpr std::uint32_t kMagic = 0x31424B53U;   // "SKB1" 小端
 
 void put_u64(std::uint8_t* p, std::uint64_t v) { std::memcpy(p, &v, 8); }
-std::uint64_t get_u64(const std::uint8_t* p) { std::uint64_t v = 0; std::memcpy(&v, p, 8); return v; }
 
 bool pwrite_all(int fd, const void* src, std::size_t n, std::uint64_t off) {
     const auto* p = static_cast<const std::uint8_t*>(src);
