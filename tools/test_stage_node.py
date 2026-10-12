@@ -334,6 +334,243 @@ class ClocksTest(unittest.TestCase):
         self.assertEqual(self.calls, [])   # no clock lock for it
 
 
+FAKE_WORKER = """\
+import os, sys, time
+mode = os.environ.get("FAKE_WORKER", "sleep")
+print("fake worker", os.getpid(), flush=True)
+if mode == "fail":       # ends before it listens
+    sys.exit(2)
+print("strata stage worker: listening on 127.0.0.1:7899 (a token is required)", flush=True)
+if mode == "exit":       # ends by itself (a stall report, a crash)
+    time.sleep(float(os.environ.get("FAKE_LIFE", "0.1")))
+    sys.exit(3)
+time.sleep(120)
+"""
+
+
+class SupervisionTest(unittest.TestCase):
+    """A worker that ends by itself starts again (node.json "restart"), against a fake worker: a Python script that
+    says "listening on" and then exits or sleeps (FAKE_WORKER=exit|sleep|fail)."""
+
+    PORT = 7899
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        fake = self.d / "fake_worker.py"
+        fake.write_text(FAKE_WORKER)
+        real = subprocess.Popen
+        popen = lambda args, **kw: real([sys.executable, "-I", str(fake)] + list(args[1:]), **kw)  # noqa: E731
+        self.patches = [mock.patch.object(sn.subprocess, "Popen", side_effect=popen),
+                        mock.patch.object(sn, "LISTEN_POLL_S", 0.05),
+                        mock.patch.object(sn, "RESTART_FIRST_S", 0.2),
+                        mock.patch.object(sn, "RESTART_MAX_S", 0.8),
+                        mock.patch.dict(os.environ, {"FAKE_WORKER": "exit", "FAKE_LIFE": "0.1"})]
+        for p in self.patches:
+            p.start()
+        self.said = []
+        self.w = self.workers()
+
+    def workers(self, **extra):
+        w = sn.Workers({"exe": "strata", "bind": "127.0.0.1", "pack": "p", "native": "n", "expert_profile": "e",
+                        "_token": "t", "log_dir": str(self.d), "drop_cache": False, **extra})
+        w.say = self.said.append
+        return w
+
+    def tearDown(self):
+        self.w.close()
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    def port(self) -> dict:
+        return self.w.ports().get(str(self.PORT), {})
+
+    def until(self, what, timeout=15.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if what():
+                return True
+            time.sleep(0.02)
+        self.fail(f"not reached in {timeout} s: {self.port()} {self.said}")
+
+    def delays(self) -> list[float]:
+        return [float(m.split("starting it again in ")[1].split(" s")[0]) for m in self.said
+                if "starting it again in" in m]
+
+    def test_restart_after_an_unexpected_exit(self):
+        r = self.w.start({"begin": 40, "port": self.PORT})
+        self.assertTrue(r["ok"], r)
+        first = (self.d / f"stage-worker-{self.PORT}.log").read_text()
+        os.environ["FAKE_WORKER"] = "sleep"   # the restarted one stays up
+        self.until(lambda: self.port().get("restarts") == 1 and self.port().get("running"))
+        st = self.port()
+        self.assertEqual((st["last_exit"], st["next_restart_at"], st["supervised"]), (3, None, True))
+        self.assertEqual(self.delays(), [0.2])
+        self.until(lambda: "listening on" in (self.d / f"stage-worker-{self.PORT}.log").read_text())
+        # the run before kept as .prev.log (one generation), not truncated
+        self.assertEqual((self.d / f"stage-worker-{self.PORT}.prev.log").read_text(), first)
+        self.assertNotEqual((self.d / f"stage-worker-{self.PORT}.log").read_text().split("\n")[0],
+                            first.split("\n")[0])   # another process
+
+    def test_backoff_grows_to_its_cap(self):
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        self.until(lambda: len(self.delays()) >= 4)
+        self.w.stop(self.PORT)
+        self.assertEqual(self.delays()[:4], [0.2, 0.4, 0.8, 0.8])
+
+    def test_long_run_starts_the_backoff_again(self):
+        os.environ["FAKE_LIFE"] = "0.5"
+        with mock.patch.object(sn, "RESTART_STABLE_S", 0.3):
+            self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+            self.until(lambda: len(self.delays()) >= 3)
+            self.w.stop(self.PORT)
+        self.assertEqual(self.delays()[:3], [0.2, 0.2, 0.2])
+
+    def test_failed_restart_counts_as_an_end(self):
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        os.environ["FAKE_WORKER"] = "fail"
+        self.until(lambda: len(self.delays()) >= 3)
+        os.environ["FAKE_WORKER"] = "sleep"
+        self.until(lambda: self.port().get("running"))
+        self.assertEqual(self.delays()[:3], [0.2, 0.4, 0.8])
+        self.assertTrue(any("the restart failed: exit 2" in m for m in self.said), self.said)
+
+    def test_no_restart_after_stop(self):
+        os.environ["FAKE_WORKER"] = "sleep"
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        self.assertEqual(self.w.stop(self.PORT), [self.PORT])
+        time.sleep(0.6)
+        st = self.port()
+        self.assertEqual((st["running"], st["restarts"], st["next_restart_at"], st["supervised"]), (False, 0, None, False))
+        self.assertEqual(self.delays(), [])
+
+    def test_stop_and_close_cancel_a_pending_restart(self):
+        for end in ("stop", "close"):
+            self.said.clear()
+            with mock.patch.object(sn, "RESTART_FIRST_S", 0.8):
+                w = self.w = self.workers()
+                os.environ["FAKE_WORKER"] = "exit"
+                self.assertTrue(w.start({"begin": 40, "port": self.PORT})["ok"])
+                self.until(lambda: self.port().get("next_restart_at") is not None)
+                os.environ["FAKE_WORKER"] = "sleep"
+                gen = w.gens[self.PORT]
+                w.stop(self.PORT) if end == "stop" else w.close()
+                w._restart(self.PORT, gen)   # a timer that fired anyway (just before its cancel)
+                time.sleep(1.2)
+            self.assertEqual((w.procs, w.timers, self.port()["restarts"]), ({}, {}, 0), end)
+            self.assertFalse(any("starting it again (restart" in m for m in self.said), end)
+
+    def test_a_late_restart_leaves_a_new_start_alone(self):
+        # a restart that passed its check, then waited for start_lock while a /start on the port took it first: it
+        # neither stops the new worker nor starts the old request
+        os.environ["FAKE_WORKER"] = "sleep"
+        old = self.w.gens.get(self.PORT, 0) + 1
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        self.assertTrue(self.w.start({"begin": 24, "port": self.PORT})["ok"])
+        proc = self.w.procs[self.PORT]
+        r = self.w._start({"begin": 40, "port": self.PORT}, old)
+        self.assertEqual(r["error"], "stopped meanwhile")
+        self.assertIs(self.w.procs.get(self.PORT), proc)
+        self.assertIsNone(proc.poll())
+        self.assertEqual(self.w.reqs[self.PORT]["begin"], 24)
+
+    def test_a_refused_start_leaves_the_port_alone(self):
+        # a /start refused for its flags, a relay without both ends or its model: the restart pending, the port's
+        # generation and what a restart runs stay; so does a running worker
+        with mock.patch.object(sn, "RESTART_FIRST_S", 2.0):
+            self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+            self.until(lambda: self.port().get("next_restart_at") is not None)
+            os.environ["FAKE_WORKER"] = "sleep"
+            gen = self.w.gens[self.PORT]
+            refused = ({"extra": ["--not-allowed-here"]}, {"end": 44}, {"begin": "x"}, {"prefill": None},
+                       {"end": "44", "next": "192.0.2.2:7841", "port": "p"},
+                       {"model": {"dir": "d", "native": "n", "pack": "p"}})   # (this node has no data_dir)
+            for bad in refused:
+                r = self.w.start({"begin": 24, "port": self.PORT, **bad})
+                self.assertFalse(r["ok"], bad)
+            self.assertEqual((self.w.gens[self.PORT], self.w.reqs[self.PORT]["begin"]), (gen, 40))
+            self.assertIn(self.PORT, self.w.timers)
+            self.assertTrue(self.port()["supervised"])
+            self.assertIsNotNone(self.port()["next_restart_at"])
+            self.until(lambda: self.port().get("restarts") == 1 and self.port().get("running"))
+        proc = self.w.procs[self.PORT]
+        for bad in refused:
+            self.assertFalse(self.w.start({"begin": 24, "port": self.PORT, **bad})["ok"], bad)
+        self.assertIs(self.w.procs.get(self.PORT), proc)
+        self.assertIsNone(proc.poll())
+        self.assertEqual((self.w.gens[self.PORT], self.w.reqs[self.PORT]["begin"]), (gen, 40))
+
+    def test_an_exception_in_a_restart_is_a_failed_restart(self):
+        # an exception on the timer's thread (a stop of the old worker that timed out, say) does not end supervision
+        real, calls = self.w._start, []
+
+        def start(req, gen):
+            calls.append(gen)
+            if len(calls) == 2:   # the first restart
+                raise subprocess.TimeoutExpired("strata", 30)
+            return real(req, gen)
+
+        self.w._start = start
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        os.environ["FAKE_WORKER"] = "sleep"
+        self.until(lambda: self.port().get("restarts") == 2 and self.port().get("running"))
+        self.assertEqual(self.delays(), [0.2, 0.4])
+        self.assertTrue(any("the restart failed: TimeoutExpired" in m for m in self.said), self.said)
+        self.assertEqual(self.port()["last_exit"], None)   # (the failed restart's: no process ended)
+
+    def test_a_restart_that_fails_after_its_worker_started_stops_it(self):
+        # an exception once the restart's worker runs (its clocks, its log) leaves no worker that no thread waits on
+        real, started = self.w.lock_clocks, []
+
+        def lock():
+            started.append(self.w.procs.get(self.PORT))
+            if len(started) == 2:   # the first restart
+                raise OSError("no log")
+            return real()
+
+        self.w.lock_clocks = lock
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        os.environ["FAKE_WORKER"] = "sleep"
+        self.until(lambda: any("the restart failed: OSError" in m for m in self.said))
+        self.assertIsNotNone(started[1].poll(), "the failed restart's worker was stopped at once")
+        self.until(lambda: self.port().get("restarts") == 2 and self.port().get("running"))
+
+    def test_prev_log_is_the_last_run_that_listened(self):
+        log, prev = self.d / f"stage-worker-{self.PORT}.log", self.d / f"stage-worker-{self.PORT}.prev.log"
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        first = log.read_text()   # a run that listened, then ended by itself
+        os.environ["FAKE_WORKER"] = "fail"   # its restarts end before they listen
+        self.until(lambda: len(self.delays()) >= 3)   # its end and two failed restarts
+        self.w.stop(self.PORT)
+        self.assertEqual(prev.read_text(), first)
+        self.assertIn("listening on", first)
+        self.assertNotIn("listening on", log.read_text())   # the last failed restart's
+
+    def test_restart_off(self):
+        self.w = self.workers(restart=False)
+        self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+        self.until(lambda: self.port().get("last_exit") == 3)
+        time.sleep(0.5)
+        st = self.port()
+        self.assertEqual((st["running"], st["restarts"], st["next_restart_at"], st["supervised"]), (False, 0, None, False))
+        self.assertTrue(any('not started again (node.json "restart": false)' in m for m in self.said), self.said)
+
+    def test_clocks_across_a_restart(self):
+        calls = []
+        run = lambda args, **kw: (calls.append(args[1]), subprocess.CompletedProcess(args, 0, "", ""))[1]  # noqa: E731
+        self.w = self.workers(gpu_clocks={"graphics": [1500, 1905]})
+        with mock.patch.object(sn.shutil, "which", return_value="nvidia-smi"), \
+                mock.patch.object(sn.subprocess, "run", side_effect=run):
+            self.assertTrue(self.w.start({"begin": 40, "port": self.PORT})["ok"])
+            os.environ["FAKE_WORKER"] = "sleep"
+            self.until(lambda: self.port().get("restarts") == 1 and self.port().get("running"))
+            self.until(lambda: len(calls) >= 4)     # (the restart's lock follows its process start)
+            self.assertEqual(calls, ["-lgc", "-rgc", "-rmc", "-lgc"])   # locked, reset while none ran, locked again
+            self.w.stop(self.PORT)
+            self.assertEqual(calls[4:], ["-rgc", "-rmc"])
+
+
 class TunerPiecesTest(unittest.TestCase):
     """stage_tune's /start body and its notes, on a Tuner built without a cluster."""
 

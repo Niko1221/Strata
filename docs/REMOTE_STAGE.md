@@ -267,8 +267,8 @@ main process without it.
 
 Fixed: a peer that connects but sends no hello within 10 s is dropped; TCP keepalive notices a peer that vanished
 without closing (power, cable) in about a minute. A worker stuck in a message it serves (a window, a prompt chunk, a
-commit, a reset, a position table) for `STRATA_WATCHDOG_S` (60 s) ends with a stall report, as a main process does;
-its agent does not start it again. A relay's waits for its next worker do not count: they end by the link's timeouts,
+commit, a reset, a position table) for `STRATA_WATCHDOG_S` (60 s) ends with a stall report, as a main process does,
+and its agent starts it again ([Tools](#tools)). A relay's waits for its next worker do not count: they end by the link's timeouts,
 and the next worker has its own watchdog. On Windows a worker's port is bound exclusively (`SO_EXCLUSIVEADDRUSE`), so
 a second worker on the same port fails as it does on Linux.
 
@@ -310,7 +310,8 @@ What the measurements say (re-measure on your PCs; `tools/stage_tune.py` does it
 ## Tools
 
 Three Python scripts (standard library only) in `tools/`. The agent and the shipper run on Linux and Windows; `stage_tune.py tune` runs on a Linux main PC (it starts and stops the server with `pgrep` / `kill`), `stage_tune.py apply` anywhere. Their docstrings are the
-full usage; `python -m unittest tools.test_stage_node` tests the agent's file store and the shipper's paths.
+full usage; `python -m unittest tools.test_stage_node` tests the agent's file store and restarts, and the shipper's
+paths.
 
 **`tools/stage_node.py`: a node agent** on each worker PC. It starts and stops that PC's stage workers on request
 and reports the PC (GPU, RAM, CPU) and the link speed toward other nodes. Every request carries the token in an
@@ -341,10 +342,17 @@ python3 tools/stage_node.py node.json
 - `"gpu_clocks": {"graphics": [MIN, MAX], "memory": [MIN, MAX], "gpu": INDEX}` locks the GPU's clocks (on GPU INDEX,
   else every GPU) while a worker runs. It is meant for Windows workers, and works on any OS where the agent runs as
   administrator (Windows) or root; otherwise the `/start` reply and the tuner say "NOT locked". The clocks are reset
-  when no worker runs: after a `/stop`, a worker that exits (noticed at the next `/info`), or the agent stopped with
+  when no worker runs: after a `/stop`, a worker that exits (also while its restart waits), or the agent stopped with
   Ctrl+C or Ctrl+Break (SIGTERM on Linux). A killed agent or a closed console window leaves them locked until
   `nvidia-smi -rgc -rmc` or a reboot. `"agent_bind"` lets the agent listen on every
   interface, so the tuner's link test runs over the stage link when the workers use a second NIC.
+- A worker that ends without a `/stop` (a stall report, a crash) is started again with its port's last `/start`
+  that listened, after 5 s, doubling up to 300 s; a run of 10 minutes or more starts the wait from 5 s again, and a
+  restart that fails counts as an end. Each decision is a line on the agent's stdout. `/stop`, a new `/start` on the
+  port and the agent's end cancel a pending restart. `"restart": false` in node.json turns it off. Before each start
+  the previous log becomes `stage-worker-PORT.prev.log` (one run back; `GET /log?port=P&prev=1`), so a stall report
+  survives the restart. `GET /info` has `"ports"`: per port, whether it runs, the restarts so far, the last exit
+  (code, time) and the next start's time while one is pending (epoch seconds).
 - Other endpoints: `GET /ping`, `GET /info` (GPU, RAM, the clock setting), `POST /stop`, `GET /log`, `POST /sink`
   and `POST /send` (a link test), `POST /put`, `GET /ranges`, `GET /sha256` (for `stage_ship.py`). A stop waits up
   to 180 s for the worker to exit (a worker with ~30 GB of pinned experts takes more than 30 s to unpin).
@@ -488,7 +496,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | `the main process's context (N) or window (T) is larger than this worker's` | the worker's `--max-context` and `--spec` must be at least the main process's |
 | `ArenaExpertSource: a layer range needs a native pack read from its GGUF` | a pack directory with `experts.bin`: use a copy without it; drop `--shared-expert-arena` |
 | `strata generate: remote stage: it does not support ...` | remove that flag (see above) |
-| a request fails with a link error | the main engine ends with that error at once; the next request starts it again (the server tries three times, 15 s apart) and it connects anew, while the worker waits for the new connection. If the worker itself ended (its log ends with a stall report, or it exited), start it again first: its agent does not |
+| a request fails with a link error | the main engine ends with that error at once; the next request starts it again (the server tries three times, 15 s apart) and it connects anew, while the worker waits for the new connection. If the worker itself ended (a stall report, or it exited), its agent starts it again after 5 s and more (`GET /info`, `"ports"`); its last run's log is `stage-worker-PORT.prev.log`. Without an agent, or with `"restart": false`, start it again by hand |
 | the main process waits at its start, then `receive failed: timed out` | the worker is serving another main process, or is stuck; a stuck worker ends by itself after `STRATA_WATCHDOG_S` (60 s) |
 | decode slower than expected on Linux | look at `decode expert cache hit rate` on every PC; keep the adaptive tier on everywhere (do not set `--adapt-every 0`) |
 | numbers that move between runs | record the other load on every PC and repeat runs: the same configuration decoded a ~30K prompt's answer at 50.2 and 44.0 tok/s twenty minutes apart |

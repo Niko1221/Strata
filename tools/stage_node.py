@@ -24,6 +24,7 @@ node.json (paths are this PC's):
       "gpu_clocks": {"graphics": [1500, 1905], "memory": [7001, 7001]}
                                                    optional: lock the GPU's clocks (MHz) while a worker runs - for a
                                                    Windows worker (see Workers.lock_clocks); needs administrator/root
+      "restart": true                              default: start a worker that ended by itself again (Workers.exited)
     }
 
 What the token allows: a holder can start and stop this PC's workers with the engine and model files node.json
@@ -40,15 +41,17 @@ keeps them (a faster restart with the same layers).
 Every request carries the shared token in the X-Stage-Token header (the workers get it as STRATA_STAGE_TOKEN), so
 only the tuner and the main process drive this PC.  Endpoints (JSON in and out):
     GET  /ping                 {"ok": true}: a round trip with no work behind it
-    GET  /info                 the GPU (nvidia-smi), RAM, CPU and the workers running here
+    GET  /info                 the GPU (nvidia-smi), RAM, CPU and the workers running here; "ports": each port's
+                               worker - running, restarts so far, its last exit (code, time) and the next start's time
     POST /start                {"begin": K, "end": K2?, "next": "host:port"?, "port": 7841, "prefill": 5888,
                                 "cache": "auto"|slots, "extra": [...], "model"?: {"dir": D, "native": F, "pack": P,
                                 "profile"?: R, "ple"?: G}}
                                - stops the worker on that port, starts this one and answers when it listens (or with
                                its log's tail when it exits).  "model" runs a model shipped under data_dir
                                (data_dir/models/D/F, data_dir/packs/P), so one agent serves every model shipped to it
-    POST /stop                 {"port": 7841} (no port: every worker)
-    GET  /log?port=P&lines=N   a worker's log tail
+    POST /stop                 {"port": 7841} (no port: every worker) - and no start again
+    GET  /log?port=P&lines=N   a worker's log tail (&prev=1: the last run that listened before this one,
+                               stage-worker-P.prev.log)
     POST /sink                 reads the body; answers its bytes and the seconds it took (a link test toward here)
     POST /send                 {"url": "http://other:7840", "mib": 64} - sends to another node's /sink
     POST /put?path=P&offset=N&total=T[&mode=755][&sha256=H]
@@ -90,7 +93,11 @@ EXTRA_ALLOWED = {"--max-context", "--stage-bind", "--vram-reserve-mib", "--vram-
 PLAIN_NAME = re.compile(r"[A-Za-z0-9._-]+")   # a /start's model names: no separator, no drive, no space
 DEVICE_NAME = re.compile(r"(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?", re.I)   # a Windows device in any directory
 LISTEN_TIMEOUT_S = 600     # loading a worker's experts: up to ~30 GB from disk on a cold cache
+LISTEN_POLL_S = 1.0        # how often a /start reads the worker's log for "listening on"
 STOP_TIMEOUT_S = 180       # a worker with ~30 GB of pinned experts takes a while to unpin
+RESTART_FIRST_S = 5.0      # a worker that ended by itself starts again after this, doubling up to RESTART_MAX_S
+RESTART_MAX_S = 300.0
+RESTART_STABLE_S = 600.0   # ... back to RESTART_FIRST_S after a run at least this long
 
 
 def load_config(path: str) -> dict:
@@ -150,7 +157,14 @@ def ram_info() -> dict:
 
 
 class Workers:
-    """The workers this agent started, by port."""
+    """The workers this agent started, by port.
+
+    Supervision ("restart", on unless node.json says false): a worker that ends without a /stop (a stall report, a
+    crash, a lost GPU) is started again with its port's last /start that listened, after RESTART_FIRST_S, doubling
+    up to RESTART_MAX_S; a run of RESTART_STABLE_S or more starts the wait from RESTART_FIRST_S again.  A start that
+    fails counts as an end.  /stop, a new /start on the port and the agent's end cancel it: each port has a
+    generation, and a start or a timer of an older one does nothing: it checks before it stops the port's worker,
+    where it registers its own (killing it) and while it waits for it to listen."""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -160,13 +174,41 @@ class Workers:
         self.clock_lock = threading.Lock()   # a clock lock or reset with its nvidia-smi calls, one at a time
         self.clocks_locked = False
         self.closing = False                 # the agent is stopping: a /start under way stops its own worker
+        self.gens: dict[int, int] = {}       # a port's generation: /stop and /start move it on
+        self.reqs: dict[int, dict] = {}      # a port's last /start that listened: what a restart runs
+        self.timers: dict[int, threading.Timer] = {}   # a pending restart
+        self.status: dict[int, dict] = {}    # restarts so far, the last exit, the next start (see ports())
+        # whether a port's log is of a run that listened (only those become .prev.log; a log from before this agent
+        # counts as one); under start_lock, as every _start
+        self.listened: dict[int, bool] = {}
 
-    def log_path(self, port: int) -> Path:
-        return Path(self.cfg.get("log_dir", ".")) / f"stage-worker-{port}.log"
+    def log_path(self, port: int, prev: bool = False) -> Path:
+        return Path(self.cfg.get("log_dir", ".")) / f"stage-worker-{port}{'.prev' if prev else ''}.log"
+
+    @staticmethod
+    def say(msg: str) -> None:
+        """A supervision decision, on the agent's stdout."""
+        print(f"stage_node: {msg}", flush=True)
+
+    def _forget(self, ports) -> None:
+        """Under self.lock: no start again on these ports (their next generation)."""
+        for p in ports:
+            self.gens[p] = self.gens.get(p, 0) + 1
+            self.reqs.pop(p, None)
+            t = self.timers.pop(p, None)
+            if t is not None:
+                t.cancel()
+            if p in self.status:
+                self.status[p]["next_restart_at"] = None
 
     def stop(self, port: int | None) -> list[int]:
         with self.lock:
-            ports = [port] if port is not None else list(self.procs)
+            ports = [port] if port is not None else list(set(self.procs) | set(self.reqs) | set(self.timers))
+            self._forget(ports)
+        return self._stop_procs(ports)
+
+    def _stop_procs(self, ports: list[int]) -> list[int]:
+        with self.lock:
             procs = [(p, self.procs.pop(p, None)) for p in ports]
         stopped = []
         for p, proc in procs:   # waited for outside the lock: /info answers meanwhile
@@ -183,14 +225,94 @@ class Workers:
         return stopped
 
     def close(self) -> None:
-        """The agent is stopping: every worker, and the one a /start under way is starting."""
+        """The agent is stopping: every worker, and the one a /start under way is starting; no restart after."""
         with self.lock:
             self.closing = True
         self.stop(None)
 
     def start(self, req: dict) -> dict:
+        """A /start: it replaces what the port ran (and a restart pending there); remembered when it listens.  One
+        that is refused (see _refusal) leaves the port as it was: its worker, its supervision, a restart pending."""
+        refused = self._refusal(req)
+        if refused is not None:
+            return refused
+        port = int(req.get("port", 7841))
+        with self.lock:
+            self._forget([port])
+            gen = self.gens[port]
+            if port in self.status:
+                self.status[port].update(restarts=0, backoff=0.0)
         with self.start_lock:
-            return self._start(req)
+            return self._start(req, gen)
+
+    def exited(self, port: int, gen: int, code, ran_s: float) -> None:
+        """A worker of generation `gen` ended by itself (or its restart failed): start it again after the backoff,
+        unless the port moved on (/stop, /start), the agent is stopping or node.json says "restart": false."""
+        now = time.time()
+        with self.lock:
+            st = self.status.setdefault(port, {"restarts": 0, "backoff": 0.0})
+            st.update(last_exit=code, last_exit_at=now)
+            req = self.reqs.get(port) if not self.closing and self.gens.get(port) == gen else None
+            if req is not None and not self.cfg.get("restart", True):
+                self.say(f"worker {port} ended (exit {code}) after {ran_s:.0f} s: not started again "
+                         f"(node.json \"restart\": false)")
+            elif req is not None:
+                if ran_s >= RESTART_STABLE_S:
+                    st["backoff"] = 0.0
+                delay = RESTART_FIRST_S if st["backoff"] <= 0 else min(st["backoff"] * 2, RESTART_MAX_S)
+                st["backoff"] = delay
+                st["next_restart_at"] = now + delay
+                t = threading.Timer(delay, self._restart, (port, gen))
+                t.daemon = True
+                self.timers[port] = t
+                t.start()
+                self.say(f"worker {port} ended (exit {code}) after {ran_s:.0f} s: starting it again in {delay:g} s "
+                         f"(restart {st['restarts'] + 1})")
+        self.reset_clocks()   # none runs here now, or none until the restart
+
+    def _restart(self, port: int, gen: int) -> None:
+        with self.lock:
+            if self.closing or self.gens.get(port) != gen or port not in self.reqs:
+                return
+            self.timers.pop(port, None)
+            st = self.status[port]
+            st["next_restart_at"] = None
+            st["restarts"] += 1
+            req = self.reqs[port]
+        self.say(f"worker {port}: starting it again (restart {st['restarts']})")
+        t0 = time.time()
+        try:
+            with self.start_lock:
+                r = self._start(req, gen)
+        except Exception as e:  # noqa: BLE001 - on the timer's thread: a failed restart, not the end of supervision
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        if r.get("ok"):
+            self.say(f"worker {port}: listening again after {r['seconds']} s")
+        else:
+            self.say(f"worker {port}: the restart failed: {r.get('error') or 'exit ' + str(r.get('exit'))}")
+            self.exited(port, gen, r.get("exit"), time.time() - t0)
+
+    def _wait(self, port: int, gen: int, proc: subprocess.Popen, t0: float) -> None:
+        """A worker that listened: its end, whoever caused it (a /stop moved the generation on: no restart)."""
+        code = proc.wait()
+        with self.lock:
+            if self.procs.get(port) is proc:
+                self.procs.pop(port)
+        self.exited(port, gen, code, time.time() - t0)
+
+    def ports(self) -> dict[str, dict]:
+        """/info's "ports": each port's worker - running, restarts so far, the last exit's code and time (epoch s),
+        the next start's time (epoch s) while one is pending."""
+        with self.lock:
+            out = {}
+            for p in sorted(set(self.procs) | set(self.status) | set(self.reqs)):
+                st = self.status.get(p, {})
+                proc = self.procs.get(p)
+                out[str(p)] = {"running": proc is not None and proc.poll() is None,
+                               "supervised": p in self.reqs and bool(self.cfg.get("restart", True)),
+                               "restarts": st.get("restarts", 0), "last_exit": st.get("last_exit"),
+                               "last_exit_at": st.get("last_exit_at"), "next_restart_at": st.get("next_restart_at")}
+            return out
 
     def model(self, req: dict) -> dict:
         """The model files a worker runs: node.json's, or a model shipped under data_dir that /start names -
@@ -227,20 +349,50 @@ class Workers:
                 raise ValueError(f"model {k} is not shipped here: tools/stage_ship.py first")
         return {k: str(p or "") for k, p in out.items()}
 
-    def _start(self, req: dict) -> dict:
-        port = int(req.get("port", 7841))
+    def _refusal(self, req: dict) -> dict | None:
+        """A start's answer when it cannot run here (a number that is not one, flags not allowed, a relay without
+        both end and next, a model not shipped here); None when it can."""
+        try:
+            int(req.get("port", 7841)), int(req["begin"]), int(req.get("prefill", 2048))
+            if req.get("end") is not None:
+                int(req["end"])
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "error": "begin, end, port and prefill must be whole numbers"}
         allowed = EXTRA_ALLOWED | set(self.cfg.get("extra_allow", []))
-        extra = [str(a) for a in req.get("extra", [])]
-        bad = [a for a in extra if a.startswith("-") and a not in allowed]
+        bad = [str(a) for a in req.get("extra", []) if str(a).startswith("-") and str(a) not in allowed]
         if bad:
             return {"ok": False, "error": f"flags not allowed here: {bad} (node.json extra_allow)"}
         if (req.get("end") is None) != (req.get("next") is None):
             return {"ok": False, "error": "a relay needs both end and next"}
         try:
-            m = self.model(req)
+            self.model(req)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
-        self.stop(port)
+        return None
+
+    def _start(self, req: dict, gen: int) -> dict:
+        """_launch, under start_lock: an exception in it (reading the log, say) stops the worker it started, so none
+        runs that no thread waits on (a restart's then counts as a failed one)."""
+        try:
+            return self._launch(req, gen)
+        except Exception:
+            self._stop_procs([int(req.get("port", 7841))])
+            raise
+
+    def _launch(self, req: dict, gen: int) -> dict:
+        port = int(req.get("port", 7841))
+        refused = self._refusal(req)   # (again for a restart: a shipped model may be gone since)
+        if refused is not None:
+            return refused
+        extra = [str(a) for a in req.get("extra", [])]
+        try:
+            m = self.model(req)
+        except ValueError as e:   # (removed since the check)
+            return {"ok": False, "error": str(e)}
+        with self.lock:   # a restart that waited for start_lock while a /stop or a /start moved the port on
+            if self.gens.get(port, 0) != gen:
+                return {"ok": False, "port": port, "error": "stopped meanwhile"}
+        self._stop_procs([port])
         c = self.cfg
         args = [c["exe"], "--serve", "--stage-worker", str(port), "--stage-begin", str(int(req["begin"]))]
         if req.get("end") is not None:
@@ -257,6 +409,12 @@ class Workers:
             var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
             env[var] = libs + (os.pathsep + env[var] if env.get(var) else "")
         log = self.log_path(port)
+        try:   # the last run that listened stays readable (its stall report, say); one that never did is overwritten
+            if self.listened.get(port, True) and log.exists():
+                os.replace(log, self.log_path(port, prev=True))
+        except OSError:
+            pass   # (then it is overwritten, as before)
+        self.listened[port] = False
         kw = {"start_new_session": True} if os.name != "nt" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         try:
             with open(log, "wb") as fh:
@@ -264,33 +422,44 @@ class Workers:
                                         **kw)
         except OSError as e:   # a wrong exe or log_dir: an answer, not a dropped connection
             return {"ok": False, "port": port, "error": f"cannot start the worker: {e}"}
+        t0 = time.time()
         with self.lock:
-            closing = self.closing
-            if not closing:
+            # close() has run or is running, or a /stop or /start moved the port on: neither would see this worker
+            gone = "the agent is stopping" if self.closing else \
+                "stopped meanwhile" if self.gens.get(port, 0) != gen else None
+            if gone is None:
                 self.procs[port] = proc
-        if closing:   # close() has run or is running: it would not see this worker
+        if gone is not None:
             proc.kill()
             proc.wait(30)
-            return {"ok": False, "port": port, "error": "the agent is stopping"}
+            return {"ok": False, "port": port, "error": gone}
         clock_note = self.lock_clocks()   # (the worker reads its experts for seconds before its first window)
-        t0 = time.time()
         while time.time() - t0 < LISTEN_TIMEOUT_S:
-            time.sleep(1)
+            time.sleep(LISTEN_POLL_S)
+            if self.gens.get(port, 0) != gen:   # a /stop or a /start (waiting for this one) moved the port on
+                self._stop_procs([port])
+                return {"ok": False, "port": port, "error": "stopped meanwhile"}
             text = log.read_text(encoding="utf-8", errors="replace")
             if "listening on" in text:
+                self.listened[port] = True
                 if c.get("drop_cache", True):   # its experts are pinned now: the cached file pages are a second copy
                     for f in model_files(m):
                         drop_cache(f)
+                with self.lock:
+                    if self.gens.get(port, 0) == gen:
+                        self.reqs[port] = req   # what a restart runs
+                threading.Thread(target=self._wait, args=(port, gen, proc, t0), daemon=True).start()
                 r = {"ok": True, "port": port, "seconds": round(time.time() - t0, 1), "log": tail(text, 25)}
                 if clock_note:
                     r["clocks"] = clock_note
                 return r
             if proc.poll() is not None:
                 with self.lock:
-                    self.procs.pop(port, None)
+                    if self.procs.get(port) is proc:
+                        self.procs.pop(port)
                 self.reset_clocks()
                 return {"ok": False, "port": port, "exit": proc.returncode, "log": tail(text, 40)}
-        self.stop(port)
+        self._stop_procs([port])
         return {"ok": False, "port": port, "error": f"not listening after {LISTEN_TIMEOUT_S} s",
                 "log": tail(log.read_text(encoding="utf-8", errors="replace"), 40)}
 
@@ -584,8 +753,8 @@ def make_handler(cfg: dict, workers: Workers, store: Store):
                 workers.reap()
                 self.reply(200, {"ok": True, "host": platform.node(), "system": platform.platform(),
                                  "cpus": os.cpu_count(), "gpus": gpu_info(), "ram": ram_info(),
-                                 "workers": workers.running(), "bind": cfg["bind"],
-                                 "gpu_clocks": cfg.get("gpu_clocks")})
+                                 "workers": workers.running(), "ports": workers.ports(), "bind": cfg["bind"],
+                                 "gpu_clocks": cfg.get("gpu_clocks"), "restart": bool(cfg.get("restart", True))})
             elif u.path == "/sha256":
                 try:
                     p = store.path(q["path"][0])
@@ -604,7 +773,7 @@ def make_handler(cfg: dict, workers: Workers, store: Store):
             elif u.path == "/log":
                 port = int(q.get("port", ["7841"])[0])
                 lines = int(q.get("lines", ["200"])[0])
-                p = workers.log_path(port)
+                p = workers.log_path(port, prev=q.get("prev", ["0"])[0] == "1")
                 text = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
                 self.reply(200, {"ok": True, "port": port, "log": tail(text, lines)})
             else:
