@@ -20,8 +20,8 @@ Work through the steps in order. Tell the user what you are doing in plain words
   Do not put a tunnel or port forward in front of a server without a key unless the user asks for it.
 - Do not change the user's system beyond what Strata does. The Terminal installs into the user's home folder and needs
   no administrator rights. It does not install drivers, Python packages or compilers. Ask before installing drivers.
-- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with
-  that before you start, especially on a metered connection.
+- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL, 90 GB for Signal's AP-IQ4_XS,
+  101 GB for AP-Q4_K_XL). Confirm the user is fine with that before you start, especially on a metered connection.
 - The first `strata launch` is long-running (an hour or more on a slow connection). Run it in the background or with a
   long timeout and poll its output; do not kill it because it is quiet for a while. It is resumable: running the same
   command again continues where it stopped.
@@ -86,7 +86,10 @@ size):
 | 96 GB+ | `--model iq3_s` | `--family unsloth --model ud-iq4_xs` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `ud-q4_k_xl` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes IQ2_XS, IQ3_XXS, IQ3_S) is the
-alternative to `qwen`. A model name is not case sensitive. More: [MODELS.md](MODELS.md).
+alternative to `qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two
+~4-bit sizes for 48 GB or more: `AP-Q4_K_XL` (101 GB, NVIDIA only so far; part of the experts read from the SSD under
+~90 GB of RAM) and `AP-IQ4_XS` (90 GB, under ~80 GB; not run by us yet). A model name is not case sensitive. More:
+[MODELS.md](MODELS.md).
 
 ## 4. Set up and serve, without questions
 
@@ -103,8 +106,8 @@ The flags (all of them, with examples: `strata launch --help`):
 
 | Flag | Meaning |
 | --- | --- |
-| `--model NAME` | the size: `q2_0`, `iq2_xs`, `iq3_xxs`, `iq3_s`, `iq1_m`, `ud-iq4_xs`, `ud-q4_k_xl`, ... (the error message for a wrong name lists them) |
-| `--family NAME` | the model version when several have that size: `qwen`, `swift`, `coder`, `unsloth` |
+| `--model NAME` | the size: `q2_0`, `iq2_xs`, `iq3_xxs`, `iq3_s`, `iq1_m`, `ud-iq4_xs`, `ud-q4_k_xl`, `ap-q4_k_xl`, `ap-iq4_xs`, ... (the error message for a wrong name lists them) |
+| `--family NAME` | the model version when several have that size: `qwen`, `swift`, `coder`, `unsloth`, `signal` |
 | `--model-path PATH` | files the user already has: a folder of shards or one `.gguf` file |
 | `--data-dir DIR` | where new model files go. Models you already have stay where they are and stay usable; add `--move-data` to move them into DIR |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens |

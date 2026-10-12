@@ -239,11 +239,27 @@ START-HERE.bat --setup --family nvfp4 --model NVFP4-QAD
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
 explicit packing conversion and is not an installer menu option.
 
-### agentionai Signal AP-Q4_K_XL
+### Signal 3.8 Flash Next
 
-For **agentionai's Signal fine-tune in AP-Q4_K_XL**, see the [manual compatibility setup](SIGNAL_AP_Q4_K_XL.md). It
-has UD-Q4_K_XL's expert gate/up with IQ4_NL downs and Q6_K everywhere else, so it needs the same packing conversion
-plus a BF16 embedding file. It is not an installer menu option.
+**[Signal](https://huggingface.co/agentionai/Signal-3.8-Flash-Next-GGUF)** - a fine-tune by agentionai that thinks
+more directly: 26% fewer reasoning tokens on MATH-500, at a higher score, by its authors' numbers. Setup offers its two
+~4-bit sizes (`--family signal`): **AP-Q4_K_XL** (Q4_K experts, a 101 GB download with 67.9 GB of experts) and
+**AP-IQ4_XS** (IQ3_S experts, 90 GB with 57.3 GB). As with Unsloth's files, Strata keeps your RAM minus 24 GB of the
+experts in RAM and reads the rest from the SSD while it answers. Setup also writes a BF16 copy of its token embedding
+(1.3 GB), which the engine reads instead of the file's Q6_K table. Images use Signal's own encoder. Its license is the
+Qwen Community License 1.0 (see its page).
+
+With the config setup wrote (128K context, 8-bit KV, images on, every expert in RAM), on an RTX 4090 with 93 GB of
+DDR5-3600 RAM and Strata 0.1.46.3 (`tools/strata_bench.py`, three runs of the suite each, medians of the runs):
+AP-Q4_K_XL 71.3 tokens/s for short answers and 86.1 in an agent session; AP-IQ4_XS 91.0 and 108.0. Speeds moved from
+run to run (AP-Q4_K_XL short answers: 71.3, 71.5 and 64.5 tokens/s in the three runs); each run is in the tables of
+the Signal page. AP-Q4_K_XL is NVIDIA only so far: the AMD engine has no prompt kernels for its Q4_K experts, as with
+UD-Q4_K_XL. The two files differ only in the experts' gate/up type, the one UD-IQ4_XS uses. Details and the manual
+steps: [Signal](SIGNAL_AP_Q4_K_XL.md).
+
+```
+START-HERE.bat --setup --family signal --model AP-Q4_K_XL
+```
 
 ## Qwen3.6-35B-A3B
 
