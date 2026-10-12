@@ -3,6 +3,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <sycl/sycl.hpp>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
@@ -1861,17 +1862,30 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_1a727f>>(
-            sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) *
-                                  sycl::range(1, 1, THREADS),
-                              sycl::range(1, 1, THREADS)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                gr_up_multi_kernel(m);
-            });
+        // Opt-in launch-only GRF experiment, limited to this default up kernel.
+        static const bool large_grf = [] {
+            const char* v = std::getenv("STRATA_GR_UP_LARGE_GRF");
+            return v != nullptr && std::strcmp(v, "1") == 0;
+        }();
+        const auto range = sycl::nd_range<3>(
+            sycl::range(1, 1, UPM_BLOCKS) * sycl::range(1, 1, THREADS),
+            sycl::range(1, 1, THREADS));
+        const auto body = [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+            gr_up_multi_kernel(m);
+        };
+        if (large_grf) {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync,
+                sycl::ext::intel::experimental::grf_size<256>};
+            // Distinct name: different properties overloads otherwise collide.
+            st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_large_grf_256>>(
+                range, exp_props, body);
+        } else {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+            st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_1a727f>>(
+                range, exp_props, body);
+        }
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
