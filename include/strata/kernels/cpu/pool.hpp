@@ -36,6 +36,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -183,6 +184,10 @@ public:
     void run_split_multi(ExpertJobMulti* jobs, int n);
     /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).
     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
+    /// The same, with `aside` run by the host thread right after the first phase's tasks are published - the workers
+    /// compute while the host does it (a peer GPU's launch, ~30 us a layer, used to run before this call and hold the
+    /// whole pool back by that much).  The host joins the first phase's drain when `aside` returns.
+    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, const std::function<void()>& aside);
     static constexpr int kMaxSplitMulti = 96;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
@@ -223,7 +228,7 @@ private:
     int tasks_ = 0;
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
-    void run_phase(int mode, int n_tasks);
+    void run_phase(int mode, int n_tasks, const std::function<void()>* aside = nullptr);
     /// Claim the next job of batch `epoch`, or -1 (that batch is exhausted, or it is not the current one).
     int claim(uint32_t epoch);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.

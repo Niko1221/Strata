@@ -3859,16 +3859,26 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     : (e >= 0 && e < d.n_expert && d.peer != nullptr && d.peer->has(d.layers, e)) ? 2 : -1;
         }
     }
-    if (d.peer != nullptr) {                 // multi-GPU: start the second GPU's share before the CPU's own work
+    // multi-GPU: the second GPU's share.  Launched by the pool's host thread once the CPU's first phase is published
+    // (`peer_go`, below): ~30 us of host work a layer that used to run BEFORE the pool started, with every worker
+    // waiting.  Opt-in (STRATA_PEER_LAUNCH_IN_POOL=1); without it the peer launches first, as before.  A layer with no
+    // CPU work launches it here.
+    static const bool peer_first = [] { const char* v = std::getenv("STRATA_PEER_LAUNCH_IN_POOL"); return v == nullptr || std::atoi(v) == 0; }();
+    bool peer_launched = false;
+    auto peer_go = [&]() -> bool {
+        if (d.peer == nullptr || peer_launched) return true;
+        peer_launched = true;
         std::string perr;
         if (!d.peer->launch(d.layers, x_f, ids, n_tok, k, kind, perr, out)) {
             std::fprintf(stderr, "strata: %s (layer %lld)\n", perr.c_str(), (long long) d.layers);
             d.failed = true;
             d.fail = "the peer GPU's experts could not be launched";
             d.fail_layer = d.layers;
-            return;
+            return false;
         }
-    }
+        return true;
+    };
+    if (peer_first && !peer_go()) return;
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r) {
@@ -3932,9 +3942,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 if (kind[i] == 0) ++d.cache_hits;
                 else ++d.offload_entries;                       // #588: PCIe or another GPU
                 if (kind[i] == 2 && d.peer != nullptr) ++d.peer_entries;
-                // multi-GPU: a direct peer launch is writing this row right now - zeroing it would race it;
-                // dec_batch: copy_rows_from_mapped_kernel already zeroes kind 0/1 rows on the GPU
-                if (!((kind[i] == 2 && d.peer != nullptr && d.peer->launched_direct()) ||
+                // multi-GPU: a direct peer launch writes the whole row itself (now, or - STRATA_PEER_LAUNCH_IN_POOL -
+                // once it is launched below) - zeroing it would race it or be wasted; dec_batch:
+                // copy_rows_from_mapped_kernel already zeroes kind 0/1 rows on the GPU
+                if (!((kind[i] == 2 && d.peer != nullptr &&
+                       (d.peer->launched_direct() || (!peer_first && PeerExperts::direct_mode() && out != nullptr))) ||
                       (gpu_zeroes_hits && (kind[i] == 0 || kind[i] == 1))))
                     std::memset(row, 0, (size_t) H * sizeof(float));
                 continue;
@@ -3966,9 +3978,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const auto c3 = std::chrono::steady_clock::now();
     pt("run", njobs);
     if (njobs > 0) {
-        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+        if (native && d.peer != nullptr && !peer_launched)
+            d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, [&] { (void) peer_go(); });
+        else if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
+    if (!peer_go()) return;                  // no CPU work this layer (or a non-native pack): the peer starts here
+    if (d.failed) return;                    // a launch inside the pool's first phase failed
+    const auto c3p = std::chrono::steady_clock::now();
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r)
@@ -3993,6 +4010,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     d.ms_actq += ms(c1, c2);
     d.ms_jobs += ms(c2, c3);
     d.ms_run += ms(c3, c4);
+    d.ms_cpu += ms(c3, c3p);
     for (int64_t i = 0; i < n_tok * k; ++i) {
         const int64_t e = ids[i];
         if (e >= 0 && e < d.n_expert) d.job_of[(size_t) e] = -1;

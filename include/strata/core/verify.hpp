@@ -44,10 +44,11 @@ namespace strata::core {
 /// bytes arrive layer by layer: `run` holds a layer's plan (the first thing that lets the GPU read the layer's expert
 /// slots) back until `landed >= layer` for a layer with a swap (`has[layer]`).  Set `active` only around one window.
 struct AdaptGate {
-    struct Tick { AdaptGate* gate; int32_t layer; };
+    struct Tick { std::atomic<int32_t>* counter; int32_t layer; };
     std::atomic<int32_t> landed{-1};      ///< the highest layer whose swap copies have landed (n_layers: all of them)
     std::atomic<bool> active{false};
     std::vector<uint8_t> has;             ///< per layer: a swap copies into this layer's slots
+    int32_t last = -1;                    ///< the highest layer with a swap this round (-1: none)
     std::vector<Tick> ticks;              ///< host-function contexts, one per layer and the final one (stable storage)
     const int32_t* dvals = nullptr;       ///< device [0..n_layers]: the source of those copies
     volatile int32_t* hland = nullptr;   ///< pinned host int the copy stream writes (a D2H copy of the layer number), instead of a host function; null: host functions
@@ -55,6 +56,19 @@ struct AdaptGate {
         const int32_t a = landed.load(std::memory_order_acquire);
         if (hland == nullptr) return a;
         const int32_t b = *hland;
+        return a > b ? a : b;
+    }
+    /// The peer tier's copies (--peer-device with STRATA_ADAPT_OVERLAP=1): its own counter, raised on its refill stream
+    /// in layer order the same two ways (`peer_hland`: the pinned int its D2H copies write; null: host functions); a
+    /// layer with a peer swap waits for it as well.
+    std::atomic<int32_t> peer_landed{-1};
+    std::vector<uint8_t> peer_has;
+    int32_t peer_last = -1;
+    volatile int32_t* peer_hland = nullptr;
+    int32_t peer_reached() const {
+        const int32_t a = peer_landed.load(std::memory_order_acquire);
+        if (peer_hland == nullptr) return a;
+        const int32_t b = *peer_hland;
         return a > b ? a : b;
     }
 };

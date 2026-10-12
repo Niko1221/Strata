@@ -2219,7 +2219,12 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
 bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
-    while (adapt_gate_->reached() < layer) {
+    // each tier's counter climbs to the last layer it swaps this round, so an all-layers wait asks for that layer
+    const AdaptGate& ag = *adapt_gate_;
+    const int32_t want = std::min(layer, ag.last), want_peer = std::min(layer, ag.peer_last);
+    const bool wait_main = ag.last >= 0 && ((size_t) layer >= ag.has.size() || ag.has[(size_t) layer] != 0);
+    const bool wait_peer = ag.peer_last >= 0 && ((size_t) layer >= ag.peer_has.size() || ag.peer_has[(size_t) layer] != 0);
+    while ((wait_main && ag.reached() < want) || (wait_peer && ag.peer_reached() < want_peer)) {
         _mm_pause();
         if ((++spins & 1023u) != 0) continue;
         if (Clock::now() - t0 > std::chrono::seconds(20)) {
@@ -2360,7 +2365,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (g_trace) trace_ev("RANG", k, l, (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
         VDBG("layer %lld rang\n", (long long) l);
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && l >= 0 &&
-            (size_t) l < adapt_gate_->has.size() && adapt_gate_->has[(size_t) l] != 0 &&
+            (((size_t) l < adapt_gate_->has.size() && adapt_gate_->has[(size_t) l] != 0) ||
+             ((size_t) l < adapt_gate_->peer_has.size() && adapt_gate_->peer_has[(size_t) l] != 0)) &&
             !adapt_gate_wait((int32_t) l, err)) return false;
         cur_layer_ = want - 1;
         set_plan_slot(grp);
