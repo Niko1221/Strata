@@ -52,6 +52,7 @@ internal static class TrayTests
         SynchronizationContext.SetSynchronizationContext(null);
         Check(AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), new IntPtr(-4)), "actual PerMonitorV2 process");
         int port;
+        using (var artwork = TrayContext.LoadIcon()) Check(artwork.Width > 0 && artwork.Height > 0, "embedded favicon loads after resource stream closes");
         Check(Program.TryPort(new string[0], out port) && port == 8095, "official default port");
         Check(Program.TryPort(new[] { "--port", "43210" }, out port) && port == 43210, "custom port");
         foreach (string bad in new[] { "0", "65536", "-1", "localhost", "8095/path" })

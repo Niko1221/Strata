@@ -23,9 +23,38 @@ with the existing run script as usual. Nothing adds the Tray to startup or to
 the installer. One instance is allowed per port in the current Windows session.
 
 Right-click the notification-area icon for the menu; double-click opens the
-Web UI. Windows may place new icons in the taskbar overflow. The initial icon
-uses the Windows application symbol. Status text uses system menu colors and
+Web UI. Windows may place new icons in the taskbar overflow. The Tray and executable use the official green layer-stack favicon.
+`Strata.ico` is a raster conversion of `serve/web/favicon.svg`, with 16, 20,
+24, 32, 40, 48, 64, 128 and 256 px frames; the artwork is unchanged. Status text uses system menu colors and
 stays noninteractive. Other menu actions retain standard Windows rendering.
+
+## Menu and daily use
+
+<img src="screenshots/favicon.png" width="32" height="32" alt="Official Strata favicon">
+
+![Actual Windows menu connected to the official mock server](screenshots/menu.jpg)
+
+This capture shows the actual candidate menu opened from a temporary preview
+harness connected to the unmodified official mock server. The harness window is
+not part of the shipped client. The screenshot's ephemeral port is an example;
+normal launch uses 8095. Screenshot scaling is not a physical 4K sharpness test.
+
+1. Start the server with your existing Strata run script, then launch the Tray
+   with the same port. Launching the Tray does not start the server.
+2. Expand the taskbar notification overflow if needed. Right-click the green
+   Strata icon to see status; updates arrive automatically every five seconds.
+3. Choose **Refresh status** to check immediately. A running check is not duplicated.
+4. Choose **Open Web UI**, or double-click the icon, to open the configured local
+   port in your default browser. Sign in there normally if the server requires it.
+5. Choose **Copy diagnostics**, then paste into a text editor or issue draft.
+   Review the report before sharing. It records the last check and its timestamp.
+   If another app holds the clipboard, retry after the notification.
+6. Choose **Exit Tray (keep server running)** to remove the icon. Stop the server
+   separately with its original launcher when you want to free the model resources.
+
+If the API is unavailable, check that the server is running and the port matches.
+`auth required` is expected for a protected API: the Tray deliberately does not
+store an API key. A duplicate launch for the same port exits without another icon.
 
 ## What the status means
 

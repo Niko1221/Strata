@@ -173,8 +173,16 @@ internal sealed class TrayContext : ApplicationContext
     private readonly ContextMenuStrip menu = new ContextMenuStrip { Renderer = new StatusRenderer(), ShowItemToolTips = true };
     private readonly StatusItem api = new StatusItem("API: checking"), model = new StatusItem("Model: unknown");
     private readonly NotifyIcon icon;
+    private readonly Icon artwork = LoadIcon();
     private Snapshot snapshot = new Snapshot();
     private bool polling, closing;
+
+    internal static Icon LoadIcon()
+    {
+        using (var stream = typeof(TrayContext).Assembly.GetManifestResourceStream("Strata.ico"))
+        using (var source = new Icon(stream, SystemInformation.SmallIconSize))
+            return (Icon)source.Clone();
+    }
 
     internal TrayContext(int serverPort)
     {
@@ -188,7 +196,7 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add("Copy diagnostics", null, delegate { CopyDiagnostics(); });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit Tray (keep server running)", null, delegate { ExitThread(); });
-        icon = new NotifyIcon { Icon = SystemIcons.Application, Text = "Strata — checking", ContextMenuStrip = menu, Visible = true };
+        icon = new NotifyIcon { Icon = artwork, Text = "Strata — checking", ContextMenuStrip = menu, Visible = true };
         icon.DoubleClick += delegate { OpenWeb(); };
         timer.Tick += async delegate { await Refresh(); };
         timer.Start();
@@ -236,6 +244,7 @@ internal sealed class TrayContext : ApplicationContext
         shutdown.Cancel();
         icon.Visible = false;
         icon.Dispose();
+        artwork.Dispose();
         menu.Dispose();
         timer.Dispose();
         probe.Dispose();
