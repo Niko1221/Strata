@@ -136,6 +136,72 @@ class Store(unittest.TestCase):
             self.assertEqual(usage.UsageStore(path).view()["total"]["requests"], 0)
 
 
+class Folders(unittest.TestCase):
+    """The models sharing the running model's folder: what they are called, how they add up, and whose counts
+    win when the model is the one the server is running."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.dir = Path(self._dir.name)
+        self.addCleanup(self._dir.cleanup)
+
+    def put(self, stem, model=None, days=None):
+        """One model in the folder: its run config (when it has one) and its usage file."""
+        if model is not None:
+            (self.dir / f"{stem}.json").write_text(json.dumps({"model_name": model}), encoding="utf-8")
+        path = self.dir / f"{stem}.usage.json"
+        path.write_text(json.dumps({"days": days or {}}), encoding="utf-8")
+        return path
+
+    def test_a_model_is_named_after_its_run_config(self):
+        p = self.put("strata-a", "model-a")
+        self.assertEqual(usage.model_name(p), "model-a")
+        # a config one edited by hand, a config that is gone, a file someone copied here: the file names itself
+        (self.dir / "strata-a.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(usage.model_name(p), "strata-a")
+        self.assertEqual(usage.model_name(self.put("strata-c")), "strata-c")
+        self.assertEqual(usage.model_name(self.put("names", "  spaced  ")), "spaced")
+
+    def test_the_folder_adds_up_and_one_model_stays_one_model(self):
+        live = self.put("strata-live", "model-live",
+                        {"2026-01-01": {"requests": 5, "prompt_tokens": 500, "energy_wh": 1.0, "seconds": 60.0}})
+        self.put("strata-a", "model-a", {"2026-01-01": {"requests": 2, "prompt_tokens": 200}})
+        # the same model at another context or quantisation: two run configs, one model, one line
+        self.put("strata-b1", "model-b", {"2026-01-01": {"requests": 3}})
+        self.put("strata-b2", "model-b", {"2026-01-01": {"requests": 4}})
+        store = usage.ModelsUsage(live)
+
+        models = dict(store.models({"2026-01-01": {"requests": 6, "prompt_tokens": 600,
+                                                   "energy_wh": 2.0, "seconds": 120.0}}, "model-live"))
+        self.assertEqual(sorted(models), ["model-a", "model-b", "model-live"])
+        self.assertEqual(models["model-b"]["2026-01-01"]["requests"], 7)
+        # the running model's counts come from memory - its file may be up to SAVE_EVERY_S behind, and the two
+        # must not be added to one another: the memory copy replaces what the file holds
+        self.assertEqual(models["model-live"]["2026-01-01"]["requests"], 6)
+        self.assertEqual(models["model-live"]["2026-01-01"]["prompt_tokens"], 600)
+        self.assertEqual(models["model-live"]["2026-01-01"]["energy_wh"], 2.0)
+
+        merged = usage.summed(models.values())
+        self.assertEqual(merged["2026-01-01"]["requests"], 6 + 2 + 7)
+        self.assertEqual(merged["2026-01-01"]["prompt_tokens"], 600 + 200)
+        v = usage.days_view(merged)
+        self.assertEqual((v["total"]["requests"], v["total"]["prompt_tokens"]), (15, 800))
+        self.assertEqual(v["total"]["energy_wh"], 2.0)
+        self.assertEqual(v["today"]["requests"], 0)                  # that day is not today
+        self.assertEqual(v["total"]["cost"]["currency"], "CNY")
+
+        # a file another server rewrote is read again, not remembered
+        self.put("strata-a", "model-a", {"2026-01-01": {"requests": 9}})
+        again = dict(store.models({}, "model-live"))
+        self.assertEqual(again["model-a"]["2026-01-01"]["requests"], 9)
+
+    def test_a_model_with_nothing_to_show_is_still_listed(self):
+        live = self.put("strata-live", "model-live")
+        self.assertEqual(usage.ModelsUsage(live).models({}, "model-live"), [("model-live", {})])
+        # no folder at all (a server started without a run config): the running model is the folder
+        self.assertEqual(usage.ModelsUsage().models({"x": {"requests": 1}}, "m"), [("m", {"x": {"requests": 1}})])
+
+
 class Http(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -145,6 +211,7 @@ class Http(unittest.TestCase):
         base = Path(self.dir.name) / "strata-m"
         self.svc.usage = usage.UsageStore(str(base) + ".usage.json")
         self.svc.usage_path = str(base) + ".usage.json"
+        self.svc.models_usage = usage.ModelsUsage(self.svc.usage_path)
         self.svc.pricing_path = str(base) + ".pricing.json"
         self.base = base
         self.httpd = serve(self.svc, port=0)
@@ -254,13 +321,47 @@ class Http(unittest.TestCase):
         self.assertEqual((v["energy_wh"], v["busy_wh"], v["seconds"]), (0.5, 0.5, 12.0))
         self.assertGreater(v["cost"]["energy_cost"], 0)
 
+    def test_the_card_adds_the_models_up_and_can_show_them_apart(self):
+        self.chat()
+        # another model that ran out of this folder: its own usage file, named by its own run config
+        here = self.base.parent
+        (here / "strata-other.json").write_text(json.dumps({"model_name": "other-model"}), encoding="utf-8")
+        (here / "strata-other.usage.json").write_text(json.dumps({"days": {
+            usage.UsageStore._today(): {"requests": 4, "prompt_tokens": 4_000_000, "reused": 1_000_000,
+                                        "output_tokens": 1000, "energy_wh": 10.0, "seconds": 3600.0}}}),
+            encoding="utf-8")
+        status, u = self.get("/usage")
+        self.assertEqual(status, 200)
+        usage_v, models = u["usage"], u["usage"]["models"]
+        self.assertEqual(usage_v["today"]["requests"], 5)                    # 1 here + 4 in the other file
+        self.assertEqual(usage_v["total"]["prompt_tokens"],
+                         sum(m["total"]["prompt_tokens"] for m in models))
+        self.assertEqual([m["name"] for m in models], ["other-model", self.svc.model])   # dearest first
+        other, mine = models
+        self.assertEqual(other["total"]["requests"], 4)
+        self.assertEqual(other["today"]["requests"], 4)
+        self.assertEqual(other["days"][0]["date"], usage.UsageStore._today())
+        self.assertEqual(mine["total"]["requests"], 1)                       # the running model, from memory
+        self.assertEqual(mine["total"]["cost"]["currency"], "CNY")
+        self.assertGreater(other["total"]["cost"]["total_cost"], mine["total"]["cost"]["total_cost"])
+        # /metrics carries the same card, so the Monitor needs no second call
+        self.assertEqual(self.get("/metrics")[1]["usage"]["models"], models)
+        # the prices the page sets re-price every model, not only this one
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, b = post(f"http://{self.host}/pricing", {"pricing": {"currency": "USD"}},
+                        {"Origin": f"http://{self.host}"})
+        self.assertEqual([m["total"]["cost"]["currency"] for m in b["usage"]["models"]], ["USD", "USD"])
+
     def test_the_page_has_the_cards(self):
         web = ROOT / "serve" / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("usage-card", "usage-facts", "usage-days-body", "price-card", "price-save", "price-input",
-                   "price-kwh", "price-other-w"):
+        for el in ("usage-card", "usage-facts", "usage-days-body", "usage-model-th", "usage-scope", "usage-scope-card",
+                   "price-card", "price-save", "price-input", "price-kwh", "price-other-w"):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("pricing", {method: "POST", headers: headers(true)', js)
+        # the choice, on the card and in the Settings card: merged, or one line per model
+        self.assertEqual(html.count('data-v="merged"'), 2)
+        self.assertEqual(html.count('data-v="models"'), 2)
 
 
 if __name__ == "__main__":

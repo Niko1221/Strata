@@ -3166,8 +3166,10 @@ class Service:
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
         self.last_request_at = None                      # when a request last started or finished
         # token use kept across starts (serve/usage.py) and the prices it is shown at; main() points these at the
-        # files next to the run config, so a server started without one keeps the numbers in memory only
+        # files next to the run config, so a server started without one keeps the numbers in memory only.  The
+        # other models of the same folder are read from their own files, for the card's merged and by-model views.
         self.usage = usage.UsageStore()
+        self.models_usage = usage.ModelsUsage()
         self.usage_path = None
         self.pricing_path = None
         self.pricing = dict(usage.DEFAULT_PRICING)
@@ -3641,6 +3643,20 @@ class Service:
         "reasoning_effort" (#1641).  Every API reads it here (the Responses API did not: 0.1.44.1)."""
         return self.shared.get("reasoning_effort") or self.config_effort
 
+    def usage_view(self, pricing: dict | None = None) -> dict:
+        """The Monitor's Token usage and cost card (GET /usage, and /metrics' `usage`): the models of this folder
+        added up, which is what the card shows, plus each model on its own for the card's "By model" choice.
+
+        The running model's counts come from the live store, the other models' from their usage files next to
+        their run configs; one folder, one bill.  Every figure is priced with this server's prices - the page has
+        one Token pricing card, so a model one ran months ago is shown at today's prices too."""
+        pricing = self.pricing if pricing is None else pricing
+        today = time.strftime("%Y-%m-%d")
+        entries = self.models_usage.models(self.usage.snapshot(), self.model)
+        models = [{"name": name, **usage.days_view(days, pricing, today)} for name, days in entries]
+        models.sort(key=lambda m: (-m["total"]["cost"]["total_cost"], m["name"]))   # dearest first
+        return {**usage.days_view(usage.summed([days for _, days in entries]), pricing, today), "models": models}
+
     def load_pricing(self) -> None:
         """The prices from the file next to the run config (strata-<model>.pricing.json); absent or unreadable:
         the defaults.  Called once at start, before the first request could be recorded."""
@@ -3830,8 +3846,9 @@ class Service:
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now,
-                # token use kept across starts and its cost at the current prices (serve/usage.py)
-                "usage": self.usage.view(self.pricing), "pricing": dict(self.pricing)}
+                # token use kept across starts and its cost at the current prices (serve/usage.py): the folder's
+                # models added up, and each of them for the card's "By model" choice
+                "usage": self.usage_view(), "pricing": dict(self.pricing)}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -5492,7 +5509,7 @@ def make_handler(svc: Service):
                 return
             if path == "/usage":                             # token use kept across starts, priced for display
                 if self._authorized():
-                    self._json(200, {"usage": svc.usage.view(svc.pricing), "pricing": dict(svc.pricing)})
+                    self._json(200, {"usage": svc.usage_view(), "pricing": dict(svc.pricing)})
                 return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
@@ -5903,7 +5920,7 @@ def make_handler(svc: Service):
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
-            self._json(200, {"pricing": pricing, "usage": svc.usage.view(pricing)})
+            self._json(200, {"pricing": pricing, "usage": svc.usage_view()})
 
         def _foreign_origin(self) -> bool:
             """A web page of another origin sent this.  The Origin must be this server's own address (host and port),
@@ -7149,9 +7166,11 @@ def main() -> int:
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
-        # token use kept across starts and the prices it is shown at, next to the run config
+        # token use kept across starts and the prices it is shown at, next to the run config; the folder's other
+        # models are read from their own usage files, for the card's merged and by-model views
         svc.usage = usage.UsageStore(str(Path(a.config).with_suffix("")) + ".usage.json")
         svc.usage_path = str(Path(a.config).with_suffix("")) + ".usage.json"
+        svc.models_usage = usage.ModelsUsage(svc.usage_path)
         svc.pricing_path = str(Path(a.config).with_suffix("")) + ".pricing.json"
         svc.load_pricing()
     if a.config:                                        # the Chat settings shared with other apps, from last time
