@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine, VideoCancelled,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
@@ -681,7 +681,7 @@ class VideoParts(unittest.TestCase):
         try:
             cancel = threading.Event()
             cancel.set()
-            with self.assertRaisesRegex(ValueError, "video request cancelled"):
+            with self.assertRaisesRegex(VideoCancelled, "video request cancelled"):
                 self.svc.prepare([{"role": "user", "content": [{"type": "video", "source": "a.mp4"}]}],
                                  None, {}, cancel=cancel)
             self.assertEqual(self.svc.status["queued"], 0)
@@ -695,7 +695,7 @@ class VideoParts(unittest.TestCase):
         timer = threading.Timer(0.05, cancel.set)
         timer.start()
         try:
-            with self.assertRaisesRegex(ValueError, "video request cancelled"):
+            with self.assertRaisesRegex(VideoCancelled, "video request cancelled"):
                 self.svc.prepare([{"role": "user", "content": [{"type": "video", "source": "a.mp4"}]}],
                                  None, {}, cancel=cancel)
             self.assertEqual(self.svc.status["queued"], 0)
