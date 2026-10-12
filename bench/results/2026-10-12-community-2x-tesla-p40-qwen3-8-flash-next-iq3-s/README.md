@@ -22,7 +22,7 @@ strata --pack iq3_s --native Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.ggu
 
 ## Method
 
-Run by `python tools/strata_bench.py` against the HTTP API of a Strata server (started by the benchmark from the install configuration); model loading is not timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation cache cannot help the fresh-prompt tests.
+Run by `python tools/strata_bench.py --long` against the HTTP API of a Strata server (started by the benchmark from the install configuration); model loading is not timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation cache cannot help the fresh-prompt tests.
 
 - short chat: the three questions of `tools/ab_engine.py`, up to 100 new tokens, 3 runs
 - 4K / 16K prompts: generated word lists sized by a calibration request, 24 new tokens, 3 fresh prompts each
@@ -33,28 +33,29 @@ Run by `python tools/strata_bench.py` against the HTTP API of a Strata server (s
 
 | Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds median and range |
 | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
-| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 34.9 (28.6-46.1) | 0.88 (0.75-1.03) |
-| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 344.6 (326.3-345.4) | not measured | 11.70 (11.68-12.36) |
-| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 509.0 (507.0-509.2) | not measured | 31.60 (31.59-31.73) |
-| agent session, follow-up turns | 14458 (14451-14461) at the last turn | see below | up to 64 | 3 | see below | 36.4 (27.1-44.6) | 9.77 (5.93-11.17) |
+| short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 36.0 (28.8-44.7) | 0.89 (0.75-1.04) |
+| 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 344.1 (326.4-345.5) | not measured | 11.72 (11.68-12.36) |
+| 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 509.0 (506.8-509.5) | not measured | 31.60 (31.56-31.73) |
+| 32K prompt, fresh | 32049 (32049-32049) | 0 (0-0) | 24 cap | 3 | 634.8 (633.4-634.9) | not measured | 50.55 (50.54-50.66) |
+| agent session, follow-up turns | 14446 (14432-14472) at the last turn | see below | up to 64 | 3 | see below | 37.4 (29.1-46.2) | 9.68 (5.92-11.12) |
 
 Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token.
 
 ### Agent session (conversation cache)
 
-Cache hit over the follow-up turns: 68.6 % (68.6-68.8); earlier-turn tokens read again per session: 74 (4-74) (earlier turns that the cache did not hold; the 13634 (13633-13634) new tokens of the files are read once); first turn (nothing cached) first token: 3.70 s (3.70-3.90).
+Cache hit over the follow-up turns: 68.7 % (68.6-68.8); earlier-turn tokens read again per session: 3 (3-74) (earlier turns that the cache did not hold; the 13633 (13633-13634) new tokens of the files are read once); first turn (nothing cached) first token: 3.70 s (3.69-3.91).
 
 | Turn (run 1) | Prompt tokens | Reused | Read | Prompt tok/s | First token (s) | Decode tok/s |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | 609 | 0 | 609 | 164.6 | 3.897 | 24.7 |
-| 1 | 3712 | 631 | 3081 | 299.6 | 10.684 | 36.4 |
-| 2 | 5245 | 3775 | 1470 | 242.5 | 6.201 | 33.0 |
-| 3 | 8689 | 5308 | 3381 | 306.4 | 11.171 | 31.6 |
-| 4 | 11588 | 8728 | 2860 | 291.2 | 9.947 | 40.8 |
-| 5 | 14451 | 11605 | 2846 | 293.3 | 9.774 | 30.4 |
+| 0 | 609 | 0 | 609 | 163.9 | 3.913 | 23.8 |
+| 1 | 3706 | 626 | 3080 | 301.3 | 10.6 | 33.9 |
+| 2 | 5239 | 3770 | 1469 | 241.7 | 6.244 | 39.7 |
+| 3 | 8683 | 5302 | 3381 | 307.7 | 11.121 | 31.9 |
+| 4 | 11566 | 8706 | 2860 | 293.4 | 9.867 | 39.2 |
+| 5 | 14432 | 11586 | 2846 | 296.1 | 9.68 | 34.3 |
 
 Per-request data: `results.json`. Engine log lines from the start: `engine-log-excerpt.txt` (when this run started the server).
 
 ## Correctness and limitations
 
-Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; storage, PCIe link, background load and power limits were added by hand. Total time of the suite: 350 s.
+Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; storage, PCIe link, background load and power limits were added by hand. Total time of the suite: 504 s.
