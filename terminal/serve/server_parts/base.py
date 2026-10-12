@@ -45,8 +45,9 @@ def listen_problem(host: str, port: int, e: OSError) -> str:
     import errno
     code = getattr(e, "winerror", None) or e.errno
     if code in (errno.EADDRINUSE, 10048):
-        return (f"port {port} is already in use - is Strata (or another server) already running? "
-                f"Close it, or start this one with a different --port")
+        # the helpers sit beside Server in http_api, which imports this module: a lazy import, no cycle at load
+        from serve.server_parts import http_api
+        return http_api.port_in_use_message(host, port)
     what = e.strerror or str(e)
     if code in (10013, errno.EACCES):
         if sys.platform == "win32":
