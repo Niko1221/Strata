@@ -549,6 +549,112 @@ int main() {
             check(r_max_step <= std::max(u_max_step, 1.0) * 1.10,
                   "T11.e: rotated double-quant noise within 10% of the accepted unrotated path's");
         }
+
+        // ---- T11.f: --kv q4_0 - the Q4 sandwich with Q4_0 codec ----
+        // Stored rows are quant_q4(H * R(p) * k).  Assert (a) the splice result is BITWISE
+        // equal to an independently coded sandwich of the STORED row, and (b) the distance
+        // to the ideal fresh write, measured in the q4 codec's own scale units, with the
+        // measured number reported (16-level codes are coarser than int8's - the claim is
+        // the measured value, not a hard bound).
+        {
+            const int blocks_per_head = head_dim / strata::kernels::QK4_0;
+            std::vector<uint8_t> q4_arena(pool_rows * (size_t) blocks_per_head
+                                          * sizeof(strata::kernels::block_q4_0), 0);
+            strata::kernels::block_q4_0* q4_rows = (strata::kernels::block_q4_0*) q4_arena.data();
+            for (int p = 0; p < max_cells; ++p) {
+                const int page = p / page_size, off = p % page_size;
+                for (int h = 0; h < n_head_kv; ++h) {
+                    const size_t row = (size_t) page * n_head_kv * page_size + (size_t) h * page_size + off;
+                    strata::kernels::block_q4_0* rb = q4_rows + row * blocks_per_head;  // packed row (head in row id)
+                    std::vector<float> cell(head_dim);
+                    for (int d = 0; d < head_dim; ++d)
+                        cell[d] = raw[(size_t) p * n_head_kv * head_dim + (size_t) h * head_dim + d];
+                    rope_at_fp32(cell.data(), n_rot, p, cos_tab.data(), sin_tab.data(), max_pos);
+                    strata::program::suffix_reuse::fwht256_row_host(cell.data());
+                    for (int b = 0; b < blocks_per_head; ++b)
+                        strata::program::suffix_reuse::kv_q4_quant_block_host(
+                            &cell[b * strata::kernels::QK4_0], rb[b]);
+                }
+            }
+            const std::vector<uint8_t> q4_before = q4_arena;
+            strata::core::QsaState qst;
+            qst.kv_q4 = true;
+            qst.k_q4 = q4_arena.data();
+            qst.kv_mode = 0;
+            qst.max_cells = max_cells;
+            qst.n_pages = n_pages;
+            qst.n_slots = n_pages;
+            qst.cos_tab = cos_tab.data();
+            qst.sin_tab = sin_tab.data();
+            qst.owns_rope = false;
+            const bool qok = strata::program::suffix_reuse::rotate_qsa_tail_inplace_q4(
+                qst, head_dim, n_rot, n_head_kv, max_pos, page_size,
+                edit_pos, old_suffix_len, /*uniform=*/true, delta, /*deltas=*/nullptr,
+                /*pool_rows=*/(int64_t) pool_rows);
+            check(qok, "T11.f: q4_0 splice runs (kv_q4 path, head_dim 256)");
+            // (a) bitwise: independent sandwich of the stored row
+            auto q4_ref = [&](int p, int h, strata::kernels::block_q4_0* out_blocks) {
+                const size_t row = (size_t) (p / page_size) * n_head_kv * page_size
+                                 + (size_t) h * page_size + (p % page_size);
+                const strata::kernels::block_q4_0* before = ((const strata::kernels::block_q4_0*) q4_before.data())
+                                                          + row * blocks_per_head;
+                std::vector<float> cell(head_dim);
+                for (int b = 0; b < blocks_per_head; ++b)
+                    strata::program::suffix_reuse::kv_q4_dequant_block_host(before[b],
+                                                                            &cell[b * strata::kernels::QK4_0]);
+                strata::program::suffix_reuse::fwht256_row_host(cell.data());
+                strata::program::suffix_reuse::rotate_k_by_delta(
+                    cell.data(), 1, head_dim, n_rot, p, delta, cos_tab.data(), sin_tab.data(), max_pos);
+                strata::program::suffix_reuse::fwht256_row_host(cell.data());
+                for (int b = 0; b < blocks_per_head; ++b)
+                    strata::program::suffix_reuse::kv_q4_quant_block_host(
+                        &cell[b * strata::kernels::QK4_0], out_blocks[b]);
+            };
+            int q4_bit_mismatch = 0, q4_out_changed = 0;
+            double q4_max_rel = 0.0;   // vs ideal, in the q4 block's own scale units
+            for (int p = 0; p < max_cells; ++p) {
+                const int page = p / page_size, off = p % page_size;
+                const bool in_range = (p >= edit_pos) && (p < edit_pos + old_suffix_len);
+                for (int h = 0; h < n_head_kv; ++h) {
+                    const size_t row = (size_t) page * n_head_kv * page_size + (size_t) h * page_size + off;
+                    strata::kernels::block_q4_0* now = q4_rows + row * blocks_per_head;
+                    if (!in_range) {
+                        const strata::kernels::block_q4_0* before = ((const strata::kernels::block_q4_0*) q4_before.data())
+                                                                  + row * blocks_per_head;
+                        if (std::memcmp(now, before, blocks_per_head * sizeof(now[0])) != 0) ++q4_out_changed;
+                        continue;
+                    }
+                    std::vector<strata::kernels::block_q4_0> want(blocks_per_head);
+                    q4_ref(p, h, want.data());
+                    if (std::memcmp(now, want.data(), blocks_per_head * sizeof(now[0])) != 0) ++q4_bit_mismatch;
+                    // (b) measured: distance to the ideal fresh write in scale units
+                    std::vector<float> ideal(head_dim);
+                    for (int d = 0; d < head_dim; ++d)
+                        ideal[d] = raw[(size_t) p * n_head_kv * head_dim + (size_t) h * head_dim + d];
+                    rope_at_fp32(ideal.data(), n_rot, p + delta, cos_tab.data(), sin_tab.data(), max_pos);
+                    strata::program::suffix_reuse::fwht256_row_host(ideal.data());
+                    for (int b = 0; b < blocks_per_head; ++b) {
+                        std::vector<float> got_cell(strata::kernels::QK4_0);
+                        strata::program::suffix_reuse::kv_q4_dequant_block_host(now[b], got_cell.data());
+                        // the ideal block's scale (the reference quantizer's d)
+                        strata::kernels::block_q4_0 iw{};
+                        strata::program::suffix_reuse::kv_q4_quant_block_host(
+                            &ideal[b * strata::kernels::QK4_0], iw);
+                        const float id = strata::kernels::f32_from_f16(iw.d);
+                        for (int t = 0; t < strata::kernels::QK4_0; ++t) {
+                            const double step = std::fabs((double) got_cell[t] - (double) ideal[b * strata::kernels::QK4_0 + t])
+                                                / std::max(1e-9, std::fabs((double) id));
+                            q4_max_rel = std::max(q4_max_rel, step);
+                        }
+                    }
+                }
+            }
+            check(q4_out_changed == 0, "T11.f: cells OUTSIDE the splice range byte-identical (q4)");
+            std::printf("       (q4 bitwise-sandwich mismatches: %d; ideal distance %.2f q4-scale units)\n",
+                        q4_bit_mismatch, q4_max_rel);
+            check(q4_bit_mismatch == 0,
+                  "T11.f: q4 splice result BITWISE == independent q4 sandwich-of-stored reference");
+        }
     }
 
     std::printf(g_fail ? "FAIL\n" : "PASS\n");

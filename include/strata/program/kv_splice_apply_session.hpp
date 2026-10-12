@@ -38,7 +38,8 @@ inline SpliceStatus apply_splice(const SuffixHookOutcome& out,
     //      dequant->rotate->requant).  Read the format ONCE so the two paths' guards stay
     //      independent and a future format (q4_0, hybrid) still gets refused uniformly.
     const bool kv_int8_now   = strata::core::qsa_kv_int8() || strata::core::qsa_kv_hybrid();
-    const bool kv_other      = strata::core::qsa_kv_q4();           // --kv q4_0 (Phase 3 follow-up)
+    const bool kv_q4_now     = strata::core::qsa_kv_q4();  // --kv q4_0: the Q4 sandwich helper
+    const bool kv_other      = false;                      // every engine quant format is handled below
     const int64_t kv_res_now = strata::core::qsa_kv_resident();
     const bool layer_split_active = (ss.layer_lo != 0) || (ss.layer_hi != g.n_layers);
     // Hoisted above both format branches: the device-pointer safety checks inside each
@@ -46,7 +47,29 @@ inline SpliceStatus apply_splice(const SuffixHookOutcome& out,
     // e51880c n_qsa hoist in generate.cpp - only the engine TU (generate.cpp) compiles
     // this header, so the tests-only CPU tree never catches the use-before-decl.
     const int64_t n_qsa = g.n_qsa_layers();
-    if (kv_int8_now) {
+    if (kv_q4_now) {
+        // ---- q4_0 path: same scope guard shape, then the Q4 sandwich helper ----
+        if (kv_res_now > 0) {
+            std::fprintf(stderr, "[strata] suffix-reuse: SPLICE_UNSUPPORTED: kv_resident=%lld "
+                         "(slot-ring/streamed mode; q4_0).  Streaming-ring splice is Phase 3.\n",
+                         (long long) kv_res_now);
+            return SpliceStatus::UnsupportedResident;
+        }
+        if (layer_split_active) {
+            std::fprintf(stderr, "[strata] suffix-reuse: SPLICE_UNSUPPORTED: layer_split "
+                         "(layer_lo=%lld, layer_hi=%lld of %lld; q4_0).  Per-stage splice is Phase 3.\n",
+                         (long long) ss.layer_lo, (long long) ss.layer_hi, (long long) g.n_layers);
+            return SpliceStatus::UnsupportedSplit;
+        }
+        if (n_qsa > 0) {
+            const auto& st0 = ss.qsa_states[ss.qsa_ord0];
+            if (transport::pointer_is_device(st0.k_q4) && !transport::is_active()) {
+                std::fprintf(stderr, "[strata] suffix-reuse: SPLICE_UNSUPPORTED: device buffers "
+                             "without transport (q4_0 path).  Falling through to the re-read path.\n");
+                return SpliceStatus::UnsupportedFormat;
+            }
+        }
+    } else if (kv_int8_now) {
         // ---- int8 path (Phase 3 + the kv_rot H-sandwich).  STRATA_KV_ROT=1 is accepted:
         //      the helper undoes and re-applies the Hadamard around the RoPE delta.
         const SpliceStatus g_status = splice_scope_guard_int8(
@@ -135,7 +158,16 @@ inline SpliceStatus apply_splice(const SuffixHookOutcome& out,
         // The pool's row count: n_slots pages of n_head_kv*page_size rows.  kv_mode==0 is
         // identity-mapped, so position p's rows are exactly the rows the splice walks.
         const int64_t pool_rows = st.n_slots > 0 ? st.n_slots * n_head_kv * page_size : 0;
-        if (kv_int8_now) {
+        if (kv_q4_now) {
+            // Q4_0 path: the exact H-sandwich with Q4_0 dequant/requant blocks.
+            if (st.k_q4 == nullptr) continue;
+            (void) rotate_qsa_tail_inplace_q4(
+                st, head_dim, n_rot, n_head_kv, max_pos, page_size,
+                edit_pos, old_suffix_len,
+                out.uniform, (int) out.delta,
+                out.deltas.empty() ? nullptr : out.deltas.data(),
+                pool_rows);
+        } else if (kv_int8_now) {
             // Phase 3 int8 path: dequant per group, rotate, requant (kv_splice_apply_int8.hpp).
             if (st.k_q == nullptr || st.k_scale == nullptr) continue;
             (void) rotate_qsa_tail_inplace_int8(

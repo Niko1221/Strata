@@ -350,8 +350,8 @@ int main() {
         // Phase 2: kv format guards.  Phase 3: --kv int8 is NOW SUPPORTED.
         check(validate_suffix_reuse_options(10, 6, "int8", 0, false).empty(),
               "T8: flag on + --kv int8: guard PASSES (Phase 3 int8 splice)");
-        check(!validate_suffix_reuse_options(10, 6, "q4_0", 0, false).empty(),
-              "T8: flag on + --kv q4_0: guard rejects (Phase 3 follow-up)");
+        check(validate_suffix_reuse_options(10, 6, "q4_0", 0, false).empty(),
+              "T8: flag on + --kv q4_0: guard PASSES (the Q4 sandwich; measured in T11.f)");
         check(validate_suffix_reuse_options(10, 6, "k8v4", 0, false).empty(),
               "T8: flag on + --kv k8v4 (hybrid): guard PASSES (K half is int8; V untouched)");
         check(!validate_suffix_reuse_options(10, 6, "fp16", 20480, false).empty(),
