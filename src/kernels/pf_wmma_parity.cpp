@@ -138,16 +138,23 @@ int run(int ty, int n_out, int K, std::mt19937& rng) {
 }  // namespace
 
 int main() {
-    int dev = 0, major = 0;
-    cudaGetDevice(&dev);
-    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-    if (major < 7) { std::printf("pf_wmma_parity: needs sm_70+, skipped\n"); return 77; }
-    std::mt19937 rng(70);
-    int fails = 0;
-    for (int ty : {16, 22, 29}) fails += run(ty, 1280, 2560, rng);
-    fails += run(42, 2560, 640, rng);
-    for (int ty : {20, 21, 23}) fails += run(ty, 1280, 2560, rng);   // this pack's gate/up formats, generic WK=256 path
-    fails += run(20, 2560, 640, rng);                                // the IQ4_NL down, the new WK=128 lane
-    std::printf("pf_wmma_parity: %d failures\n", fails);
+    // every sm_70+ card in one process, in turn: a layer split launches the tiles on its second card after the first
+    int n_dev = 0, ran = 0, fails = 0;
+    cudaGetDeviceCount(&n_dev);
+    for (int dev = 0; dev < n_dev; ++dev) {
+        int major = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        if (major < 7) continue;
+        cudaSetDevice(dev);
+        std::printf("device %d\n", dev);
+        ++ran;
+        std::mt19937 rng(70);
+        for (int ty : {16, 22, 29}) fails += run(ty, 1280, 2560, rng);
+        fails += run(42, 2560, 640, rng);
+        for (int ty : {20, 21, 23}) fails += run(ty, 1280, 2560, rng);   // this pack's gate/up formats, generic WK=256 path
+        fails += run(20, 2560, 640, rng);                                // the IQ4_NL down, the new WK=128 lane
+    }
+    if (!ran) { std::printf("pf_wmma_parity: needs sm_70+, skipped\n"); return 77; }
+    std::printf("pf_wmma_parity: %d failures on %d devices\n", fails, ran);
     return fails ? 1 : 0;
 }
