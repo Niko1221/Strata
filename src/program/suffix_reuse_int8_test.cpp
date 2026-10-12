@@ -332,7 +332,7 @@ int main() {
               "T11.c: guard ACCEPTS hybrid k8v4 (K half is byte-identical int8; V untouched)");
         check(splice_scope_guard_int8(false, true, false, 0, false, false)
               == SpliceStatus::UnsupportedFormat,
-              "T11.c: guard still refuses q4_0");
+              "T11.c: int8 helper still refuses q4_0 (the q4_0 dispatch routes it to rotate_qsa_tail_inplace_q4, not this helper)");
         check(splice_scope_guard_int8(false, false, false, 32, false, false)
               == SpliceStatus::UnsupportedResident,
               "T11.c: guard still refuses kv_resident (streaming ring)");
