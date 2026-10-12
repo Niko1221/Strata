@@ -153,6 +153,65 @@ pinned by this repository. For an offline build, point `STRATA_GGML_DIR` at a
 checkout of that exact revision; using an arbitrary newer checkout changes the
 dependency being tested.
 
+## Opt-in chunked prompt GDN on gfx11
+
+`STRATA_GDN_CHUNKED=1` runs the prompt's gated DeltaNet recurrence in 16-token chunks on the gfx11 matrix cores,
+with FP16 operands and FP32 accumulation, and fuses the output norm. It is off by default: rounding differs from
+the token-by-token FP32 recurrence. The CUDA switch of the same name uses a separate FP32 implementation.
+
+The HIP path accepts gfx1100, gfx1101, gfx1102, gfx1103, gfx1150 and gfx1151, and prompt chunks of at least 64 tokens.
+Other cards, shorter chunks, an output row stride not divisible by eight, and `STRATA_GDN_REC_HEADS` use the
+existing recurrence. Runtime measurements and numerical checks were run on gfx1151 only; building for another
+target does not validate its speed or answers. The synthetic test compares the FP16 output and carried FP32 state
+against the existing recurrence, and short cases against a double-precision CPU calculation. It covers partial
+chunks, padded rows, weak decay and a split request; the off/default tests require identical output and state bits.
+It does not establish model answer equivalence.
+
+`STRATA_GDN_CHUNKED=2`, which on CUDA skips the SM-count test, is the same as 1 here.
+
+Measured on a Ryzen AI Max+ 395 (gfx1151, ROCm 7.14.1), UD-IQ4_XS. One layer's recurrence and norm take 1.6x less time than
+gfx1151's default kernels at 16K and 32K tokens (`hip_gdn_chunked --bench` against `--bench-default`, three runs each: 20.83 ->
+13.20 ms at 16K, 42.23 -> 26.43 ms at 32K). A whole prompt: the same binary with only this switch changed, a fresh engine per
+side, 11 pairs in alternating order after a discarded one, the engine's `prompt_ms`, every prompt read in full (no reused
+tokens). Each engine reads a discarded 4K prompt first, because the first prompt after a start varies more (on those first
+prompts the same pairs gave 95% intervals of [1.015, 1.021] and [0.991, 1.210]); the prompts follow each other once
+`/proc/vmstat`'s page-migration and direct-reclaim counters have stood still for 3 s, and a pair in which either prompt still
+met page migration or direct reclaim was dropped and measured again (2 of the 68 pairs, both on the defaults; kept in, 32K and
+128K give 1.011 each). "Section 5" is the nine variables of `STRIX_HALO.md` section 5 (with `STRATA_PF_SWITCH_MIN_T=2048`);
+"defaults" is the engine without them (section 4's gfx1151 defaults stay). Times are medians; the ratio is the geometric mean of
+the 11 off / on ratios with a 95% bootstrap interval; "faster" counts the pairs in which the switch was faster:
+
+| tokens | arm | off -> on | off / on | faster |
+|---:|---|---:|---:|---:|
+| 4,096 | section 5 | 3.701 -> 3.630 s | 1.019 [1.017, 1.021] | 11 of 11 |
+| 4,096 | defaults | 5.947 -> 5.876 s | 1.012 [1.008, 1.016] | 10 of 11 |
+| 32,768 | section 5 | 26.024 -> 25.401 s | 1.024 [1.023, 1.026] | 11 of 11 |
+| 32,768 | defaults | 44.684 -> 44.122 s | 1.012 [1.009, 1.016] | 10 of 11 |
+| 128,000 | section 5 | 107.468 -> 104.858 s | 1.025 [1.023, 1.026] | 11 of 11 |
+| 128,000 | defaults | 195.498 -> 193.445 s | 1.011 [1.008, 1.013] | 11 of 11 |
+
+So about 2.4% on top of section 5 and about 1.1% on the defaults, for a prompt that is not the first one after a start. At 36
+gated-DeltaNet layers the layer figures predict about 0.55 s for a 32K prompt; 0.62 s (section 5) and 0.56 s (defaults) were
+measured.
+
+First-token KL against the same run without the switch, 12 prompts of 1.5K-24K tokens: UD-IQ4_XS 0.0066 mean (0.016 max) on the
+defaults and 0.0043 (0.013) on top of section 5; UD-Q4_K_XL 0.0059 (0.043) and 0.0095 (0.054); the same top token in all of them
+(across the 12 prompts the first token takes only two distinct values). Section 5's switches alone are 0.0076 (IQ4_XS) and
+0.0065 (Q4_K_XL) against the defaults, a different change that is listed for scale and not as a limit for this one. Only the
+first generated token was compared: a long generation and perplexity were not measured.
+
+Build and run these checks in the HIP build directory:
+
+```sh
+cmake --build build-hip --target hip_gdn_chunked hip_gdn_rec_head
+ctest --test-dir build-hip -R 'hip_gdn_(chunked|rec_head)' --output-on-failure
+for i in 1 2 3; do ./build-hip/hip_gdn_chunked --bench-default; ./build-hip/hip_gdn_chunked --bench; done
+```
+
+Each benchmark run reports the GPU-event median of seven runs after two warmups, the same nonzero initial state every run:
+`--bench` this path, `--bench-default` gfx1151's default kernels (`STRATA_GDN_PP=2`, `STRATA_GDN_NOY=1`). The switch is read
+once per process, so the two are separate runs. It times one layer's recurrence and norm, not a whole prompt.
+
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime using the existing tools.
