@@ -6961,6 +6961,17 @@ int main(int argc, char** argv) {
         // (decided above, before the lend regions were sized: a no-op here unless the resident RAM mode skipped it)
         decide_split_ring();
         std::vector<PfPart> pf_parts;
+        // #2090: under --prefill auto a request whose chunk is 0.1.39's pick (`small_ring`) or less reads with 0.1.39's
+        // ring, which on a pack with bigger blobs than Q2_0's has more slots than the byte-budget ring the chosen chunk
+        // was sized with - so it can need more of the cache than that chunk's loan (L4, IQ3_XXS, --expert-cache 905:
+        // auto 2816 with a 227-slot ring lent 1023 slots, a 2048-token request with the 384-slot ring needs 1059).  Its
+        // buffers did not fit and the engine exited.  So a loan has room for both; a request still lends only what its
+        // own chunk needs.  0: no chunk below the chosen one keeps 0.1.39's ring.
+        int64_t small_ring = 0;
+        auto loan_slots = [&](const PfPart& p, int64_t c) -> int64_t {
+            const int64_t k = part_slots(p, c);
+            return small_ring > 0 && small_ring < c ? std::max(k, part_slots(p, small_ring)) : k;
+        };
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
@@ -7066,6 +7077,7 @@ int main(int argc, char** argv) {
                 strata::prefill::Prefill::set_ring_budget(
                     small >= chunk ? 0 : (int) ring_room(chunk, nullptr, strata::prefill::Prefill::ring_cap_for(small)),
                     small);
+                if (small < chunk) small_ring = small;
             }
             if (chunk > 0 && alone > chunk) {
                 for (size_t i = 1; i < pf_parts.size(); ++i) {
@@ -7105,7 +7117,7 @@ int main(int argc, char** argv) {
                                          "every expert cache\n", (long long) o.prefill_chunk, (long long) chunk);
                 o.prefill_chunk = chunk;
                 for (PfPart& p : pf_parts) {
-                    p.first = (int32_t) (p.cache->slots() - part_slots(p, chunk));
+                    p.first = (int32_t) (p.cache->slots() - loan_slots(p, chunk));
                     p.first_now = p.first;
                 }
                 // #340: a split stage whose card still has room for the chunk's buffers (its cache already holds
@@ -7278,7 +7290,7 @@ int main(int argc, char** argv) {
                 if (any_loan) {                  // smaller loans for the smaller chunk
                     for (PfPart& p : pf_parts)
                         if (p.first >= 0) {
-                            p.first = (int32_t) (p.cache->slots() - part_slots(p, next));
+                            p.first = (int32_t) (p.cache->slots() - loan_slots(p, next));
                             p.first_now = p.first;
                         }
                     lend_first = pf_parts[0].first;
@@ -9082,13 +9094,13 @@ int main(int argc, char** argv) {
             PfPart& p = pf_parts[0];
             const int64_t live = xcache.slots();
             auto fits = [&](int64_t c) {
-                const int64_t k = part_slots(p, c);
+                const int64_t k = loan_slots(p, c);
                 return k > 0 && k + 128 <= live && !(o.prefill_auto && k * 100 > kAutoLendPct * live);
             };
             int64_t c = chunk_full;
             while (c > 256 && !fits(c)) c = std::max<int64_t>(256, c / 2 / 256 * 256);
             o.prefill_chunk = c;
-            p.first = (int32_t) std::max<int64_t>(0, live - part_slots(p, c));
+            p.first = (int32_t) std::max<int64_t>(0, live - loan_slots(p, c));
             p.first_now = -1;   // laid out again at the next loan
         };
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
