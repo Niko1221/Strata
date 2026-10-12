@@ -584,12 +584,16 @@ private:
 // and then checked against the shape the kernels are compiled for (core/geometry.hpp), so a file of another
 // shape is refused with the key that differs rather than silently mis-run.
 
-/// Fills `g` from the metadata shard `f`.  Returns "" or the first problem.  The six keys every qwen4exp file
-/// has carried since the first guard are required; any other key the file does not carry keeps the compiled
-/// value.  The keys that describe one thing twice (the interval and `compress_ratios`, the key and value head
-/// widths, the routed and shared expert widths) must agree.
+/// Fills `g` from the metadata shard `f`.  Returns "" or the first problem.  Another architecture is refused by
+/// name first: its keys carry another prefix, and "missing qwen4exp.block_count" would hide what is wrong.  The six
+/// keys every qwen4exp file has carried since the first guard are required; any other key the file does not carry
+/// keeps the compiled value.  The keys that describe one thing twice (the interval and `compress_ratios`, the key
+/// and value head widths, the routed and shared expert widths) must agree.
 inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
     g = core::kCompiledGeometry;
+    const MetaValue* arch = f.get("general.architecture");
+    if (!arch) return "missing general.architecture";
+    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
     const std::string p = "qwen4exp.";
     std::string err;
     // an integer key into `out`: present and positive, or absent and not `required`
@@ -741,9 +745,6 @@ inline std::string geometry_unsupported(const core::ModelGeometry& g) {
 
 /// The architecture guard: "" when the engine can run the model whose metadata shard is `f`.
 inline std::string check_architecture(const GgufFile& f) {
-    const MetaValue* arch = f.get("general.architecture");
-    if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
     core::ModelGeometry g;
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);
