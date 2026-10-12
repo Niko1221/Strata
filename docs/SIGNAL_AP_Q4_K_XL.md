@@ -1,4 +1,7 @@
-# agentionai Signal AP-Q4_K_XL (manual setup)
+# agentionai Signal AP-Q4_K_XL
+
+Setup installs Signal (`--family signal`, sizes AP-Q4_K_XL and AP-IQ4_XS, images included): see
+[What setup does](#what-setup-does). The rest of this page is the manual workflow setup automates, and what was checked.
 
 Packed, loaded and run on Linux with an RTX 4090 (24 GB), Ryzen 9 7950X3D and 93 GB RAM. The engine starts on this
 pack and answers requests. The speeds quoted here were measured on 2026-10-21 with Strata 0.1.46.3 and
@@ -105,8 +108,8 @@ twice - it is a single file, and it carries the PLE table):
 
 The web interface is at `http://127.0.0.1:12223`, API clients use `http://127.0.0.1:12223/v1`. The port is the one
 `--port` asks for (8095 if you leave it out); a launcher can pass its own, so the `port` entry in the file is only a
-note to the reader. Vision is not configured in this text-only example, and one graphics card runs one engine: stop
-another server before starting this one.
+note to the reader. Images are not configured in this example (see [Images](#images)), and one graphics card runs one
+engine: stop another server before starting this one.
 
 The last four settings belong to one machine (RTX 4090, Ryzen 9 7950X3D, 93 GiB RAM) and are not general defaults.
 `--pcie-frac`, `--spec-min-p` and `--pool-workers 8` are what `setup.py`'s calibration chose for Signal on that
@@ -160,6 +163,105 @@ the Steam client (no game), JetBrains Toolbox and the coding agent that drove th
 `tools/mtp_rt.py` as in the [OrcaRouter setup](ORCA.md); without `--mtp` the server drafts by lookup only. Signal
 verifies every draft, and a fine-tune's acceptance is not the base model's. It has not been measured for Signal.
 
+## What setup does
+
+`setup.py --family signal --model AP-Q4_K_XL` (or `AP-IQ4_XS`) does the steps above by itself: it downloads the file
+from a pinned revision and checks its SHA-256, packs it with `--compat-bf16`, writes the BF16 embedding beside the
+pack (`token-embd-bf16.gguf`) and adds `--embd-gguf` to the config. With images on, it downloads Signal's own encoder
+(`mmproj-F16.gguf`, 904 MB), saved as `mmproj-Signal-3.8-Flash-Next-F16.gguf`. On an AMD card setup asks before it
+installs AP-Q4_K_XL, as it does for UD-Q4_K_XL: the HIP engine has no prompt kernels for Q4_K experts.
+
+Run on the machine above on 2026-10-11 with the file already downloaded:
+`./setup.sh --family signal --model AP-Q4_K_XL --gguf-dir <its folder> --vision gpu --build --yes --no-start`. The
+pack, the tokenizer and the embedding file it wrote are byte for byte the ones built by hand above.
+
+Run again on 2026-10-21 with Strata 0.1.46.3 (`setup.py --family signal --model AP-Q4_K_XL --data-dir <folder>
+--gguf-dir <its folder> --vision gpu --no-start --yes`, into an empty data folder, the engine already built). Its config
+is not the hand-built one above: 131072
+tokens of context (setup's default on this card; the hand-built one has 262144), every expert kept in RAM instead of a
+67 GiB budget (setup does that from about 80 GiB of RAM), the PLE table read from the GGUF into RAM (`--ple-gguf`,
+`--ple-io ram`), images on (`--vision`, `--vram-reserve-mib 700`), `--spec-min-p 0.5` instead of 0.70, and neither
+`--pcie-frac` nor `--pool-workers`; the KV cache is 8-bit in both. `tools/strata_bench.py` (3 runs per test, thinking
+off, temperature 0), run three times on 2026-10-21 with one start each, measured:
+
+| test | median of the runs | each run's median | slowest to fastest request |
+|---|---|---|---|
+| short chat, decode (up to 100 tokens) | 71.3 tokens/s | 71.3, 71.5, 64.5 | 46.4-78.9 (27 answers) |
+| short chat, first token | 0.49 s | 0.49, 0.48, 0.51 | 0.36-0.60 |
+| 4K prompt | 1636 tokens/s | 1669, 1636, 1300 | 718-1681 (9 prompts) |
+| 4K prompt, first token | 2.48 s | 2.43, 2.48, 3.11 | 2.41-5.62 |
+| 16K prompt | 3080 tokens/s | 3108, 3080, 2844 | 2197-3133 (9 prompts) |
+| 16K prompt, first token | 5.24 s | 5.19, 5.24, 5.67 | 5.15-7.34 |
+| agent session, decode (turns 2-6) | 86.1 tokens/s | 86.1, 89.4, 84.8 | 48.4-117.5 (45 turns) |
+| agent session, first token (turns 2-6) | 2.58 s | 2.58, 2.50, 2.62 | 2.36-11.14 |
+| agent session, prompt reused from the cache | 69.4% | 69.5, 69.3, 69.4 | 69.3-69.5% |
+
+Two runs have slow requests: run 2's first 4K prompt (984 tokens/s), and in run 3 a 4K and a 16K prompt (718 and 2197
+tokens/s) and one agent turn that took 11.1 s to its first token (the other 44 turns: 2.4-6.3 s). In both runs the
+kernel logged a page-allocation failure in the engine while it loaded, followed by a message from the NVIDIA driver
+("Failed to create a DMA mapping"); the engine carried on and both runs finished without a failed request. With every
+expert in RAM, this configuration left 12.8-15.7 GiB of the PC's memory available while it ran, against 22.9-25.4 GiB
+during the runs of the other configurations. The cause of the slow requests is not established, and they stay in the
+table.
+
+Against the hand-built configuration's table above, setup's is faster for short answers (71.3 against 64.1 tokens/s),
+the 16K prompt (3080 against 2769) and the agent session (86.1 against 76.5), and a little slower for the 4K prompt
+(1636 against 1710). The two differ in six settings at once (context, RAM budget, PLE table, speculation threshold,
+the PCIe fraction and the pool workers), plus images, so this does not say which of them makes the difference.
+
+AP-IQ4_XS (90,447,294,816 bytes) was run through setup on 2026-10-19 and again on 2026-10-21. Its header, read from
+the first 32 MB of the file, differs from AP-Q4_K_XL's only in the routed experts' gate and up projections: IQ3_S
+instead of Q4_K, 57,252,249,600 bytes of experts. IQ3_S gate/up with IQ4_NL downs is the pair Unsloth's UD-IQ4_XS
+uses, which setup already runs on NVIDIA and AMD cards.
+
+`setup.py --family signal --model AP-IQ4_XS --vision gpu` ran on 2026-10-19 with the engine of that day (0.1.45.3):
+the 90 GB download, its SHA-256 check, the pack, the BF16 embedding and the MTP head. Its config
+has the same settings as AP-Q4_K_XL's setup config above (131072 tokens of context, every expert in RAM, images on).
+`tools/strata_bench.py` (3 runs per test, thinking off, temperature 0), run three times on 2026-10-21 with one start
+each, measured:
+
+| test | median of the runs | each run's median | slowest to fastest request |
+|---|---|---|---|
+| short chat, decode (up to 100 tokens) | 91.0 tokens/s | 90.4, 91.0, 92.1 | 70.7-104.6 (27 answers) |
+| short chat, first token | 0.33 s | 0.33, 0.33, 0.32 | 0.25-0.42 |
+| 4K prompt | 2123 tokens/s | 2123, 2112, 2134 | 1586-2135 (9 prompts) |
+| 4K prompt, first token | 1.91 s | 1.91, 1.92, 1.90 | 1.90-2.55 |
+| 16K prompt | 3802 tokens/s | 3802, 3796, 3827 | 3358-3840 (9 prompts) |
+| 16K prompt, first token | 4.25 s | 4.25, 4.25, 4.22 | 4.20-4.81 |
+| agent session, decode (turns 2-6) | 108.0 tokens/s | 107.1, 108.3, 108.0 | 74.6-145.7 (45 turns) |
+| agent session, first token (turns 2-6) | 2.00 s | 1.99, 2.00, 2.78 | 1.86-3.46 |
+| agent session, prompt reused from the cache | 69.3% | 69.5, 69.3, 69.3 | 69.3-69.5% |
+
+On the same setup config AP-IQ4_XS was faster than AP-Q4_K_XL: short answers 91.0 against 71.3 tokens/s, the 4K prompt
+2123 against 1636, the 16K prompt 3802 against 3080 and the agent session 108.0 against 86.1. Its three runs agree
+closely (short answers 90.4, 91.0 and 92.1 tokens/s), and the kernel log has no allocation failure or error during
+them. Output quality was not compared with AP-Q4_K_XL's, and no picture was sent to it.
+
+## Images
+
+Signal ships its own image encoder, `mmproj-F16.gguf`: a `qwen3vl_merger` projector to 2560 wide, the model's width,
+in F16. With the configuration setup wrote, on 2026-10-11, Signal answered (thinking off, temperature 0):
+
+- a drawn test picture (the number 7341 at the top, a red circle on the left, a blue square on the right, the word
+  LIGHTHOUSE at the bottom), asked for each of them: "7341 red circle blue square lighthouse"; asked how many colored
+  shapes: "2";
+- `docs/media/pagoda-preview.webp`, asked for two sentences: "This image shows a pixelated, isometric 3D scene
+  featuring a multi-tiered pagoda on a floating island with cherry blossom trees and a small pond. A control panel on
+  the left allows users to adjust settings like time, weather, and camera angle for this voxel-style environment."
+
+By hand: build the image encoder (setup does it with `--vision gpu`), add `"--vision", "--vram-reserve-mib", "700"`
+to `args`, and give the config a block:
+
+```json
+"vision": {
+  "exe": "engine/strata-vision",
+  "mmproj": "/path/to/mmproj-F16.gguf",
+  "model": "/path/to/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf",
+  "gpu": true,
+  "max_tokens": 1024
+}
+```
+
 ## Scope and validation
 
 Checked on 2026-10-11 on the machine above:
@@ -193,8 +295,12 @@ Not checked:
 - Output quality against the base model is not measured, and neither is the draft head's acceptance rate on this
   fine-tune - Signal verifies every draft, but how often it accepts one is unknown here. The speeds above are one
   machine's; on other hardware, calibrate and watch the log for the engine's own complaints.
-- Only AP-Q4_K_XL from that repository was downloaded and packed; the other quantizations there were not examined.
-- The installer's model menu is unchanged. This is an explicit local packing workflow.
+- AP-Q4_K_XL was checked as listed above. AP-IQ4_XS was run through setup and `tools/strata_bench.py` (above) and
+  answered an arithmetic question (391), but none of the other checks listed here (the OrcaRouter list, pictures) was
+  run on it. Q8_0 was not examined.
+- Setup's download of the 101 GB AP-Q4_K_XL file (both runs above used `--gguf-dir`; AP-IQ4_XS's 90 GB download went
+  through setup), setup on Windows, AMD cards, several GPUs,
+  and the image encoder on the CPU.
 - `tools/embd_bf16_pack.py --model` was not run end to end, because no safetensors checkpoint was on the machine. Its
   header was compared byte for byte with the one the previous code built, and the table is copied by the same loop,
   moved into a function. (`--gguf` was already there for Gyro-S's Q6_K table. This setup changed how it reads the

@@ -96,6 +96,12 @@ FALLBACK_MODELS = {
     "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 - slightly faster on short prompts; a 102 GB download "
                            "that this PC turns into a Strata pack once; it reads pictures",
                   "download_gb": 102.2, "ram_gb": 80, "arena_gb": 68.0, "families": ("nvfp4",), "vision": True},
+    "AP-Q4_K_XL": {"about": "4-bit (Agention Precision), Q4_K experts; on a PC with less than ~90 GB of RAM part of "
+                            "its experts are read from the SSD", "download_gb": 101.1, "ram_gb": 48, "arena_gb": 67.9,
+                   "families": ("signal",), "budget": True, "vision": True},
+    "AP-IQ4_XS": {"about": "~4-bit (Agention Precision), IQ3_S experts, 10 GB smaller; on a PC with less than ~80 GB "
+                           "of RAM part of its experts are read from the SSD", "download_gb": 90.4, "ram_gb": 48,
+                  "arena_gb": 57.3, "families": ("signal",), "budget": True, "vision": True},
 }
 FALLBACK_FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},
@@ -115,6 +121,9 @@ FALLBACK_FAMILIES = {
     "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, "
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
+    "signal": {"title": "Signal 3.8 Flash Next", "about": "more direct thinking (26% fewer reasoning tokens on MATH-500, "
+                                                       "by its authors' numbers); ~4-bit only, a 90-101 GB download",
+               "tag": "signal-"},
 }
 OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
 MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))   # as setup.py's: RAM + VRAM floors of the owner's 64 / 48 / 40 GB tiers

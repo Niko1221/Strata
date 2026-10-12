@@ -64,6 +64,7 @@ can differ. Gyro is a memory-saving fallback, currently slower, not a general sp
 | ISTA-DASLab Coder | `--family coder --model IQ1_M` |
 | Unsloth Flash-Next | `--family unsloth --model UD-Q4_K_XL` (check the pack's backend limits) |
 | Gyro Flash-Next | `--family gyro --model Gyro-S` |
+| Signal Flash-Next (agentionai) | `--family signal --model AP-Q4_K_XL` or `AP-IQ4_XS` (check the pack's backend limits) |
 | Unsloth Qwen3.6 | `--family qwen36 --model UD-Q4_K_XL` |
 
 These are choices, not an instruction to install every row. The full list and memory estimates are in
