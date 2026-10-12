@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/gguf_expert_source.hpp"
@@ -20,6 +21,7 @@
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_stream.hpp"
@@ -360,6 +362,7 @@ struct Stager {
     std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
     std::vector<dpct::event_ptr> dma_done;
     uint64_t* done_seq = nullptr;            // page-locked: the copy queue's last finished DMA per buffer
+    uint64_t* src_seq = nullptr;             // page-locked: the values a copy-engine queue copies into done_seq (it cannot run a fill kernel)
     std::vector<uint64_t> want;              // the sequence number each buffer's last DMA writes
     uint64_t issue_seq = 0;
     std::vector<Job> jobs;
@@ -385,6 +388,9 @@ struct Stager {
         done_seq = sycl::malloc_host<uint64_t>((size_t) kRing, dpct::get_in_order_queue());
         if (done_seq == nullptr) return false;
         for (int i = 0; i < kRing; ++i) done_seq[i] = 0;
+        src_seq = sycl::malloc_host<uint64_t>((size_t) 4 * kRing, dpct::get_in_order_queue());
+        if (src_seq == nullptr) return false;
+        for (int i = 0; i < 4 * kRing; ++i) src_seq[i] = 0;
         pageable.resize(kRing);
         for (int i = 0; i < kRing; ++i) {
             /*
@@ -417,6 +423,7 @@ struct Stager {
         cv.notify_all();
         for (auto& t : threads) t.join();
         if (done_seq) sycl::free(done_seq, dpct::get_in_order_queue());
+        if (src_seq) sycl::free(src_seq, dpct::get_in_order_queue());
         for (int i = 0; i < kRing; ++i) {
             if (dma_done[i]) dpct::destroy_event(dma_done[i]);
             if (buf[i] && pinned[i])
@@ -503,7 +510,13 @@ struct Stager {
     void issued_one(int j, dpct::queue_ptr copy) {
         const uint64_t s = ++issue_seq;
         want[(size_t) (j % kRing)] = s;
-        copy->fill<uint64_t>(done_seq + j % kRing, s, 1);
+        if (strata::is_copy_engine_queue(copy)) {   // a copy-only command list runs no kernels (a fill is one): a copy of the value
+            uint64_t* v = src_seq + (size_t) (s % (uint64_t) (4 * kRing));
+            *v = s;
+            copy->memcpy(done_seq + j % kRing, v, sizeof(uint64_t));
+        } else {
+            copy->fill<uint64_t>(done_seq + j % kRing, s, 1);
+        }
         issued.store(j + 1, std::memory_order_release);
     }
     bool buffer_free(int b) const {
@@ -971,8 +984,12 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
     DPCT1025: The SYCL queue is created ignoring the flag and priority
     options.
     */
-    if (DPCT_CHECK_ERROR(
-            m.copy = dpct::get_current_device().create_queue(true)) != 0) {
+    // 0.1.43: the expert copies on the GPU's copy engine when the device has one the SYCL runtime does not use itself
+    // (the Level Zero v2 adapter runs every queue on the compute engine: ~0.8 s of a 4K prompt on a B70 is the compute
+    // engine waiting for its own DMA).  nullptr: the ordinary in-order queue.  STRATA_COPY_ENGINE=0 turns it off.
+    m.copy = strata::make_copy_engine_queue("the prompt path's expert");
+    if (m.copy == nullptr &&
+        DPCT_CHECK_ERROR(m.copy = dpct::get_current_device().create_queue(true)) != 0) {
         err = "prefill: copy stream"; return false;
     }
     const size_t T = (size_t) chunk;
@@ -4069,9 +4086,17 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
-                                strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
-                                                                   m.dq_gu[q], m.cs);
-                                strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                // 0.1.43: both matrices in one launch (the same values; STRATA_PF_DQ_FUSED=0: two launches)
+                                static const bool dq_one = [] { const char* v = std::getenv("STRATA_PF_DQ_FUSED"); return !(v && v[0] == '0'); }();
+                                if (dq_one) {
+                                    strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, blob_dev, blob_dev + f.up_off,
+                                                                           blob_dev + f.down_off, f.n_ff, f.n_embd, m.dq_gu[q],
+                                                                           m.dq_d[q], m.cs);
+                                } else {
+                                    strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
+                                                                       m.dq_gu[q], m.cs);
+                                    strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                }
                             } else {
                                 blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
                             }

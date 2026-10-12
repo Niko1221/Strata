@@ -22,7 +22,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+                          PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_timings, serve, start_failure_hint)
@@ -2086,6 +2087,129 @@ class RepeatStop(unittest.TestCase):
         self.assertEqual(done["finish"], "stop")
 
 
+class NonFiniteEngine(MockEngine):
+    """#879: each pass ends on the engine's `DONE ... nonfinite` after plan[i] tokens (None, or no plan left: the
+    script runs whole), as StrataEngine.generate raises it.  A pass that ends on it had reused all but the last
+    prompt token; the next one reads from token 0, as the engine does."""
+
+    def __init__(self, *a, plan=(), **kw):
+        super().__init__(*a, **kw)
+        self.plan, self.calls = list(plan), []
+        self.last, self.flushed = None, False
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.calls.append(list(ids))
+        cut = self.plan.pop(0) if self.plan else None
+        # (set before the tokens: the service closes a pass at its end-of-turn token, before the code after the loop)
+        self.last = {"prompt_tokens": len(ids), "reused": 0 if self.flushed else len(ids) - 1,
+                     "finish": "nonfinite" if cut is not None else "stop"}
+        self.flushed = False
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+            if cut is not None and i >= cut:
+                break
+            yield t
+        if cut is not None:
+            self.flushed = True
+            raise EngineNonFinite("the engine's logits became non-finite (#879)")
+
+
+class NonFiniteLogits(unittest.TestCase):
+    """#879: non-finite logits before the first token -> the same request once more; after tokens went out -> the
+    reply ends as "length"; again on the retry -> an error, no loop."""
+
+    def run_reply(self, plan):
+        tok = ByteTokenizer()
+        eng = NonFiniteEngine(tok, "hello", max_context=CTX, plan=plan)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        ids = tok.encode("hi")
+        events, done, error = [], None, None
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                for kind, x in svc.run(ids, False, None, 100, {}, threading.Event()):
+                    if kind == "done":
+                        done = x
+                    elif kind == "event":
+                        events.append(x)
+            except EngineNonFinite as e:
+                error = e
+        text = "".join(ev.text or "" for ev in events if ev.kind == "content")
+        return eng, svc, ids, done, error, text, out.getvalue()
+
+    def test_nothing_emitted_is_retried_once(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([0])
+        self.assertIsNone(error)
+        self.assertEqual(eng.calls, [ids, ids])                  # the same request, once more
+        self.assertEqual(done["finish"], "stop")
+        self.assertEqual(text, "hello")
+        self.assertIn("non-finite before the first token", log)
+        self.assertEqual(svc.metrics()["requests"][0]["finish"], "stop")
+        self.assertEqual(svc.metrics()["requests"][0]["reused"], 0)  # the retry's DONE, not the failed pass's
+
+    def test_mid_reply_ends_without_retry(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([3])    # "hel"
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 1)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("length", 3))
+        self.assertEqual(text, "hel")
+        self.assertIn("non-finite after 3 tokens", log)
+
+    def test_twice_is_an_error(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([0, 0, 0])
+        self.assertIsNotNone(error)
+        self.assertIn("twice in a row", str(error))
+        self.assertEqual(eng.calls, [ids, ids])                  # one retry, no loop
+        self.assertEqual(eng.plan, [0])
+        self.assertIsNone(done)
+        self.assertEqual(svc.metrics()["requests"][0]["finish"], "error")
+
+    def test_twice_over_http(self):
+        tok = ByteTokenizer()
+        svc = Service(NonFiniteEngine(tok, "ok", max_context=CTX, plan=[0, 0]), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for path, stream in (("/v1/chat/completions", False), ("/v1/chat/completions", True),
+                                 ("/v1/responses", False)):
+                svc.engine.plan = [0, 0]
+                body = {"model": "m", "max_tokens": 20, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}
+                if path == "/v1/responses":
+                    body = {"model": "m", "max_output_tokens": 20, "input": "hi"}
+                req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            code, text = r.status, r.read().decode()
+                    except urllib.error.HTTPError as e:
+                        with e:
+                            code, text = e.code, e.read().decode()
+                self.assertEqual(code, 200 if stream else 503, text)
+                self.assertIn("twice in a row", text)
+                self.assertIn("server_error", text)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_engine_done_line_raises(self):
+        """StrataEngine.generate: `DONE ... nonfinite` raises EngineNonFinite after the tokens before it."""
+        import queue as queue_
+        eng = object.__new__(StrataEngine)
+        eng.lines = queue_.Queue()
+        for line in ("T 5", "T 6", "DONE 2 3 1.0 2.0 nonfinite 0 0 0"):
+            eng.lines.put(line)
+        eng.proc = SimpleNamespace(stdin=io.StringIO())
+        eng.alive = lambda: True
+        eng.silence_s, eng.can_stop, eng.last = 0, True, None
+        got = []
+        with self.assertRaises(EngineNonFinite):
+            for t in eng.generate([1, 2, 3], 10, {}, threading.Event()):
+                got.append(t)
+        self.assertEqual(got, [5, 6])
+        self.assertEqual(eng.last["finish"], "nonfinite")
+        self.assertNotIn("STOP", eng.proc.stdin.getvalue())   # the DONE was read: nothing to stop or drain
+
+
 class LayerSplit(unittest.TestCase):
     """#644: "layer_split" is the first layer of each later GPU; a list is accepted, counts per card are not."""
 
@@ -3260,6 +3384,97 @@ class SharingTheGpu(unittest.TestCase):
         self.assertFalse(mark.exists())
         self.assertEqual(self.chat()[0], 200)
         self.assertTrue(mark.exists())
+
+    def _raw_chat(self):
+        r = urllib.request.Request(self.base + "/v1/chat/completions",
+                                   data=json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                   headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, dict(resp.headers), json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, dict(e.headers), json.loads(e.read())
+
+    def test_failing_before_load_with_free_vram_still_loads(self):
+        """#1997: a peer that is not running makes `curl` exit 7; the card has room, so the model loads."""
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(3)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000
+        self.svc.unload()
+        self.svc.vram_free_wait_s = 0.2                              # (not the 15 s wait for memory)
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertIn("exited with code 3", body["error"]["message"])
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.engine.starts, 0)
+        self.svc.free_vram_mib = lambda: 20000                      # the peer let go: the next try loads
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_strict_refuses_even_with_free_vram(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.before_load_strict = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertEqual(self.engine.starts, 0)
+
+    def test_failing_before_load_without_a_vram_limit_loads(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_timeout_is_configurable_and_a_timeout_refuses(self):
+        self.svc.before_load = [sys.executable, "-c", "import time; time.sleep(30)"]
+        self.svc.before_load_timeout_s = 0.5
+        self.svc.before_load_strict = True
+        self.svc.unload()
+        t0 = time.time()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("before_load_timeout_s", body["error"]["message"])
+        self.assertFalse(self.engine.alive())
+
+    def test_before_load_failure_can_be_ignored_by_config(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        self.svc.before_load_ignore_failure = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000                       # full, but ignore means load
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_unload_wait_waits_for_the_running_turn(self):
+        """#1997: POST /unload answers busy at once (409); with ?wait=1 it waits for the turn and then unloads."""
+        self.svc.fifo.acquire()
+        threading.Timer(1.0, self.svc.fifo.release).start()
+        t0 = time.time()
+        self.assertEqual(self.req("/unload", {}), (409, {"status": "busy"}))
+        self.assertLess(time.time() - t0, 0.9)
+        status, body = self.req("/unload?wait=1", {})
+        self.assertEqual((status, body), (200, {"status": "unloaded"}))
+        self.assertGreaterEqual(time.time() - t0, 0.9)
+        self.assertFalse(self.engine.alive())
+
+    def test_unload_wait_gives_up_after_the_given_seconds(self):
+        with self.svc.fifo:
+            t0 = time.time()
+            self.assertEqual(self.req("/unload?wait=0.6", {}),
+                             (409, {"status": "busy"}))
+            self.assertLess(time.time() - t0, 5)
+        self.assertTrue(self.engine.alive())
 
     def test_vision_encoder_unloads_and_starts_first(self):
         order = []
@@ -5224,3 +5439,72 @@ class UntimedReads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrepareCancelled(unittest.TestCase):
+    """#1999: a client that leaves while its pictures are prepared gives the turn up and encodes nothing more."""
+
+    def make(self, d, vision):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                       vision=vision(d))
+
+    @staticmethod
+    def msgs(n=2):
+        return [{"role": "user", "content": [{"type": "text", "text": "look"}] +
+                 [{"type": "image", "source": f"{i}.png"} for i in range(n)]}]
+
+    def test_cancel_before_the_encode_runs_none(self):
+        import tempfile
+        calls = []
+
+        class V(ImageMarkers.FakeVision):
+            def encode(self, source):
+                calls.append(source)
+                return self.rows, 3
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, V)
+            cancel = threading.Event()
+            cancel.set()
+            from serve.server import ClientGone
+            with self.assertRaises(ClientGone):
+                svc.prepare(self.msgs(), None, {}, cancel=cancel)
+            self.assertEqual(calls, [])
+            self.assertTrue(svc.fifo.acquire(blocking=False))        # the turn was not left held
+            svc.fifo.release()
+
+    def test_cancel_while_waiting_for_the_turn(self):
+        import tempfile
+        from serve.server import ClientGone
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            cancel = threading.Event()
+            threading.Timer(0.3, cancel.set).start()
+            with svc.fifo:                                          # another request holds the engine
+                t0 = time.perf_counter()
+                with self.assertRaises(ClientGone):
+                    svc.prepare(self.msgs(1), None, {}, cancel=cancel)
+                self.assertLess(time.perf_counter() - t0, 3)
+
+    def test_cancel_between_pictures_stops_the_next_encode(self):
+        import tempfile
+        from serve.server import ClientGone, Vision
+        cancel, seen = threading.Event(), []
+        v = Vision.__new__(Vision)
+
+        def encode(src, keep=()):
+            seen.append(src)
+            cancel.set()                                            # the client leaves during the first encode
+            return Path("x"), 3
+        v.encode = encode
+        with self.assertRaises(ClientGone):
+            v.encode_all([b"a", b"b", b"c"], cancel)
+        self.assertEqual(seen, [b"a"])
+
+    def test_without_cancel_nothing_changes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
+            self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
+            svc.embeddings.path.unlink(missing_ok=True)

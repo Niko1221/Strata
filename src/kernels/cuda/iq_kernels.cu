@@ -3421,7 +3421,11 @@ int exp_mode() {
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         const char* sm70 = std::getenv("STRATA_SM70_TABLE");   // PR 1401: Volta's mode 8 is opt-in until confirmed on a V100
-        per_dev[dev] = 1 + (major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0 ? 8 : kExpModeDefault);
+        // Pascal GP100 (sm_60): mode 8 too, on by default (Tesla P100: bitwise equal on the model's layers, the down
+        // projection 116 -> 94 us and IQ3_S gate/up 360 -> 229 us in a 28-group VRAM call); STRATA_SM60_TABLE=0 keeps the CUDA layout
+        const char* sm60 = std::getenv("STRATA_SM60_TABLE");
+        const bool p100 = major == 6 && minor == 0 && (sm60 == nullptr || std::atoi(sm60) != 0);
+        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 ? 8 : kExpModeDefault);
     }
     return per_dev[dev] - 1;
 #endif

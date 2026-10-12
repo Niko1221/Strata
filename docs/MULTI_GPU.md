@@ -243,7 +243,17 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
 
-## One conversation with both cards busy (`--pipeline-windows`, opt-in)
+## One conversation with both cards busy (`--pipeline-windows`, default on three or more AMD gfx12 stages)
+
+**0.1.43 default.** On AMD RDNA4 (gfx1200 / gfx1201) with `--serve`, the draft layer and a layer split of **three or more
+stages**, `--pipeline-windows 2` is on unless you say otherwise (the log says "is on by default for a layer split of N
+stages"). It is no quality trade: the tokens are the serial loop's up to CPU rounding (below; on 4x R9700 with default
+flags 10 of 10 prompts matched the serial loop over 160 tokens). `--pipeline-windows 0` or
+`STRATA_PIPELINE_AUTO=0` turns it off; `--pipeline-windows 2` asks for it on any split. A split of two stages stays
+opt-in: there the draft layer's chain shares the last card with that card's window and, on 2x R9700, code decode lost
+3% (prose, 4K prompts and 32K prompts: no gain). The same options that switch it off when you ask for it (`--batch`,
+`--peer-device`, the helper caches, no draft layer, `--adapt-async 1`) leave it off without a line when it is only the default.
+NVIDIA builds keep it opt-in.
 
 With a split the cards take turns on a verify window: the first card runs its layers and hands off, then waits while
 the last card runs the rest, the head and the draft. `--pipeline-windows 2` lets the first card start the **next**

@@ -121,6 +121,7 @@ def drop(args, name, value=False):
         del args[i:i + 1 + int(value)]
 
 
+SYCL_PROFILE = "expert-profile-sycl.bin"   # data/: the xe cards' expert ranking (to_sycl)
 SMALL_CARD_GB = 12.0       # under this the engine's own advice is --vram-reserve-mib 300 (a 1024 MiB reserve leaves an
                            # 8 GB card no room for even one expert slot) and the English draft vocabulary
 SMALL_RESERVE_MIB = 300
@@ -149,6 +150,16 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     for f in ("--resident-experts", "--mmap-experts"):  # setup's low-RAM mode is the CUDA engine's
         drop(args, f)
     drop(args, "--kv-resident", True)                   # decided below on the real RAM
+    if driver != "i915" and "--expert-profile" in args and (ROOT / "data" / SYCL_PROFILE).is_file():
+        # 0.1.43: a card on xe runs every expert on the GPU (the ones the cache does not hold are read from the pinned mirror
+        # by the same kernels), so WHICH experts the cache holds changes speed and no token: data/expert-profile-sycl.bin
+        # ranks them from the routing of 45 varied prompts (chat, code, maths, six languages) and eight document summaries,
+        # where the shipped profile holds 60% of a chat prompt's experts and 85% of a summary's (B70: +9..25% decode on prompts left
+        # out of it, same tokens).  Another profile the user chose is kept; i915 keeps the shipped one (there the CPU
+        # computes the misses, so the residency moves roundings).
+        i = args.index("--expert-profile") + 1
+        if args[i].replace("\\", "/").rsplit("/", 1)[-1] == "expert-profile.bin":
+            args[i] = args[i][:-len("expert-profile.bin")] + SYCL_PROFILE
     for f in ("--pack", "--native", "--ple-gguf", "--expert-profile", "--mtp", "--control-vector-scaled"):
         if f in args:
             v = args[args.index(f) + 1]
@@ -280,6 +291,10 @@ def install(argv) -> None:
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
             selector = "level_zero:*" if split else f"level_zero:{idx}"
             cfg.setdefault("env", {}).setdefault("ONEAPI_DEVICE_SELECTOR", selector)
+        if split:
+            # #1980: without it every card keeps a full copy of the dense weights (1.4 GiB each on Flash-Next IQ2_XS) and the
+            # load stops at 96-97% resident; the later stage's missing experts have no host mirror (STRATA_VERIFY_NO_HOST)
+            cfg.setdefault("env", {}).setdefault("STRATA_STAGE_TRIM", "1")
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:

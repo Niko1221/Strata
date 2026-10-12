@@ -179,6 +179,17 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1024")
         self.assertNotIn("STRATA_VERIFY_NO_HOST", c.get("env", {}))
 
+    def test_xe_ranks_the_experts_with_the_sycl_profile_and_i915_keeps_the_shipped_one(self):
+        m = self.mod()
+        shipped = str(m.MOUNT / "data" / "expert-profile.bin")
+        other = str(m.MOUNT / "mine" / "learned.bin")
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile-sycl.bin"))
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", other]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("learned.bin"))   # the user's own file stays
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile.bin"))   # the CPU computes the misses there
+
     def test_an_explicit_reserve_is_kept_on_both_drivers(self):
         m = self.mod()
         for vram, drv in ((32.0, "xe"), (8.0, "i915")):

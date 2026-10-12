@@ -1122,12 +1122,19 @@ bool native_supported(int gu_type, int d_type) {
     }();
     // gfx12: fused::available() (the Q2_0 pack's expert_w11_kernel, not ported) stays false, so requested() does too; the
     // same opt-in (STRATA_PF_FUSED=1) is read here.  Every other device: requested() as before.
-    static const bool env = [] {
+    // unset: on by default on gfx12 for IQ3_S and IQ3_XXS gate/up only (R9700: prompt +13..+20%, first-token KL against the FP16 prompt
+    // path equal to MMQ's within noise, 96 prompts each); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
+    static const int env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
-        return v != nullptr && v[0] == '1';
+        return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0);
     }();
-    if (off || !env || !gu_covered(gu_type) || !d_covered(d_type)) return false;   // opt-in (=1): no device query without it
+    if (off || env == 0 || !gu_covered(gu_type) || !d_covered(d_type)) return false;
+#if !defined(__HIPCC__)
+    if (env < 0) return false;   // the default is gfx12 (HIP) only
+#endif
+    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
     const DevInfo& d = dev_info();
+    if (env < 0) return d.ok && d.w12;
     return d.ok && (requested() || d.w12);
 }
 

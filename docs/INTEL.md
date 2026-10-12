@@ -803,6 +803,35 @@ on this card for this model is the dequant kernels (at ~200 GB/s against a 600 G
 prompt attention (14%); the multi-column int8 DPAS decode kernels of llama.cpp PR 29864 target K-quant and Q8_0 weights, not
 the IQ-quant experts, and were not ported.
 
+## Arc Pro B70, Flash-Next IQ3_S: prompt and decode speed in 0.1.43 (branch f-143-intel)
+
+Measured on the B70 (xe, 32 GB, 60 GB RAM, IQ3_S, 11.5k of 24.6k experts in VRAM, the rest in the pinned mirror; unitrace from pti-gpu
+for the kernel timelines). All the changes below leave the tokens as they were (first-token logits compared byte for byte, the 10-prompt
+gate identical in the 32K and the 128K configuration); every one has an off switch.
+
+- **Prompt: the expert copies run on the card's copy engine** (`sycl/include/strata/copy_queue.hpp`). The Level Zero v2 adapter runs every
+  SYCL queue on the compute engine, a copy-only queue included: the ~10,000 expert DMAs of a 4K prompt (2 MB, ~80 us each) sat between the
+  expert kernels and never overlapped one (unitrace: 0 of 2,000 copies overlapped a kernel). An immediate command list on the copy-only queue
+  group (ordinal 1) wrapped with `sycl::make_queue` puts them on `Copy Engine<1,0>`; events work across the two queues as before. 4K prompt
+  3.82 -> 3.25 s, 16K 15.5 -> 13.5 s. On by default for a Battlemage card; `STRATA_COPY_ENGINE=1` forces it elsewhere, `=0` turns it off (an A750
+  gained 1.4% and the prompt hung there once the stager's completion flag was a copy-engine memcpy, so Alchemist stays off).
+- **The 128K configuration setup writes** (`--kv-resident 32768`, the prompt borrows cache slots) paid three more costs: `kv_append` wrote the
+  host copy of the KV with 1-byte stores (2 s of a 4K prompt, now 4-byte lane stores), every expert GEMM staged two 6.5/3.3 MB operands because they
+  sit past 4 GiB in the borrowed region (an A770 oneMKL bug that did not show on this card: off on Battlemage, `STRATA_SYCL_GEMM_STAGE=1`
+  brings it back), and the lent slots were refilled by a single-threaded GGUF read (0.9 s for 930 slots, now a DMA from the pinned mirror:
+  the experts in the last 10% of the cache slots are mirrored too, `STRATA_LEND_MIRROR=0` off). 4K prompt incl. the refill 7.2 -> 3.3 s,
+  1K 3.1 -> 1.6 s, 16K 25.5 -> 13.5 s, 49K 78 -> 44 s; a 684-token request through the server 2.64 -> 1.59 s, a 3,083-token one 6.1 -> 2.95 s (the same answer).
+- **Decode: `data/expert-profile-sycl.bin`.** The shipped profile ranks the experts for a document summary; a chat, code or non-English prompt finds
+  only 60% of its routed experts in the cache (85% for a summary). `tools/make_profile_mix.py` builds a ranking from several routing traces with
+  every trace counting the same, `tools/collect_profile_traces.py` records them (`bench/profile_corpus.json`: 45 prompts) through the engine's
+  device-side routing counts (`STRATA_USAGE_DUMP=PATH`). The profile built from the 45 prompts and eight summaries holds 71% / 84%
+  (leave-one-out) and gave +5% to +64% decode (mean +21%) on 12 prompts that were in neither set, identical tokens; setup_intel writes it for a
+  card on xe (the i915 A750 keeps the shipped one: its CPU computes the misses, so the residency moves roundings).
+- Decode graph without the nodes nobody answers under `STRATA_VERIFY_NO_HOST` (`STRATA_VERIFY_LEAN=0` off): -2%.
+- Tried and not worth it on this card: the grouped XMX expert GEMM for Battlemage (built, `STRATA_PF_XMX=1/2`, correct to 6e-7, 11-15% slower), a
+  miss-first or hit-first group order in the device plan (-3% / -7%), spreading the expert chains over several queues (one compute engine),
+  `STRATA_LFUSE`, `STRATA_VERIFY_EAGER`.
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |
