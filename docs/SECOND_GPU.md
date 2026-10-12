@@ -133,7 +133,9 @@ caches.
 `--peer-device N` puts a second adaptive expert cache on CUDA device N. It
 takes the ranked pairs CUDA0's cache does not hold, as many as fit. The peer
 computes the rows of its own experts, for decode windows and for prompt
-chunks; the activations and the results cross NVLink or another P2P path. The
+chunks. The prompt path uses CUDA peer-to-peer copies when available, including
+NVLink; decode reads pinned-host inputs and returns results through mapped
+host rows. An NVLink bridge does not make that decode transport peer-to-peer. The
 tier adapts while the server runs, like the primary cache. It is an
 alternative to the CUDA1-3 caches above, not a third tier beside them.
 
@@ -171,3 +173,46 @@ not yet combined with the peer's rows. Mapped host buffers gain
 context write them. The tier size is manual for now (`--peer-reserve-mib`,
 `--peer-slots`); automatic sizing on small cards wants the buffer lending of
 #216 and is a follow-up.
+
+### Capacity-aware peer placement (opt-in)
+
+`STRATA_PEER_CAPACITY_AWARE=1` jointly plans primary and peer ownership from
+their available bytes after scratch and reserve costs. It prices each layer's
+aligned expert blobs, respects `--peer-slots`, and gives hot ranks to both cards
+instead of moving them behind a fixed 8,700-rank boundary. This matters when a
+large primary cache would still hold everything before that boundary, or when
+the two cards have unequal byte capacities.
+
+The profile records ranks, not routing counts: reciprocal square-root rank is
+a load-balancing proxy, not a measured expert frequency. Unprofiled experts
+complete the candidate list; each pair has one planned owner or remains a CPU
+miss. The peer's fill checks actual primary residency, including allocation
+retries, so it can use space for pairs dropped from the primary plan.
+
+This needs explicit `--peer-device`, a native pack, `--expert-profile` and the
+shared non-elastic expert cache with the CPU pool. With it on, the legacy
+`STRATA_PEER_HOT` and `STRATA_PEER_HOT_AT` settings are ignored. Without the
+switch, or without a peer, the existing placement is unchanged. Startup logs
+the byte caps and planned ownership, then counts actual primary/peer/missed
+pairs from the residency tables after allocation correction and peer backfill.
+The primary's post-write live-free check retains the same reserve, owned
+prefill, unbound draft head and pipeline costs used to price its plan. It does
+not subtract that reserve twice. On Windows the pre-allocation free reading
+can run high; a post-write correction can legitimately reduce coverage when
+the peer is already full. The pricing and correction logs expose both readings
+and the bytes held back rather than promising the initial plan will fit.
+The planner has no GPU-name or
+architecture-specific selection rule. CPU-only tests cover unequal capacities
+and heterogeneous blobs, including aligned retry trimming.
+
+[ruibeikaa's Windows contributor report](https://github.com/Niko1221/Strata/pull/1438#issuecomment-6055005922)
+on pristine 0.1.40.3 plus the original PR measured two GP100 dies on a PH402
+board (experimental sm_60, CUDA 12.9): +6.5% decode and +17.5% prompt throughput
+versus default placement, with equal outputs in all three placement arms.
+Two RTX 3090 Ti cards were neutral within run-to-run noise; their planned
+10,230 primary pairs became 9,614 actual pairs with the peer full, so 1,376
+pairs were missed rather than 760. That report does not include the intervening
+allocation-correction logs, so the reason for that hardware's lower live
+capacity is not established. These are contributor measurements of the old
+branch, not measurements of this rebased correction. The updated code has no
+two-GPU runtime, Windows runtime, or mixed-size hardware validation.

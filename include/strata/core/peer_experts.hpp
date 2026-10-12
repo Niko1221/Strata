@@ -44,6 +44,14 @@ public:
     bool open(int device, const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
               ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
               std::string& err);
+    /// Capacity-aware startup: allocate scratch first, then jointly plan the two
+    /// arenas from their remaining byte budgets. No expert arena exists yet.
+    bool prepare(int device, ExpertSource& src, int64_t n_layers, int64_t n_expert, std::string& err);
+    bool byte_budget(int reserve_mib, uint64_t& budget, std::string& err) const;
+    /// Fill from ranked, excluding actual primary residents; skip oversize pairs
+    /// rather than leaving usable space behind the first one that does not fit.
+    bool fill_ranked(const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
+                     int reserve_mib, int64_t max_slots, std::string& err, bool capacity_aware = false);
     void close();
     bool valid() const { return device_ >= 0; }
     int device() const { return device_; }
