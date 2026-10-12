@@ -987,6 +987,67 @@ class ApiKeyForms(unittest.TestCase):
             httpd.server_close()
 
 
+def _has_markitdown() -> bool:
+    try:
+        import markitdown  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class ConvertDocuments(unittest.TestCase):
+    """POST /convert: the web app's attach button turns a PDF / Office file into text (MarkItDown, optional)."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(svc, port=0)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/convert"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def post(self, name, data: bytes, origin=None):
+        import base64
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = origin
+        body = json.dumps({"name": name, "data": "data:application/pdf;base64," + base64.b64encode(data).decode()})
+        req = urllib.request.Request(self.url, body.encode(), headers)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_other_types_are_refused(self):
+        code, body = self.post("notes.exe", b"MZ")
+        self.assertEqual(code, 400)
+        self.assertIn(".pdf", body["error"]["message"])
+
+    def test_only_from_the_own_page(self):
+        code, _ = self.post("a.pdf", b"%PDF-1.4", origin="https://elsewhere.example")
+        self.assertEqual(code, 403)
+
+    @unittest.skipUnless(_has_markitdown(), "MarkItDown is not installed")
+    def test_pdf(self):
+        code, body = self.post("Strata-Paper.pdf", (ROOT / "docs/paper/Strata-Paper.pdf").read_bytes())
+        self.assertEqual(code, 200)
+        self.assertIn("Strata", body["text"])
+        self.assertGreater(body["chars"], 10000)
+
+    @unittest.skipUnless(_has_markitdown(), "MarkItDown is not installed")
+    def test_damaged_file(self):
+        code, body = self.post("broken.pdf", b"this is not a pdf")
+        self.assertIn(code, (200, 422))                 # pdfminer may also read it as an empty document
+        if code == 200:
+            self.assertLess(len(body["text"].strip()), 20)
+
+
+
+
 class ToolCallTerminators(unittest.TestCase):
     """#210: a value that contains </parameter> or </tool_call> (a file documenting the call format) is kept whole."""
     CONTENT = ("Close each value with </parameter> and the call with </function></tool_call>.\n"

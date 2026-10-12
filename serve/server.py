@@ -4967,6 +4967,29 @@ def anthropic_collect(events) -> dict:
     return msg
 
 
+# ------------------------------------------------------------------------------------------------ documents
+CONVERT_EXT = (".pdf", ".docx", ".xlsx", ".pptx")
+MAX_CONVERT_BYTES = 50 * 1024 * 1024                  # the file itself; its base64 in the request is 4/3 of that
+
+
+def convert_document(name: str, data: bytes) -> str:
+    """The text of a PDF / Word / Excel / PowerPoint file as Markdown, for the web app's attach button.  MarkItDown is
+    optional (pip install "markitdown[pdf,docx,xlsx,pptx]"): RuntimeError without it, ValueError for another type.
+    A scanned PDF has no text layer and gives (almost) nothing - there is no OCR here."""
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in CONVERT_EXT:
+        raise ValueError(f"{name}: only {', '.join(CONVERT_EXT)} files are converted")
+    try:
+        from markitdown import MarkItDown, StreamInfo
+    except ImportError:
+        raise RuntimeError(f'reading documents needs MarkItDown: "{sys.executable}" -m pip install '
+                           '"markitdown[pdf,docx,xlsx,pptx]", then restart Strata') from None
+    import io
+    result = MarkItDown(enable_plugins=False).convert_stream(io.BytesIO(data),
+                                                              stream_info=StreamInfo(extension=ext, filename=name))
+    return result.markdown
+
+
 # ------------------------------------------------------------------------------------------------ HTTP
 CHUNKED_BODY_MAX = 256 << 20                # #893: the most a Transfer-Encoding: chunked body may hold (read into memory)
 
@@ -5430,6 +5453,9 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/convert":
+                self._convert()
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -5755,6 +5781,40 @@ def make_handler(svc: Service):
             print("[strata] other apps now use the Chat settings: " + ", ".join(f"{k}={v}" for k, v in shared.items())
                   if shared else "[strata] other apps use their own settings again", flush=True)
             self._json(200, {"shared": bool(shared), "defaults": shared})
+
+        def _convert(self):
+            # a document attached in the web app -> its text ({"name", "data": base64 or a data: URL} -> {"text"});
+            # only the app's own page may ask, like /settings (it reads what it is sent, nothing on disk)
+            try:
+                size = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                self._json(400, {"error": {"message": "invalid Content-Length"}})
+                return
+            if size > MAX_CONVERT_BYTES * 4 // 3 + 65536:
+                self._json(413, {"error": {"message": f"the file is over {MAX_CONVERT_BYTES >> 20} MB"}})
+                return
+            body = self.rfile.read(size)
+            if not self._own_page("documents can be read"):
+                return
+            try:
+                req = json.loads(body or b"{}")
+                name = str(req.get("name") or "") if isinstance(req, dict) else ""
+                data = base64.b64decode(str(req.get("data") or "").split(",", 1)[-1], validate=True)
+                t0 = time.time()
+                text = convert_document(name, data)
+            except ValueError as e:                          # bad JSON / base64, or a type it does not convert
+                self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
+            except RuntimeError as e:                        # MarkItDown is not installed
+                self._json(501, {"error": {"type": "server_error", "message": str(e)}})
+                return
+            except Exception as e:                           # a damaged or protected file: MarkItDown's own error
+                self._json(422, {"error": {"type": "invalid_request_error",
+                                           "message": f"could not read it ({type(e).__name__}: {e})"[:500]}})
+                return
+            print(f"[strata] document converted: {len(data):,} bytes -> {len(text):,} characters in "
+                  f"{time.time() - t0:.1f} s", flush=True)
+            self._json(200, {"name": name, "text": text, "chars": len(text)})
 
         def _sse(self):
             self._note(http_status=200)

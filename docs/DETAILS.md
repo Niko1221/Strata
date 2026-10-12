@@ -1436,6 +1436,20 @@ position, not only past the trained end. That is why the setup turns scaling on 
 262,144. Pictures read the same scaled table (their (t, h, w) positions feed it). That should work, but it is
 unmeasured: all the runs above are text.
 
+### PDFs and Office files in the chat page
+
+The chat page's attach button (or a drop) also takes **PDF, Word, Excel and PowerPoint** files: the server turns each
+into text with [MarkItDown](https://github.com/microsoft/markitdown) (`POST /convert`, only from Strata's own page) and
+it is attached like a text file, up to 50 MB per file and 1 MB of text. MarkItDown is optional:
+
+```
+.venv\Scripts\python -m pip install "markitdown[pdf,docx,xlsx,pptx]"      (Windows)
+.venv/bin/python -m pip install "markitdown[pdf,docx,xlsx,pptx]"          (Linux)
+```
+
+There is no OCR: a scanned PDF has no text layer and is refused with "No text found" (turn on images and attach the
+pages as pictures instead).
+
 ---
 
 ## Manage Strata from your AI assistant (MCP server)

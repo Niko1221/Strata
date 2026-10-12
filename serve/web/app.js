@@ -909,8 +909,40 @@ function isTextFile(f) {
   return f.type.startsWith("text/") || /json|xml|javascript|yaml|toml|x-sh|x-python/.test(f.type) ||
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
 }
+// PDF / Word / Excel / PowerPoint: the server turns them into text (POST /convert, MarkItDown), attached like a text file
+const DOC_EXT = /\.(pdf|docx|xlsx|pptx)$/i;
+const MAX_DOC_FILE = 50 * 1024 * 1024;
+const MAX_DOC_TEXT = 1024 * 1024;
+async function addDocument(f) {
+  if (f.size > MAX_DOC_FILE) { toast("warn", "File too large", `${f.name} is over 50 MB.`); return; }
+  toast("info", "Reading document", f.name);
+  try {
+    const data = await new Promise((ok, fail) => {
+      const r = new FileReader();
+      r.onload = () => ok(r.result);
+      r.onerror = () => fail(r.error || new Error("could not read the file"));
+      r.readAsDataURL(f);
+    });
+    const r = await fetch("convert", {method: "POST", headers: headers(true), body: JSON.stringify({name: f.name, data})});
+    let j = {};
+    try { j = await r.json(); } catch (e) { /* not json */ }
+    if (!r.ok) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
+    const text = String(j.text || "");
+    if (text.trim().length < 20) {
+      toast("warn", "No text found", `${f.name}: nothing could be read - a scan or a picture has no text layer.`, 8000);
+      return;
+    }
+    if (text.length > MAX_DOC_TEXT) { toast("warn", "Document too long", `${f.name} is over 1 MB of text.`, 8000); return; }
+    attachments.push({kind: "file", name: f.name, text});
+    renderAttachments();
+    toast("success", "Document attached", `${f.name}: ${text.length.toLocaleString()} characters of text.`);
+  } catch (e) {
+    toast("error", "Could not read document", `${f.name}: ${e.message}`, 8000);
+  }
+}
 function addFiles(files) {
   for (const f of files) {
+    if (DOC_EXT.test(f.name)) { addDocument(f); continue; }
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
       if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
@@ -919,7 +951,7 @@ function addFiles(files) {
       r.readAsDataURL(f);
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
+    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data), PDF, Word, Excel or PowerPoint${health.images ? " or pictures" : ""}.`); continue; }
     if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
     const r = new FileReader();
     r.onload = () => {
