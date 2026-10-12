@@ -3659,7 +3659,8 @@ int main(int argc, char** argv) {
             // 0.1.43: split opt-in + gfx12 default-on (decode_defaults_arch_ok).  Other HIP parts: STRATA_PCIE_FRAC_DEFAULT=auto
             // turns the refinement on (pcie_auto_fork_arch_ok); the pool timings and miss counts it reads are engine-generic.
             // STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule everywhere.
-            o.pcie_frac_auto = (o.layer_split.empty() || pcie_auto_split_ok()) && !pf_old &&
+            // (a remote stage's main process has no local later stage for STRATA_PCIE_AUTO_SPLIT to refine)
+            o.pcie_frac_auto = (o.layer_split.empty() || (pcie_auto_split_ok() && o.remote_stage.empty())) && !pf_old &&
                                (decode_defaults_arch_ok() || pcie_auto_fork_arch_ok());
             o.pcie_probe_gbps = bw;
         } else {
@@ -10173,8 +10174,19 @@ int main(int argc, char** argv) {
             const char* tse = std::getenv("STRATA_ROUTE_TAIL_SKIP");
             // #1884: with nearly every expert in the GPU cache (V100 32 GB, Coder IQ1_M: 94.8% of the experts, 99.9% decode hits) the few
             // misses are cheap and the skip costs more draft acceptance (70.1% -> 68.2%) than it saves: -1..2% decode.  No default then.
-            size_t cached_experts = 0;
-            for (int32_t r : host_res) cached_experts += r >= 0 ? 1 : 0;
+            // A remote stage's process holds only its own layers' experts (the other PC caches the rest): the share is
+            // of those, the nearest it can see to the whole split's (an in-process split counts every stage's).
+            size_t cached_experts = 0, counted_experts = 0;
+            {
+                const int64_t own_end = own_hi >= 0 ? own_hi : g.n_layers;
+                const bool own_only = remote_main || stage_worker;
+                for (size_t i = 0; i < host_res.size(); ++i) {
+                    const int64_t l = (int64_t) i / g.n_expert;
+                    if (own_only && (l < own_lo || l >= own_end)) continue;
+                    ++counted_experts;
+                    cached_experts += host_res[i] >= 0 ? 1 : 0;
+                }
+            }
             // (STRATA_TAIL_SKIP_MAX_CACHED=<percent>, default 90, moves the line; 101 = never).  0.1.43: 60 on a HIP layer split, where
             // 2x R9700 (5 pairs, skip on vs off): Q2_0 story -6.2% at 70% cached, -1.8% at 60%; IQ3_S +6..15% at 44-52%, about 0 at 60%.
 #if defined(STRATA_USE_HIP)
@@ -10184,8 +10196,8 @@ int main(int argc, char** argv) {
 #endif
             const char* mcs = std::getenv("STRATA_TAIL_SKIP_MAX_CACHED");
             const double max_cached = mcs != nullptr && mcs[0] != 0 ? std::atof(mcs) / 100.0 : max_cached_default;
-            const bool nearly_all_cached = !host_res.empty() && !all_experts_resident &&
-                                           (double) cached_experts >= max_cached * (double) host_res.size();
+            const bool nearly_all_cached = counted_experts > 0 && !all_experts_resident &&
+                                           (double) cached_experts >= max_cached * (double) counted_experts;
             // NVFP4 experts (any layer): no default (sergqwer/strata-nvfp4 c83625c3).  On the fork's qwen-nvfp4-gptq pack the
             // skip moved the answers by teacher-forced KL 0.035 against it off - as much as the GPTQ quantization's own error
             // against an all-Q8_0 reference (0.038) - for +11.5% decode (RTX 5090).  STRATA_ROUTE_TAIL_SKIP=7 opts in.
@@ -10204,7 +10216,7 @@ int main(int argc, char** argv) {
             if (tse == nullptr && nearly_all_cached && o.batch == 0 && o.peer_device < 0 && decode_defaults_arch_ok())
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP is off by default: %.1f%% of the experts are in the GPU cache, so "
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
-                                     "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) host_res.size());
+                                     "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) counted_experts);
             if (tail_default_ok) strata::core::set_tail_skip_rank(7);
             if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s: a missed expert that every token of a verify window routes at rank %d or "
@@ -10292,6 +10304,12 @@ int main(int argc, char** argv) {
                               : pin_blobs_on() ? "not with page-locked swap sources"
                               : strata::core::dma_batch_mode() != 0 ? "not with STRATA_DMA_BATCH"
                               : adapt_lag() != 1 || adapt_nowait() ? "not with STRATA_ADAPT_LAG / STRATA_ADAPT_NOWAIT"
+                              // a remote stage's worker: opt-in.  Its copies land while the main process runs its own layers,
+                              // so on a 3080 + 2080 Ti pair over 10 GbE nearly all had landed by the next window (26-42 ms
+                              // of waiting per run; 6 interleaved pairs, the main's overlap on: decode -0.22%, 2/6 faster;
+                              // the worker's time per window equal)
+                              : stage_worker && !(std::getenv("STRATA_ADAPT_OVERLAP") && std::getenv("STRATA_ADAPT_OVERLAP")[0] == '1')
+                                    ? "not on a remote-stage worker unless STRATA_ADAPT_OVERLAP=1"
                               // the resident RAM mode is exact too (soft_commit_exchanges) but not a win everywhere: RTX A4000 +7.0%
                               // (5/5 pairs), RTX 3060 on a 46 GB box -2.6% (0/5; the CPU experts and the copies share the RAM bandwidth)
                               : src.complement_ready() && !(std::getenv("STRATA_ADAPT_OVERLAP_RESIDENT") &&
@@ -11629,13 +11647,27 @@ int main(int argc, char** argv) {
                     const auto wk_t0 = Clock::now();
                     // a prompt's loan goes back before a window reads the cache (as the request loop does)
                     if (!refill(e)) return false;
-                    // the adaptive tier's swaps of earlier windows land first (as the decode loop does)
+                    // the adaptive tier's swaps of earlier windows land first (as the decode loop does; with 0.1.43's
+                    // STRATA_ADAPT_OVERLAP the tables take them now and each layer waits for its own copies inside
+                    // the window, as there)
                     if (adapt_nowait()) apply_pending(false);
+                    else if (aov && !pending.empty() && !aflipped) {
+                        if (src.complement_ready() && !src.soft_commit_exchanges()) {
+                            apply_pending(true);
+                        } else {
+                            for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
+                            res_upload();
+                            aflipped = true;
+                            ++aov_flips;
+                            agate.active.store(true, std::memory_order_release);
+                        }
+                    }
                     else if (pending.empty() || ++pending_age >= adapt_lag()) apply_pending(true);
                     if (!ver.run(T, tokens, pos0, win_pool_fn, win_pool_user, wk_outv.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
                     }
+                    if (aflipped) apply_pending(true);   // every layer's copies were waited for in the window
                     const auto wk_t1 = Clock::now();
                     // a relay worker: the next worker runs the rest; its rows are this window's reply
                     if (stage_relay &&
@@ -11653,6 +11685,10 @@ int main(int argc, char** argv) {
                                                                         " ms").c_str() : "",
                                          (ver.ms_wait - wk_wait0) / 64, (ver.ms_pool - wk_pool0) / 64,
                                          (ver.ms_host - wk_host0) / 64);
+                            if (aov)   // as the main process's decode line
+                                std::fprintf(stderr, "strata stage worker: adapt overlap: %lld windows took swaps still "
+                                                     "landing, a layer waited %.2f ms in all so far\n",
+                                             (long long) aov_flips, ver.ms_gate);
                             wk_wait0 = ver.ms_wait;
                             wk_pool0 = ver.ms_pool;
                             wk_host0 = ver.ms_host;
