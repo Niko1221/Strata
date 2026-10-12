@@ -239,6 +239,12 @@ START-HERE.bat --setup --family nvfp4 --model NVFP4-QAD
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
 explicit packing conversion and is not an installer menu option.
 
+### agentionai Signal AP-Q4_K_XL
+
+For **agentionai's Signal fine-tune in AP-Q4_K_XL**, see the [manual compatibility setup](SIGNAL_AP_Q4_K_XL.md). It
+has UD-Q4_K_XL's expert gate/up with IQ4_NL downs and Q6_K everywhere else, so it needs the same packing conversion
+plus a BF16 embedding file. It is not an installer menu option.
+
 ## Qwen3.6-35B-A3B
 
 A smaller model from the same maker: [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (35 billion
