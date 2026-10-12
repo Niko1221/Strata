@@ -939,7 +939,9 @@ class StrataEngine:
             self.slot_cv = threading.Condition()
             self.waiting = 0                            # requests waiting for the control lines (ctl)
             self.admitting = 0                          # #1603: ... and those that gave the lines back to wait for a slot
-            self.wait_lens: list[list[int]] = []        # ... their prompt lengths (a long read gives way to short ones)
+            self.admit_prios: list[int] = []            # ... their priorities (a free slot goes to the highest)
+            self.wait_lens: list[list] = []             # ... [prompt length, priority, after_epoch] (a long read gives
+                                                        # way to short ones; a higher priority goes first)
             self.ctl_epoch = 0                          # how often the control lines were taken
             self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
@@ -1416,10 +1418,11 @@ class StrataEngine:
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
-    def _take_control(self, cancel, plen: int, after_epoch: int | None = None):
+    def _take_control(self, cancel, plen: int, after_epoch: int | None = None, prio: int = 0):
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
-        `after_epoch`: a request whose read gave way lets the requests waiting then go first."""
-        entry = [plen]
+        `after_epoch`: a request whose read gave way lets the requests waiting then go first.  `prio`: while a request
+        of a higher priority waits (and is not itself letting others go first), this one does not take the lines."""
+        entry = [plen, prio, after_epoch]
         with self.slot_cv:
             self.waiting += 1
             self.wait_lens.append(entry)
@@ -1432,7 +1435,8 @@ class StrataEngine:
                     # restart is under way it keeps waiting and goes on with the new engine.
                     raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
-                    turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+                    turn = ((after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1) and
+                            not self._outranked(prio))
                 if turn and self.ctl.acquire(timeout=0.5):
                     if self.alive():
                         break
@@ -1469,10 +1473,21 @@ class StrataEngine:
         with self.slot_cv:
             return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
 
-    def _shorter_waiting(self, plen: int) -> bool:
-        """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
+    def _shorter_waiting(self, plen: int, prio: int = 0) -> bool:
+        """#656: someone of the same or a higher priority waits for the control lines with a prompt under half this
+        one's, or someone of a higher priority waits at all: worth giving way to."""
         with self.slot_cv:
-            return any(e[0] * 2 <= plen for e in self.wait_lens)
+            return any(e[1] > prio or (e[1] == prio and e[0] * 2 <= plen) for e in self.wait_lens)
+
+    def _outranked(self, prio: int) -> bool:
+        """A request of a higher priority waits for the control lines and is not letting others go first.  The caller
+        holds slot_cv.  Requests waiting for a slot do not count: a read that gave way (BYIELD) holds a slot and needs
+        the lines to go on and free it, whatever its priority."""
+        return any(e[1] > prio and (e[2] is None or self.ctl_epoch > e[2]) for e in self.wait_lens)
+
+    def _free_slot(self, prompt: list[int], prio: int) -> int | None:
+        """pick_slot, unless a request of a higher priority waits for a slot (the caller holds slot_cv)."""
+        return None if any(p > prio for p in self.admit_prios) else self.pick_slot(prompt)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
@@ -1488,12 +1503,13 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        prio = request_priority(sampling)
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
         reused0 = None      # the first read's reused tokens: a continued leg's count includes this request's own output
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
-        ok = yield from self._take_control(cancel, len(prompt))
+        ok = yield from self._take_control(cancel, len(prompt), prio=prio)
         if not ok:
             return
         holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1506,7 +1522,7 @@ class StrataEngine:
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
-                    ok = yield from self._take_control(cancel, len(prompt))
+                    ok = yield from self._take_control(cancel, len(prompt), prio=prio)
                     if not ok:
                         return
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1526,7 +1542,7 @@ class StrataEngine:
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                                self._shorter_waiting(len(prompt), prio)):
                             with self.slot_cv:          # the slot the part read will wait in
                                 reserved = self.pick_slot(prompt)
                                 if reserved is not None:
@@ -1576,17 +1592,20 @@ class StrataEngine:
                         # long, short at 0.25 s steps under parallel: 2 (ENGINE_REVIEW finding 1, reproduced in 0.1.41).
                         while True:
                             with self.slot_cv:
-                                slot = self.pick_slot(prompt)
+                                slot = self._free_slot(prompt, prio)
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
                                     if admit_wait:
                                         admit_wait = False
                                         self.admitting = max(0, self.admitting - 1)
+                                        self.admit_prios.remove(prio)
+                                        self.slot_cv.notify_all()   # the next priority down may take a free slot now
                                     break
                                 if not admit_wait:          # #1603: counted while it waits for a slot (it holds no
                                     admit_wait, admit_since = True, time.monotonic()   # control lines then)
                                     self.admitting += 1
+                                    self.admit_prios.append(prio)
                             if holding:
                                 self.ctl.release()
                                 holding = False
@@ -1602,12 +1621,12 @@ class StrataEngine:
                                                   f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
-                                if self.pick_slot(prompt) is None:
+                                if self._free_slot(prompt, prio) is None:
                                     self.slot_cv.wait(timeout=1.0)
                             if cancel.is_set():
                                 return
                             if not holding:
-                                ok = yield from self._take_control(cancel, len(prompt))
+                                ok = yield from self._take_control(cancel, len(prompt), prio=prio)
                                 if not ok:
                                     return
                                 holding, born = True, self.gen
@@ -1619,7 +1638,7 @@ class StrataEngine:
                         holding = False
                         with self.slot_cv:
                             epoch = self.ctl_epoch
-                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
+                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch, prio=prio)
                         if not ok:
                             return
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1640,7 +1659,7 @@ class StrataEngine:
                     def ask():        # as give_way above, for the slot this admission reads into
                         nonlocal asked
                         if (not asked and not embeddings and yields < self.YIELDS_MAX and
-                                self._shorter_waiting(len(prompt))):
+                                self._shorter_waiting(len(prompt), prio)):
                             self._send(f"BYIELD {slot}")
                             asked = True
                     try:
@@ -1775,6 +1794,8 @@ class StrataEngine:
             if admit_wait:
                 with self.slot_cv:
                     self.admitting = max(0, self.admitting - 1)
+                    self.admit_prios.remove(prio)
+                    self.slot_cv.notify_all()       # a lower priority may take the slot this one waited for
             if reserved is not None:
                 with self.slot_cv:
                     self.slot_busy[reserved] = False
@@ -2920,6 +2941,14 @@ class Detokenizer:
             return ""
         delta, self.sent = text[self.sent:], len(text)
         return delta
+
+
+def request_priority(req: dict | None) -> int:
+    """The request's `priority` (an integer, higher first, as SGLang's and vLLM's field; absent or not an integer: 0).
+    With --batch it orders the requests waiting for the control lines and for a slot; a running request is never
+    paused for it, and requests without it are served as before."""
+    p = (req or {}).get("priority")
+    return p if isinstance(p, int) and not isinstance(p, bool) else 0
 
 
 OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`

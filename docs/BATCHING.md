@@ -133,6 +133,11 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   half as long is waiting, the server sends `BYIELD`; at its next chunk boundary the long read stops, the part read
   so far is copied into a slot, the short request is admitted, and the long one then goes on from its slot with the
   same chunks (at most twice per request).
+- **Priority**: a request's `"priority"` (an integer, higher first; the field SGLang and vLLM read, so a gateway such
+  as LiteLLM passes it on) orders the waiting. A free slot goes to the highest priority waiting for one, the control
+  lines (the next prompt read) to the highest priority waiting for them, and a long read gives way to a waiting
+  request of a higher priority whatever its length - but never to a much shorter one of a lower priority. A running
+  request is never paused for it. Without the field every request is 0, the order is as before.
 - **Each slot is a conversation cache.** A finished slot keeps what it holds (the prompt, the answer, and the
   checkpoint at the prompt's last turn boundary); the next turn of that conversation goes to that slot and the
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
