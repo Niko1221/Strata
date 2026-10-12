@@ -488,6 +488,7 @@ class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
     def go(self, ram, cards, model, *flags):
         return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
 
+    @mock.patch.object(setup, "is_wsl", lambda: False)   # #974: not WSL, as in install()
     def test_the_streaming_rule_is_the_flag_setup_writes(self):
         for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
                                                         ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):

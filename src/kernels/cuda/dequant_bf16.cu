@@ -8,6 +8,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -174,6 +175,30 @@ __global__ void dequant_kernel(const uint8_t* __restrict__ blocks, int64_t row_b
     group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * ld + gi * 32);
 }
 
+// Q8_0 with four threads per block, 8 values each: the warp reads 8 consecutive blocks and writes 512 consecutive
+// bytes (a thread per block wrote 2-byte values 64 bytes apart: ~110 GB/s, a quarter of a prompt projection's time)
+template <typename T>
+__global__ void dequant_q8_0_kernel(const uint8_t* __restrict__ blocks, int64_t row_bytes, int64_t row0, int64_t rows,
+                                    int64_t groups_per_row, T* __restrict__ out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * groups_per_row * 4) return;
+    const int64_t g = i >> 2, r = g / groups_per_row, gi = g % groups_per_row;
+    const int piece = (int) (i & 3);
+    const uint8_t* b = blocks + (row0 + r) * row_bytes + gi * 34;
+    const float d = h2f(b);
+    const uint16_t* q = (const uint16_t*) (b + 2 + 8 * piece);   // blocks are 2-byte aligned
+    __align__(16) T v[8];
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const uint16_t w = q[k];
+        put(v, 2 * k, (float) (int8_t) (w & 0xFF) * d);
+        put(v, 2 * k + 1, (float) (int8_t) (w >> 8) * d);
+    }
+    uint4* o = (uint4*) (out + g * 32 + 8 * piece);
+#pragma unroll
+    for (int k = 0; k < (int) (8 * sizeof(T) / 16); ++k) o[k] = ((const uint4*) v)[k];
+}
+
 bool geometry(int type, int& block_elems, int& block_bytes) {
     switch (type) {
     case 2: block_elems = 32; block_bytes = 18; return true;
@@ -205,6 +230,13 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     const unsigned grid = (unsigned) ((total + 255) / 256);
     const uint8_t* p = (const uint8_t*) blocks;
     cudaStream_t st = (cudaStream_t) stream;
+    if (type == 8 && ld == cols && (reinterpret_cast<uintptr_t>(blocks) & 1) == 0 &&
+        (reinterpret_cast<uintptr_t>(out) & 15) == 0) {   // contiguous rows only (the kernel writes out + g * 32)
+        dequant_q8_0_kernel<T><<<(unsigned) ((4 * total + 255) / 256), 256, 0, st>>>(p, row_bytes, row0, rows, gpr, out);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "dequant launch: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
 #define STRATA_DQ(TY) dequant_kernel<TY, T><<<grid, 256, 0, st>>>(p, row_bytes, row0, rows, gpr, ld, out); break
     switch (type) {
     case 2: STRATA_DQ(2);

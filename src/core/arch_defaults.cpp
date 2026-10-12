@@ -11,6 +11,24 @@ namespace strata::core {
 
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch) {
     std::vector<std::pair<std::string, std::string>> t;
+    if (strata::kernels::gfx_arch_is_gfx12(gcn_arch)) {
+        // gfx1200 / gfx1201 (RDNA4): only the PROMPT half of the gfx1151 table.  Reported exact (identical answers) on an R9700
+        // in #1478 and re-checked bitwise here (notes-142-amd.md); the decode half measured slower on that card, so it stays out.
+        // STRATA_HCD_EXACT is left out: it needs the gfx1151 hipBLASLt tuning table, finds none on gfx12, says so on every start
+        // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
+        // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
+        // consulted by a CUDA build.
+        const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+        if (off12 != nullptr && off12[0] == '0') return t;
+        t = {
+            {"STRATA_GDN_HEAD", "1"},
+            {"STRATA_GDN_PP", "2"},
+            {"STRATA_GDN_CONVL2", "1"},
+            {"STRATA_GDN_NOY", "1"},
+            {"STRATA_CVEC_FUSE", "1"},
+        };
+        return t;
+    }
     if (!strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
     const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
     if (off != nullptr && off[0] == '0') return t;
@@ -52,8 +70,11 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
         set.push_back(kv.first);
     }
     if (!set.empty()) {
-        std::fprintf(stderr, "strata: gfx1151 (Strix Halo): %zu exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns "
-                             "them off; a switch you set is kept): ", set.size());
+        const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
+        std::fprintf(stderr, "strata: %s: %zu exact speed switches on by default (%s=0 turns "
+                             "them off; a switch you set is kept): ",
+                     g12 ? "gfx12 (RDNA4)" : "gfx1151 (Strix Halo)", set.size(),
+                     g12 ? "STRATA_GFX12_DEFAULTS" : "STRATA_GFX1151_DEFAULTS");
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
     }

@@ -90,6 +90,30 @@ int main() {
         check(q.chain(4, 0.9, 3, 4) == 0, "chain: dear rows, never accepted -> none");
         check(q.chain(4, 0.9, 0, 4) == 0 && q.chain(8, 1.0, 3, 40) == 0, "chain: nothing proposed / no room -> none");
     }
+    {
+        // The stale-size check must also run when a shorter chain already pays. Synthetic costs isolate the
+        // selection policy: even a size that stays expensive is retried, but only once per stale interval.
+        DraftPolicy p(6);
+        for (int i = 0; i < 3; ++i) p.observe(false, 4, 3, 0, 40.0);
+        for (int i = 0; i < 3; ++i) p.observe_chain(4, 1, 4, 40, 42.0);
+        for (int i = 0; i < 3; ++i) p.observe_chain(4, 2, 5, 40, 1000.0);
+        check(p.chain(4, 1.0, 2, 40) == 1, "chain: the profitable shorter chain initially wins");
+        int probes = 0, last_probe = -1;
+        bool spaced = true, confident = true;
+        for (int i = 0; i < 1000; ++i) {
+            const int k = p.chain(4, 1.0, 2, 40);
+            if (k == 2) {
+                ++probes;
+                spaced &= last_probe < 0 ? i >= 300 : i - last_probe > 300;
+                last_probe = i;
+                confident &= p.chain(4, 0.5, 2, 40) < 2;
+            }
+            p.observe_chain(4, k, 3 + k, 40, k == 2 ? 1000.0 : 42.0);
+        }
+        check(probes > 0 && probes <= 3 && spaced,
+              "chain: stale full size is re-probed despite a profitable shorter chain");
+        check(probes > 0 && confident, "chain: stale re-probes retain the MTP confidence gate");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

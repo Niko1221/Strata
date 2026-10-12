@@ -1951,7 +1951,7 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
                  int64_t page_size, uint16_t *k_pool, uint16_t *v_pool,
                  int8_t *k_q, int8_t *v_q, uint16_t *k_scale, uint16_t *v_scale,
                  strata::kernels::KvHostPools host,
-                 strata::kernels::KvHostPools stage) {
+                 strata::kernels::KvHostPools stage, bool wide_host) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int64_t t = item_ct1.get_group(2);
     const int kvh = item_ct1.get_group(1), g = item_ct1.get_group(0) >> 1;
@@ -1962,9 +1962,27 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
     const int64_t row_id = ((pos / page_size) * 2 + kvh) * page_size + pos % page_size;
+    // 0.1.43: the host copy and the staging pool are written 4 bytes a lane, 64 contiguous bytes a group, instead of one
+    // 1- or 2-byte store per lane: on a B70 the 1-byte stores into the pinned host KV (--kv-resident) ran at ~30 MB/s
+    // (kv_append: 161 ms a layer for 4,096 tokens, 2 s of a 4K prompt), the same bytes in 4-byte stores are a few ms.
+    const int lid = (int) item_ct1.get_local_id(2);
     if (k_pool != nullptr) {
         const uint16_t h = hf(x);
         if (page >= 0) (is_v ? v_pool : k_pool)[row * 256 + d] = h;
+        if (wide_host && (host.k_pool != nullptr || stage.k_pool != nullptr)) {
+            auto &s16 = *sycl::ext::oneapi::group_local_memory_for_overwrite<uint16_t[64]>(
+                sycl::ext::oneapi::this_work_item::get_work_group<3>());
+            s16[lid] = h;
+            item_ct1.barrier(sycl::access::fence_space::local_space);
+            if (lid < 32) {
+                const uint32_t w = (uint32_t) s16[2 * lid] | ((uint32_t) s16[2 * lid + 1] << 16);
+                if (host.k_pool != nullptr)
+                    ((uint32_t *) ((is_v ? host.v_pool : host.k_pool) + row_id * 256 + g * 64))[lid] = w;
+                if (stage.k_pool != nullptr)
+                    ((uint32_t *) ((is_v ? stage.v_pool : stage.k_pool) + row_id * 256 + g * 64))[lid] = w;
+            }
+            return;
+        }
         if (host.k_pool != nullptr) (is_v ? host.v_pool : host.k_pool)[row_id * 256 + d] = h;
         if (stage.k_pool != nullptr) (is_v ? stage.v_pool : stage.k_pool)[row_id * 256 + d] = h;
         return;
@@ -2005,6 +2023,23 @@ runtimes. You may need to adjust the code.
         (is_v ? v_q : k_q)[row * 256 + d] = (int8_t) q;
         if (item_ct1.get_local_id(2) == 0)(is_v ? v_scale
                                                 : k_scale)[row * 4 + g] = sb;
+    }
+    if (wide_host && (host.k_q != nullptr || stage.k_q != nullptr)) {
+        auto &s8 = *sycl::ext::oneapi::group_local_memory_for_overwrite<int8_t[64]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+        s8[lid] = (int8_t) q;
+        item_ct1.barrier(sycl::access::fence_space::local_space);
+        if (lid < 16) {
+            const uint32_t w = (uint32_t) (uint8_t) s8[4 * lid] | ((uint32_t) (uint8_t) s8[4 * lid + 1] << 8) |
+                               ((uint32_t) (uint8_t) s8[4 * lid + 2] << 16) | ((uint32_t) (uint8_t) s8[4 * lid + 3] << 24);
+            if (host.k_q != nullptr) ((uint32_t *) ((is_v ? host.v_q : host.k_q) + row_id * 256 + g * 64))[lid] = w;
+            if (stage.k_q != nullptr) ((uint32_t *) ((is_v ? stage.v_q : stage.k_q) + row_id * 256 + g * 64))[lid] = w;
+        }
+        if (lid == 0) {
+            if (host.k_q != nullptr) (is_v ? host.v_scale : host.k_scale)[row_id * 4 + g] = sb;
+            if (stage.k_q != nullptr) (is_v ? stage.v_scale : stage.k_scale)[row_id * 4 + g] = sb;
+        }
+        return;
     }
     if (host.k_q != nullptr) {
         (is_v ? host.v_q : host.k_q)[row_id * 256 + d] = (int8_t) q;
@@ -2134,6 +2169,8 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
                void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage) {
     if (T <= 0) return;
+    static const bool wide_env = [] { const char* v = std::getenv("STRATA_KV_WIDE_HOST"); return !(v && v[0] == '0'); }();
+    const bool wide = wide_env;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2159,7 +2196,7 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
                                 K, V, pos0, page_table, page_size, k_pool,
                                 v_pool, k_q, v_q, k_scale, v_scale,
                                 host_host_strata_kernels_KvHostPools_ct11,
-                                stage_stage_strata_kernels_KvHostPools_ct12);
+                                stage_stage_strata_kernels_KvHostPools_ct12, wide);
                         });
             });
     }

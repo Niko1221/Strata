@@ -109,6 +109,8 @@ download stops, run it again: it continues where it left off. Your browser opens
 its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
 several cards, where the files go and every option: [docs/INSTALL.md](docs/INSTALL.md).
 
+**Is it fast on your PC?** Run `BENCH.bat` (`./bench.sh`): about 5-10 minutes, it measures chat, 4K/16K prompts and an agent-style session with your own settings and writes a report to share ([how](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
+
 ## Which model should I pick?
 
 The installer recommends one for your RAM. The same model comes in several sizes, compressed more or less. Smaller

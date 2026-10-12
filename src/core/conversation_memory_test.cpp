@@ -50,7 +50,7 @@ int main() {
     check(!conversation_memory_admit(std::numeric_limits<uint64_t>::max(),
                                     std::numeric_limits<uint64_t>::max(), 1), "maximal sum overflow rejected");
     // Test the real provider without assuming any particular amount of free RAM.
-    const auto available = conversation_available_memory();
+    const auto available = available_host_bytes();
     check(!available || conversation_memory_admit(available, 0, 0), "provider returns bytes or unknown");
 #if defined(_WIN32)
     // Unknown must fail closed in production, but must not let a broken Windows provider pass this test.
