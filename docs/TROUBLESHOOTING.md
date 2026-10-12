@@ -122,7 +122,8 @@ are the same, only the copies of the pageable part to the GPU go through the CPU
 **The Windows display driver resets, then the PC blue-screens (0x141, then 0x116 in `nvlddmkm`) during an answer (#961).**
 This is the NVIDIA driver, not Strata: the report shows the same wedge with other CUDA programs on that driver (610.88,
 RTX 4080 SUPER). Try another driver (a Studio one, or an older one) and a lower power limit; if it only happens with
-`--spec 4`, `--spec 0` avoids the verify window while you wait for a driver fix.
+`--spec 4`, `--spec 0` avoids the verify window while you wait for a driver fix (a native
+(IQ) pack needs `--spec` >= 2 and cannot turn speculation off).
 
 **An RTX 50 card (a source build with CUDA 13.2) answers with nonsense, or reads prompts wrongly (#892, #968).**
 CUDA 13.2.0 and 13.2.1's compiler (nvcc 13.2.51) miscompile some of the engine's kernels for sm_120: on our RTX 5070 the IQ2_S and IQ3_S

@@ -214,6 +214,10 @@ Measured on the same card, same 2,185-token prompt, 64 greedy tokens (AOT build,
 | decode, suffix drafter only (`--spec 2`) | 24.2-26.0 tok/s | 20.2-20.8 tok/s |
 | decode with the MTP draft layer (`--spec 4 --mtp`) | - | **42.7 tok/s** at the 2,185-token context (81% accepted, 2.9 tokens/round); 45.3 on a short prompt |
 
+A native (IQ) pack takes `--spec` 2 at the smallest: the engine refuses `--spec 0` (or 1) on one -
+it needs `--native SHARD1`, `--spec T` with T >= 2 and `--prefill CHUNK` - so speculative decoding
+cannot be turned off for these packs.
+
 Prompt reading is where Strata's design pays (oneMKL GEMM over dequantised experts, the whole model on
 the card). Decode is at ~80%: a speculative round costs ~53 ms whatever its size and the suffix drafter
 is accepted 9% of the time, so nearly every round yields one token; `--spec 4` (16.9 tok/s) was worse
@@ -391,9 +395,10 @@ Measured through the OpenAI API with those sampling defaults: 36 tok/s decode on
 (which reuses the conversation's cached prompt), against 24-26 for llama.cpp on the same card. After the decode work
 (2026-10-01 build): 48-72 tok/s on a ~190-token answer, prompt included (the first request after a start is the slower
 one); 55-59 tok/s over 5,000-18,000-token answers on the 2026-09-30 build. The reserve matters:
-with `--stream-experts` there is no host copy of the experts, so any expert left out of VRAM is read from the SSD
-and computed on the CPU whenever it is routed. At 1,536 MiB the cache came up 128 experts short and decode fell to
-5-10 tok/s; 1,024 MiB fits all 12,288 with 2 GB of VRAM still free.
+with `--stream-experts` under `STRATA_VERIFY_NO_HOST=1` (the `strata-sycl.sh` default) there is no SSD
+expert tier - every expert must be in VRAM or in the pinned RAM mirror (`STRATA_MIRROR_MIB`), and the
+engine refuses to start when the two do not cover the model ("REFUSED: N experts are neither in VRAM nor
+mirrored"). Raise the mirror or lower `--max-context`. 1,024 MiB fits all 12,288 with 2 GB of VRAM still free.
 
 **Logprobs (2026-10-02).** `/v1/chat/completions` takes OpenAI's `"logprobs": true` and `"top_logprobs": 0..20`,
 streamed or not, through `sycl/serve/server_intel.py`; the reply carries `choices[0].logprobs.content[]` (`token`,
