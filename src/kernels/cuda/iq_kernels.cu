@@ -1708,9 +1708,10 @@ __device__ void dq_q2_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     for (int j = 0; j < 8; ++j) {
         const int i = part * 8 + j;
         const int code = (x[b].qs[i / 4] >> ((i % 4) * 2)) & 3;
-#if defined(__HIPCC__) && ((defined(__gfx1012__) && HIP_VERSION_MAJOR < 7) || defined(__gfx1151__))
-        // HIP 5.7 on RDNA1 and the HIP compiler on gfx1151 (PR #895, ROCm 7.13) fold the half path's negative scale
-        // times +0 to +0. Preserve the scale's sign, as the FP32/CPU paths do.
+#if defined(__HIPCC__) && ((defined(__gfx1012__) && HIP_VERSION_MAJOR < 7) || defined(__gfx1151__) || \
+    defined(__gfx1200__) || defined(__gfx1201__))
+        // HIP 5.7 on RDNA1, the HIP compiler on gfx1151 (PR #895, ROCm 7.13) and on RDNA4 gfx1200/gfx1201 (ROCm
+        // 7.10, #1474) fold the half path's negative scale times +0 to +0. Preserve the scale's sign, as the FP32/CPU paths do.
         if constexpr (std::is_same_v<dst_t, __half>) {
             if (code == 1) {
                 yy[b * 64 + i] = __ushort_as_half(__half_as_ushort(x[b].d) & 0x8000u);
@@ -3420,7 +3421,11 @@ int exp_mode() {
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         const char* sm70 = std::getenv("STRATA_SM70_TABLE");   // PR 1401: Volta's mode 8 is opt-in until confirmed on a V100
-        per_dev[dev] = 1 + (major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0 ? 8 : kExpModeDefault);
+        // Pascal GP100 (sm_60): mode 8 too, on by default (Tesla P100: bitwise equal on the model's layers, the down
+        // projection 116 -> 94 us and IQ3_S gate/up 360 -> 229 us in a 28-group VRAM call); STRATA_SM60_TABLE=0 keeps the CUDA layout
+        const char* sm60 = std::getenv("STRATA_SM60_TABLE");
+        const bool p100 = major == 6 && minor == 0 && (sm60 == nullptr || std::atoi(sm60) != 0);
+        per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 ? 8 : kExpModeDefault);
     }
     return per_dev[dev] - 1;
 #endif

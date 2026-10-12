@@ -37,20 +37,37 @@ struct Case {
 const Case CASES[] = {
     {"IQ4_XS 2560x10240", 23, 2560, 10240, 256, 136, {0, -1}},
     {"IQ4_XS 2560x6144", 23, 2560, 6144, 256, 136, {0, -1}},
-    {"IQ4_XS 4096x2560", 23, 4096, 2560, 256, 136, {0, -1}},
+    {"IQ4_XS 6144x2560", 23, 6144, 2560, 256, 136, {0, -1}},
     {"IQ4_XS 2560x512", 23, 2560, 512, 256, 136, {0, -1}},
     {"Q4_K 2560x10240", 12, 2560, 10240, 256, 144, {0, 2}},
-    {"Q4_K 4096x2560", 12, 4096, 2560, 256, 144, {0, 2}},
+    {"Q4_K 6144x2560", 12, 6144, 2560, 256, 144, {0, 2}},
     {"Q4_K odd rows 2560x2051", 12, 2560, 2051, 256, 144, {0, 2}},
     {"Q5_K 2560x12288", 13, 2560, 12288, 256, 176, {0, 2}},
     {"Q5_K 2560x6144", 13, 2560, 6144, 256, 176, {0, 2}},
-    {"Q5_K 4096x2560", 13, 4096, 2560, 256, 176, {0, 2}},
+    {"Q5_K 6144x2560", 13, 6144, 2560, 256, 176, {0, 2}},
     {"Q5_K head 2560x248320", 13, 2560, 248320, 256, 176, {0, 2}},
     {"Q6_K 2560x12288", 14, 2560, 12288, 256, 210, {208, -1}},
     {"Q6_K 2560x10240", 14, 2560, 10240, 256, 210, {208, -1}},
-    {"Q6_K 4096x2560", 14, 4096, 2560, 256, 210, {208, -1}},
+    {"Q6_K 6144x2560", 14, 6144, 2560, 256, 210, {208, -1}},
     {"Q6_K odd rows 2560x2051", 14, 2560, 2051, 256, 210, {208, -1}},
     {"Q6_K 2560x512", 14, 2560, 512, 256, 210, {208, -1}},
+    {"IQ4_XS 2560x12288", 23, 2560, 12288, 256, 136, {0, -1}},
+    {"IQ4_XS 2560x640", 23, 2560, 640, 256, 136, {0, -1}},
+    {"Q4_K 2560x6144", 12, 2560, 6144, 256, 144, {0, 2}},
+    {"Q4_K 2560x640", 12, 2560, 640, 256, 144, {0, 2}},
+    {"Q4_K 2560x512", 12, 2560, 512, 256, 144, {0, 2}},
+    {"Q5_K 2560x10240", 13, 2560, 10240, 256, 176, {0, 2}},
+    {"Q5_K 2560x640", 13, 2560, 640, 256, 176, {0, 2}},
+    {"Q5_K 2560x512", 13, 2560, 512, 256, 176, {0, 2}},
+    {"Q6_K 2560x6144", 14, 2560, 6144, 256, 210, {208, -1}},
+    {"Q6_K 2560x640", 14, 2560, 640, 256, 210, {208, -1}},
+    {"Q3_K 2560x10240", 11, 2560, 10240, 256, 110, {108, -1}},
+    {"Q3_K 2560x12288", 11, 2560, 12288, 256, 110, {108, -1}},
+    {"Q3_K 2560x6144", 11, 2560, 6144, 256, 110, {108, -1}},
+    {"Q3_K 6144x2560", 11, 6144, 2560, 256, 110, {108, -1}},
+    {"Q3_K 2560x640", 11, 2560, 640, 256, 110, {108, -1}},
+    {"Q3_K 2560x512", 11, 2560, 512, 256, 110, {108, -1}},
+    {"Q3_K 2560x2051 odd", 11, 2560, 2051, 256, 110, {108, -1}},
 };
 
 uint16_t sane_half(std::mt19937& rng) {
@@ -64,6 +81,7 @@ bool ck(cudaError_t e, const char* what) {
 }
 
 int run_case(const Case& c, bool bench, cudaStream_t s) {
+    if (std::strstr(c.name, "odd") != nullptr) bench = false;   // parity-only shape: not a timing cell of the table
     if (c.type == 13 && c.n_out > 100000 && !bench) { /* the head: parity too, just big */ }
     const std::size_t wbytes = native_mmvq_weight_bytes(c.type, c.n_in, c.n_out);
     std::mt19937 rng(77u + (unsigned) c.type * 31u + (unsigned) c.n_out);
@@ -87,7 +105,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             return 1;
     }
     int bad = 0;
-    for (int T = 2; T <= 4; ++T) {
+    for (int T = 1; T <= 4; ++T) {
         std::vector<float> x((std::size_t) T * c.n_in);
         std::normal_distribution<float> nd(0.f, 1.f);
         for (auto& v : x) v = nd(rng);
@@ -102,7 +120,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             return 1;
         ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "copy x");
         quantize_q8_1_rows(dx, T, c.n_in, xq, s);
-        native_q8_1_interleave(xq, xil, c.n_in, T, s);
+        if (T >= 2) native_q8_1_interleave(xq, xil, c.n_in, T, s);
         native_mmvq(c.type, dw[0], xq, yref, c.n_in, c.n_out, T, s);
         ck(cudaStreamSynchronize(s), "ref");
         std::vector<uint32_t> a((std::size_t) T * c.n_out), b(a.size());
@@ -176,31 +194,51 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
 // A cell with several measured shapes takes the worst (smallest) gain of the best choice, as the shipped table does for
 // two cards; a class with no measured shape prints the value of its neighbour below it (or 0).
 void emit_table() {
-    const int types[] = {23, 12, 13, 14};
-    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K"};
+    const int types[] = {23, 12, 13, 14, 11};
+    const char* names[] = {"IQ4_XS", "Q4_K", "Q5_K", "Q6_K", "Q3_K"};
     std::printf("// measured on this card by mmvq_il_parity --bench --emit-table\n");
-    for (int ti = 0; ti < 4; ++ti) {
+    // per cell: the rows count whose WORST ratio to native_mmvq over the cell's measured shapes is the best, taken only
+    // when that worst ratio is under 0.97 (else 0); a class with no measured shape takes its lower neighbour's value
+    auto pick_cell = [&](int type, int nc, int cls, int prev) {
+        double best_worst = 1e9;
+        int best = -1;
+        bool any = false;
+        for (int r : {1, 2, 4}) {
+            double worst = 0;
+            bool have = false;
+            for (const Cell& c : g_cells) {
+                if (c.type != type || c.T != nc) continue;
+                const int cc = c.n_out < 2048 ? 0 : c.n_out < 4096 ? 1 : c.n_out < 8192 ? 2 : c.n_out < 12288 ? 3 : 4;
+                if (cc != cls || c.il[r] <= 0) continue;
+                have = true;
+                worst = std::max(worst, c.il[r] / c.ref);
+            }
+            any = any || have;
+            if (have && worst < best_worst) { best_worst = worst; best = r; }
+        }
+        if (!any) return prev;
+        return best_worst < 0.97 ? best : 0;
+    };
+    for (int ti = 0; ti < 5; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 2; nc <= 4; ++nc) {
             int prev = 0;
             std::printf("{");
             for (int cls = 0; cls < 5; ++cls) {
-                int pick = -1;
-                for (const Cell& c : g_cells) {
-                    if (c.type != types[ti] || c.T != nc) continue;
-                    const int cc = c.n_out < 2048 ? 0 : c.n_out < 4096 ? 1 : c.n_out < 8192 ? 2 : c.n_out < 12288 ? 3 : 4;
-                    if (cc != cls) continue;
-                    int best = 0;
-                    double bt = c.ref * 0.97;
-                    for (int r : {1, 2, 4})
-                        if (c.il[r] > 0 && c.il[r] < bt) { bt = c.il[r]; best = r; }
-                    pick = pick < 0 ? best : (pick == best ? pick : 0);   // shapes disagree: native_mmvq
-                }
-                if (pick < 0) pick = prev;
-                prev = pick;
-                std::printf("%d%s", pick, cls < 4 ? ", " : "");
+                prev = pick_cell(types[ti], nc, cls, prev);
+                std::printf("%d%s", prev, cls < 4 ? ", " : "");
             }
             std::printf("}%s", nc < 4 ? ", " : "");
+        }
+        std::printf("}},   // %s\n", names[ti]);
+    }
+    std::printf("// one column (kIl1RowsShared):\n");
+    for (int ti = 0; ti < 5; ++ti) {
+        std::printf("    {%d, {", types[ti]);
+        int prev = 0;
+        for (int cls = 0; cls < 5; ++cls) {
+            prev = pick_cell(types[ti], 1, cls, prev);
+            std::printf("%d%s", prev, cls < 4 ? ", " : "");
         }
         std::printf("}},   // %s\n", names[ti]);
     }
@@ -209,12 +247,14 @@ void emit_table() {
 // the per-architecture lookup, no GPU needed for its answers
 int check_tables() {
     int bad = 0;
-    for (int type : {23, 12, 13, 14})
+    for (int type : {23, 12, 13, 14, 11})
         for (int nc = 2; nc <= 4; ++nc)
             for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {
                 const int a = native_mmvq_il_rows_for(86, type, nc, n_out);
-                // sm_89 has no table of its own: it must answer exactly what the measured Ampere table says
-                if (native_mmvq_il_rows_for(89, type, nc, n_out) != a || native_mmvq_il_rows_for(120, type, nc, n_out) != a) {
+                // sm_89 and sm_120 have no table of their own: they answer the shared table (what sm_86 answered before its
+                // own 143-dense table, which differs only in Q3_K, a type the shared table does not use)
+                const int b = native_mmvq_il_rows_for(89, type, nc, n_out);
+                if (b != native_mmvq_il_rows_for(120, type, nc, n_out) || (type != 11 && b != a) || (type == 11 && b != 0)) {
                     ++bad;
                     std::printf("FAIL table: sm_89/sm_120 differ from sm_86 at type %d ncols %d n_out %d\n", type, nc, n_out);
                 }
@@ -224,6 +264,11 @@ int check_tables() {
     if (native_mmvq_il_rows_for(70, 14, 2, 2560) != 1 || native_mmvq_il_rows_for(86, 14, 2, 2560) != 0) {
         ++bad;
         std::printf("FAIL table: the sm_70 table is not the V100's\n");
+    }
+    // Pascal has its own table too (the P100's): Q6_K, 3 columns, 12288 rows -> 4 rows a warp; sm_75 still has none (the shared one)
+    if (native_mmvq_il_rows_for(60, 14, 3, 12288) != 4 || native_mmvq_il_rows_for(60, 23, 2, 512) != 0) {
+        ++bad;
+        std::printf("FAIL table: the sm_60 table is not the P100's\n");
     }
     if (native_mmvq_il_rows_for(89, 99, 2, 2560) != 0 || native_mmvq_il_rows_for(89, 12, 5, 2560) != 0) {
         ++bad;
@@ -240,8 +285,10 @@ int main(int argc, char** argv) {
     cudaStreamCreate(&s);
     int bad = 0;
     bad += check_tables();
-    for (const Case& c : CASES) bad += run_case(c, bench, s);
+    const char* only = std::getenv("MMVQ_IL_ONLY");   // 143-dense: only the cases whose name contains this
+    for (const Case& c : CASES)
+        if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s);
     if (emit) emit_table();
-    std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 2-4, rows 1/2/4 and the table, bitwise)");
+    std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 1-4, rows 1/2/4 and the table, bitwise)");
     return bad ? 1 : 0;
 }

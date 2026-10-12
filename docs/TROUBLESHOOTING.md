@@ -52,7 +52,8 @@ Install what it names (links are printed), then run it again. Everything already
 **Linux: the engine does not compile (`unsupported GNU version`, or `exception specification is incompatible` for
 `cospi`/`sinpi`/`rsqrt`).** Two known mismatches between the CUDA toolkit and a new Linux (#601):
 - gcc newer than 14 (Ubuntu 26.04's default 15): CUDA 12.x and 13.0 refuse it. Install g++-14 and run
-  `CXX=g++-14 CUDAHOSTCXX=g++-14 ./setup.sh`.
+  `CXX=g++-14 ./setup.sh` (CC, CXX and CUDAHOSTCXX name the build's compilers; setup passes them to CMake itself,
+  so an already-configured build folder picks them up too, #1645).
 - glibc 2.43 with CUDA 12.9: the toolkit's math headers clash with glibc's, already in CMake's first test compile.
   Use CUDA 12.8 or 13.x instead. Setup takes the newest toolkit it finds; `STRATA_NVCC=/usr/local/cuda-12.8/bin/nvcc
   ./setup.sh` makes it use that one (only that one).
