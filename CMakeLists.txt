@@ -782,6 +782,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
     add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
+    add_test(NAME mmvq_il_tables COMMAND mmvq_il_parity --tables-only)
+    set_tests_properties(mmvq_il_tables PROPERTIES ENVIRONMENT
+      "STRATA_MMVQ_IL_ROWS=;STRATA_MMVQ_IL_T1=1;STRATA_MMVQ_IL_Q3K=1")
+    add_test(NAME mmvq_il_tables_disable_extensions COMMAND mmvq_il_parity --tables-only)
+    set_tests_properties(mmvq_il_tables_disable_extensions PROPERTIES ENVIRONMENT
+      "STRATA_MMVQ_IL_ROWS=;STRATA_MMVQ_IL_T1=0;STRATA_MMVQ_IL_Q3K=0")
+    add_test(NAME mmvq_il_sm75_override_isolation COMMAND mmvq_il_parity --sm75-tables-only)
+    set_tests_properties(mmvq_il_sm75_override_isolation PROPERTIES ENVIRONMENT
+      "STRATA_MMVQ_IL_ROWS=14:2:4,4,4,4,4")
   endif()
   # programmatic dependent launch (pdl.hpp) in a captured verify-shaped chain: bitwise vs ordinary launches over
   # replays with poisoned buffers, and only kernel-to-kernel programmatic edges (GPU, synthetic, no model; the edges

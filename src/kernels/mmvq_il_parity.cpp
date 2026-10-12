@@ -5,6 +5,8 @@
 //
 // --emit-table (with --bench) prints the rows-a-warp table this card measured, in the source form of kIlRows in
 // native_mmvq.cu: per cell the rows count (1/2/4) that takes at least 3% off native_mmvq's time, else 0.
+// --tables-only checks architecture selection without CUDA initialization; --sm75-tables-only checks just
+// exact-shape isolation, including when STRATA_MMVQ_IL_ROWS is set.
 //
 // The same Q8_1 bytes feed both paths (quantize_q8_1_rows, then native_q8_1_interleave). Weights are random bytes with
 // the block scales rewritten as normal fp16 values, so every output is finite (a NaN would compare equal whatever
@@ -134,7 +136,7 @@ bool ck(cudaError_t e, const char* what) {
     std::exit(1);
 }
 
-int run_case(const Case& c, bool bench, cudaStream_t s) {
+int run_case(const Case& c, bool bench, cudaStream_t s, int first_T = 1) {
     if (std::strstr(c.name, "odd") != nullptr) bench = false;   // parity-only shape: not a timing cell of the table
     if (std::strstr(c.name, "tail") != nullptr) bench = false;
     const std::size_t wbytes = native_mmvq_weight_bytes(c.type, c.n_in, c.n_out);
@@ -159,7 +161,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             return 1;
     }
     int bad = 0;
-    for (int T = 1; T <= 4; ++T) {
+    for (int T = first_T; T <= 4; ++T) {
         std::vector<float> x((std::size_t) T * c.n_in);
         std::normal_distribution<float> nd(0.f, 1.f);
         for (auto& v : x) v = nd(rng);
@@ -406,7 +408,7 @@ int main(int argc, char** argv) {
     }
     if (sm75) {
         for (const Case& c : SM75_CASES)
-            if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s);
+            if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s, 2);
     } else {
         for (const Case& c : CASES)
             if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s);
@@ -417,6 +419,8 @@ int main(int argc, char** argv) {
     cudaStreamDestroy(s);
     std::printf("PATH forced_interleaved=%d table_interleaved=%d table_fallback=%d\n",
                 forced_interleaved, table_interleaved, table_fallback);
-    std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every selected case, T 1-4, rows 1/2/4 and the table, bitwise)");
+    if (bad) std::printf("mmvq_il_parity: FAIL\n");
+    else std::printf("mmvq_il_parity: OK (every selected case, T %d-4, rows 1/2/4 and the table, bitwise)\n",
+                     sm75 ? 2 : 1);
     return bad ? 1 : 0;
 }

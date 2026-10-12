@@ -2634,8 +2634,8 @@ constexpr IlArch kIlArch[] = {
     {75, nullptr, 0, kIlRowsSm75, sizeof(kIlRowsSm75) / sizeof(IlShapeRows)},
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
-// STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
-// type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
+// STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides class tables, not sm_75's exact shapes (type = ggml
+// type 23/12/13/14/11, ncols 1-4, r* = rows a warp 0/1/2/4 for the five n_out classes). Parsed once.
 struct IlEnvRow { int type, ncols; uint8_t r[5]; };
 const std::vector<IlEnvRow>& il_env_rows() {
     static const std::vector<IlEnvRow> v = [] {

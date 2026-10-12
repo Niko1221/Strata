@@ -148,6 +148,7 @@ void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols,
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out, int n_in = 0);
 // native_mmvq for 2..4 columns whose copy native_q8_1_interleave wrote, bitwise native_mmvq's output: kernels in which a
 // warp takes 1, 2 or 4 rows and reads the columns from the interleaved copy; native_mmvq (x_q8_1) when not supported.
+// For one column, eligible architectures read x_q8_1 directly, with no interleaved copy.
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream);
 // The table's rows a warp (0, 1, 2, 4; 0 = native_mmvq's kernels) for a card of compute capability `cc` (major * 10 + minor).
