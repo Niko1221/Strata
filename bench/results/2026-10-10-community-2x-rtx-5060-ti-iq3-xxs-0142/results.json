@@ -1,0 +1,5148 @@
+[
+  {
+    "id": "2026-10-10/exact042/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "exact042-decode.json",
+    "source_file_sha256": "60d33e24509a313e584723042580fcd58ae64c7794de41c21a07bb013dc5364c",
+    "request_sha256": "19bf27836305036b5417a8bb86394019e0c0afb37b24fd6213a79967cfc7ae7e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 17.068521653010976,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2163,
+      "total_tokens": 4429,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659464.6577165,
+      "duration_s": 17.1,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2163,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2163,
+      "prompt_ms": 2668.2,
+      "decode_ms": 14386.3,
+      "decode_tok_s": 150.4,
+      "hit_rate": 0.943,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1387,
+      "drafts_accepted": 1298
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1298,
+      1387
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "exact042-decode.json",
+    "source_file_sha256": "60d33e24509a313e584723042580fcd58ae64c7794de41c21a07bb013dc5364c",
+    "request_sha256": "dcdf69ac1847c494f493688ec816557c27c9f6c5ddcea891265c57fa11982f0c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 14.333793693047483,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 1904,
+      "total_tokens": 4413,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659481.7182477,
+      "duration_s": 14.3,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 1904,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1904,
+      "prompt_ms": 2679.8,
+      "decode_ms": 11649.1,
+      "decode_tok_s": 163.4,
+      "hit_rate": 0.932,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1262,
+      "drafts_accepted": 1210
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1210,
+      1262
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/decode/1/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "exact042-decode.json",
+    "source_file_sha256": "60d33e24509a313e584723042580fcd58ae64c7794de41c21a07bb013dc5364c",
+    "request_sha256": "f448ff736e7ff22acd0ad1d488778833c95a570ede290ae3473c8317c779eed4",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 25.034374550974462,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2988,
+      "total_tokens": 5254,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659496.0521283,
+      "duration_s": 25.0,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2988,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2988,
+      "prompt_ms": 2369.7,
+      "decode_ms": 22660.3,
+      "decode_tok_s": 131.9,
+      "hit_rate": 0.943,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1776,
+      "drafts_accepted": 1633
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1633,
+      1776
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/decode/1/leads28_en",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "exact042-decode.json",
+    "source_file_sha256": "60d33e24509a313e584723042580fcd58ae64c7794de41c21a07bb013dc5364c",
+    "request_sha256": "299408cb11b10e64505c89ff7c6843c7652ad44173562f37ba9f8cf2dd593e02",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.07097205799073,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 1802,
+      "total_tokens": 4311,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659521.0872512,
+      "duration_s": 15.1,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 1802,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1802,
+      "prompt_ms": 2737.5,
+      "decode_ms": 12328.8,
+      "decode_tok_s": 146.2,
+      "hit_rate": 0.929,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1163,
+      "drafts_accepted": 1098
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1098,
+      1163
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "exact042-long.json",
+    "source_file_sha256": "5d04e333a1c142b17076fc34b33d0663531b78e3a09269d69346070c97a56ccf",
+    "request_sha256": "ab6dea695e666763616eee260b505333a86f8ad6518edc852f53dc0c84f20547",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 34.95202029997017,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32268,
+      "completion_tokens": 2508,
+      "total_tokens": 34776,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659536.2118142,
+      "duration_s": 34.9,
+      "finish": "stop",
+      "prompt_tokens": 32268,
+      "reused": 0,
+      "output_tokens": 2508,
+      "prompt_total": 32268,
+      "prompt_read": 32268,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2508,
+      "prompt_ms": 16006.4,
+      "decode_ms": 18924.4,
+      "decode_tok_s": 132.5,
+      "hit_rate": 0.941,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1546,
+      "drafts_accepted": 1436
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1436,
+      1546
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_arithmetic",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_arithmetic",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "719a9ef38a37c656486905b7920f0163d2b9ba7f895f8697cd74ccf4a8d15df2",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_arithmetic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.2122704020002857,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 171,
+      "completion_tokens": 306,
+      "total_tokens": 477,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659571.1967883,
+      "duration_s": 3.2,
+      "finish": "stop",
+      "prompt_tokens": 171,
+      "reused": 0,
+      "output_tokens": 306,
+      "prompt_total": 171,
+      "prompt_read": 171,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 306,
+      "prompt_ms": 726.2,
+      "decode_ms": 2476.8,
+      "decode_tok_s": 123.5,
+      "hit_rate": 0.872,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 194,
+      "drafts_accepted": 180
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      180,
+      194
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_versions",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_versions",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "e5dcc97459d04e1906b795b9e958bd863e71eed4a93a2d5363a3ab7bf1313227",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_versions. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.1271800699760206,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 211,
+      "completion_tokens": 186,
+      "total_tokens": 397,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659574.4042606,
+      "duration_s": 2.1,
+      "finish": "stop",
+      "prompt_tokens": 211,
+      "reused": 0,
+      "output_tokens": 186,
+      "prompt_total": 211,
+      "prompt_read": 211,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 186,
+      "prompt_ms": 737.1,
+      "decode_ms": 1386.2,
+      "decode_tok_s": 134.2,
+      "hit_rate": 0.889,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 125,
+      "drafts_accepted": 113
+    },
+    "complete": true,
+    "correct": false,
+    "drafts": [
+      113,
+      125
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_injection",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_injection",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "7fcb9e689db43b562d7a0456569da9861b9538c13068525eb1127aa32d01060c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_injection. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 1.5871976949856617,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 165,
+      "completion_tokens": 113,
+      "total_tokens": 278,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659576.5318837,
+      "duration_s": 1.6,
+      "finish": "stop",
+      "prompt_tokens": 165,
+      "reused": 0,
+      "output_tokens": 113,
+      "prompt_total": 165,
+      "prompt_read": 165,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 113,
+      "prompt_ms": 620.0,
+      "decode_ms": 963.4,
+      "decode_tok_s": 117.3,
+      "hit_rate": 0.922,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 73,
+      "drafts_accepted": 61
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      61,
+      73
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_negation",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_negation",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "4d880bd9726cd3e3bcfa152c6bc7a168a7f86104877e4bf69b230923a03c1bfd",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_negation. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 4.1867729789810255,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 154,
+      "completion_tokens": 405,
+      "total_tokens": 559,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659578.1193464,
+      "duration_s": 4.2,
+      "finish": "stop",
+      "prompt_tokens": 154,
+      "reused": 0,
+      "output_tokens": 405,
+      "prompt_total": 154,
+      "prompt_read": 154,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 405,
+      "prompt_ms": 630.7,
+      "decode_ms": 3552.0,
+      "decode_tok_s": 114.0,
+      "hit_rate": 0.938,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 259,
+      "drafts_accepted": 216
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      216,
+      259
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_plan",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_plan",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "39fc648df89c91eb75ecd53b3e405bb43932894ce842ba2b7e5d959506112acf",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_plan. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.3712175919790752,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 185,
+      "completion_tokens": 257,
+      "total_tokens": 442,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659582.306976,
+      "duration_s": 2.4,
+      "finish": "stop",
+      "prompt_tokens": 185,
+      "reused": 0,
+      "output_tokens": 257,
+      "prompt_total": 185,
+      "prompt_read": 185,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 257,
+      "prompt_ms": 622.2,
+      "decode_ms": 1744.7,
+      "decode_tok_s": 147.3,
+      "hit_rate": 0.946,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 168,
+      "drafts_accepted": 155
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      155,
+      168
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/exact042/quality/0/qa_logic",
+    "date": "2026-10-10",
+    "arm": "exact042",
+    "group": "quality",
+    "fixture": "qa_logic",
+    "repeat": 0,
+    "source_file": "exact042-quality.json",
+    "source_file_sha256": "daccbc18ed42bdecea853361ba866eff9d01e3595dcfc2233ac3cdd9f6482ead",
+    "request_sha256": "ba09920ad93b115370db81c8fedead503fee9ed836d24cbfaf068acf6ebda52a",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_logic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.2332500210031867,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 130,
+      "completion_tokens": 332,
+      "total_tokens": 462,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659584.6778274,
+      "duration_s": 3.2,
+      "finish": "stop",
+      "prompt_tokens": 130,
+      "reused": 0,
+      "output_tokens": 332,
+      "prompt_total": 130,
+      "prompt_read": 130,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 332,
+      "prompt_ms": 560.3,
+      "decode_ms": 2669.3,
+      "decode_tok_s": 124.4,
+      "hit_rate": 0.939,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 205,
+      "drafts_accepted": 180
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      180,
+      205
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/tail7/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "tail7-decode.json",
+    "source_file_sha256": "99d5c13965658afb5b19d84fbbaf1279ffb39974a791fa69e6ba80150dca153d",
+    "request_sha256": "19bf27836305036b5417a8bb86394019e0c0afb37b24fd6213a79967cfc7ae7e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 23.523839853005484,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2883,
+      "total_tokens": 5149,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659618.8287427,
+      "duration_s": 23.5,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2883,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2883,
+      "prompt_ms": 2678.4,
+      "decode_ms": 20834.3,
+      "decode_tok_s": 138.4,
+      "hit_rate": 0.971,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1747,
+      "drafts_accepted": 1593
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1593,
+      1747
+    ],
+    "tail_skipped": [
+      "38079"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "tail7-decode.json",
+    "source_file_sha256": "99d5c13965658afb5b19d84fbbaf1279ffb39974a791fa69e6ba80150dca153d",
+    "request_sha256": "dcdf69ac1847c494f493688ec816557c27c9f6c5ddcea891265c57fa11982f0c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 16.101362055982463,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2286,
+      "total_tokens": 4795,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659642.3469317,
+      "duration_s": 16.1,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2286,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2286,
+      "prompt_ms": 2673.1,
+      "decode_ms": 13423.3,
+      "decode_tok_s": 170.3,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1497,
+      "drafts_accepted": 1447
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1447,
+      1497
+    ],
+    "tail_skipped": [
+      "70753"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/decode/1/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "tail7-decode.json",
+    "source_file_sha256": "99d5c13965658afb5b19d84fbbaf1279ffb39974a791fa69e6ba80150dca153d",
+    "request_sha256": "f448ff736e7ff22acd0ad1d488778833c95a570ede290ae3473c8317c779eed4",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 27.353899934969377,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 3306,
+      "total_tokens": 5572,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659658.4480584,
+      "duration_s": 27.4,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 3306,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3306,
+      "prompt_ms": 2381.5,
+      "decode_ms": 24968.0,
+      "decode_tok_s": 132.4,
+      "hit_rate": 0.97,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1914,
+      "drafts_accepted": 1772
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1772,
+      1914
+    ],
+    "tail_skipped": [
+      "113477"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/decode/1/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "tail7-decode.json",
+    "source_file_sha256": "99d5c13965658afb5b19d84fbbaf1279ffb39974a791fa69e6ba80150dca153d",
+    "request_sha256": "299408cb11b10e64505c89ff7c6843c7652ad44173562f37ba9f8cf2dd593e02",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.355506157968193,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2240,
+      "total_tokens": 4749,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659685.8029,
+      "duration_s": 15.4,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2240,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2240,
+      "prompt_ms": 2648.1,
+      "decode_ms": 12702.7,
+      "decode_tok_s": 176.3,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1473,
+      "drafts_accepted": 1435
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1435,
+      1473
+    ],
+    "tail_skipped": [
+      "144305"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "tail7-long.json",
+    "source_file_sha256": "d593bbdac75a005cada1f7ff02fe5d8079c9b50745272b9e3ea44a3afbd1c29b",
+    "request_sha256": "ab6dea695e666763616eee260b505333a86f8ad6518edc852f53dc0c84f20547",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 32.18512794096023,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32268,
+      "completion_tokens": 2262,
+      "total_tokens": 34530,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659701.2113113,
+      "duration_s": 32.2,
+      "finish": "stop",
+      "prompt_tokens": 32268,
+      "reused": 0,
+      "output_tokens": 2262,
+      "prompt_total": 32268,
+      "prompt_read": 32268,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2262,
+      "prompt_ms": 15995.5,
+      "decode_ms": 16167.8,
+      "decode_tok_s": 139.9,
+      "hit_rate": 0.961,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1419,
+      "drafts_accepted": 1341
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1341,
+      1419
+    ],
+    "tail_skipped": [
+      "178269"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_arithmetic",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_arithmetic",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "719a9ef38a37c656486905b7920f0163d2b9ba7f895f8697cd74ccf4a8d15df2",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_arithmetic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 4.176378511998337,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 171,
+      "completion_tokens": 503,
+      "total_tokens": 674,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659733.4268992,
+      "duration_s": 4.2,
+      "finish": "stop",
+      "prompt_tokens": 171,
+      "reused": 0,
+      "output_tokens": 503,
+      "prompt_total": 171,
+      "prompt_read": 171,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 503,
+      "prompt_ms": 716.9,
+      "decode_ms": 3450.8,
+      "decode_tok_s": 145.8,
+      "hit_rate": 0.926,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 318,
+      "drafts_accepted": 302
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      302,
+      318
+    ],
+    "tail_skipped": [
+      "188943"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_versions",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_versions",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "e5dcc97459d04e1906b795b9e958bd863e71eed4a93a2d5363a3ab7bf1313227",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_versions. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 1.9676456509623677,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 211,
+      "completion_tokens": 185,
+      "total_tokens": 396,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659737.5987604,
+      "duration_s": 2.0,
+      "finish": "stop",
+      "prompt_tokens": 211,
+      "reused": 0,
+      "output_tokens": 185,
+      "prompt_total": 211,
+      "prompt_read": 211,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 185,
+      "prompt_ms": 723.9,
+      "decode_ms": 1240.2,
+      "decode_tok_s": 149.2,
+      "hit_rate": 0.934,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 119,
+      "drafts_accepted": 111
+    },
+    "complete": true,
+    "correct": false,
+    "drafts": [
+      111,
+      119
+    ],
+    "tail_skipped": [
+      "192708"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_injection",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_injection",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "7fcb9e689db43b562d7a0456569da9861b9538c13068525eb1127aa32d01060c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_injection. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 1.4839135630172677,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 165,
+      "completion_tokens": 100,
+      "total_tokens": 265,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659739.5670142,
+      "duration_s": 1.5,
+      "finish": "stop",
+      "prompt_tokens": 165,
+      "reused": 0,
+      "output_tokens": 100,
+      "prompt_total": 165,
+      "prompt_read": 165,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 100,
+      "prompt_ms": 615.7,
+      "decode_ms": 864.5,
+      "decode_tok_s": 115.7,
+      "hit_rate": 0.955,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 59,
+      "drafts_accepted": 48
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      48,
+      59
+    ],
+    "tail_skipped": [
+      "194422"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_negation",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_negation",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "4d880bd9726cd3e3bcfa152c6bc7a168a7f86104877e4bf69b230923a03c1bfd",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_negation. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.693368260981515,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 154,
+      "completion_tokens": 388,
+      "total_tokens": 542,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659741.0511289,
+      "duration_s": 3.7,
+      "finish": "stop",
+      "prompt_tokens": 154,
+      "reused": 0,
+      "output_tokens": 388,
+      "prompt_total": 154,
+      "prompt_read": 154,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 388,
+      "prompt_ms": 630.1,
+      "decode_ms": 3059.7,
+      "decode_tok_s": 126.8,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 248,
+      "drafts_accepted": 214
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      214,
+      248
+    ],
+    "tail_skipped": [
+      "200425"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_plan",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_plan",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "39fc648df89c91eb75ecd53b3e405bb43932894ce842ba2b7e5d959506112acf",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_plan. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.3089809890370816,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 185,
+      "completion_tokens": 257,
+      "total_tokens": 442,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659744.745314,
+      "duration_s": 2.3,
+      "finish": "stop",
+      "prompt_tokens": 185,
+      "reused": 0,
+      "output_tokens": 257,
+      "prompt_total": 185,
+      "prompt_read": 185,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 257,
+      "prompt_ms": 626.9,
+      "decode_ms": 1678.0,
+      "decode_tok_s": 153.2,
+      "hit_rate": 0.968,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 161,
+      "drafts_accepted": 151
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      151,
+      161
+    ],
+    "tail_skipped": [
+      "203338"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7/quality/0/qa_logic",
+    "date": "2026-10-10",
+    "arm": "tail7",
+    "group": "quality",
+    "fixture": "qa_logic",
+    "repeat": 0,
+    "source_file": "tail7-quality.json",
+    "source_file_sha256": "e2520dd84d22c2afccd948ecc338f14e484288851fa80affb04b000e9708da79",
+    "request_sha256": "ba09920ad93b115370db81c8fedead503fee9ed836d24cbfaf068acf6ebda52a",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0qa_logic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.1723361279582605,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 130,
+      "completion_tokens": 323,
+      "total_tokens": 453,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659747.0540514,
+      "duration_s": 3.2,
+      "finish": "stop",
+      "prompt_tokens": 130,
+      "reused": 0,
+      "output_tokens": 323,
+      "prompt_total": 130,
+      "prompt_read": 130,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 323,
+      "prompt_ms": 551.4,
+      "decode_ms": 2617.3,
+      "decode_tok_s": 123.4,
+      "hit_rate": 0.968,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 196,
+      "drafts_accepted": 167
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      167,
+      196
+    ],
+    "tail_skipped": [
+      "208873"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-aux/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-aux",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "tail7-aux-decode.json",
+    "source_file_sha256": "d09332eb094700e9acd7534297d73265cb4d4bf432c460cba9d192fd2e0ed538",
+    "request_sha256": "19bf27836305036b5417a8bb86394019e0c0afb37b24fd6213a79967cfc7ae7e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 25.465632450999692,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 3087,
+      "total_tokens": 5353,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659780.4097257,
+      "duration_s": 25.5,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 3087,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3087,
+      "prompt_ms": 2629.9,
+      "decode_ms": 22825.5,
+      "decode_tok_s": 135.2,
+      "hit_rate": 0.972,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1816,
+      "drafts_accepted": 1671
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1671,
+      1816
+    ],
+    "tail_skipped": [
+      "39807"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-aux/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-aux",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "tail7-aux-decode.json",
+    "source_file_sha256": "d09332eb094700e9acd7534297d73265cb4d4bf432c460cba9d192fd2e0ed538",
+    "request_sha256": "dcdf69ac1847c494f493688ec816557c27c9f6c5ddcea891265c57fa11982f0c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.525523571996018,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2243,
+      "total_tokens": 4752,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659805.87076,
+      "duration_s": 15.5,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2243,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2243,
+      "prompt_ms": 2675.6,
+      "decode_ms": 12844.8,
+      "decode_tok_s": 174.6,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1480,
+      "drafts_accepted": 1433
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1433,
+      1480
+    ],
+    "tail_skipped": [
+      "70640"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-aux/decode/1/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-aux",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "tail7-aux-decode.json",
+    "source_file_sha256": "d09332eb094700e9acd7534297d73265cb4d4bf432c460cba9d192fd2e0ed538",
+    "request_sha256": "f448ff736e7ff22acd0ad1d488778833c95a570ede290ae3473c8317c779eed4",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 21.70004159002565,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2728,
+      "total_tokens": 4994,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659821.3959193,
+      "duration_s": 21.7,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2728,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2728,
+      "prompt_ms": 2386.2,
+      "decode_ms": 19309.7,
+      "decode_tok_s": 141.3,
+      "hit_rate": 0.965,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1628,
+      "drafts_accepted": 1519
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1519,
+      1628
+    ],
+    "tail_skipped": [
+      "109152"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-aux/decode/1/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-aux",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "tail7-aux-decode.json",
+    "source_file_sha256": "d09332eb094700e9acd7534297d73265cb4d4bf432c460cba9d192fd2e0ed538",
+    "request_sha256": "299408cb11b10e64505c89ff7c6843c7652ad44173562f37ba9f8cf2dd593e02",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.120973751007114,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2225,
+      "total_tokens": 4734,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659843.0967798,
+      "duration_s": 15.1,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2225,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2225,
+      "prompt_ms": 2631.8,
+      "decode_ms": 12484.9,
+      "decode_tok_s": 178.2,
+      "hit_rate": 0.965,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1460,
+      "drafts_accepted": 1428
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1428,
+      1460
+    ],
+    "tail_skipped": [
+      "139333"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-aux/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "tail7-aux",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "tail7-aux-long.json",
+    "source_file_sha256": "97ae086dd7e77c65b50ad731b7abf95f600d01c93acf30276d597a1b50e70117",
+    "request_sha256": "ab6dea695e666763616eee260b505333a86f8ad6518edc852f53dc0c84f20547",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 30.506093107978813,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32268,
+      "completion_tokens": 1854,
+      "total_tokens": 34122,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659858.26997,
+      "duration_s": 30.5,
+      "finish": "stop",
+      "prompt_tokens": 32268,
+      "reused": 0,
+      "output_tokens": 1854,
+      "prompt_total": 32268,
+      "prompt_read": 32268,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1854,
+      "prompt_ms": 16040.7,
+      "decode_ms": 14443.7,
+      "decode_tok_s": 128.4,
+      "hit_rate": 0.96,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1144,
+      "drafts_accepted": 1038
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1038,
+      1144
+    ],
+    "tail_skipped": [
+      "168321"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-mtp/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-mtp",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "tail7-mtp-decode.json",
+    "source_file_sha256": "b9244124234cff27b28c051b9171e7943d04e0f6487f2d68daee2cb8b65a85ec",
+    "request_sha256": "19bf27836305036b5417a8bb86394019e0c0afb37b24fd6213a79967cfc7ae7e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 13.595126305997837,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 1851,
+      "total_tokens": 4117,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659919.1417532,
+      "duration_s": 13.6,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 1851,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1851,
+      "prompt_ms": 2554.9,
+      "decode_ms": 11029.1,
+      "decode_tok_s": 167.8,
+      "hit_rate": 0.968,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1209,
+      "drafts_accepted": 1153
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1153,
+      1209
+    ],
+    "tail_skipped": [
+      "24678"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-mtp/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-mtp",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "tail7-mtp-decode.json",
+    "source_file_sha256": "b9244124234cff27b28c051b9171e7943d04e0f6487f2d68daee2cb8b65a85ec",
+    "request_sha256": "dcdf69ac1847c494f493688ec816557c27c9f6c5ddcea891265c57fa11982f0c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 19.364046890987083,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2663,
+      "total_tokens": 5172,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659932.7309175,
+      "duration_s": 19.4,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2663,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2663,
+      "prompt_ms": 2601.5,
+      "decode_ms": 16757.7,
+      "decode_tok_s": 158.9,
+      "hit_rate": 0.961,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1694,
+      "drafts_accepted": 1624
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1624,
+      1694
+    ],
+    "tail_skipped": [
+      "63590"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-mtp/decode/1/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-mtp",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "tail7-mtp-decode.json",
+    "source_file_sha256": "b9244124234cff27b28c051b9171e7943d04e0f6487f2d68daee2cb8b65a85ec",
+    "request_sha256": "f448ff736e7ff22acd0ad1d488778833c95a570ede290ae3473c8317c779eed4",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 18.26598624198232,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2347,
+      "total_tokens": 4613,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659952.0948834,
+      "duration_s": 18.3,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2347,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2347,
+      "prompt_ms": 2312.3,
+      "decode_ms": 15949.4,
+      "decode_tok_s": 147.2,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1464,
+      "drafts_accepted": 1368
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1368,
+      1464
+    ],
+    "tail_skipped": [
+      "97449"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-mtp/decode/1/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-mtp",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "tail7-mtp-decode.json",
+    "source_file_sha256": "b9244124234cff27b28c051b9171e7943d04e0f6487f2d68daee2cb8b65a85ec",
+    "request_sha256": "299408cb11b10e64505c89ff7c6843c7652ad44173562f37ba9f8cf2dd593e02",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.479541729029734,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2249,
+      "total_tokens": 4758,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659970.3616204,
+      "duration_s": 15.5,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2249,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2249,
+      "prompt_ms": 2545.9,
+      "decode_ms": 12929.1,
+      "decode_tok_s": 173.9,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1486,
+      "drafts_accepted": 1436
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1436,
+      1486
+    ],
+    "tail_skipped": [
+      "128264"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-mtp/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "tail7-mtp",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "tail7-mtp-long.json",
+    "source_file_sha256": "20583dddf0afa15e1131899f0950cf8fe9d040725eeb83571a79628a2697a9d6",
+    "request_sha256": "ab6dea695e666763616eee260b505333a86f8ad6518edc852f53dc0c84f20547",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 30.706951532978565,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32268,
+      "completion_tokens": 1938,
+      "total_tokens": 34206,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791659985.897893,
+      "duration_s": 30.7,
+      "finish": "stop",
+      "prompt_tokens": 32268,
+      "reused": 0,
+      "output_tokens": 1938,
+      "prompt_total": 32268,
+      "prompt_read": 32268,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1938,
+      "prompt_ms": 15486.5,
+      "decode_ms": 15197.8,
+      "decode_tok_s": 127.5,
+      "hit_rate": 0.958,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1185,
+      "drafts_accepted": 1090
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1090,
+      1185
+    ],
+    "tail_skipped": [
+      "159724"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-both/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-both",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "tail7-both-decode.json",
+    "source_file_sha256": "411414007e64d114c5107193fa30e33edd04934707b6a069a49aa2d9222c1150",
+    "request_sha256": "19bf27836305036b5417a8bb86394019e0c0afb37b24fd6213a79967cfc7ae7e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 16.523961186001543,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 2155,
+      "total_tokens": 4421,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660054.9006698,
+      "duration_s": 16.5,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 2155,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2155,
+      "prompt_ms": 2600.2,
+      "decode_ms": 13912.8,
+      "decode_tok_s": 154.9,
+      "hit_rate": 0.968,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1359,
+      "drafts_accepted": 1279
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1279,
+      1359
+    ],
+    "tail_skipped": [
+      "29658"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-both/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-both",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "tail7-both-decode.json",
+    "source_file_sha256": "411414007e64d114c5107193fa30e33edd04934707b6a069a49aa2d9222c1150",
+    "request_sha256": "dcdf69ac1847c494f493688ec816557c27c9f6c5ddcea891265c57fa11982f0c",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.94067056797212,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 2320,
+      "total_tokens": 4829,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660071.4187996,
+      "duration_s": 15.9,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 2320,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2320,
+      "prompt_ms": 2577.9,
+      "decode_ms": 13358.1,
+      "decode_tok_s": 173.7,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1537,
+      "drafts_accepted": 1482
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1482,
+      1537
+    ],
+    "tail_skipped": [
+      "61521"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-both/decode/1/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "tail7-both",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "tail7-both-decode.json",
+    "source_file_sha256": "411414007e64d114c5107193fa30e33edd04934707b6a069a49aa2d9222c1150",
+    "request_sha256": "f448ff736e7ff22acd0ad1d488778833c95a570ede290ae3473c8317c779eed4",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 30.79859449499054,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2266,
+      "completion_tokens": 3419,
+      "total_tokens": 5685,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660087.359714,
+      "duration_s": 30.8,
+      "finish": "stop",
+      "prompt_tokens": 2266,
+      "reused": 0,
+      "output_tokens": 3419,
+      "prompt_total": 2266,
+      "prompt_read": 2266,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3419,
+      "prompt_ms": 2309.9,
+      "decode_ms": 28483.9,
+      "decode_tok_s": 120.0,
+      "hit_rate": 0.969,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1887,
+      "drafts_accepted": 1683
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1683,
+      1887
+    ],
+    "tail_skipped": [
+      "107676"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-both/decode/1/leads28_en",
+    "date": "2026-10-10",
+    "arm": "tail7-both",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "tail7-both-decode.json",
+    "source_file_sha256": "411414007e64d114c5107193fa30e33edd04934707b6a069a49aa2d9222c1150",
+    "request_sha256": "299408cb11b10e64505c89ff7c6843c7652ad44173562f37ba9f8cf2dd593e02",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 14.458870362956077,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2509,
+      "completion_tokens": 1964,
+      "total_tokens": 4473,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660118.1591382,
+      "duration_s": 14.5,
+      "finish": "stop",
+      "prompt_tokens": 2509,
+      "reused": 0,
+      "output_tokens": 1964,
+      "prompt_total": 2509,
+      "prompt_read": 2509,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1964,
+      "prompt_ms": 2544.8,
+      "decode_ms": 11909.1,
+      "decode_tok_s": 164.9,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1280,
+      "drafts_accepted": 1223
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1223,
+      1280
+    ],
+    "tail_skipped": [
+      "136407"
+    ]
+  },
+  {
+    "id": "2026-10-10/tail7-both/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "tail7-both",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "tail7-both-long.json",
+    "source_file_sha256": "abca5c74a8c5c45f829e685fe1e1cfe2e0329f5531cbfe3417eea19521de5190",
+    "request_sha256": "ab6dea695e666763616eee260b505333a86f8ad6518edc852f53dc0c84f20547",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10control0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 36.776350799016654,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32268,
+      "completion_tokens": 2760,
+      "total_tokens": 35028,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660132.6732643,
+      "duration_s": 36.8,
+      "finish": "stop",
+      "prompt_tokens": 32268,
+      "reused": 0,
+      "output_tokens": 2760,
+      "prompt_total": 32268,
+      "prompt_read": 32268,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2760,
+      "prompt_ms": 15534.6,
+      "decode_ms": 21216.8,
+      "decode_tok_s": 130.1,
+      "hit_rate": 0.965,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1680,
+      "drafts_accepted": 1553
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1553,
+      1680
+    ],
+    "tail_skipped": [
+      "175393"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-a/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-a-decode.json",
+    "source_file_sha256": "1ac833e1a50a20922c6a7c8fc486335ffcc854c6c22e62d175ff2f5264d0547d",
+    "request_sha256": "4175e606562cf493e3858f53699e2b7775ed6b04ad965d99ebb7cb975b212a84",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 18.382452493009623,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2263,
+      "total_tokens": 4530,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660251.8505104,
+      "duration_s": 18.4,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2263,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2263,
+      "prompt_ms": 2991.1,
+      "decode_ms": 15378.3,
+      "decode_tok_s": 147.2,
+      "hit_rate": 0.944,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1380,
+      "drafts_accepted": 1311
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1311,
+      1380
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-a/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-a-decode.json",
+    "source_file_sha256": "1ac833e1a50a20922c6a7c8fc486335ffcc854c6c22e62d175ff2f5264d0547d",
+    "request_sha256": "55dbe53464f5e48aed8f050a0d53910e8210b3ab855c36a1fa14d33cba40d259",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 20.321053018036764,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2637,
+      "total_tokens": 5147,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660270.2255821,
+      "duration_s": 20.3,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2637,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2637,
+      "prompt_ms": 2656.4,
+      "decode_ms": 17659.8,
+      "decode_tok_s": 149.3,
+      "hit_rate": 0.936,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1654,
+      "drafts_accepted": 1579
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1579,
+      1654
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-a/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-a",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-a-long.json",
+    "source_file_sha256": "6131ca25bce9497230c06e2035b9e7cff0713c0d5d7092917ca9f8a81996ba7e",
+    "request_sha256": "a382dc461ce14de3859e588538dfacc04652be95463955d182f7ff7591b4c6f2",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 30.992892162001226,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 1909,
+      "total_tokens": 34178,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660290.5991018,
+      "duration_s": 31.0,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 1909,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1909,
+      "prompt_ms": 15487.6,
+      "decode_ms": 15484.0,
+      "decode_tok_s": 123.3,
+      "hit_rate": 0.932,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1148,
+      "drafts_accepted": 1055
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1055,
+      1148
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-a/quality_versions/0/qa_versions_id",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-a",
+    "group": "quality_versions",
+    "fixture": "qa_versions_id",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-a-quality_versions.json",
+    "source_file_sha256": "9ecc848b4f570f9ab4a13074443dd2ae749d764a16443670b7bf47e5b3cb6cee",
+    "request_sha256": "acb0157e106d87c7803f15e32cc65e1e2dcec233323ce47851e2670e21bff085",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0qa_versions_id. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.4000558890402317,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 235,
+      "completion_tokens": 203,
+      "total_tokens": 438,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660321.6244118,
+      "duration_s": 2.4,
+      "finish": "stop",
+      "prompt_tokens": 235,
+      "reused": 0,
+      "output_tokens": 203,
+      "prompt_total": 235,
+      "prompt_read": 235,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 203,
+      "prompt_ms": 766.0,
+      "decode_ms": 1625.2,
+      "decode_tok_s": 124.9,
+      "hit_rate": 0.868,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 136,
+      "drafts_accepted": 120
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      120,
+      136
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-a/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-a-decode.json",
+    "source_file_sha256": "c718ebeda252059d4bcc43745752287c2d512775430a5306964b9be141604817",
+    "request_sha256": "4175e606562cf493e3858f53699e2b7775ed6b04ad965d99ebb7cb975b212a84",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 17.724031711986754,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2275,
+      "total_tokens": 4542,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660358.7307513,
+      "duration_s": 17.7,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2275,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2275,
+      "prompt_ms": 2581.6,
+      "decode_ms": 15131.5,
+      "decode_tok_s": 150.3,
+      "hit_rate": 0.969,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1425,
+      "drafts_accepted": 1335
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1335,
+      1425
+    ],
+    "tail_skipped": [
+      "31122"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-a/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-a-decode.json",
+    "source_file_sha256": "c718ebeda252059d4bcc43745752287c2d512775430a5306964b9be141604817",
+    "request_sha256": "55dbe53464f5e48aed8f050a0d53910e8210b3ab855c36a1fa14d33cba40d259",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.743940204032697,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2290,
+      "total_tokens": 4800,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660376.4491174,
+      "duration_s": 15.7,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2290,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2290,
+      "prompt_ms": 2602.9,
+      "decode_ms": 13136.2,
+      "decode_tok_s": 174.3,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1508,
+      "drafts_accepted": 1464
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1464,
+      1508
+    ],
+    "tail_skipped": [
+      "62340"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-a/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-a",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-a-long.json",
+    "source_file_sha256": "359c41a18238f2f789dd0ce5ad9c4610b7d228a37395a1ea35ce3ccc3523291f",
+    "request_sha256": "a382dc461ce14de3859e588538dfacc04652be95463955d182f7ff7591b4c6f2",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 39.38560584001243,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 3075,
+      "total_tokens": 35344,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660392.2518752,
+      "duration_s": 39.4,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 3075,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3075,
+      "prompt_ms": 15468.4,
+      "decode_ms": 23894.2,
+      "decode_tok_s": 128.7,
+      "hit_rate": 0.966,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1889,
+      "drafts_accepted": 1723
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1723,
+      1889
+    ],
+    "tail_skipped": [
+      "105345"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-a/quality_versions/0/qa_versions_id",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-a",
+    "group": "quality_versions",
+    "fixture": "qa_versions_id",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-a-quality_versions.json",
+    "source_file_sha256": "46fe20c3ef7549bdd0ea5c2e13a62c52147620035aa64f05442a471c00cb9d88",
+    "request_sha256": "acb0157e106d87c7803f15e32cc65e1e2dcec233323ce47851e2670e21bff085",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmA0qa_versions_id. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.1663271180004813,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 235,
+      "completion_tokens": 184,
+      "total_tokens": 419,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660431.6675725,
+      "duration_s": 2.2,
+      "finish": "stop",
+      "prompt_tokens": 235,
+      "reused": 0,
+      "output_tokens": 184,
+      "prompt_total": 235,
+      "prompt_read": 235,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 184,
+      "prompt_ms": 782.9,
+      "decode_ms": 1374.6,
+      "decode_tok_s": 133.9,
+      "hit_rate": 0.891,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 120,
+      "drafts_accepted": 109
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      109,
+      120
+    ],
+    "tail_skipped": [
+      "110580"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-b/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-b-decode.json",
+    "source_file_sha256": "b67d35b926fb1d85d1fb245f3baff522d025feb866a536801af1010fb9c661ac",
+    "request_sha256": "dbe23ca9ff4dcfe6d633209c8ae145bde38436f67989e44afd45809fee8864d6",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 16.580784951976966,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2123,
+      "total_tokens": 4390,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660470.9834404,
+      "duration_s": 16.4,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2123,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2123,
+      "prompt_ms": 2679.5,
+      "decode_ms": 13737.5,
+      "decode_tok_s": 154.5,
+      "hit_rate": 0.968,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1355,
+      "drafts_accepted": 1277
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1277,
+      1355
+    ],
+    "tail_skipped": [
+      "28389"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-b/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-b-decode.json",
+    "source_file_sha256": "b67d35b926fb1d85d1fb245f3baff522d025feb866a536801af1010fb9c661ac",
+    "request_sha256": "ee0a2304cb506a7d2f463a4d1434266945f81dbb5e4999c416f96965e98257ee",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.009812470991164,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2118,
+      "total_tokens": 4628,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660487.4291177,
+      "duration_s": 15.0,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2118,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2118,
+      "prompt_ms": 2604.8,
+      "decode_ms": 12379.7,
+      "decode_tok_s": 171.1,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1392,
+      "drafts_accepted": 1348
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1348,
+      1392
+    ],
+    "tail_skipped": [
+      "57957"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-b/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-b",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-b-long.json",
+    "source_file_sha256": "a8dcd9385003caf67b01ef0b2500afa56c9d398850d61a0fd24b7150020da783",
+    "request_sha256": "3f3ab5144c4bc8a8800211cc658b02f57215f96501556175387f78d34c7ee706",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 34.56883917696541,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 2397,
+      "total_tokens": 34666,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660502.477455,
+      "duration_s": 34.5,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 2397,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2397,
+      "prompt_ms": 15469.4,
+      "decode_ms": 19070.6,
+      "decode_tok_s": 125.7,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1422,
+      "drafts_accepted": 1319
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1319,
+      1422
+    ],
+    "tail_skipped": [
+      "93984"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-tail-mtp-b/quality_versions/0/qa_versions_id",
+    "date": "2026-10-10",
+    "arm": "confirm-tail-mtp-b",
+    "group": "quality_versions",
+    "fixture": "qa_versions_id",
+    "repeat": 0,
+    "source_file": "confirm-tail-mtp-b-quality_versions.json",
+    "source_file_sha256": "dd18c8155148be7865073e817b89b9476d9254936c7db94217e6c97526625b04",
+    "request_sha256": "72f768cdd0e2904b5a22dfb27bc58aa22d774af3772c5bb125c3d7719c0db561",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0qa_versions_id. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.103610188001767,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 235,
+      "completion_tokens": 183,
+      "total_tokens": 418,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660537.0775979,
+      "duration_s": 2.1,
+      "finish": "stop",
+      "prompt_tokens": 235,
+      "reused": 0,
+      "output_tokens": 183,
+      "prompt_total": 235,
+      "prompt_read": 235,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 183,
+      "prompt_ms": 799.1,
+      "decode_ms": 1288.4,
+      "decode_tok_s": 142.0,
+      "hit_rate": 0.909,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 125,
+      "drafts_accepted": 112
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      112,
+      125
+    ],
+    "tail_skipped": [
+      "98598"
+    ]
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-b/decode/0/contacts32_ru",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-b-decode.json",
+    "source_file_sha256": "baed1efe60bb17953ee94db603e3934bb6b6a90a03be6906da12ad55371ef761",
+    "request_sha256": "dbe23ca9ff4dcfe6d633209c8ae145bde38436f67989e44afd45809fee8864d6",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 16.569251699955203,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2109,
+      "total_tokens": 4376,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660576.906681,
+      "duration_s": 16.6,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2109,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2109,
+      "prompt_ms": 2692.8,
+      "decode_ms": 13865.4,
+      "decode_tok_s": 152.1,
+      "hit_rate": 0.945,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1358,
+      "drafts_accepted": 1273
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1273,
+      1358
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-b/decode/0/leads28_en",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-b-decode.json",
+    "source_file_sha256": "baed1efe60bb17953ee94db603e3934bb6b6a90a03be6906da12ad55371ef761",
+    "request_sha256": "ee0a2304cb506a7d2f463a4d1434266945f81dbb5e4999c416f96965e98257ee",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 17.243710960960016,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2194,
+      "total_tokens": 4704,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660593.470598,
+      "duration_s": 17.2,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2194,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2194,
+      "prompt_ms": 2598.1,
+      "decode_ms": 14640.3,
+      "decode_tok_s": 149.9,
+      "hit_rate": 0.929,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1402,
+      "drafts_accepted": 1333
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1333,
+      1402
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-b/long/0/long32k",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-b",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-b-long.json",
+    "source_file_sha256": "65ea19fe990cc19266ef3b58ab53b65643978dc3289428315b78186716434020",
+    "request_sha256": "3f3ab5144c4bc8a8800211cc658b02f57215f96501556175387f78d34c7ee706",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 40.644197272951715,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 3172,
+      "total_tokens": 35441,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660610.7682252,
+      "duration_s": 40.6,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 3172,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3172,
+      "prompt_ms": 15462.3,
+      "decode_ms": 25159.7,
+      "decode_tok_s": 126.1,
+      "hit_rate": 0.944,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1932,
+      "drafts_accepted": 1776
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1776,
+      1932
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/confirm-exact-mtp-b/quality_versions/0/qa_versions_id",
+    "date": "2026-10-10",
+    "arm": "confirm-exact-mtp-b",
+    "group": "quality_versions",
+    "fixture": "qa_versions_id",
+    "repeat": 0,
+    "source_file": "confirm-exact-mtp-b-quality_versions.json",
+    "source_file_sha256": "545a6a6a0c435bcd12f5c6858781e1b5f9a902da6c4dfc7d977d5cf2893275e2",
+    "request_sha256": "72f768cdd0e2904b5a22dfb27bc58aa22d774af3772c5bb125c3d7719c0db561",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10confirmB0qa_versions_id. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.520722493005451,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 235,
+      "completion_tokens": 203,
+      "total_tokens": 438,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660651.4431105,
+      "duration_s": 2.5,
+      "finish": "stop",
+      "prompt_tokens": 235,
+      "reused": 0,
+      "output_tokens": 203,
+      "prompt_total": 235,
+      "prompt_read": 235,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 203,
+      "prompt_ms": 791.0,
+      "decode_ms": 1720.8,
+      "decode_tok_s": 118.0,
+      "hit_rate": 0.849,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 138,
+      "drafts_accepted": 122
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      122,
+      138
+    ],
+    "tail_skipped": []
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_arithmetic",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_arithmetic",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "3fd8c7cfc105667defcb03448c5e6166ac053bb56d23a7b61c4a94a21f3a5657",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_arithmetic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 4.41207492898684,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 171,
+      "completion_tokens": 521,
+      "total_tokens": 692,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660744.4014664,
+      "duration_s": 4.4,
+      "finish": "stop",
+      "prompt_tokens": 171,
+      "reused": 0,
+      "output_tokens": 521,
+      "prompt_total": 171,
+      "prompt_read": 171,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 521,
+      "prompt_ms": 986.5,
+      "decode_ms": 3415.0,
+      "decode_tok_s": 152.6,
+      "hit_rate": 0.95,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 337,
+      "drafts_accepted": 314
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      314,
+      337
+    ],
+    "tail_skipped": [
+      "9303"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_injection",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_injection",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "b155b6267bcd09ee8911c4df5525f2d6b3fca91275bdcbba24741a0abc5cc01d",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_injection. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 1.8533587689744309,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 165,
+      "completion_tokens": 175,
+      "total_tokens": 340,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660748.8073325,
+      "duration_s": 1.9,
+      "finish": "stop",
+      "prompt_tokens": 165,
+      "reused": 0,
+      "output_tokens": 175,
+      "prompt_total": 165,
+      "prompt_read": 165,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 175,
+      "prompt_ms": 671.4,
+      "decode_ms": 1178.5,
+      "decode_tok_s": 148.5,
+      "hit_rate": 0.949,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 104,
+      "drafts_accepted": 99
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      99,
+      104
+    ],
+    "tail_skipped": [
+      "12403"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_negation",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_negation",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "6a79884b35fcf5f69d4335181de9cddff653641200248821640564c382026127",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_negation. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.4672189799603075,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 154,
+      "completion_tokens": 347,
+      "total_tokens": 501,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660750.6608171,
+      "duration_s": 3.5,
+      "finish": "stop",
+      "prompt_tokens": 154,
+      "reused": 0,
+      "output_tokens": 347,
+      "prompt_total": 154,
+      "prompt_read": 154,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 347,
+      "prompt_ms": 620.4,
+      "decode_ms": 2843.4,
+      "decode_tok_s": 122.0,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 234,
+      "drafts_accepted": 194
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      194,
+      234
+    ],
+    "tail_skipped": [
+      "18100"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_plan",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_plan",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "0ab7e5d5be08ba8459fc1f2048b632645a4a2113d1b762fbd1e8dbef8a171f41",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_plan. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.3869409670005552,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 185,
+      "completion_tokens": 262,
+      "total_tokens": 447,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660754.128785,
+      "duration_s": 2.4,
+      "finish": "stop",
+      "prompt_tokens": 185,
+      "reused": 0,
+      "output_tokens": 262,
+      "prompt_total": 185,
+      "prompt_read": 185,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 262,
+      "prompt_ms": 607.5,
+      "decode_ms": 1775.6,
+      "decode_tok_s": 147.6,
+      "hit_rate": 0.967,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 176,
+      "drafts_accepted": 159
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      159,
+      176
+    ],
+    "tail_skipped": [
+      "21066"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_logic",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_logic",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "b87ad5de330684b271f4debe61c0e94d9e72940cbfe25cc173a49e27cc244910",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_logic. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 3.1912687909789383,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 130,
+      "completion_tokens": 336,
+      "total_tokens": 466,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660756.5155368,
+      "duration_s": 3.2,
+      "finish": "stop",
+      "prompt_tokens": 130,
+      "reused": 0,
+      "output_tokens": 336,
+      "prompt_total": 130,
+      "prompt_read": 130,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 336,
+      "prompt_ms": 554.9,
+      "decode_ms": 2633.2,
+      "decode_tok_s": 127.6,
+      "hit_rate": 0.967,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 204,
+      "drafts_accepted": 178
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      178,
+      204
+    ],
+    "tail_skipped": [
+      "26621"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/quality_clear/0/qa_versions_id",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "quality_clear",
+    "fixture": "qa_versions_id",
+    "repeat": 0,
+    "source_file": "final-quality_clear.json",
+    "source_file_sha256": "25640101094fd564531cbfef49ba8dfe38dcea8ca067b6d36aab173f3dbeaee2",
+    "request_sha256": "cbcb1806b526fe88a802967d1ebaa54be079f207c1a9987d5a2327677e09bc00",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0qa_versions_id. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 2.0498500170069747,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 234,
+      "completion_tokens": 199,
+      "total_tokens": 433,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660759.7073321,
+      "duration_s": 2.0,
+      "finish": "stop",
+      "prompt_tokens": 234,
+      "reused": 0,
+      "output_tokens": 199,
+      "prompt_total": 234,
+      "prompt_read": 234,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 199,
+      "prompt_ms": 692.0,
+      "decode_ms": 1354.4,
+      "decode_tok_s": 146.9,
+      "hit_rate": 0.955,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 136,
+      "drafts_accepted": 118
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      118,
+      136
+    ],
+    "tail_skipped": [
+      "29892"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/long122/0/long122k",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "long122",
+    "fixture": "long122k",
+    "repeat": 0,
+    "source_file": "final-long122.json",
+    "source_file_sha256": "5740f73aef2ad7fb171188f15789f0e7c4e5099e93daf793e5842b6b2255cd02",
+    "request_sha256": "2d404fca76a3083d7b9e58e3079e077ac3ef2e91d78c1dc4784b2ede415a5a0e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0long122k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 63.939739755005576,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 122159,
+      "completion_tokens": 2120,
+      "total_tokens": 124279,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660761.838224,
+      "duration_s": 63.9,
+      "finish": "stop",
+      "prompt_tokens": 122159,
+      "reused": 0,
+      "output_tokens": 2120,
+      "prompt_total": 122159,
+      "prompt_read": 122159,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2120,
+      "prompt_ms": 46665.0,
+      "decode_ms": 17210.6,
+      "decode_tok_s": 123.2,
+      "hit_rate": 0.973,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1238,
+      "drafts_accepted": 1132
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1132,
+      1238
+    ],
+    "tail_skipped": [
+      "56650"
+    ]
+  },
+  {
+    "id": "2026-10-10/final/retention122/0/retention122k",
+    "date": "2026-10-10",
+    "arm": "final",
+    "group": "retention122",
+    "fixture": "retention122k",
+    "repeat": 0,
+    "source_file": "final-retention122.json",
+    "source_file_sha256": "4c1aa97b79a104683a77949db70bf4bbb90666861013b5166ca852fa4245ab9a",
+    "request_sha256": "108d14e518b66d0d8557ef05f48ba78399dd4f0b366403f808e08bc32a115a0e",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct10final0retention122k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 51.10564699600218,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 119995,
+      "completion_tokens": 516,
+      "total_tokens": 120511,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791660825.8080535,
+      "duration_s": 51.1,
+      "finish": "stop",
+      "prompt_tokens": 119995,
+      "reused": 0,
+      "output_tokens": 516,
+      "prompt_total": 119995,
+      "prompt_read": 119995,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 516,
+      "prompt_ms": 46718.3,
+      "decode_ms": 4335.7,
+      "decode_tok_s": 119.0,
+      "hit_rate": 0.958,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 314,
+      "drafts_accepted": 287
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      287,
+      314
+    ],
+    "tail_skipped": [
+      "65103"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-a/decode/0/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "all-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "all-a-decode.json",
+    "source_file_sha256": "1fa26f3abf2984d25302ad50c63b466897fba48983f216c7ad125b7fc4a448f9",
+    "request_sha256": "05c5d00a39022e6b1418d142a4b4e1b401ec3bf0a71fd62acd3efedcc94efccc",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 29.443717976042535,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 3528,
+      "total_tokens": 5795,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716077.3513613,
+      "duration_s": 29.4,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 3528,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 3528,
+      "prompt_ms": 2622.3,
+      "decode_ms": 26808.1,
+      "decode_tok_s": 131.6,
+      "hit_rate": 0.973,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 2008,
+      "drafts_accepted": 1858
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1858,
+      2008
+    ],
+    "tail_skipped": [
+      "44375"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-a/decode/0/leads28_en",
+    "date": "2026-10-11",
+    "arm": "all-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "all-a-decode.json",
+    "source_file_sha256": "1fa26f3abf2984d25302ad50c63b466897fba48983f216c7ad125b7fc4a448f9",
+    "request_sha256": "ad3f4120d78b7f10b5e330071faf3aeb4afc025dd0aa053c636b81f5adfbcbb7",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.356165552977473,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2243,
+      "total_tokens": 4753,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716106.7872565,
+      "duration_s": 15.4,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2243,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2243,
+      "prompt_ms": 2595.0,
+      "decode_ms": 12756.3,
+      "decode_tok_s": 175.8,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1481,
+      "drafts_accepted": 1435
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1435,
+      1481
+    ],
+    "tail_skipped": [
+      "75107"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-a/decode/1/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "all-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "all-a-decode.json",
+    "source_file_sha256": "1fa26f3abf2984d25302ad50c63b466897fba48983f216c7ad125b7fc4a448f9",
+    "request_sha256": "ef388f19b249ce0b5b7102c194fa474a337bbccc3e7cb1f9116d575649484961",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 21.720583104004618,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2747,
+      "total_tokens": 5014,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716122.1433818,
+      "duration_s": 21.7,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2747,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2747,
+      "prompt_ms": 2307.2,
+      "decode_ms": 19409.1,
+      "decode_tok_s": 141.5,
+      "hit_rate": 0.965,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1641,
+      "drafts_accepted": 1536
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1536,
+      1641
+    ],
+    "tail_skipped": [
+      "113584"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-a/decode/1/leads28_en",
+    "date": "2026-10-11",
+    "arm": "all-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "all-a-decode.json",
+    "source_file_sha256": "1fa26f3abf2984d25302ad50c63b466897fba48983f216c7ad125b7fc4a448f9",
+    "request_sha256": "df90ebf66cc124732cc4267c4530fb26d67b4ae652952a3ab050b9f073ba06bc",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 19.334219486045185,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2692,
+      "total_tokens": 5202,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716143.8647902,
+      "duration_s": 19.3,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2692,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2692,
+      "prompt_ms": 2560.7,
+      "decode_ms": 16768.9,
+      "decode_tok_s": 160.5,
+      "hit_rate": 0.962,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1693,
+      "drafts_accepted": 1634
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1634,
+      1693
+    ],
+    "tail_skipped": [
+      "151972"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-a/long122/0/long122k",
+    "date": "2026-10-11",
+    "arm": "all-a",
+    "group": "long122",
+    "fixture": "long122k",
+    "repeat": 0,
+    "source_file": "all-a-long122.json",
+    "source_file_sha256": "282173dd735947a45c5f38353fb743490916844ee1c03f6da4c49b6caf20977a",
+    "request_sha256": "2618c1f31d7b4d7c14c3f50c1eadd5e6499963e08cf0faf4a3affb30c3ba78ff",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0long122k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 61.58899878099328,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 122160,
+      "completion_tokens": 2028,
+      "total_tokens": 124188,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716163.293643,
+      "duration_s": 61.5,
+      "finish": "stop",
+      "prompt_tokens": 122160,
+      "reused": 0,
+      "output_tokens": 2028,
+      "prompt_total": 122160,
+      "prompt_read": 122160,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2028,
+      "prompt_ms": 46898.8,
+      "decode_ms": 14615.8,
+      "decode_tok_s": 138.8,
+      "hit_rate": 0.958,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1284,
+      "drafts_accepted": 1217
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1217,
+      1284
+    ],
+    "tail_skipped": [
+      "184064"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-a/decode/0/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "pcores-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "pcores-a-decode.json",
+    "source_file_sha256": "79009f8bf7f45e759199b9d687bab1377b3e40f5d591a983bea29bfde646dde6",
+    "request_sha256": "05c5d00a39022e6b1418d142a4b4e1b401ec3bf0a71fd62acd3efedcc94efccc",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 22.21912235498894,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2762,
+      "total_tokens": 5029,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716255.1430502,
+      "duration_s": 22.2,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2762,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2762,
+      "prompt_ms": 2583.5,
+      "decode_ms": 19622.2,
+      "decode_tok_s": 140.8,
+      "hit_rate": 0.972,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1672,
+      "drafts_accepted": 1546
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1546,
+      1672
+    ],
+    "tail_skipped": [
+      "35804"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-a/decode/0/leads28_en",
+    "date": "2026-10-11",
+    "arm": "pcores-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "pcores-a-decode.json",
+    "source_file_sha256": "79009f8bf7f45e759199b9d687bab1377b3e40f5d591a983bea29bfde646dde6",
+    "request_sha256": "ad3f4120d78b7f10b5e330071faf3aeb4afc025dd0aa053c636b81f5adfbcbb7",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 16.083031440037303,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2302,
+      "total_tokens": 4812,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716277.35505,
+      "duration_s": 16.1,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2302,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2302,
+      "prompt_ms": 2581.4,
+      "decode_ms": 13496.3,
+      "decode_tok_s": 170.6,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1500,
+      "drafts_accepted": 1449
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1449,
+      1500
+    ],
+    "tail_skipped": [
+      "68383"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-a/decode/1/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "pcores-a",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "pcores-a-decode.json",
+    "source_file_sha256": "79009f8bf7f45e759199b9d687bab1377b3e40f5d591a983bea29bfde646dde6",
+    "request_sha256": "ef388f19b249ce0b5b7102c194fa474a337bbccc3e7cb1f9116d575649484961",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 19.10618565400364,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2426,
+      "total_tokens": 4693,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716293.4385338,
+      "duration_s": 19.1,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2426,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2426,
+      "prompt_ms": 2307.2,
+      "decode_ms": 16793.6,
+      "decode_tok_s": 144.5,
+      "hit_rate": 0.962,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1472,
+      "drafts_accepted": 1382
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1382,
+      1472
+    ],
+    "tail_skipped": [
+      "103641"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-a/decode/1/leads28_en",
+    "date": "2026-10-11",
+    "arm": "pcores-a",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "pcores-a-decode.json",
+    "source_file_sha256": "79009f8bf7f45e759199b9d687bab1377b3e40f5d591a983bea29bfde646dde6",
+    "request_sha256": "df90ebf66cc124732cc4267c4530fb26d67b4ae652952a3ab050b9f073ba06bc",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.792945664958097,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2308,
+      "total_tokens": 4818,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716312.5458572,
+      "duration_s": 15.8,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2308,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2308,
+      "prompt_ms": 2554.6,
+      "decode_ms": 13232.9,
+      "decode_tok_s": 174.4,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1515,
+      "drafts_accepted": 1472
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1472,
+      1515
+    ],
+    "tail_skipped": [
+      "135462"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-a/long122/0/long122k",
+    "date": "2026-10-11",
+    "arm": "pcores-a",
+    "group": "long122",
+    "fixture": "long122k",
+    "repeat": 0,
+    "source_file": "pcores-a-long122.json",
+    "source_file_sha256": "6c5dfe16c8a4c7698e9c8d7f5b8bed6e77fdfacd29169f6919738f7e5d9fb52e",
+    "request_sha256": "2618c1f31d7b4d7c14c3f50c1eadd5e6499963e08cf0faf4a3affb30c3ba78ff",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuA0long122k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 65.06101253500674,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 122160,
+      "completion_tokens": 2374,
+      "total_tokens": 124534,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716328.413886,
+      "duration_s": 65.0,
+      "finish": "stop",
+      "prompt_tokens": 122160,
+      "reused": 0,
+      "output_tokens": 2374,
+      "prompt_total": 122160,
+      "prompt_read": 122160,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2374,
+      "prompt_ms": 46932.9,
+      "decode_ms": 18074.3,
+      "decode_tok_s": 131.3,
+      "hit_rate": 0.961,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1457,
+      "drafts_accepted": 1368
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1368,
+      1457
+    ],
+    "tail_skipped": [
+      "171685"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-b/decode/0/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "pcores-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "pcores-b-decode.json",
+    "source_file_sha256": "b495a37b5820eec262179300b208e02113439225b71fda78fcdd0fd2758a6908",
+    "request_sha256": "1605e263950addf3e1d54e00ff7a9413617504c5717f6cecff2ffaaa7afecfb6",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 24.827822219987866,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2911,
+      "total_tokens": 5178,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716425.809687,
+      "duration_s": 24.8,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2911,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2911,
+      "prompt_ms": 2554.9,
+      "decode_ms": 22262.0,
+      "decode_tok_s": 130.8,
+      "hit_rate": 0.972,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1704,
+      "drafts_accepted": 1540
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1540,
+      1704
+    ],
+    "tail_skipped": [
+      "38035"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-b/decode/0/leads28_en",
+    "date": "2026-10-11",
+    "arm": "pcores-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "pcores-b-decode.json",
+    "source_file_sha256": "b495a37b5820eec262179300b208e02113439225b71fda78fcdd0fd2758a6908",
+    "request_sha256": "09e464411ddc643b340c4f6820064862b6fe9b5263b06a5d77d165314fbf48ff",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 14.543504793022294,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 1973,
+      "total_tokens": 4483,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716450.63258,
+      "duration_s": 14.5,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 1973,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 1973,
+      "prompt_ms": 2563.1,
+      "decode_ms": 11975.1,
+      "decode_tok_s": 164.8,
+      "hit_rate": 0.961,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1276,
+      "drafts_accepted": 1230
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1230,
+      1276
+    ],
+    "tail_skipped": [
+      "67669"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-b/decode/1/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "pcores-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "pcores-b-decode.json",
+    "source_file_sha256": "b495a37b5820eec262179300b208e02113439225b71fda78fcdd0fd2758a6908",
+    "request_sha256": "41995a1f43ce9f71e440c2e610c32ded6e310560ee3fea8150ad5e8a198ad5fd",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.265781137975864,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2067,
+      "total_tokens": 4334,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716465.1769183,
+      "duration_s": 15.3,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2067,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2067,
+      "prompt_ms": 2288.1,
+      "decode_ms": 12972.6,
+      "decode_tok_s": 159.3,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1325,
+      "drafts_accepted": 1263
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1263,
+      1325
+    ],
+    "tail_skipped": [
+      "96581"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-b/decode/1/leads28_en",
+    "date": "2026-10-11",
+    "arm": "pcores-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "pcores-b-decode.json",
+    "source_file_sha256": "b495a37b5820eec262179300b208e02113439225b71fda78fcdd0fd2758a6908",
+    "request_sha256": "d95bd7f685f9950fa13696be1dbeb6d1bbc19088fb260f510de8089849bc5c74",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 17.536684938007966,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2467,
+      "total_tokens": 4977,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716480.4436426,
+      "duration_s": 17.5,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2467,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2467,
+      "prompt_ms": 2628.1,
+      "decode_ms": 14902.5,
+      "decode_tok_s": 165.5,
+      "hit_rate": 0.96,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1603,
+      "drafts_accepted": 1547
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1547,
+      1603
+    ],
+    "tail_skipped": [
+      "132729"
+    ]
+  },
+  {
+    "id": "2026-10-11/pcores-b/long/0/long32k",
+    "date": "2026-10-11",
+    "arm": "pcores-b",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "pcores-b-long.json",
+    "source_file_sha256": "430e96b2eab4c0a288ae7b6e479b1234d02179295ec1ef80e33bf155a8be3562",
+    "request_sha256": "55dd36e36d8f5c5a3710ea7156576a0be27fbc724328d4d6ad1f48343ef55555",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 37.03249095904175,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 2778,
+      "total_tokens": 35047,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716498.0295985,
+      "duration_s": 37.0,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 2778,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2778,
+      "prompt_ms": 15502.3,
+      "decode_ms": 21508.8,
+      "decode_tok_s": 129.2,
+      "hit_rate": 0.965,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1637,
+      "drafts_accepted": 1532
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1532,
+      1637
+    ],
+    "tail_skipped": [
+      "172118"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-b/decode/0/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "all-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 0,
+    "source_file": "all-b-decode.json",
+    "source_file_sha256": "2dfb5bc7bce8b9281e849b2b4088c5b707c14bedfeefd427d1c51676d525e32b",
+    "request_sha256": "1605e263950addf3e1d54e00ff7a9413617504c5717f6cecff2ffaaa7afecfb6",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 18.952571292000357,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2446,
+      "total_tokens": 4713,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716571.1265247,
+      "duration_s": 18.9,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2446,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2446,
+      "prompt_ms": 2582.4,
+      "decode_ms": 16359.7,
+      "decode_tok_s": 149.5,
+      "hit_rate": 0.97,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1519,
+      "drafts_accepted": 1419
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1419,
+      1519
+    ],
+    "tail_skipped": [
+      "32131"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-b/decode/0/leads28_en",
+    "date": "2026-10-11",
+    "arm": "all-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 0,
+    "source_file": "all-b-decode.json",
+    "source_file_sha256": "2dfb5bc7bce8b9281e849b2b4088c5b707c14bedfeefd427d1c51676d525e32b",
+    "request_sha256": "09e464411ddc643b340c4f6820064862b6fe9b5263b06a5d77d165314fbf48ff",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 15.677431325020734,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2280,
+      "total_tokens": 4790,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716590.0738058,
+      "duration_s": 15.7,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2280,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2280,
+      "prompt_ms": 2615.0,
+      "decode_ms": 13057.7,
+      "decode_tok_s": 174.6,
+      "hit_rate": 0.964,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1493,
+      "drafts_accepted": 1454
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1454,
+      1493
+    ],
+    "tail_skipped": [
+      "63445"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-b/decode/1/contacts32_ru",
+    "date": "2026-10-11",
+    "arm": "all-b",
+    "group": "decode",
+    "fixture": "contacts32_ru",
+    "repeat": 1,
+    "source_file": "all-b-decode.json",
+    "source_file_sha256": "2dfb5bc7bce8b9281e849b2b4088c5b707c14bedfeefd427d1c51676d525e32b",
+    "request_sha256": "41995a1f43ce9f71e440c2e610c32ded6e310560ee3fea8150ad5e8a198ad5fd",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB1contacts32_ru. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 22.529616778017953,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2267,
+      "completion_tokens": 2813,
+      "total_tokens": 5080,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716605.751253,
+      "duration_s": 22.5,
+      "finish": "stop",
+      "prompt_tokens": 2267,
+      "reused": 0,
+      "output_tokens": 2813,
+      "prompt_total": 2267,
+      "prompt_read": 2267,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2813,
+      "prompt_ms": 2313.5,
+      "decode_ms": 20211.8,
+      "decode_tok_s": 139.2,
+      "hit_rate": 0.966,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1733,
+      "drafts_accepted": 1586
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1586,
+      1733
+    ],
+    "tail_skipped": [
+      "103448"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-b/decode/1/leads28_en",
+    "date": "2026-10-11",
+    "arm": "all-b",
+    "group": "decode",
+    "fixture": "leads28_en",
+    "repeat": 1,
+    "source_file": "all-b-decode.json",
+    "source_file_sha256": "2dfb5bc7bce8b9281e849b2b4088c5b707c14bedfeefd427d1c51676d525e32b",
+    "request_sha256": "d95bd7f685f9950fa13696be1dbeb6d1bbc19088fb260f510de8089849bc5c74",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB1leads28_en. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 19.96849045000272,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 2510,
+      "completion_tokens": 2702,
+      "total_tokens": 5212,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716628.2815762,
+      "duration_s": 20.0,
+      "finish": "stop",
+      "prompt_tokens": 2510,
+      "reused": 0,
+      "output_tokens": 2702,
+      "prompt_total": 2510,
+      "prompt_read": 2510,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2702,
+      "prompt_ms": 2578.4,
+      "decode_ms": 17385.6,
+      "decode_tok_s": 155.4,
+      "hit_rate": 0.962,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1692,
+      "drafts_accepted": 1622
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1622,
+      1692
+    ],
+    "tail_skipped": [
+      "142755"
+    ]
+  },
+  {
+    "id": "2026-10-11/all-b/long/0/long32k",
+    "date": "2026-10-11",
+    "arm": "all-b",
+    "group": "long",
+    "fixture": "long32k",
+    "repeat": 0,
+    "source_file": "all-b-long.json",
+    "source_file_sha256": "a61d6c9470343a74bccde3cdce4f4c65e766786454ff6c34cb2e4bc6cba4672b",
+    "request_sha256": "55dd36e36d8f5c5a3710ea7156576a0be27fbc724328d4d6ad1f48343ef55555",
+    "request": {
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "reasoning_effort": "high",
+      "temperature": 0,
+      "stream": true,
+      "system_message": {
+        "role": "system",
+        "content": "Run oct11cpuB0long32k. Ignore this run identifier in your answer."
+      }
+    },
+    "wall_s": 34.75141020101728,
+    "finish": "stop",
+    "usage": {
+      "prompt_tokens": 32269,
+      "completion_tokens": 2548,
+      "total_tokens": 34817,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "metrics": {
+      "projection": true,
+      "time": 1791716648.3054779,
+      "duration_s": 34.7,
+      "finish": "stop",
+      "prompt_tokens": 32269,
+      "reused": 0,
+      "output_tokens": 2548,
+      "prompt_total": 32269,
+      "prompt_read": 32269,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2548,
+      "prompt_ms": 15503.2,
+      "decode_ms": 19224.4,
+      "decode_tok_s": 132.5,
+      "hit_rate": 0.963,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 1531,
+      "drafts_accepted": 1453
+    },
+    "complete": true,
+    "correct": true,
+    "drafts": [
+      1453,
+      1531
+    ],
+    "tail_skipped": [
+      "179979"
+    ]
+  }
+]

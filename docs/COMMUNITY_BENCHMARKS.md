@@ -62,6 +62,12 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 
+- [2026-10-10–11: 2x RTX 5060 Ti 16 GB, i7-12700, 64 GB DDR4-3200](../bench/results/2026-10-10-community-2x-rtx-5060-ti-iq3-xxs-0142/README.md):
+  Strata 0.1.42 in Docker, GSQ-RCO IQ3_XXS with Huihui projection and Cyrillic MTP vocabulary,
+  layer split 28, 131K context, full high-reasoning responses. Paired tail-skip comparison:
+  149.5 → 161.9 pooled decode tok/s; 122K inputs: 123.2 / 138.8 tok/s and about 47 s prefill.
+  Includes a P-core comparison, all 81 requests, synthetic fixtures and replay scripts.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
