@@ -2574,6 +2574,17 @@ constexpr IlRows kIlRows_60[] = {
     {13, {{0, 2, 2, 2, 2}, {0, 4, 2, 2, 4}, {0, 2, 2, 2, 2}}},   // Q5_K
     {14, {{0, 2, 2, 2, 4}, {0, 0, 0, 4, 4}, {0, 0, 0, 4, 4}}},   // Q6_K
 };
+// Pascal with dp4a (sm_61), read off mmvq_il_parity --bench --emit-table on a Tesla P40 (three runs: a cell is non-zero
+// only where every run picked a rows count that takes at least 3% off native_mmvq's time; where the runs disagreed on
+// the count, the one that won twice).  E.g. IQ4_XS 2560x10240 at 2 columns 112 -> 65 us, Q6_K 12288x2560 at 4
+// columns 189 -> 127 us, the Q5_K head at 3 columns 2545 -> 1766 us.  Bitwise equal to native_mmvq.
+constexpr IlRows kIlRows_61[] = {
+    {23, {{2, 4, 4, 4, 4}, {4, 4, 4, 4, 4}, {2, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{2, 0, 4, 4, 4}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{2, 0, 4, 4, 4}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 2, 2}, {0, 4, 4, 4, 4}, {2, 4, 2, 2, 2}}},   // Q6_K
+    {11, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K
+};
 // RTX 30-series (sm_86), 143-dense: read off mmvq_il_parity --bench --emit-table on an RTX A4000 with the engine's real
 // shapes (the output projections have 6144 inputs, not 4096), per cell the rows count whose worst measured shape is under
 // 0.97 of native_mmvq's time. The four older rows are the shared table's; Q3_K (the Q2_0 pack's main dense type) is new.
@@ -2589,8 +2600,15 @@ struct Il1Rows { int type; uint8_t r[5]; };
 constexpr Il1Rows kIl1Rows_86[] = {
     {11, {0, 1, 1, 1, 1}},   // Q3_K: 2560x10240 60 -> 43 us, 6144x2560 30 -> 26 us on the A4000
 };
+// Tesla P40 (sm_61), the same three runs: IQ4_XS 2560x10240 102 -> 58 us, the Q5_K head 1754 -> 1507 us
+constexpr Il1Rows kIl1Rows_61[] = {
+    {23, {2, 2, 4, 4, 4}},   // IQ4_XS
+    {13, {0, 0, 0, 2, 2}},   // Q5_K
+    {11, {0, 0, 2, 2, 2}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
 };
 bool il_env_on(const char* name) {
@@ -2602,6 +2620,7 @@ bool il_q3k_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_Q3K"); retur
 struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
+    {61, kIlRows_61, sizeof(kIlRows_61) / sizeof(IlRows)},   // Pascal with dp4a: measured on a Tesla P40
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
@@ -2680,13 +2699,16 @@ int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp f
 void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
 
 namespace {
-// sm_80 and newer (measured on sm_86 and sm_120) and Volta (sm_70, its own table above); Pascal/Turing keep
-// native_mmvq's kernels unchanged
+// sm_80 and newer (measured on sm_86 and sm_120), Volta (sm_70) and Pascal (sm_60, sm_61), each with its own table
+// above; Turing keeps native_mmvq's kernels unchanged
 // Volta (PR 1401): opt-in with STRATA_SM70_TABLE=1 until the author confirms on a V100 with the final code
 bool sm70_opt_in() { const char* v = std::getenv("STRATA_SM70_TABLE"); return v != nullptr && std::atoi(v) != 0; }
 // Pascal (sm_60, GP100): the same interleaved kernels (bitwise equal to native_mmvq's, mmvq_il_parity), its own table
 // kIlRows_60.  STRATA_SM60_TABLE=0 keeps native_mmvq's kernels on a P100; any other value (or unset) uses the table.
 bool sm60_table_on() { const char* v = std::getenv("STRATA_SM60_TABLE"); return v == nullptr || std::atoi(v) != 0; }
+// Pascal (sm_61: Tesla P40 / P4, GTX 10 series; native dp4a): the same interleaved kernels (bitwise equal to
+// native_mmvq's, mmvq_il_parity), its own table kIlRows_61.  STRATA_SM61_TABLE=0 keeps native_mmvq's kernels.
+bool sm61_table_on() { const char* v = std::getenv("STRATA_SM61_TABLE"); return v == nullptr || std::atoi(v) != 0; }
 bool il_arch_ok() {
     static int ok[16] = {};   // 0 unknown, 1 yes, -1 no, by device ordinal
     int dev = 0;
@@ -2696,7 +2718,8 @@ bool il_arch_ok() {
         int minor = 0;
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 6 && minor == 0 && sm60_table_on()))) ? 1 : -1;
+                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 6 && minor == 0 && sm60_table_on()) ||
+                    (major == 6 && minor == 1 && sm61_table_on()))) ? 1 : -1;
     }
     return ok[dev] > 0;
 }
