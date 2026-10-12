@@ -203,6 +203,25 @@ int cache_checks(strata::prefill::Gemm& gemm, cudaStream_t st) {
     }
     cudaEventDestroy(ready);
     cudaStreamDestroy(other);
+    constexpr int64_t padded_ldx = K + 16;
+    std::vector<uint16_t> padded_x(T * padded_ldx, to_bf16(-20.0f));
+    for (int64_t t = 0; t < T; ++t)
+        std::copy_n(x.data() + t * K, K, padded_x.data() + t * padded_ldx);
+    uint16_t* dpadded = nullptr;
+    if (!ok_or(cudaMalloc((void**) &dpadded, padded_x.size() * 2), "strided x") ||
+        !upload(dpadded, padded_x)) return 1;
+    gemm.bf16(dx, dw, dr, T, N, K);
+    for (bool immutable : {false, true}) {
+        if (immutable) gemm.bf16_immutable(dpadded, dw, dy, T, N, K, 0, 0.0f, padded_ldx);
+        else gemm.bf16(dpadded, dw, dy, T, N, K, 0, 0.0f, padded_ldx);
+        if (!ok_or(cudaStreamSynchronize(st), "strided sync")) return 1;
+        std::vector<float> y(T * N), r(y.size());
+        if (!ok_or(cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost), "strided read") ||
+            !ok_or(cudaMemcpy(r.data(), dr, r.size() * 4, cudaMemcpyDeviceToHost), "packed ref read")) return 1;
+        check(std::memcmp(y.data(), r.data(), y.size() * 4) == 0,
+              immutable ? "cached strided input parity" : "uncached strided input parity");
+    }
+    cudaFree(dpadded);
     s = gemm.bf16_cache_stats();
     std::printf("  cache counters: hits=%llu misses=%llu conversions=%llu budget_misses=%llu "
                 "invalidations=%llu bytes=%zu budget=%zu\n",

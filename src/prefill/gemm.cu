@@ -496,18 +496,21 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
 // Pascal (6.x) has no tensor cores and cuBLAS has no BF16 GEMM for it (#395, measured NOT_SUPPORTED on a P40): both
 // operands are widened to fp32 by an exact shift and the product is cublasSgemm with the same fp32 accumulator.
 namespace {
-__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, __half* __restrict__ out, int64_t n) {
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, __half* __restrict__ out, int64_t n,
+                                  int64_t k, int64_t ldx) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        float f = __uint_as_float((uint32_t) in[i] << 16);
+        const int64_t src = ldx ? (i / k) * ldx + i % k : i;
+        float f = __uint_as_float((uint32_t) in[src] << 16);
         if (f > 65504.0f && !isinf(f)) f = 65504.0f;
         else if (f < -65504.0f && !isinf(f)) f = -65504.0f;
         out[i] = __float2half_rn(f);
     }
 }
-void bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t st) {
+void bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t st,
+                 int64_t k = 0, int64_t ldx = 0) {
     if (n <= 0) return;
-    bf16_to_f16_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, st>>>(in, reinterpret_cast<__half*>(out), n);
+    bf16_to_f16_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, st>>>(in, reinterpret_cast<__half*>(out), n, k, ldx);
 }
 #if defined(STRATA_EXPERIMENTAL_SM60)   // Pascal runs only the experimental build
 __global__ void bf16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
@@ -551,17 +554,12 @@ int bf16_path() {
     if (forced >= 0) return forced != 0 ? 1 : 0;
     return cc < 75 ? 1 : 0;
 }
-bool grow(uint16_t*& p, int64_t& have, int64_t want, const char* diagnostic = nullptr) {
+bool grow(uint16_t*& p, int64_t& have, int64_t want) {   // `have`, `want`: 2-byte elements
     if (have >= want) return true;
     if (p) cudaFree(p);
     p = nullptr;
     have = 0;
-    if (const cudaError_t e = cudaMalloc((void**) &p, (size_t) want * 2); e != cudaSuccess) {
-        if (diagnostic)
-            std::fprintf(stderr, "prefill gemm: %s of %zu bytes: %s; falling back to cuBLAS BF16 GEMM\n",
-                         diagnostic, (size_t) want * 2, cudaGetErrorString(e));
-        cudaGetLastError(); p = nullptr; return false;
-    }
+    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { cudaGetLastError(); p = nullptr; return false; }
     have = want;
     return true;
 }
@@ -809,7 +807,7 @@ void Gemm::bf16_impl(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, 
                     if (!cached_w) bf16_to_f16(W + n0 * K, tc_w_, nn * K, (cudaStream_t) stream_);
                     for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
                         const int64_t n = std::min<int64_t>(x_rows, T - t0);
-                        bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
+                        bf16_to_f16(X + t0 * (ldx ? ldx : K), tc_x_, n * K, (cudaStream_t) stream_, K, ldx);
                         f16(tc_x_, weight, Y + t0 * ldy + n0, n, nn, K, ldy, beta);
                     }
                 }

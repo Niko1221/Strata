@@ -1905,6 +1905,8 @@ budget (default **256 MiB**, range **1..65536**); invalid values disable it with
 Each owner allocates a persistent arena separate from borrowed prompt buffers. Startup expert-cache sizing and
 prefill fit checks reserve that memory even when the prompt borrows expert slots. The first weights that fit
 stay until invalidation or destruction; full/oversize misses convert per call without evicting them.
+Uncached conversions retain the tiled low-memory fallback. Cached and uncached FP16 products accept
+strided input rows; only weight conversions are retained.
 This competes with expert VRAM, so a larger budget can leave fewer experts resident.
 The `owned_prefill_mib()` sizing helper prices all owned prompt-path allocations, including the persistent
 arena independently of loans; callers do not need to add a separate conversion-cache reserve.
@@ -1917,7 +1919,9 @@ activations are never cached. Logs expose hits, misses, retained conversions, bu
 bytes and budget, and report allocation/conversion errors. BF16_TC's rounding is unchanged; it is not a
 promise of bit-identical results against native BF16 cuBLAS.
 
-Measured on physical GPU 3, RTX 8000 at 260 W, IQ3_S, speculation 4, a fixed 19,000-slot expert cache and
+Historical measurement from 2026-10-07, on a v0.1.40.3 source build with other local changes integrated,
+not a benchmark of the rebased cache branch. Measured on physical GPU 3, RTX 8000 at 260 W, IQ3_S,
+speculation 4, a fixed 19,000-slot expert cache and
 8,192-token prefill: medians of three runs per prompt length, each generating 128 tokens. At 537 / 4,057 /
 32,057 prompt tokens, `STRATA_BF16_TC=1` without the cache processed **661 / 1,262 / 1,416 tokens/s**;
 with a **1,024 MiB** cache, **654 / 1,261 / 1,413 tokens/s**. The cache retained 321 conversions and logged
