@@ -54,7 +54,58 @@ process checks the worker's hello for it too. The hello is 192 bytes in
 every protocol, so an older peer is refused for its protocol number. A peer that sends no hello within 10 s is dropped; after
 the hello the worker waits for messages without a time limit (the next prompt may be hours away), while sends and the
 main process's receives time out after `STRATA_REMOTE_TIMEOUT_S` (300 s). Sockets: `TCP_NODELAY`, 8 MiB buffers,
-keepalive after 30 s idle, 3 probes 10 s apart. The engine's stall watchdog (issue #29, `STRATA_WATCHDOG_S`) watches
+keepalive after 30 s idle, 3 probes 10 s apart.
+
+**Recovery.** The worker serves one connection at a time. A new one stays in the listen backlog, unread, until the
+served one has had no message read, being read, or a reply going out for `STRATA_REMOTE_TAKEOVER_S` (30 s; 0:
+never) - the time counts from the last of those, so a relay's reply that waited long on its next worker starts it
+anew - and only then does the worker watch the listen socket, accept the new one and read its hello on a thread
+of its own (a shorter pause is no sign the main process went away: inside one request it can leave the worker
+waiting while it runs its own layers of a prompt chunk). A hello it accepts (the token,
+the hello's checks against the hello it gave the served main process, the worker's own checks) takes the worker over:
+the old connection ends as a closed one does (`disconnected`: the positions back to the identity, a relay's next link
+closed), and the new one is served; the log says how long the old one had been silent. A refused hello leaves the
+old connection alone; when the old connection closes, the new one is accepted at once as before. When the served
+one sends again before the new one's hello is decided, the new one is closed without an error message (one line on
+the worker's stderr, `connected while ... was served`): its main process sees the connection closed, a lost link,
+and connects again every 2 s within `STRATA_REMOTE_CONNECT_S`, so a stale hello never takes over later. So a main
+process that started again after its PC lost power, while its old connection still looks open on the worker, is
+served within `STRATA_REMOTE_TAKEOVER_S`, and two live main processes pointed at one worker take turns (each takes it
+over after the other's 30 s without a message; every request then starts by connecting again). After its
+hello the receiving thread polls for the next message (250 ms) instead of blocking in `recv`: on Windows a socket's
+`shutdown` does not wake a `recv` blocked on it, and a connection taken over is still open (the wait ended only when
+Windows dropped the half-closed connection, 120 s later). A new connection's hello is read the same way, every read
+polled (50 ms) within 10 s in all: with a blocking read, closing a silent one held the served main process's next
+message for more than 1 s in `stage_link_test` on Windows (by the code, until the hello's 10 s read timeout, and a
+peer sending a byte at a time could hold it longer). The main process
+connects at its start, and again when a
+request's positions or reset finds the link lost (closed, reset, timed out, a send or receive failed, the name did
+not resolve: `stage_link_lost`), with the same hello; nothing else is per connection on either side (the reset zeroes the worker's
+session, the hello carries the tail-skip rank, `--vision` and the chunk), and the request's positions are sent again.
+While the name does not resolve, nothing listens or the network does not reach the worker, it tries every 2 s for
+`STRATA_REMOTE_CONNECT_S` (180 s), each try with its own watchdog allowance; a refusal is not tried again. The wait
+can last that long plus the last try's own wait (a connect's SYN tries; a hello waiting in the worker's backlog for
+its reply, up to `STRATA_REMOTE_TIMEOUT_S`). Within a request a helper thread prints `INFO remote_stage_wait=S` (the
+seconds so far) on stdout every 10 s for the whole wait, including a try that blocks, and is joined before the
+connect returns: the server's frozen-engine check (`ENGINE_STALL_S`, 90 s without a line, CPU or I/O) would end the
+engine first, and the request would get "frozen" instead of the link's error. Not at the engine's start: the server
+then waits for READY and reads INFO lines as settings. A worker
+down for longer is still found: the engine ends with the error, and the server's next request starts it again,
+which tries anew. A link lost in the middle of a request still ends the main engine. A
+Commit's error that the next Reset drops is written on the worker's stderr first. `stage_link_test` covers the
+take-over over loopback with `STRATA_REMOTE_TAKEOVER_S=1` (a second main not served while the first sends a message
+every 0.5 s, served once the first is silent past 1 s, served at once when the first closes; a wrong token or
+another model refused while the old one stays; a peer accepted while the first was idle with 8 bytes of its hello
+sent, closed as soon as the first sends again, the first answered at once, and the rest of that hello sent then not
+taking over at the first's next idle second; a chunk's reply held 1.5 s by a relay's handler, then
+0.4 s until the first's next message: not taken over), with `STRATA_REMOTE_TAKEOVER_S=0` (a second main not served
+while the first is silent for 2.5 s), and which errors count as a lost link; the main process's reconnect and its
+`INFO remote_stage_wait` lines were not run (read from the code). The node agent (`tools/stage_node.py`) starts a
+worker that ended by itself again (5 s, doubling to 300 s; node.json `"restart": false` turns it off), keeping the
+log of its last run that listened as `stage-worker-PORT.prev.log` (a restart that fails before it listens
+overwrites only the current log); a refused `/start` leaves its port's worker and supervision as they were.
+
+The engine's stall watchdog (issue #29, `STRATA_WATCHDOG_S`) watches
 each message a worker serves (a window, a prompt chunk, a commit, a reset, a position table) and is idle between
 them, so a worker stuck on its GPU ends with its stall report instead of holding every later main process at the
 hello. A relay's waits for its next worker (a connect, its taking a prompt chunk, a window's or a reset's reply) get an allowance of
@@ -63,7 +114,8 @@ own report. `STRATA_REMOTE_STALL_AT=N` (a test hook) blocks the worker's Nth win
 pair, `STRATA_REMOTE_STALL_AT=60 STRATA_WATCHDOG_S=20` on the worker): the worker wrote its stall report 20 s into the
 blocked window and exited; the request in flight failed 25-26 s after it was sent (`remote stage: the peer closed the
 connection`), and the next request failed after 66-68 s (two runs), when the server's three starts had each ended with
-`cannot connect to HOST:PORT: Connection refused`, since nothing starts a worker again.
+`cannot connect to HOST:PORT: Connection refused`, since nothing started a worker again then (its agent does now:
+"Recovery" above; not run on GPUs).
 
 **Bytes, Qwen3.8-Flash-Next** (n_embd 2560, 4 hyper-connection streams, everything fp32):
 
@@ -137,7 +189,7 @@ sends nothing for text, so a worker puts a picture's table back to the identity 
 relay forwards the table to the next worker first, making its link to the next worker if a new main process's hello
 dropped it, and a relay started with `--vision` checks at its start that the next worker has it too. Positions is one
 way, like a commit, and its failure (or a malformed table) comes back as the next reply's error. A Reset drops a
-pending commit error (it belongs to the request before), but not a Positions error, because the positions belong to
+pending commit error (it belongs to the request before; the worker writes it on its stderr), but not a Positions error, because the positions belong to
 the request the Reset begins, which must not run on the old table. A later table replaces an earlier one's failure:
 the main process sent no Reset for a request it then refused (a prompt longer than the context, say).
 `STRATA_STAGE_POSITIONS=0` on the main process (a test switch) sends no table, to show what the positions change.
@@ -597,8 +649,9 @@ Then images ([Images](#images)). Checked on PC A and PC B (RVN IQ3_S, 10 GbE, K=
 - **Correctness check** against the in-process split (`--layer-split K --split-device 0`) with the caches fixed: not
   done. So far the start of every benchmark answer (the 100-160 characters the benchmark keeps) was read: coherent and
   on topic in every configuration.
-- **Reconnecting** without restarting the main engine (a broken link now ends the main engine at the next prompt's
-  reset, and the server starts it again; read from the code, not tested); conversation checkpoints across stages.
+- **Reconnecting** in the middle of a request (a link lost between requests is made again at the next request's
+  start; one lost mid-request ends the main engine, and the server starts it again). The reconnect and the agent's
+  restarts were not run on GPUs (loopback and a fake worker only); conversation checkpoints across stages.
 - **A ring topology** for three or more PCs.
 - **A bf16 hand-off** (half the traffic); its effect on the answers would need measuring.
 - **Windows as the main PC** (only workers were run on Windows), and the clock behaviour of an in-process split on

@@ -81,6 +81,13 @@ static_assert(sizeof(StageHello) == 192, "the hello's size");
 /// Seconds a send or receive on a link may block before the link counts as dead (STRATA_REMOTE_TIMEOUT_S, default 300).
 int io_timeout_s();
 
+/// Whether a StageClient's error says the link itself failed - nothing listened or the network did not reach it, the
+/// connection closed, was reset or timed out, a send or a receive failed, the name did not resolve (yet: a name
+/// service after a reboot) - so connecting again may mend it; false for a refusal (token, model, layers, chunk,
+/// protocol: "refused", "differ"), an address that does not parse, and an error the worker reported
+/// ("remote stage (worker): ...").
+bool stage_link_lost(const std::string& err);
+
 /// Running totals of one side's traffic (STRATA_REMOTE_TIMING=1 prints them).
 struct StageStats {
     uint64_t runs = 0, commits = 0, prefills = 0, resets = 0;
@@ -207,8 +214,12 @@ inline void stage_positions_fill(int32_t* out, int64_t cells, const int32_t* tab
 }
 
 /// Listens on `bind_addr`:`port` (empty: every interface) and serves one main process at a time until `stop` is set
-/// or listening fails.  `token`: the secret a main process's hello must carry (empty: none - any host that reaches
-/// the port can drive the worker).  Returns 0 when stopped, nonzero on a listen error (the reason on stderr).
+/// or listening fails.  A new connection waits in the listen backlog until the served one has had no message read,
+/// being read, or a reply going out for STRATA_REMOTE_TAKEOVER_S seconds (default 30; 0: until it closes); then a
+/// valid hello takes the worker over: the old one ends as a closed one does (`disconnected`).  An invalid one is
+/// refused and the old one stays; one accepted while the served one sends again is closed (its main process connects
+/// again).  `token`: the secret a main process's hello must carry (empty: none - any host that reaches the port can
+/// drive the worker).  Returns 0 when stopped, nonzero on a listen error (the reason on stderr).
 int serve_stage(const std::string& bind_addr, int port, const std::string& token, const StageHandlers& h,
                 const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop);
 

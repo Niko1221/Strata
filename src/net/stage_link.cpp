@@ -48,6 +48,16 @@ int io_timeout_s() {
 
 namespace {
 
+// Seconds a served connection must have had no message read, being read, or a reply going out before a new one may
+// take the worker over (STRATA_REMOTE_TAKEOVER_S, default 30; 0: never).  A live main process can leave its worker
+// waiting for seconds inside one request (its own layers of a prompt chunk, a long context), so a short pause is no
+// sign it went away.
+// Read when a worker starts listening (serve_stage).
+int takeover_s() {
+    const char* v = std::getenv("STRATA_REMOTE_TAKEOVER_S");
+    return v != nullptr && *v != '\0' ? std::max(0, std::atoi(v)) : 30;
+}
+
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
@@ -217,6 +227,13 @@ bool drain(sock_t fd, uint64_t n, std::string& err) {
     return true;
 }
 
+// the link failures a StageClient reports (stage_link_lost: what connecting again can mend; a name the name service
+// cannot answer yet, after a reboot, is one)
+constexpr const char* kLost[] = {"remote stage: cannot resolve ", "remote stage: cannot connect to ",
+                                 "remote stage: the peer closed the connection",
+                                 "remote stage: send failed", "remote stage: receive failed",
+                                 "remote stage: the link failed earlier", "remote stage: not connected"};
+
 bool hello_matches(const StageHello& a, const StageHello& b, std::string& err) {
     char buf[512];
     if (a.protocol != b.protocol || a.n_embd != b.n_embd || a.hc != b.hc || a.n_layers != b.n_layers ||
@@ -237,6 +254,12 @@ bool hello_matches(const StageHello& a, const StageHello& b, std::string& err) {
 }
 
 }  // namespace
+
+bool stage_link_lost(const std::string& err) {
+    for (const char* p : kLost)
+        if (err.rfind(p, 0) == 0) return true;
+    return false;
+}
 
 // ------------------------------------------------------------------------------------------------ StageClient
 
@@ -284,6 +307,10 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
     tune_socket(fd);
     fd_ = (std::intptr_t) fd;
     peer_ = host_port;
+    {
+        std::lock_guard<std::mutex> lq(q_mu_);
+        sent_at_.clear();   // (a connection before this one: no chunk of it is outstanding here)
+    }
     StageHeader h;
     h.type = (uint32_t) StageMsg::Hello;
     h.bytes = sizeof mine;
@@ -470,6 +497,87 @@ struct Inbox {
     std::string err;
 };
 
+// A main process's connection: tuned, its hello due within 10 s (a silent peer does not hold the worker; after the
+// hello there is no read timeout - the main process may wait for its next prompt for hours), logged.
+sock_t accept_main(sock_t lfd, std::string& host) {
+    sockaddr_storage peer{};
+    sock_len plen = sizeof peer;
+    const sock_t fd = ::accept(lfd, (sockaddr*) &peer, &plen);
+    if (fd == kNoSock) return fd;
+    char name[128] = "?";
+    (void) getnameinfo((sockaddr*) &peer, plen, name, sizeof name, nullptr, 0, NI_NUMERICHOST);
+    host = name;
+    tune_socket(fd);
+    set_timeout(fd, SO_RCVTIMEO, 10);
+    std::fprintf(stderr, "strata stage worker: connection from %s\n", name);
+    std::fflush(stderr);
+    return fd;
+}
+
+// The first message of a connection that arrived while another one is served: a hello read whole (its read timeout
+// lifted), else `bad` or `closed`.  Nothing else is read: such a connection is refused and closed.  Every read is
+// polled, within the hello's 10 s in all, so `drop` ends it at once (shutting a socket down does not wake a recv
+// blocked on it on Windows) - also when the peer sent part of a hello, or sends it a byte at a time.
+Inbox read_hello(sock_t fd, const std::atomic<bool>& drop) {
+    Inbox in;
+    const Clock::time_point t0 = Clock::now();
+    auto take = [&](void* p, size_t n) -> bool {
+        char* c = (char*) p;
+        while (n > 0) {
+            bool ready = false;
+            while (!ready) {
+                if (drop.load()) return false;
+                if (ms_since(t0) >= 10000.0) { in.err = "remote stage: receive failed: timed out"; return false; }
+                poll_fd pfd{};
+                pfd.fd = fd;
+                pfd.events = POLLIN;
+                const int pr = sock_poll(&pfd, 1, 50);
+                if (pr < 0) {
+                    const int e = sock_errno();
+                    if (sock_eintr(e)) continue;
+                    in.err = "remote stage: receive failed: " + sock_errstr(e);
+                    return false;
+                }
+                ready = pr > 0;
+            }
+            const long long r = ::recv(fd, c, (int) n, 0);   // (what is there: it does not block)
+            if (r == 0) { in.err = "remote stage: the peer closed the connection"; return false; }
+            if (r < 0) {
+                const int e = sock_errno();
+                if (sock_eintr(e)) continue;
+                in.err = "remote stage: receive failed: " + sock_errstr(e);
+                return false;
+            }
+            c += r;
+            n -= (size_t) r;
+        }
+        return true;
+    };
+    if (!take(&in.h, sizeof in.h)) {
+        in.closed = true;
+    } else if (in.h.magic != kStageMagic) {
+        in.closed = true;
+        in.err = "remote stage: bad message magic (not a Strata stage peer?)";
+    } else if ((StageMsg) in.h.type != StageMsg::Hello) {
+        in.bad = "hello first";
+    } else if (in.h.bytes != sizeof in.hello) {
+        in.bad = "bad hello";
+    } else if (!take(&in.hello, sizeof in.hello)) {
+        in.closed = true;
+    } else {
+        set_timeout(fd, SO_RCVTIMEO, 0);
+    }
+    return in;
+}
+
+void send_error(sock_t fd, const std::string& m) {
+    StageHeader e;
+    e.type = (uint32_t) StageMsg::Error;
+    e.bytes = m.size();
+    std::string se;
+    (void) send_msg(fd, e, m.data(), m.size(), nullptr, 0, se);
+}
+
 }  // namespace
 
 StageRelay::~StageRelay() {
@@ -530,41 +638,69 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                  token.empty() ? " - WARNING: no STRATA_STAGE_TOKEN, any host that reaches this port can drive the worker"
                                : " (a token is required)");
     std::fflush(stderr);
+    // A connection that arrives while a main process is served (its PC lost power, say, and its process started
+    // again) waits in the listen backlog until the served one has had no message read, being read, or a reply going
+    // out for `takeover` seconds.  Then it is accepted, its hello read on a thread of its own, and a valid hello (the
+    // token, the same checks as below) takes the worker over: the old connection ends as a closed one does, and the
+    // new one is served.  An invalid one is refused; the old one stays.  One accepted while the served main process
+    // sends again is closed (its main process connects again).
+    const int takeover = takeover_s();
+    sock_t cand = kNoSock;
+    std::string cand_host;
+    std::atomic<bool> cand_drop{false};   // ends the wait for its hello (drop_cand; declared first: it outlives it)
+    std::future<Inbox> cand_hello;
+    // the connection served next: accepted while another was served, its hello read (`first`)
+    sock_t next_fd = kNoSock;
+    std::string next_host;
+    Inbox first;
     while (stop == nullptr || !*stop) {
-        poll_fd pfd{};
-        pfd.fd = lfd;
-        pfd.events = POLLIN;
-        const int pr = sock_poll(&pfd, 1, 1000);
-        if (pr < 0 && !sock_eintr(sock_errno())) {   // (a network that went down: no spinning on the error)
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            continue;
+        sock_t fd = next_fd;
+        std::string host = next_host;
+        const bool have_first = fd != kNoSock;
+        next_fd = kNoSock;
+        if (fd == kNoSock) {
+            poll_fd pfd{};
+            pfd.fd = lfd;
+            pfd.events = POLLIN;
+            const int pr = sock_poll(&pfd, 1, 1000);
+            if (pr < 0 && !sock_eintr(sock_errno())) {   // (a network that went down: no spinning on the error)
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+            if (pr <= 0) continue;
+            fd = accept_main(lfd, host);
+            if (fd == kNoSock) continue;
         }
-        if (pr <= 0) continue;
-        sockaddr_storage peer{};
-        sock_len plen = sizeof peer;
-        const sock_t fd = ::accept(lfd, (sockaddr*) &peer, &plen);
-        if (fd == kNoSock) continue;
-        char host[128] = "?";
-        (void) getnameinfo((sockaddr*) &peer, plen, host, sizeof host, nullptr, 0, NI_NUMERICHOST);
-        tune_socket(fd);
-        // the hello within 10 s (a silent peer does not hold the only connection); after it no read timeout - the
-        // main process may wait for its next prompt for hours (the receiving thread lifts it once the hello is in)
-        set_timeout(fd, SO_RCVTIMEO, 10);
-        std::fprintf(stderr, "strata stage worker: connection from %s\n", host);
-        std::fflush(stderr);
 
         // ---- the receiving thread: whole messages into a queue, a prompt chunk's rows straight into a free pf_in
         std::mutex mu;
         std::condition_variable cv;
         std::deque<Inbox> q;
+        if (have_first) q.push_back(std::move(first));   // (read with its connection: the reader starts after it)
+        first = Inbox();
         bool slot_busy[2] = {false, false};
         std::atomic<bool> quit{false};
+        std::atomic<bool> reading{false};   // a message's header is in, the rest not yet queued
         std::thread reader([&] {
+            // after the hello, the wait for the next message is polled, so this connection's end (quit) ends it:
+            // shutting a socket down does not wake a recv blocked on it on Windows (a connection taken over is
+            // still open).  Before it, the hello's 10 s read timeout ends the wait.
+            bool hello_in = have_first;
             for (;;) {
                 Inbox in;
+                bool ready = !hello_in;
+                while (!ready && !quit.load()) {
+                    poll_fd pfd{};
+                    pfd.fd = fd;
+                    pfd.events = POLLIN;
+                    ready = sock_poll(&pfd, 1, 250) != 0;   // (data, the peer's end or an error: the recv says)
+                }
+                if (!ready) break;
+                if (hello_in) reading.store(true);   // (from here until it is queued: not idle)
                 if (!recv_header(fd, in.h, in.err)) {
                     in.closed = true;
                 } else {
+                    reading.store(true);
                     const StageMsg type = (StageMsg) in.h.type;
                     if (type == StageMsg::Hello) {
                         if (in.h.bytes != sizeof in.hello) {
@@ -574,6 +710,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                             in.closed = true;
                         } else {
                             set_timeout(fd, SO_RCVTIMEO, 0);
+                            hello_in = true;
                         }
                     } else if (type == StageMsg::Run) {
                         const int64_t T = in.h.a;
@@ -628,6 +765,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 {
                     std::lock_guard<std::mutex> lk(mu);
                     q.push_back(std::move(in));
+                    reading.store(false);
                 }
                 cv.notify_all();
                 if (closed || quit.load()) break;
@@ -666,13 +804,110 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             std::string se;
             return send_msg(fd, e, m.data(), m.size(), nullptr, 0, se);
         };
+        StageHello greeted_mine;   // this worker's hello to the main process served: a new one's is checked against it
+        // a new connection's hello (read on its thread): whether it takes the worker over; else it is refused and
+        // logged.  The hello handler runs again when the new connection is served (it checks and records only).
+        auto takes_over = [&](const Inbox& ci) -> bool {
+            std::string why;
+            if (ci.closed) {
+                why = ci.err.empty() ? "no hello" : ci.err;
+            } else if (!ci.bad.empty()) {
+                why = ci.bad;
+                send_error(cand, why);
+            } else {
+                const std::string theirs_token(ci.hello.token, strnlen(ci.hello.token, sizeof ci.hello.token));
+                StageHello mine;
+                if (!token.empty() && theirs_token != token) {
+                    why = "a wrong token";
+                    send_error(cand, "wrong token (STRATA_STAGE_TOKEN)");
+                } else if (!hello_matches(ci.hello, greeted_mine, why) || !h.hello(ci.hello, mine, why)) {
+                    send_error(cand, why);
+                } else {
+                    return true;
+                }
+            }
+            std::fprintf(stderr, "strata stage worker: %s refused (%s); %s is still served\n", cand_host.c_str(),
+                         why.c_str(), host.c_str());
+            std::fflush(stderr);
+            return false;
+        };
+        // a connection accepted while the served main process was idle, which sent again before the new one's hello
+        // was decided: the new one is closed without a word - its main process sees the connection closed (a lost
+        // link) and connects again, waiting in the backlog until this one is idle once more.  (A held one would
+        // otherwise take over at the next idle time with a hello read long before, from a peer that may be gone.)
+        auto drop_cand = [&] {
+            cand_drop = true;   // (a hello not in yet, or not whole, is not waited for)
+            (void) sock_shutdown(cand);
+            (void) cand_hello.get();
+            (void) sock_close(cand);
+            std::fprintf(stderr,
+                         "strata stage worker: %s connected while %s was served: closed (it may connect again)\n",
+                         cand_host.c_str(), host.c_str());
+            std::fflush(stderr);
+            cand = kNoSock;
+        };
+        // the next message (true); once the served main process has had no message read, being read, or a reply
+        // going out for `takeover` seconds, a new connection that takes over (false: its hello in `first`).  Before
+        // that a new connection stays in the listen backlog (its main process waits for its hello's reply).
+        double idle_s = 0;   // (the take-over's log line)
+        auto next_message = [&](Inbox& in) -> bool {
+            Clock::time_point quiet_from = Clock::now();   // the last message is served
+            for (;;) {
+                bool reading_now;
+                {
+                    std::unique_lock<std::mutex> lk(mu);
+                    if (cv.wait_for(lk, std::chrono::milliseconds(cand != kNoSock ? 20 : 250), [&] { return !q.empty(); })) {
+                        in = std::move(q.front());
+                        q.pop_front();
+                        lk.unlock();
+                        if (cand != kNoSock && !in.closed) drop_cand();   // (a closed one: the held one is served next)
+                        return true;
+                    }
+                    reading_now = reading.load();   // (with the queue: a message is either queued or being read)
+                }
+                if (stop != nullptr && *stop) {
+                    in.closed = true;
+                    in.err = "the worker is stopping";
+                    return true;
+                }
+                // the idle time starts when the last message is read and its reply is out (a relay's reply can wait
+                // on its next worker for long)
+                if (reading_now ||
+                    (reply_out.valid() && reply_out.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+                    quiet_from = Clock::now();
+                idle_s = ms_since(quiet_from) / 1000.0;
+                if (!greeted || takeover == 0 || idle_s < (double) takeover) continue;
+                if (cand == kNoSock) {
+                    poll_fd pfd{};
+                    pfd.fd = lfd;
+                    pfd.events = POLLIN;
+                    if (sock_poll(&pfd, 1, 0) > 0 && (cand = accept_main(lfd, cand_host)) != kNoSock) {
+                        cand_drop = false;
+                        cand_hello = std::async(std::launch::async,
+                                                [c = cand, &cand_drop] { return read_hello(c, cand_drop); });
+                    }
+                    continue;
+                }
+                if (cand_hello.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+                Inbox ci = cand_hello.get();
+                if (takes_over(ci)) {
+                    first = std::move(ci);
+                    return false;
+                }
+                (void) sock_close(cand);
+                cand = kNoSock;
+            }
+        };
         for (;;) {
             Inbox in;
-            {
-                std::unique_lock<std::mutex> lk(mu);
-                cv.wait(lk, [&] { return !q.empty(); });
-                in = std::move(q.front());
-                q.pop_front();
+            if (!next_message(in)) {
+                char idle[64];
+                std::snprintf(idle, sizeof idle, "%.0f s", idle_s);
+                err = "a new main process (" + cand_host + ") took over after " + idle + " without a message";
+                next_fd = cand;
+                next_host = cand_host;
+                cand = kNoSock;
+                break;
             }
             if (in.closed) { err = in.err; break; }
             auto release = [&] {
@@ -706,7 +941,7 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 std::string he;
                 const std::string theirs_token(in.hello.token, strnlen(in.hello.token, sizeof in.hello.token));
                 if (!token.empty() && theirs_token != token) {
-                    std::fprintf(stderr, "strata stage worker: %s sent a wrong token: refused\n", host);
+                    std::fprintf(stderr, "strata stage worker: %s sent a wrong token: refused\n", host.c_str());
                     (void) reply_error("wrong token (STRATA_STAGE_TOKEN)");
                     keep = false;
                     break;
@@ -721,8 +956,9 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 r.bytes = sizeof mine;
                 if (!replies_out() || !send_msg(fd, r, &mine, sizeof mine, nullptr, 0, err)) keep = false;
                 greeted = true;
+                greeted_mine = mine;
                 std::fprintf(stderr, "strata stage worker: main process %s: layers %d.. here, context %lld, chunk %lld\n",
-                             host, in.hello.layer_begin, (long long) in.hello.max_context, (long long) in.hello.chunk);
+                             host.c_str(), in.hello.layer_begin, (long long) in.hello.max_context, (long long) in.hello.chunk);
                 std::fflush(stderr);
                 break;
             }
@@ -794,7 +1030,13 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             }
             case StageMsg::Reset: {
                 std::string e;
-                pending_err.clear();   // an earlier prompt's commit; not this request's table
+                // an earlier prompt's commit (no reply of that request reported it); not this request's table
+                if (!pending_err.empty()) {
+                    std::fprintf(stderr, "strata stage worker: the last request's commit failed: %s\n",
+                                 pending_err.c_str());
+                    std::fflush(stderr);
+                }
+                pending_err.clear();
                 // a chunk's reply still going out finishes first (a relay's reply thread reads the next worker's
                 // link, which the reset may make again)
                 if (!replies_out()) { keep = false; break; }
@@ -839,10 +1081,26 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
         cv.notify_all();
         reader.join();
         (void) sock_close(fd);
-        std::fprintf(stderr, "strata stage worker: %s disconnected%s%s\n", host, err.empty() ? "" : ": ", err.c_str());
+        std::fprintf(stderr, "strata stage worker: %s disconnected%s%s\n", host.c_str(), err.empty() ? "" : ": ",
+                     err.c_str());
         std::fflush(stderr);
         if (h.disconnected) h.disconnected();
+        // a connection accepted meanwhile that did not take over (this one ended before its hello was decided): its
+        // hello is served next, as a first one is
+        if (cand != kNoSock) {
+            Inbox ci = cand_hello.get();   // (within its 10 s)
+            if (!ci.closed && ci.bad.empty() && (stop == nullptr || !*stop)) {
+                next_fd = cand;
+                next_host = cand_host;
+                first = std::move(ci);
+            } else {
+                if (!ci.bad.empty()) send_error(cand, ci.bad);
+                (void) sock_close(cand);
+            }
+            cand = kNoSock;
+        }
     }
+    if (next_fd != kNoSock) (void) sock_close(next_fd);   // (stopped with one waiting)
     (void) sock_close(lfd);
     return 0;
 }

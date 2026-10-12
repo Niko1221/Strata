@@ -264,9 +264,28 @@ main process without it.
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
 | `STRATA_ADAPT_OVERLAP=1` | worker | let the adaptive tier's copies land while the next window runs, as 0.1.43's main process does by default on Linux CUDA. Off on a worker unless set: it was not measured faster there ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
 | `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit |
+| `STRATA_REMOTE_CONNECT_S` | main | seconds the main process keeps trying to connect, every 2 s, while the worker's name does not resolve, nothing listens at its address or the network does not reach it: at its start, and when a request finds the link lost (default 180; 0: one try). The wait can last that long plus the last try's own wait (a connect's SYN tries; a hello waiting for the worker's reply, up to `STRATA_REMOTE_TIMEOUT_S`). During a request the main process prints `INFO remote_stage_wait=S` every 10 s meanwhile, so the server does not take the wait for a frozen engine. A refusal (token, model, layers, chunk) is not tried again. A worker down for longer is still found: the server's next request starts the main engine again, which tries anew |
+| `STRATA_REMOTE_TAKEOVER_S` | worker | seconds the connection served must have had no message read, being read, or a reply going out before a new main process may take the worker over (default 30; 0: never, a new one waits until the old one closes) |
 
-Fixed: a peer that connects but sends no hello within 10 s is dropped; TCP keepalive notices a peer that vanished
-without closing (power, cable) in about a minute. A worker stuck in a message it serves (a window, a prompt chunk, a
+Fixed: a peer that connects but sends no hello within 10 s is dropped; on an idle link, TCP keepalive notices a peer
+that vanished without closing (power, cable) in about a minute. A new main process waits (in the worker's listen backlog, unread)
+until the connection served has had no message read, being read, or a reply going out for
+`STRATA_REMOTE_TAKEOVER_S` (30 s); then a hello the worker accepts takes it over and the old connection ends as a
+closed one does, so a main process that started again after its PC lost power is served within that time. A
+request's own pauses (the main process's part of a prompt chunk, for instance) must stay under
+`STRATA_REMOTE_TAKEOVER_S`; raise it on a slow main PC. A take-over can only happen when another main process
+connects meanwhile; between its requests a live main process can be taken over. A connection the worker accepted
+while the served main process was idle is closed when the served one sends again before the new one's hello is
+decided; its main process connects again (every 2 s, within `STRATA_REMOTE_CONNECT_S`). So two live main processes
+pointed at one worker take turns: each takes it over after the other's 30 s without a message, and every request
+then starts by connecting again. When the old connection closes, the new one is served at once. A hello the worker
+refuses leaves the old connection alone. A link lost while the main process
+was idle is made again at the next request's start (the same hello, tried as at the start; the request's image
+positions are sent again), with one line, `the link to HOST:PORT was lost (...): connected again`. That needs the
+loss seen: a worker process that ended or a link that was reset is seen at once, but when the worker's PC vanished
+without a word a request in the first minute or so (before the keepalive notices) waits for the reset's reply, and
+the main engine's watchdog (`STRATA_WATCHDOG_S`) ends it first. A link lost in the middle of a request
+ends the main engine, as before. A worker stuck in a message it serves (a window, a prompt chunk, a
 commit, a reset, a position table) for `STRATA_WATCHDOG_S` (60 s) ends with a stall report, as a main process does,
 and its agent starts it again ([Tools](#tools)). A relay's waits for its next worker do not count: they end by the link's timeouts,
 and the next worker has its own watchdog. On Windows a worker's port is bound exclusively (`SO_EXCLUSIVEADDRUSE`), so
@@ -349,9 +368,11 @@ python3 tools/stage_node.py node.json
 - A worker that ends without a `/stop` (a stall report, a crash) is started again with its port's last `/start`
   that listened, after 5 s, doubling up to 300 s; a run of 10 minutes or more starts the wait from 5 s again, and a
   restart that fails counts as an end. Each decision is a line on the agent's stdout. `/stop`, a new `/start` on the
-  port and the agent's end cancel a pending restart. `"restart": false` in node.json turns it off. Before each start
-  the previous log becomes `stage-worker-PORT.prev.log` (one run back; `GET /log?port=P&prev=1`), so a stall report
-  survives the restart. `GET /info` has `"ports"`: per port, whether it runs, the restarts so far, the last exit
+  port and the agent's end cancel a pending restart. A refused `/start` (a flag not allowed, a model not shipped)
+  changes nothing on its port. `"restart": false` in node.json turns it off. `stage-worker-PORT.prev.log` is the
+  last run that listened before the current one (`GET /log?port=P&prev=1`): a start moves the log there only when
+  its run listened, so a stall report survives restarts that fail before they listen. `GET /info` has `"ports"`: per
+  port, whether it runs, the restarts so far, the last exit
   (code, time) and the next start's time while one is pending (epoch seconds).
 - Other endpoints: `GET /ping`, `GET /info` (GPU, RAM, the clock setting), `POST /stop`, `GET /log`, `POST /sink`
   and `POST /send` (a link test), `POST /put`, `GET /ranges`, `GET /sha256` (for `stage_ship.py`). A stop waits up
@@ -486,7 +507,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | `N MiB of VRAM free with everything loaded - LOW` on a card that also drives a desktop | a smaller `--expert-cache N` (on a native pack N counts the largest blob, see [Picking K](#picking-k-and-the-chunk)); the desktop's own VRAM use moves |
 | Task Manager shows many GB of "shared GPU memory" on a Windows worker | its pinned experts (12.2 GiB for 8 UD-Q4_K_XL layers), not a spill: it stayed at 14.6 GB while the worker's VRAM went from 6.8 to 5.3 GB |
 | `verify: instantiate: out of memory` at the first long prompt; at start `... add --vram-reserve-mib M` | add `--vram-reserve-mib M` (the tuner adds 100 more) or use a smaller `--prefill` |
-| `remote stage: cannot connect to HOST:PORT` | start the worker first and wait for `listening on`; check `--stage-bind`, the address and the firewall (Windows: an inbound rule; WSL2: a Hyper-V firewall rule too) |
+| `remote stage: cannot connect to HOST:PORT` | the main process tried for `STRATA_REMOTE_CONNECT_S` (180 s) after `waiting for the worker at HOST:PORT`. A worker that comes back later (a reboot that takes longer) is still found: the server's next request starts the main engine again, which tries anew. Start the worker and wait for `listening on`; check `--stage-bind`, the address and the firewall (Windows: an inbound rule; WSL2: a Hyper-V firewall rule too) |
 | `cannot connect ...: No route to host` over a second NIC that shows its link up | check that it receives at all (`ip -s link`); a 10 GbE card here received nothing after its host rebooted until the link was taken down and up |
 | a worker restarted right after a stop fails (little VRAM free) | the previous worker is still unpinning (more than 30 s with ~30 GB of experts); wait until its process is gone |
 | `remote stage: the worker refused: wrong token (STRATA_STAGE_TOKEN)` | the same `STRATA_STAGE_TOKEN` on every PC |
@@ -496,7 +517,8 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | `the main process's context (N) or window (T) is larger than this worker's` | the worker's `--max-context` and `--spec` must be at least the main process's |
 | `ArenaExpertSource: a layer range needs a native pack read from its GGUF` | a pack directory with `experts.bin`: use a copy without it; drop `--shared-expert-arena` |
 | `strata generate: remote stage: it does not support ...` | remove that flag (see above) |
-| a request fails with a link error | the main engine ends with that error at once; the next request starts it again (the server tries three times, 15 s apart) and it connects anew, while the worker waits for the new connection. If the worker itself ended (a stall report, or it exited), its agent starts it again after 5 s and more (`GET /info`, `"ports"`); its last run's log is `stage-worker-PORT.prev.log`. Without an agent, or with `"restart": false`, start it again by hand |
-| the main process waits at its start, then `receive failed: timed out` | the worker is serving another main process, or is stuck; a stuck worker ends by itself after `STRATA_WATCHDOG_S` (60 s) |
+| a request fails with a link error | the link was lost in the middle of the request (one lost between requests is made again at the next request's start), or could not be made again within `STRATA_REMOTE_CONNECT_S`. The main engine ends with that error at once; the next request starts it again (the server tries three times, 15 s apart) and it connects anew (taking the worker over from its old connection once that has been silent for `STRATA_REMOTE_TAKEOVER_S`). If the worker itself ended (a stall report, or it exited), its agent starts it again after 5 s and more (`GET /info`, `"ports"`); the log of its last run that listened is `stage-worker-PORT.prev.log`. Without an agent, or with `"restart": false`, start it again by hand |
+| the main process waits at its start, then `receive failed: timed out` | the worker is stuck in a message, or still serves another main process (taken over once it has been silent for `STRATA_REMOTE_TAKEOVER_S`, 30 s); a stuck worker ends by itself after `STRATA_WATCHDOG_S` (60 s) |
+| two main processes take one worker from each other, requests failing on both | two main PCs (or two servers) point `--remote-stage` at the same worker: a worker serves one main process, and a second one waits until the first has been silent for `STRATA_REMOTE_TAKEOVER_S` (between its requests), then takes it over; so they take turns, and every request starts by connecting again |
 | decode slower than expected on Linux | look at `decode expert cache hit rate` on every PC; keep the adaptive tier on everywhere (do not set `--adapt-every 0`) |
 | numbers that move between runs | record the other load on every PC and repeat runs: the same configuration decoded a ~30K prompt's answer at 50.2 and 44.0 tok/s twenty minutes apart |

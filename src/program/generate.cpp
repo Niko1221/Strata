@@ -11558,6 +11558,73 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // remote-stage main: the link to the worker, made at the start and again when a request finds it lost (the
+        // worker or its PC started again, the network went away while idle), with the same hello.  A worker that does
+        // not listen yet, a network that does not reach it or a name that does not resolve yet is tried every 2 s for
+        // STRATA_REMOTE_CONNECT_S (180 s; 0: once), plus the last try's own wait; a refusal (token, model, layers,
+        // chunk, protocol) does not change by waiting.  The hello's checks of the worker are connect()'s.
+        // `in_request`: a request waits for it - `INFO remote_stage_wait=S` on stdout every 10 s meanwhile (also while
+        // one try blocks), so the server does not take the silence for a frozen engine (its ENGINE_STALL_S: no line,
+        // no CPU, no I/O) and the request ends with the link's own error.  Not at the start: there the server waits
+        // for READY and reads INFO lines as the engine's settings.
+        strata::net::StageHello remote_hello;
+        strata::net::StageHello remote_peer;
+        struct RemoteWaitLines {   // the heartbeat's thread, stopped and joined when the wait ends, on every path
+            std::mutex mu;
+            std::condition_variable cv;
+            bool done = false;
+            std::thread t;
+            explicit RemoteWaitLines(bool on) {
+                if (!on) return;
+                t = std::thread([this, t0 = Clock::now()] {
+                    std::unique_lock<std::mutex> lk(mu);
+                    while (!cv.wait_for(lk, std::chrono::seconds(10), [this] { return done; })) {
+                        const auto s = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - t0).count();
+                        std::printf("INFO remote_stage_wait=%lld\n", (long long) s);
+                        std::fflush(stdout);
+                    }
+                });
+            }
+            ~RemoteWaitLines() {
+                if (!t.joinable()) return;
+                {
+                    std::lock_guard<std::mutex> lk(mu);
+                    done = true;
+                }
+                cv.notify_all();
+                t.join();
+            }
+        };
+        auto remote_connect = [&](std::string& e, bool in_request) -> bool {
+            static const int wait_s = [] {
+                const char* v = std::getenv("STRATA_REMOTE_CONNECT_S");
+                return v != nullptr && *v != '\0' ? std::max(0, std::atoi(v)) : 180;
+            }();
+            const RemoteWaitLines lines(in_request);
+            const Clock::time_point t0 = Clock::now();
+            bool said = false;
+            for (;;) {
+                // each try can block (a connect's SYN tries, the hello's reply): its own allowance (as a relay's
+                // connect_next), not a stall
+                strata::core::progress_allow(strata::net::io_timeout_s() + 150);
+                remote_link.close();
+                if (remote_link.connect(o.remote_stage, remote_hello, remote_peer, e)) break;
+                if (!strata::net::stage_link_lost(e) ||
+                    std::chrono::duration<double>(Clock::now() - t0).count() + 2 > (double) wait_s) {
+                    strata::core::progress_allow(0);
+                    return false;
+                }
+                if (!said) {
+                    std::fprintf(stderr, "strata serve: remote stage: waiting for the worker at %s (%s), up to %d s "
+                                         "(STRATA_REMOTE_CONNECT_S)\n", o.remote_stage.c_str(), e.c_str(), wait_s);
+                    std::fflush(stderr);
+                    said = true;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            strata::core::progress_allow(0);
+            return true;
+        };
         if (stage_worker || remote_main) {
             const int64_t HBF = strata::core::Verifier::handoff_floats(g);
             const int64_t D = g.hc * g.n_embd;
@@ -11592,14 +11659,14 @@ int main(int argc, char** argv) {
             }
             if (remote_main) std::memcpy(me.token, stage_token.data(), stage_token.size());
             if (remote_main) {
-                strata::net::StageHello peer;
-                if (!remote_link.connect(o.remote_stage, me, peer, err)) {
+                remote_hello = me;
+                if (!remote_connect(err, false)) {
                     std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                     return 1;
                 }
                 std::fprintf(stderr, "strata serve: remote stage %s: layers %d-%d there (prompt chunk %lld, context %lld)\n",
-                             o.remote_stage.c_str(), peer.layer_begin, peer.n_layers - 1, (long long) peer.chunk,
-                             (long long) peer.max_context);
+                             o.remote_stage.c_str(), remote_peer.layer_begin, remote_peer.n_layers - 1,
+                             (long long) remote_peer.chunk, (long long) remote_peer.max_context);
             } else {
                 // remote-stage worker: serve the main process instead of stdin.  A prompt starts with a reset; windows,
                 // commits and chunks arrive in order, each whole, and run here one at a time.
@@ -11669,8 +11736,14 @@ int main(int argc, char** argv) {
                     }
                     mine.tail_skip = theirs.tail_skip;
                     // a relay: the next worker is linked again at the next reset (every prompt starts with one), so it
-                    // hears this main process's values, not the ones this relay sent it at its start
-                    if (stage_relay) next_link.close();
+                    // hears this main process's values, not the ones this relay sent it at its start.  (A new main
+                    // process's hello can come while the old one is still connected, idle - serve_stage's take-over:
+                    // a chunk's send to the next worker ends first.)
+                    if (stage_relay) {
+                        std::string we;
+                        (void) relay.wait(we);
+                        next_link.close();
+                    }
                     return true;
                 };
                 int64_t wk_rounds = 0;
@@ -11936,6 +12009,31 @@ int main(int argc, char** argv) {
         // h = p + y, w = p + x, and the text after the image continues at p + max(nx, ny).
         constexpr int64_t kImagePad = 248056;   // qwen4exp.ple.image_token_id: the PLE hash reads it for image cells
         bool mrope_identity = true;
+        // remote-stage main: the positions this request sent the worker (-1: none, 0: the identity, else the cells of
+        // mrope_host) - a link made again gets them again, as a worker's table starts from the identity
+        int64_t remote_pos_cells = -1;
+        // A request's first messages (its positions, its reset) found the link lost: connect again (remote_connect)
+        // and send this request's positions again; the caller then sends its message again.  Nothing of the old
+        // connection carries over: the worker zeroes its session at the reset, and the hello carries the rest (the
+        // tail-skip rank, --vision, the chunk).  A link lost in the middle of a request still ends the engine.
+        auto remote_relink = [&](std::string& e) -> bool {
+            if (!strata::net::stage_link_lost(e)) return false;
+            const std::string lost = e;
+            if (!remote_connect(e, true) ||
+                (remote_pos_cells >= 0 &&
+                 !remote_link.positions(remote_pos_cells > 0 ? mrope_host.data() : nullptr, remote_pos_cells, e))) {
+                e = lost + "; connecting again: " + (e.rfind("remote stage: ", 0) == 0 ? e.substr(14) : e);
+                return false;
+            }
+            std::fprintf(stderr, "strata serve: remote stage: the link to %s was lost (%s): connected again\n",
+                         o.remote_stage.c_str(), lost.c_str());
+            std::fflush(stderr);
+            return true;
+        };
+        auto remote_positions = [&](bool table, int64_t cells, std::string& e) -> bool {
+            remote_pos_cells = table ? cells : 0;
+            return remote_link.positions(table ? mrope_host.data() : nullptr, cells, e) || remote_relink(e);
+        };
         std::vector<float> img_rows;
         std::vector<const float*> row_ptr;
         // ---- #533: VRAM <reserve_mib>, between requests, only with --vram-elastic.  It shrinks the expert cache
@@ -13133,6 +13231,7 @@ int main(int argc, char** argv) {
             const int64_t n = (int64_t) ids.size();
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
+            remote_pos_cells = -1;
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
                 std::string ve;
@@ -13223,8 +13322,7 @@ int main(int argc, char** argv) {
                     return v == nullptr || std::atoi(v) != 0;
                 }();
                 if (ve.empty() && remote_main && send_positions &&
-                    !remote_link.positions(geni ? mrope_host.data() : nullptr,
-                                           geni ? std::min<int64_t>(cells, n + max_new + 64) : 0, err)) {
+                    !remote_positions(geni, geni ? std::min<int64_t>(cells, n + max_new + 64) : 0, err)) {
                     std::printf("ERR %s\n", err.c_str());   // the link is gone (as a failed reset)
                     std::fflush(stdout);
                     return 1;
@@ -13235,7 +13333,7 @@ int main(int argc, char** argv) {
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                     upload_mrope();
                     mrope_identity = true;
-                    if (remote_main && send_positions && !remote_link.positions(nullptr, 0, err)) {
+                    if (remote_main && send_positions && !remote_positions(false, 0, err)) {
                         std::printf("ERR %s\n", err.c_str());
                         std::fflush(stdout);
                         return 1;
@@ -13716,7 +13814,8 @@ int main(int argc, char** argv) {
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
-                if (remote_main && !remote_link.reset(err)) {
+                // (a link lost while idle: made again, then the reset again; else the engine ends, as mid-request)
+                if (remote_main && !remote_link.reset(err) && !(remote_relink(err) && remote_link.reset(err))) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
