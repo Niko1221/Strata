@@ -1,0 +1,99 @@
+{
+  "started": 1791839000.8295145,
+  "finished": 1791840181.4918857,
+  "completed_utc": "2026-10-12T21:23:01.491887+00:00",
+  "needle_exit_code": 0,
+  "needle_cases": 6,
+  "needle_complete": true,
+  "needle_found": 6,
+  "needle_errors": 0,
+  "needle_passed": true,
+  "coding_passed": 9,
+  "coding_expected": 9,
+  "failure": null,
+  "unchanged": {
+    "local_config_sha256": true,
+    "local_binary_sha256": true,
+    "local_source": true,
+    "local_source_diff_sha256": true,
+    "local_MainPID": true,
+    "local_InvocationID": true,
+    "local_ActiveState": true,
+    "remote_config_sha256": true,
+    "remote_binary_sha256": true,
+    "remote_source": true,
+    "remote_source_diff_sha256": true,
+    "remote_MainPID": true,
+    "remote_InvocationID": true,
+    "remote_ActiveState": true
+  },
+  "native_counter_deltas": {
+    "requests": 77,
+    "prompt_tokens": 3364168,
+    "reused": 2189767,
+    "output_tokens": 26866,
+    "prompt_ms": 822496.6000000006,
+    "decode_ms": 330721.8000000002,
+    "drafts_offered": 23464,
+    "drafts_accepted": 16898
+  },
+  "native_requests_collected": 77,
+  "collector": {
+    "started": 1791839139.2812932,
+    "finished": 1791840183.5187938,
+    "samples": 515,
+    "errors": [],
+    "api_monitor": "disabled; metrics-only collection",
+    "incident": "Initial collector required optional /api/requests (404); request timings recovered from retained native history, no test replay"
+  },
+  "observed_peaks": {
+    "coordinator": {
+      "gpu_mem_used": 33505411072,
+      "gpu_util": 100,
+      "gpu_power": 209.912,
+      "ram_used": 24298622976,
+      "net_rx_mib_s": 91.17085793861251,
+      "net_tx_mib_s": 0.2671317919488823
+    },
+    "worker": {
+      "gpu_mem_used": 22665756672,
+      "gpu_util": 100,
+      "gpu_power": 328.719,
+      "ram_used": 44191535104,
+      "net_rx_mib_s": 0.2030007511760621,
+      "net_tx_mib_s": 90.83768225883732
+    }
+  },
+  "initial_collector_samples": 0,
+  "initial_collector_error_count": 588,
+  "first_hardware_sample_delay_s": 138.46145629882812,
+  "worker_process_vram_mib": {
+    "min": 18050,
+    "max": 18050,
+    "samples": 515
+  },
+  "native_rates": {
+    "requests": 77,
+    "prompt_tokens": 3364168,
+    "reused": 2189767,
+    "engine_generated": 26866,
+    "fresh_prompt_tok_s": 1427.849063449016,
+    "decode_tok_s": 81.23443933844095,
+    "prompt_ms": 822496.6,
+    "decode_ms": 330721.8,
+    "drafts_offered": 23464,
+    "drafts_accepted": 16898,
+    "draft_acceptance_pct": 72.01670644391407
+  },
+  "coding_statistics": {
+    "tool_calls": 64,
+    "command_calls": 49,
+    "file_change_calls": 15,
+    "command_errors": 2,
+    "turn_failed": 0,
+    "timeouts": 0,
+    "acceptance_cases_per_repeat": 81,
+    "acceptance_checks": 243,
+    "passed_acceptance_checks": 243
+  }
+}

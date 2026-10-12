@@ -1,0 +1,11 @@
+Done — all tests pass on the first run, no repair rounds needed.
+
+**Result:** `node --test acceptance.test.ts` → 1 file-level test, 0 failures. Running the file directly (`node acceptance.test.ts`) shows the individual counts: **24 pass, 0 fail**, covering the exported `validateOrders` and `aggregateOrders` helper tests, frozen/unchanged input, cancelled-record rejection, and code-point sorting.
+
+**Changes:**
+
+- [validation.ts](<project>/validation.ts) (new): exported `validateOrders` — rejects non-arrays with `RangeError('orders')`, validates each record (non-empty trimmed customer, non-negative integer `priceCents`, positive integer `quantity`, optional boolean `cancelled`) and throws `RangeError('order')` otherwise, including for cancelled records. Returns new records with trimmed names; never mutates input.
+- [aggregation.ts](<project>/aggregation.ts) (new): exported `aggregateOrders` — skips cancelled records, groups by customer into freshly built summary objects (so frozen inputs are safe), sums `priceCents*quantity` and quantities, and sorts by customer with `<`/`>` code-point comparison.
+- [orders.ts](<project>/orders.ts): keeps the exported `Order`/`Summary` types and `summarizeOrders`, which is now just `aggregateOrders(validateOrders(orders))`. Public exports, error type, and behavior are unchanged.
+
+No tests, config, or other files were touched.

@@ -4,7 +4,9 @@ Measured on 2026-10-12 by [@petria](https://github.com/petria), using original
 Unsloth Qwen3.8-Flash-Next UD-Q4_K_XL and Strata 0.1.43 with custom, uncommitted
 stage-RPC changes. This is a **results-only report of an experimental build**,
 not a report of stock Strata network support or a change adding RPC to upstream.
-No stock/single-GPU A/B comparison or coding-quality test was run.
+No stock/single-GPU A/B comparison was run. A separately recorded
+[repository-only recall and coding follow-up](quality/README.md) supplements the
+speed measurements below; its reasoning settings and scoring are documented separately.
 
 ## Hardware and software
 
@@ -175,6 +177,12 @@ its `cpu_cores=32` is a logical-CPU fallback, not a physical-core count. This re
 uses the corrected interpretation rather than changing the raw numeric record.
 
 ## Correctness and limitations
+
+The statements below describe the original speed suite. Separate six-case
+recall testing and repeated community coding fixtures, with independent
+acceptance tests and actual Codex tool execution, are in the
+[quality follow-up](quality/README.md). Those limited checks are not a broad
+coding leaderboard, a complete application task or a hardware A/B comparison.
 
 - **No failed or skipped suite tests.** Each measured request returned tokens;
   this is an API/speed check, not evidence of coding quality or task completion.

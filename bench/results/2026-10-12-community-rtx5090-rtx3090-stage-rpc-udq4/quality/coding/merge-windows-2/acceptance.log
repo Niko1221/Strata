@@ -1,0 +1,160 @@
+TAP version 13
+# Subtest: empty
+ok 1 - empty
+  ---
+  duration_ms: 1.169492
+  type: 'test'
+  ...
+# Subtest: one
+ok 2 - one
+  ---
+  duration_ms: 0.179309
+  type: 'test'
+  ...
+# Subtest: sort input
+ok 3 - sort input
+  ---
+  duration_ms: 0.12416
+  type: 'test'
+  ...
+# Subtest: overlap
+ok 4 - overlap
+  ---
+  duration_ms: 0.176669
+  type: 'test'
+  ...
+# Subtest: touching
+ok 5 - touching
+  ---
+  duration_ms: 0.191581
+  type: 'test'
+  ...
+# Subtest: containment
+ok 6 - containment
+  ---
+  duration_ms: 0.1228
+  type: 'test'
+  ...
+# Subtest: same start
+ok 7 - same start
+  ---
+  duration_ms: 0.13941
+  type: 'test'
+  ...
+# Subtest: duplicate
+ok 8 - duplicate
+  ---
+  duration_ms: 0.09359
+  type: 'test'
+  ...
+# Subtest: exact gap
+ok 9 - exact gap
+  ---
+  duration_ms: 0.27323
+  type: 'test'
+  ...
+# Subtest: outside gap
+ok 10 - outside gap
+  ---
+  duration_ms: 0.28334
+  type: 'test'
+  ...
+# Subtest: gap chains
+ok 11 - gap chains
+  ---
+  duration_ms: 0.14123
+  type: 'test'
+  ...
+# Subtest: negative coordinates
+ok 12 - negative coordinates
+  ---
+  duration_ms: 0.0941
+  type: 'test'
+  ...
+# Subtest: fractional coordinates
+ok 13 - fractional coordinates
+  ---
+  duration_ms: 0.08765
+  type: 'test'
+  ...
+# Subtest: zero length
+ok 14 - zero length
+  ---
+  duration_ms: 0.07768
+  type: 'test'
+  ...
+# Subtest: frozen input
+ok 15 - frozen input
+  ---
+  duration_ms: 0.08341
+  type: 'test'
+  ...
+# Subtest: new objects and unchanged input
+ok 16 - new objects and unchanged input
+  ---
+  duration_ms: 0.1561
+  type: 'test'
+  ...
+# Subtest: bad gap -1
+ok 17 - bad gap -1
+  ---
+  duration_ms: 0.24503
+  type: 'test'
+  ...
+# Subtest: bad gap NaN
+ok 18 - bad gap NaN
+  ---
+  duration_ms: 0.07662
+  type: 'test'
+  ...
+# Subtest: bad gap Infinity
+ok 19 - bad gap Infinity
+  ---
+  duration_ms: 0.054161
+  type: 'test'
+  ...
+# Subtest: bad gap -Infinity
+ok 20 - bad gap -Infinity
+  ---
+  duration_ms: 0.05
+  type: 'test'
+  ...
+# Subtest: bad window 2,1
+ok 21 - bad window 2,1
+  ---
+  duration_ms: 0.09104
+  type: 'test'
+  ...
+# Subtest: bad window NaN,1
+ok 22 - bad window NaN,1
+  ---
+  duration_ms: 0.054931
+  type: 'test'
+  ...
+# Subtest: bad window 0,Infinity
+ok 23 - bad window 0,Infinity
+  ---
+  duration_ms: 0.06126
+  type: 'test'
+  ...
+# Subtest: bad window -Infinity,0
+ok 24 - bad window -Infinity,0
+  ---
+  duration_ms: 0.049529
+  type: 'test'
+  ...
+# Subtest: bad window 0,NaN
+ok 25 - bad window 0,NaN
+  ---
+  duration_ms: 0.05016
+  type: 'test'
+  ...
+1..25
+# tests 25
+# suites 0
+# pass 25
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 86.917584

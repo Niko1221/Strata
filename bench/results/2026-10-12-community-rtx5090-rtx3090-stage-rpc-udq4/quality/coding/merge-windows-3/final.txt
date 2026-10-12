@@ -1,0 +1,12 @@
+Done — all tests pass on the first run, no repair rounds needed.
+
+**Result:** `node --test acceptance.test.ts` → 1 file, **1 pass / 0 fail** (the nested run shows **25 individual tests, 25 pass / 0 fail**).
+
+**Changed file:** only [windows.ts](<project>/windows.ts). The rewritten `mergeWindows`:
+
+- Validates `gap` first (must be a finite, nonnegative number, even for empty input) and every window (finite `start`/`end`, `start <= end`), throwing `RangeError` otherwise.
+- Sorts a copy of the input by start then end, so the input array and its objects are never mutated.
+- Merges when `next.start <= current.end + gap`, extending only to the **maximum** end (fixing the containment bug where a shorter window's end overwrote a longer one).
+- Returns newly constructed `{start, end}` objects.
+
+The exported function and `Window` type are preserved, and no tests, config, or other files were touched.

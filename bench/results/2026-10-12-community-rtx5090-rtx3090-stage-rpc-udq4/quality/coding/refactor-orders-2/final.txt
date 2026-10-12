@@ -1,0 +1,14 @@
+Done — the refactor is complete and all tests pass on the first run, no repair rounds needed.
+
+**Results**
+
+- `node --test acceptance.test.ts`: **1 pass / 0 fail** (this Node version reports the file as one top-level test; the file fails if any inner test fails).
+- Running the file directly (`node acceptance.test.ts`) confirms the inner detail: **24 pass / 0 fail** out of 24 tests.
+
+**Changes**
+
+- [validation.ts](<project>/validation.ts) (new): exports `validateOrders` — rejects non-array input with `RangeError('orders')` and invalid records (including cancelled ones) with `RangeError('order')`, returning new records with trimmed customer names without mutating the input.
+- [aggregation.ts](<project>/aggregation.ts) (new): exports `aggregateOrders` — ignores cancelled records, groups by customer, sums `priceCents * quantity` and quantities, and returns summaries sorted by customer in code-point order. It reads the input without mutating it.
+- [orders.ts](<project>/orders.ts) (modified): keeps the exported `Order`/`Summary` types and `summarizeOrders`, which now just composes the two helpers (`aggregateOrders(validateOrders(orders))`). The helper imports are runtime imports; the helpers import the types from orders.ts with `import type`, so there's no runtime cycle.
+
+Tests, AGENTS.md, and configuration were not touched; only the three allowed files were changed.

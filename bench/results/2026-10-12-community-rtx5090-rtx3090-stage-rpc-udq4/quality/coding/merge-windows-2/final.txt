@@ -1,0 +1,11 @@
+All 25 acceptance tests pass. Summary of the work:
+
+**Result:** 25 passed, 0 failed — `node --test acceptance.test.ts` exits 0 (it aggregates the file as 1 subtest; running `node acceptance.test.ts` directly confirms all 25 individual tests pass). No repair rounds were needed.
+
+**Changed file:** only [windows.ts](<project>/windows.ts), as allowed by the README scope. Tests, AGENTS.md, and config were untouched.
+
+**What the fix does** (the original had bugs: it sorted the input array in place, merged only on strict `start < last.end` so touching windows and gap were ignored, dropped contained windows by overwriting `end` with the smaller value, and returned the input's own objects):
+
+- Validates `gap` first: must be finite and ≥ 0 (so `mergeWindows([], -1)` throws `RangeError` even with empty input); validates every window before doing any work — both `start` and `end` finite numbers with `start <= end`, else `RangeError`.
+- Sorts a copy by start then end (so frozen/foreign arrays are never mutated), and builds results as new `{start, end}` objects.
+- Merges when `w.start - last.end <= gap`, which covers overlap, touching endpoints, and gap-spanning chains, and keeps the maximum end so contained windows don't shrink the merged interval.

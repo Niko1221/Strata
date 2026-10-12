@@ -1,0 +1,9 @@
+All done — the workflow is fixed and green on the first run, no repair rounds needed.
+
+**Result:** 32 of 32 acceptance tests pass, 0 fail (`node --test acceptance.test.ts` reports the file as one passing unit; running the file directly enumerates all 32 named tests).
+
+**Changes** (only the three allowed source files):
+
+- [stock.ts](<project>/stock.ts) — `buildStock` now validates each record (`RangeError` for non-string SKU, empty-after-trim SKU, or units that aren't a nonnegative integer — `Number.isInteger` also rejects NaN/Infinity/floats), trims SKUs, and combines duplicate SKUs by summing units into a fresh Map.
+- [requests.ts](<project>/requests.ts) — `uniqueRequests` validates every request first (including later duplicates, so an invalid duplicate still raises `RangeError` before any allocation), then dedupes by trimmed ID with first-occurrence-wins, returning new trimmed objects.
+- [allocate.ts](<project>/allocate.ts) — `reserve` builds stock and validates requests up front, then processes in original order: unknown SKU → `unknown-sku`, quantity not fully available → `insufficient-stock` with no stock consumed, otherwise the exact quantity is deducted. Output preserves request order in `accepted`/`rejected`, and `remaining` includes every (untouched or zero) stock SKU with keys sorted in code-point order. Inputs are never mutated — all work happens on new Maps/objects.

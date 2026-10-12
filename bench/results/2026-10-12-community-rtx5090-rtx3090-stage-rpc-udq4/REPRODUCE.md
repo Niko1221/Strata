@@ -101,3 +101,13 @@ results use tokens/s; `prompt_ms`/`decode_ms` use milliseconds, client latency a
 TTFT use seconds. The native aggregate includes 4 warm-up/calibration requests;
 per-test summaries cover 36 measured requests only. Warm expert cache and reused
 conversation prefixes are separate conditions. No results were omitted as failures.
+
+## Separate repository-only quality follow-up
+
+[quality/README.md](quality/README.md) documents the independently recorded
+six-case recall test and three community-contributed TypeScript fixtures run
+through fresh Codex sessions. It includes per-attempt results, unchanged
+generated solutions, original acceptance-test logs, native request accounting,
+both-node sampling and reproduction commands. Its medium-reasoning coding
+measurements must not be mixed into this speed suite's reasoning-off summaries.
+The original speed data files above remain unchanged.

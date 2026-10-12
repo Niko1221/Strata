@@ -1,0 +1,80 @@
+{
+  "measurement_started_utc": "2026-10-12T21:03:22.072640+00:00",
+  "source_commit": "7695859aa13afb248bdb4d36f9b2e95707db079d",
+  "needle_tool_sha256": "eb55ad42a0846057e20a2f0ca53112502dd78f5407bf8470b82b2a16698945d2",
+  "fixture_manifest": {
+    "merge-windows/AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "merge-windows/README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+    "merge-windows/acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+    "merge-windows/windows.ts": "f75076f653579fcf2ecd48e1050f572619f01c535d26321ee2044515a697d7f6",
+    "refactor-orders/AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "refactor-orders/README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+    "refactor-orders/acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+    "refactor-orders/orders.ts": "d3e7dd2b1bbe8e2d09f42eae12a7f3324e027cdf4fc84d79cde1ce280d993379",
+    "reservation-workflow/AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "reservation-workflow/README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+    "reservation-workflow/acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+    "reservation-workflow/allocate.ts": "58e47304e459b99183d5b6ae48ee4855bf1d79ad8096f43405c65c57ff6ab567",
+    "reservation-workflow/requests.ts": "91b65480911f10ee4dca1dcccbdced97931360d3052ec1f9d41687fc04aa2829",
+    "reservation-workflow/stock.ts": "1c484ba860b55f8aa7e86db94317e60b47cc97900d38ea3fe7914e4d5522a8c3"
+  },
+  "launcher_sha256_measured": "30064fe4d81b96b8686d4f005b2255c4a0aadc1731682b5a6bfe36952a259b5b",
+  "controller_sha256_measured": "a212c151f114c7afb349c186f92671a1b455d996914789343fe66b75544c7555",
+  "controller_sha256_published": "9f1249d2210f3edd6d19cbaca5173bdebdc2e9d75636d9d88a0d7e9173cefc19",
+  "collector_sha256": "d720f7d25b2fc1415c31922b7348e1a664daa633157b45a25de9a64f930ccde8",
+  "codex_version": "codex-cli 0.162.1",
+  "node_version": "v22.23.2",
+  "profile": "dual-strata-unsloth-udq4-rpc",
+  "managed_run": "20261012T195818Z-640cc89f",
+  "engine_config_identity_unchanged": {
+    "local_config_sha256": true,
+    "local_binary_sha256": true,
+    "local_source": true,
+    "local_source_diff_sha256": true,
+    "local_MainPID": true,
+    "local_InvocationID": true,
+    "local_ActiveState": true,
+    "remote_config_sha256": true,
+    "remote_binary_sha256": true,
+    "remote_source": true,
+    "remote_source_diff_sha256": true,
+    "remote_MainPID": true,
+    "remote_InvocationID": true,
+    "remote_ActiveState": true
+  },
+  "needle_settings": {
+    "seed": 7,
+    "temperature": 0,
+    "thinking": false,
+    "max_tokens": 40,
+    "lengths": [
+      "32k",
+      "128k"
+    ],
+    "depths": [
+      10,
+      50,
+      90
+    ]
+  },
+  "coding_settings": {
+    "reasoning": "medium",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "attempts_per_fixture": 3,
+    "trial_timeout_s": 900,
+    "overall_timeout_s": 14400,
+    "sandbox": "workspace-write",
+    "approvals": "never",
+    "ephemeral": true,
+    "ignore_user_config": true
+  },
+  "coding_prompt": "Read AGENTS.md and README.md in this directory and perform the supplied coding task exactly. Follow the allowed-file scope; never change tests, instructions or configuration. Run node --test acceptance.test.ts. Permit at most two repair rounds after the initial test run. No network, installation, delegation or files outside this project. Finish with the actual pass/fail count and changed files.",
+  "coding_fixture_origin": "../../2026-10-10-community-rx-9060-xt/fixtures",
+  "collection_incident": "Initial collector required optional /api/requests (404); request timings recovered from retained native history, no test replay",
+  "published_controller_changes": [
+    "Portable remote/API defaults",
+    "Optional /api/requests HTTP 404 falls back to metrics-only sampling; no benchmark-request change"
+  ]
+}
