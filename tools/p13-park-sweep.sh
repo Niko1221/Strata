@@ -7,10 +7,11 @@
 #      （压缩工具自带"先验证再提交"：算不出某个存活会话的键就整体放弃）
 #
 #   用法：p13-park-sweep.sh [--dry-run] [--days N]
-#   环境：STRATA_PARK_STREAM（默认 /home/yang-ubuntu/Strata-data/park-stream）
+#   环境：STRATA_PARK_STREAM（默认 $HOME/Strata-data/park-stream；systemd 里建议显式写
+#         Environment=STRATA_PARK_STREAM=/path/to/park-stream，别依赖跑这个服务的用户是谁）
 #         P13_COMPACT_TOOL（默认 <脚本目录>/p13-blob-compact）
 set -u
-ROOT=${STRATA_PARK_STREAM:-/home/yang-ubuntu/Strata-data/park-stream}
+ROOT=${STRATA_PARK_STREAM:-$HOME/Strata-data/park-stream}
 DAYS=${P13_KEEP_DAYS:-7}
 DRY=0
 while [ $# -gt 0 ]; do
@@ -25,7 +26,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TOOL=${P13_COMPACT_TOOL:-$HERE/p13-blob-compact}
 
 echo "[$(date '+%F %T')] P13 清扫开始：root=$ROOT 保留 $DAYS 天 dry-run=$DRY"
-[ -d "$ROOT" ] || { echo "  $ROOT 不存在，结束"; exit 0; }
+[ -d "$ROOT" ] || { echo "  $ROOT 不存在 ⇒ 没有可扫的停放层。如果这是配错了，给服务写 Environment=STRATA_PARK_STREAM=…" >&2; exit 0; }
 
 # 1) 超期会话目录
 before=$(du -sb "$ROOT" 2>/dev/null | cut -f1)
