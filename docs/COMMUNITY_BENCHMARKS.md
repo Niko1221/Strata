@@ -13,10 +13,10 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
-- [2026-10-12: RTX 5090 + RTX 3090 (56 GiB VRAM, layer split), Ryzen 9 7900X, 191 GiB RAM](../bench/results/2026-10-12-community-2x-rtx-5090-qwen3-8-flash-next-iq3-s/README.md):
+- [2026-10-12: RTX 5090 + RTX 3090 (56 GiB VRAM, layer split), Ryzen 9 7900X, 191 GiB RAM](../bench/results/2026-10-12-community-rtx-5090-rtx-3090-qwen3-8-flash-next-iq3-s/README.md):
   Strata 0.1.43 official Windows engine, original Flash-Next IQ3_S, 131,072-token context;
   short chat decode 79.1 tok/s (TTFT 0.38 s), agent-session decode 115.8 tok/s at 68.8 % cache hit,
-  fresh 4K/16K prompt read at 1,945 / 2,282 tok/s; three runs each, speed suite only.
+  fresh 4K/16K prompt read at 1,945 / 2,282 tok/s; three runs each; needle recall 6/6 at 32k and 128k.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

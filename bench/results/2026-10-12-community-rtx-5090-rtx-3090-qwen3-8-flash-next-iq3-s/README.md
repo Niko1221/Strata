@@ -36,7 +36,9 @@ Run by `python tools/strata_bench.py` against the HTTP API of a Strata server (a
 | short chat | 46 (43-51) | 0 | 100 (100-100) | 9 | not measured | 79.1 (67.2-101.8) | 0.38 (0.31-0.43) |
 | 4K prompt, fresh | 4019 (4019-4019) | 0 (0-0) | 24 cap | 3 | 1944.7 (1284.2-2008.5) | not measured | 2.08 (2.04-3.16) |
 | 16K prompt, fresh | 16058 (16058-16058) | 0 (0-0) | 24 cap | 3 | 2282.1 (2276.4-2294.6) | not measured | 7.08 (7.04-7.10) |
-| agent session, follow-up turns | 14457 (14432-14472) at the last turn | see below | up to 64 | 3 | see below | 115.8 (94.8-169.2) | 1.97 (1.71-3.98) |
+| agent session, follow-up turns | 14457 (14432-14472) at the last turn | see below | up to 64 | 15 follow-up requests (3 sessions x 5 turns) | see below | 115.8 (94.8-169.2) | 1.97 (1.71-3.98) |
+
+Ranges in the agent row are over the 15 individual follow-up requests, not the 3 sessions.
 
 Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token.
 
@@ -57,4 +59,6 @@ Per-request data: `results.json`. Engine log lines from the start: `engine-log-e
 
 ## Correctness and limitations
 
-Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. Total time of the suite: 96 s.
+Long-context recall: the repository's unchanged `tools/needle_bench.py` found **6 of 6 needles** (code word at depths 10%, 50%, 90% at 32k and 128k; actual prompt lengths 32,804-32,805 and 124,840-124,842 tokens; per-request data in `needles.json`). All answers matched the expected code words. The needle test measures recall on these six inputs, not general model quality.
+
+Not otherwise measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. Total time of the speed suite: 96 s.
