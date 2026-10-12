@@ -80,19 +80,33 @@ int main(int argc, char** argv) {
         }
         // CPU reference
         std::printf("running CPU...\n"); std::fflush(stdout);
-        std::vector<float> acc(2560, 0.0f);
-        const std::string prefix = "model.language_model.layers." + std::to_string(layer) + ".mlp.experts.";
-        std::vector<float> g(640), u(640), d(2560);
-        std::vector<uint16_t> h(640);
-        for (int i = 0; i < k; ++i) {
-            std::string b = prefix + std::to_string(ids[i]);
-            Exl3Linear G = m.linear(b + ".gate_proj"), U = m.linear(b + ".up_proj"), D = m.linear(b + ".down_proj");
-            cpu::exl3_folded_gemv(G.trellis, G.ki, G.nj, G.bits, (cpu::Exl3Codebook) G.cb, G.suh, G.svh, x.data(), 1, g.data());
-            cpu::exl3_folded_gemv(U.trellis, U.ki, U.nj, U.bits, (cpu::Exl3Codebook) U.cb, U.suh, U.svh, x.data(), 1, u.data());
-            for (int j = 0; j < 640; ++j) { float gv = g[j]; h[j] = to_h((gv / (1.0f + std::exp(-gv))) * u[j]); }
-            cpu::exl3_folded_gemv(D.trellis, D.ki, D.nj, D.bits, (cpu::Exl3Codebook) D.cb, D.suh, D.svh, h.data(), 1, d.data());
-            for (int j = 0; j < 2560; ++j) acc[j] += w[i] * d[j];
+        auto cpu_loop = [&](std::vector<float>& acc_out) {
+            const std::string prefix = "model.language_model.layers." + std::to_string(layer) + ".mlp.experts.";
+            std::vector<float> g(640), u(640), d(2560);
+            std::vector<uint16_t> h(640);
+            for (int i = 0; i < k; ++i) {
+                std::string b = prefix + std::to_string(ids[i]);
+                Exl3Linear G = m.linear(b + ".gate_proj"), U = m.linear(b + ".up_proj"), D = m.linear(b + ".down_proj");
+                cpu::exl3_folded_gemv(G.trellis, G.ki, G.nj, G.bits, (cpu::Exl3Codebook) G.cb, G.suh, G.svh, x.data(), 1, g.data());
+                cpu::exl3_folded_gemv(U.trellis, U.ki, U.nj, U.bits, (cpu::Exl3Codebook) U.cb, U.suh, U.svh, x.data(), 1, u.data());
+                for (int j = 0; j < 640; ++j) { float gv = g[j]; h[j] = to_h((gv / (1.0f + std::exp(-gv))) * u[j]); }
+                cpu::exl3_folded_gemv(D.trellis, D.ki, D.nj, D.bits, (cpu::Exl3Codebook) D.cb, D.suh, D.svh, h.data(), 1, d.data());
+                for (int j = 0; j < 2560; ++j) acc_out[j] += w[i] * d[j];
+            }
+        };
+        {
+            std::vector<float> acc0(2560, 0.0f);
+            cpu_loop(acc0);
+            const int iters = 20;
+            auto t0 = std::chrono::high_resolution_clock::now();
+            for (int it = 0; it < iters; ++it) cpu_loop(acc0);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
+            std::printf("CPU expert FFN: %.2f ms/layer, one thread (k=%d) -> %.1f tok/s single-threaded, x48 layers\n",
+                        ms, k, 1000.0 / (ms * 48.0));
         }
+        std::vector<float> acc(2560, 0.0f);
+        cpu_loop(acc);
 
         double num = 0, den = 0, maxd = 0;
         for (int j = 0; j < 2560; ++j) { double dd = (double) h2f(out_gpu[j]) - acc[j]; num += dd * dd; den += (double) acc[j] * acc[j]; maxd = std::max(maxd, std::fabs(dd)); }

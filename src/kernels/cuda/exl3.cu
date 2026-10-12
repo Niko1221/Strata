@@ -541,14 +541,39 @@ void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, c
     f32_to_f16_out_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_acc, out, n);
 }
 
-void exl3_moe_rows(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const int* ids,
-                   int k, const uint16_t* x, uint16_t* out, void* stream) {
-    (void) ids;   // the caller orders gate/up/down to match ids, so row i is expert ids[i]
+void exl3_moe_rows_part(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, int k, const uint16_t* x,
+                        uint16_t* out, void* stream) {
     if (k <= 0) return;
     cudaStream_t st = (cudaStream_t) stream;
     const int n = down[0].nj * 16;
     uint16_t* d_d = moe_run_experts(gate, up, down, k, x, st);
     (void) cudaMemcpyAsync(out, d_d, (size_t)k * n * 2, cudaMemcpyDeviceToDevice, st);
+}
+
+void exl3_moe_rows(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const int* ids,
+                   int k, const uint16_t* x, uint16_t* out, void* stream) {
+    (void) ids;   // the caller orders gate/up/down to match ids, so row i is expert ids[i]
+    exl3_moe_rows_part(gate, up, down, k, x, out, stream);
+}
+
+// Scatter two f16 row blocks into the token's k rows (the order `moe_combine` expects): `dst[row]` takes
+// block `b`'s next row, `n` values each.  One block per row: k is 10 at the real geometry.
+__global__ void rows_scatter_kernel(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b,
+                                    const int* __restrict__ a_row, int na, const int* __restrict__ b_row, int nb,
+                                    int n, uint16_t* __restrict__ out) {
+    const int i = blockIdx.x;
+    const bool second = i >= na;
+    const int r = second ? i - na : i;
+    const int row = second ? b_row[r] : a_row[r];
+    const uint16_t* src = (second ? b : a) + (size_t) r * n;
+    uint16_t* dst = out + (size_t) row * n;
+    for (int j = threadIdx.x; j < n; j += blockDim.x) dst[j] = src[j];
+}
+
+void exl3_rows_scatter(const uint16_t* a, const int* a_row, int na, const uint16_t* b, const int* b_row, int nb,
+                       int n, uint16_t* out, void* stream) {
+    if (na + nb <= 0) return;
+    rows_scatter_kernel<<<na + nb, 256, 0, (cudaStream_t) stream>>>(a, b, a_row, na, b_row, nb, n, out);
 }
 
 __global__ void embed_gather_kernel(const uint16_t* __restrict__ row, long n, int bf16, float* __restrict__ out) {

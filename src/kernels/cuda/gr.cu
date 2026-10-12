@@ -175,9 +175,10 @@ __global__ void gr_down_kernel(const Activation* __restrict__ xq, const uint16_t
     // Blackwell SM holds**, each lane walking 10,240 elements in 320 dependent steps.
     //
     // Four independent accumulators were tried to break the dependency chain and put four loads in flight per
-    // lane.  **Measured: 39.86 ms/token of pure GPU against 39.80, i.e. no change**, with `gr_parity` green
-    // either way.  Removed, on the rule this file already states about `#pragma unroll 4`: a hint that does not
-    // change the timing is a claim that is not true.
+    // lane.  **Measured on the machine of that round: 39.86 ms/token of pure GPU against 39.80, i.e. no
+    // change**, with `gr_parity` green either way; removed then, on the rule this file states about
+    // `#pragma unroll 4`.  **Re-measured on the W7800 (gfx1100) they do help**: 11.72 -> 11.85 tok/s decode
+    // end to end, so they are back.
     //
     // The reason is that `gr_read`'s cost is not here.  Its four kernels are the norm (4 blocks), this (40),
     // `gr_gate_kernel` (1,280) and the mean (10), and the 1,280-block gate kernel reads 6.55 MB of weights with
@@ -212,9 +213,21 @@ __global__ void gr_down_kernel(const Activation* __restrict__ xq, const uint16_t
     // shared memory.  Lanes within a warp still read consecutive addresses, because warp `w` starts at
     // `w * 32` and strides by `nw * 32`.
     float acc = 0.0f;
-    for (int i = warp * 32 + lane; i < hc_dim; i += nw * 32)
-        acc += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
-    acc = warp_sumf(acc);
+    // four partial sums: the same latency fix as `gr_inject_kernel` (this machine: see the note above)
+    {
+        float a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+        int i = warp * 32 + lane;
+        const int st = nw * 32;
+        for (; i + 3 * st < hc_dim; i += 4 * st) {
+            a0 += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
+            a1 += activation_f32(xq[i + st]) * bf16_bits_to_f32(row[i + st]);
+            a2 += activation_f32(xq[i + 2 * st]) * bf16_bits_to_f32(row[i + 2 * st]);
+            a3 += activation_f32(xq[i + 3 * st]) * bf16_bits_to_f32(row[i + 3 * st]);
+        }
+        for (; i < hc_dim; i += st)
+            a0 += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
+        acc = warp_sumf((a0 + a1) + (a2 + a3));
+    }
 
     __shared__ float part[WARPS];
     if (lane == 0) part[warp] = acc;
@@ -273,10 +286,22 @@ __global__ void gr_inject_kernel(const Activation* __restrict__ xq, const uint16
     // 10,240-element FP64 reductions measured **3.70 ms/token, 11.1% of all GPU time, from a single SM out of
     // 48.**  It is the fourth largest consumer of GPU time in the engine and it cannot use more than 1/48th of
     // the machine.  In FP32 the same reduction is a few microseconds and the block size stops mattering.
-    float acc = 0.0f;
-    for (int i = lane; i < hc_dim; i += 32)
-        acc += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
-    acc = warp_sumf(acc);
+    // **FOUR ACCUMULATORS, BECAUSE THIS ONE IS LATENCY-BOUND AND `gr_down_kernel`'s EXPERIMENT DOES NOT
+    // COVER IT.**  One block of four warps walks 10,240 elements in 320 dependent steps: the profile put it
+    // at 75 us per call, 7.2 ms/token over 96 calls, from 4 warps out of the whole machine.  Four partial
+    // sums give four loads in flight per lane.  (The 4-accumulator experiment recorded in `gr_down_kernel`
+    // is that kernel's: 320 warps, 10% occupancy, no change.  This kernel has 4.)
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+    int i = lane;
+    for (; i + 96 < hc_dim; i += 128) {
+        a0 += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
+        a1 += activation_f32(xq[i + 32]) * bf16_bits_to_f32(row[i + 32]);
+        a2 += activation_f32(xq[i + 64]) * bf16_bits_to_f32(row[i + 64]);
+        a3 += activation_f32(xq[i + 96]) * bf16_bits_to_f32(row[i + 96]);
+    }
+    for (; i < hc_dim; i += 32)
+        a0 += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
+    float acc = warp_sumf((a0 + a1) + (a2 + a3));
     if (lane == 0) inject[c] = acc;
 }
 

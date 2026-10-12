@@ -165,6 +165,11 @@ struct Exl3ExpertStream::Impl {
     size_t stage_bytes = 0;
     std::map<std::string, int> fds;    // shard path -> fd, opened once
     std::mutex api_mu;                 // concurrent enqueues to one stream are not safe on the null stream
+    // the resident/miss split: two output blocks (the FFN of each part writes its own) and the row maps
+    uint16_t* d_hit = nullptr;
+    uint16_t* d_miss = nullptr;
+    int* d_hit_rows = nullptr;
+    int* d_miss_rows = nullptr;
     std::atomic<size_t> job_at{0};
     std::atomic<uint64_t> work_done{0};
     std::mutex work_mu;
@@ -172,7 +177,8 @@ struct Exl3ExpertStream::Impl {
     uint64_t work_gen = 0;             // guarded by work_mu
     bool work_quit = false;            // guarded by work_mu
     int n_workers = 0;
-    cudaStream_t work_stream = nullptr;
+    cudaStream_t work_stream = nullptr;   // the staging copies' own stream (see the ctor)
+    cudaEvent_t stage_done = nullptr;     // recorded on it, waited on the FFN's stream
 
     void stage_one(const Job& j, Stage& stg) {
         if (j.bytes == 0) return;
@@ -288,7 +294,10 @@ struct Exl3ExpertStream::Impl {
 #if !defined(_WIN32)
         for (auto& kv : fds) if (kv.second >= 0) (void) ::close(kv.second);
 #endif
-        for (void* p : { (void*) d_x, (void*) d_rows, (void*) d_out }) (void) cudaFree(p);
+        for (void* p : { (void*) d_x, (void*) d_rows, (void*) d_out, (void*) d_hit, (void*) d_miss,
+                         (void*) d_hit_rows, (void*) d_miss_rows }) (void) cudaFree(p);
+        if (stage_done != nullptr) (void) cudaEventDestroy(stage_done);
+        if (work_stream != nullptr) (void) cudaStreamDestroy(work_stream);
         for (auto& v : { &scratch.g, &scratch.u, &scratch.d })
             for (Slot& s : *v) { (void) cudaFree(s.tr); (void) cudaFree(s.suh); (void) cudaFree(s.svh); }
         for (Layer& l : layers)
@@ -303,7 +312,16 @@ Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int
     impl_->model = std::make_unique<Exl3Model>(model_dir);
     impl_->n_embd = n_embd;
     impl_->n_layers = n_layers;
-    impl_->work_stream = (cudaStream_t) stream;   // the stream the staging copies go on (nullptr: the default one)
+    // **THE STAGING COPIES GET THEIR OWN STREAM.**  They used to share the caller's, which put them behind
+    // the resident experts' FFN: the double-buffered workers then blocked on their own DMA events for the
+    // length of that FFN (measured: the staging went from 24 to 37 ms/token).  With a stream of their own
+    // the copies start at once, and the miss FFN waits on one event instead.
+    if (cudaStreamCreateWithFlags(&impl_->work_stream, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&impl_->stage_done, cudaEventDisableTiming) != cudaSuccess) {
+        std::fprintf(stderr, "strata generate: EXL3 expert stream: no staging stream\n");
+        std::abort();
+    }
+    (void) stream;
     // The staging workers: enough to saturate the host's memory bandwidth on the miss reads, not more.
     const char* nw = std::getenv("STRATA_EXL3_WORKERS");
     impl_->n_workers = nw != nullptr ? std::atoi(nw) : 4;
@@ -331,6 +349,10 @@ Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int
     alloc(&impl_->d_x, (size_t) n_embd * 2);
     alloc(&impl_->d_rows, (size_t) mk * n_embd * 2);
     if (cudaMalloc((void**) &impl_->d_out, (size_t) mk * n_embd * 4) != cudaSuccess) std::abort();
+    if (cudaMalloc((void**) &impl_->d_hit, (size_t) mk * n_embd * 2) != cudaSuccess ||
+        cudaMalloc((void**) &impl_->d_miss, (size_t) mk * n_embd * 2) != cudaSuccess ||
+        cudaMalloc((void**) &impl_->d_hit_rows, (size_t) mk * sizeof(int)) != cudaSuccess ||
+        cudaMalloc((void**) &impl_->d_miss_rows, (size_t) mk * sizeof(int)) != cudaSuccess) std::abort();
     // size the per-slot weight buffers from expert 0 of layer 0 (all experts in a layer share a shape)
     const std::string b0 = "model.language_model.layers.0.mlp.experts.0.";
     auto setup_scratch = [&](std::vector<Impl::Slot>& slots, std::vector<Exl3Mat>& mats, const char* proj) {
@@ -439,17 +461,22 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
     impl_->jobs.clear();
     // ---- which slots this token's k experts live in.  A cache hit costs nothing; a miss reads the
     // expert out of the mmap and uploads it into the least recently used slot of this layer.
-    std::vector<Exl3Mat> gm, um, dm;
+    std::vector<Exl3Mat> gm, um, dm;                 // the no-split path (no cache): one list of k
+    std::vector<Exl3Mat> hg, hu, hd, mg, mu, md;     // the split path: resident rows and miss rows
+    std::vector<int> hrow, mrow;
     Impl::Layer* cache = (impl_->cache > 0 && layer >= 0 && layer < (int) impl_->layers.size() &&
                           k <= impl_->cache) ? &impl_->layers[(size_t) layer] : nullptr;
     const std::string pfx = "model.language_model.layers." + std::to_string(layer) + ".mlp.experts.";
     if (cache != nullptr) {
-        gm.resize((size_t) k); um.resize((size_t) k); dm.resize((size_t) k);
+        hg.reserve((size_t) k); hu.reserve((size_t) k); hd.reserve((size_t) k);
+        mg.reserve((size_t) k); mu.reserve((size_t) k); md.reserve((size_t) k);
+        hrow.reserve((size_t) k); mrow.reserve((size_t) k);
         for (int i = 0; i < k; ++i) {
             const int e = ids[i];
             auto it = cache->at.find(e);
             int s = -1;
-            if (it != cache->at.end()) {
+            const bool resident = it != cache->at.end();
+            if (resident) {
                 s = it->second;
                 ++impl_->hits;
             } else {
@@ -470,9 +497,13 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
                 cache->at[e] = s;
             }
             cache->tick[(size_t) s] = ++cache->clock;
-            gm[(size_t) i] = cache->gm[(size_t) s];
-            um[(size_t) i] = cache->um[(size_t) s];
-            dm[(size_t) i] = cache->dm[(size_t) s];
+            if (resident) {
+                hrow.push_back(i);
+                hg.push_back(cache->gm[(size_t) s]); hu.push_back(cache->um[(size_t) s]); hd.push_back(cache->dm[(size_t) s]);
+            } else {
+                mrow.push_back(i);
+                mg.push_back(cache->gm[(size_t) s]); mu.push_back(cache->um[(size_t) s]); md.push_back(cache->dm[(size_t) s]);
+            }
         }
     } else {
         gm.resize((size_t) k); um.resize((size_t) k); dm.resize((size_t) k);
@@ -487,14 +518,39 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
             um[(size_t) i] = impl_->scratch.um[(size_t) i];
             dm[(size_t) i] = impl_->scratch.dm[(size_t) i];
         }
+        // no cache: nothing is resident, so the whole FFN follows the staging (the split has nothing to run early)
+        impl_->stage_parallel();
+        exl3_moe_rows(gm.data(), um.data(), dm.data(), ids, k, impl_->d_x, impl_->d_rows, stream);
     }
+    // **THE RESIDENT HALF'S FFN RUNS WHILE THE MISSES ARE READ.**  Their weights are already in VRAM, so
+    // nothing has to wait for the host: the kernel is enqueued before the workers start, and the miss FFN
+    // follows the staging copies on the same stream.  Without the split the whole FFN waited for the last
+    // miss, which is most of the doorbell.
+    if (!hrow.empty())
+        exl3_moe_rows_part(hg.data(), hu.data(), hd.data(), (int) hrow.size(), impl_->d_x, impl_->d_hit, stream);
     impl_->stage_parallel();
     const auto t_up1 = std::chrono::steady_clock::now();
-    exl3_moe_rows(gm.data(), um.data(), dm.data(), ids, k, impl_->d_x, impl_->d_rows, stream);
+    // the miss FFN (and the scatter) read what the staging wrote: order them after it
+    if (!impl_->jobs.empty()) {
+        (void) cudaEventRecord(impl_->stage_done, impl_->work_stream);
+        (void) cudaStreamWaitEvent(st, impl_->stage_done, 0);
+    }
+    if (!mrow.empty()) {
+        (void) cudaMemcpyAsync(impl_->d_hit_rows, hrow.data(), hrow.size() * sizeof(int), cudaMemcpyHostToDevice, st);
+        (void) cudaMemcpyAsync(impl_->d_miss_rows, mrow.data(), mrow.size() * sizeof(int), cudaMemcpyHostToDevice, st);
+        exl3_moe_rows_part(mg.data(), mu.data(), md.data(), (int) mrow.size(), impl_->d_x, impl_->d_miss, stream);
+        exl3_rows_scatter(impl_->d_hit, impl_->d_hit_rows, (int) hrow.size(), impl_->d_miss, impl_->d_miss_rows,
+                          (int) mrow.size(), (int) n, impl_->d_rows, stream);
+    } else if (!hrow.empty()) {
+        (void) cudaMemcpyAsync(impl_->d_hit_rows, hrow.data(), hrow.size() * sizeof(int), cudaMemcpyHostToDevice, st);
+        exl3_rows_scatter(impl_->d_hit, impl_->d_hit_rows, (int) hrow.size(), nullptr, nullptr, 0, (int) n,
+                          impl_->d_rows, stream);
+    }
     const auto t_ffn1 = std::chrono::steady_clock::now();
     f16_to_f32_rows_kernel<<<(unsigned)((n * k + 255) / 256), 256, 0, st>>>(impl_->d_rows, impl_->d_out, n * k);
     if (cudaMemcpyAsync(out, impl_->d_out, (size_t) n * k * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess) return false;
     const cudaError_t se = cudaStreamSynchronize(st);
+    if (impl_->work_stream != nullptr) (void) cudaStreamSynchronize(impl_->work_stream);   // its copies feed this layer's FFN
     if (se != cudaSuccess) std::fprintf(stderr, "exl3 stream run(layer=%d): %s\n", layer, cudaGetErrorString(se));
     if (timing) {
         const auto t_d2h1 = std::chrono::steady_clock::now();

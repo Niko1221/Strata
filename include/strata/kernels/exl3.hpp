@@ -36,6 +36,15 @@ struct Exl3Mat {
 void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, const float* weights,
                   int n_experts, const uint16_t* x, uint16_t* out, void* stream);
 
+// The same FFN for a subset of the experts, written as `k` rows of `n` fp16 into the caller's buffer (the
+// resident/miss split: the resident half can run while the missing experts are still being read).
+void exl3_moe_rows_part(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, int k, const uint16_t* x,
+                        uint16_t* out, void* stream);
+
+// Put the two parts' rows back in the token's order: `out[a_row[r]] = a[r]`, `out[b_row[r]] = b[r]`.
+void exl3_rows_scatter(const uint16_t* a, const int* a_row, int na, const uint16_t* b, const int* b_row, int nb,
+                       int n, uint16_t* out, void* stream);
+
 // One routed expert's FFN, UNWEIGHTED, into its own row: out[i*n] = down(silu(gate(x)) * up(x)) for expert i.
 // The engine's expert pool returns k rows and applies the router weights later (`moe_combine`), so this is the
 // shape it needs.  x: ki*16 fp16; out: k rows of down[].nj*16 fp16.
