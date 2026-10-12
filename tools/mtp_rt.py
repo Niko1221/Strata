@@ -3,9 +3,12 @@
     python tools/mtp_rt.py --gguf <Strata>/mtp-bf16/mtp-q2_0.gguf --out <Strata>/mtp-bf16/rt
 
 Writes
-  experts.bin   512 routed experts in the engine's blob layout (`include/strata/kernels/cpu/expert.hpp`): gate/up
-                rows interleaved (2r = gate r, 2r+1 = up r), then down rows; the Q2_0 codes in one plane and the fp16
-                scales in another.  A lossless relayout of the GGUF's Q2_0 blocks (same bytes, `cpu_expert_fixture.py`).
+  experts.bin   512 routed experts.  Q2_0 keeps the engine's legacy S2 blob layout
+                (`include/strata/kernels/cpu/expert.hpp`): gate/up rows interleaved, then down rows, with codes and
+                scales in separate planes.  Q4_0 and Q8_0 keep native GGUF rows in [gate | up | down] order for the
+                GPU native grouped-expert kernels.
+  experts.txt   the expert layout, GGML types and bytes per expert.  Engines predating this file keep treating a
+                runtime without it as the legacy Q2_0 S2 layout.
   dense.bin     every other tensor: the large projections quantized to Q8_0 (ggml's reference rounding) so the
                 engine's multi-column MMVQ can run them; the hyper-connection and router weights kept BF16; the
                 RMSNorm weights as F32 with the Gemma "+1" applied (vLLM GemmaRMSNorm scales by 1 + w).
@@ -25,7 +28,8 @@ add_gguf_py()
 import gguf  # noqa: E402
 
 H, FF, NE = 2560, 640, 512
-BLOB = 3 * (H * FF * 18 // 64)
+Q2_BLOB = 3 * (H * FF * 18 // 64)
+QTYPE_NAMES = {2: "q4_0", 8: "q8_0", 42: "q2_0"}
 Q8 = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
       "self_attn.v_proj.weight", "self_attn.o_proj.weight", "self_attn.indexer.index_qk_proj.weight",
       "mlp.shared_expert.gate_proj.weight", "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"}
@@ -54,8 +58,26 @@ def blob_of(gu: np.ndarray, dn: np.ndarray) -> bytes:
     dnb = dn.reshape(H, FF // 64, 18)
     parts = [inter[:, :, 2:].tobytes(), dnb[:, :, 2:].tobytes(), inter[:, :, :2].tobytes(), dnb[:, :, :2].tobytes()]
     out = b"".join(parts)
-    assert len(out) == BLOB, len(out)
+    assert len(out) == Q2_BLOB, len(out)
     return out
+
+
+def expert_plan(gu_type: int, dn_type: int, gu: np.ndarray, dn: np.ndarray) -> tuple[str, int]:
+    """Return (layout, bytes per expert), validating the packed tensors the selected runtime consumes."""
+    if gu_type != dn_type or gu_type not in QTYPE_NAMES:
+        raise ValueError(f"unsupported MTP expert types: gate/up={gu_type}, down={dn_type}")
+    if gu.shape[:2] != (NE, 2 * FF) or dn.shape[:2] != (NE, H):
+        raise ValueError(f"unexpected MTP expert shapes: gate/up={gu.shape}, down={dn.shape}")
+    if gu_type == 42:
+        if gu.shape != (NE, 2 * FF, H // 64 * 18) or dn.shape != (NE, H, FF // 64 * 18):
+            raise ValueError(f"unexpected Q2_0 expert shapes: gate/up={gu.shape}, down={dn.shape}")
+        return "s2", Q2_BLOB
+    block_bytes = 18 if gu_type == 2 else 34
+    expected_gu = (NE, 2 * FF, H // 32 * block_bytes)
+    expected_dn = (NE, H, FF // 32 * block_bytes)
+    if gu.shape != expected_gu or dn.shape != expected_dn:
+        raise ValueError(f"unexpected {QTYPE_NAMES[gu_type]} expert shapes: gate/up={gu.shape}, down={dn.shape}")
+    return "native", int(gu[0].nbytes + dn[0].nbytes)
 
 
 def main() -> int:
@@ -67,12 +89,21 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     r = gguf.GGUFReader(a.gguf)
     tens = {t.name: t for t in r.tensors}
-    gu = np.asarray(tens["mtp.layers.0.mlp.experts.gate_up_proj"].data)
-    dn = np.asarray(tens["mtp.layers.0.mlp.experts.down_proj"].data)
-    assert gu.shape == (NE, 2 * FF, 720) and dn.shape == (NE, H, 180), (gu.shape, dn.shape)
+    gu_t = tens["mtp.layers.0.mlp.experts.gate_up_proj"]
+    dn_t = tens["mtp.layers.0.mlp.experts.down_proj"]
+    gu = np.asarray(gu_t.data)
+    dn = np.asarray(dn_t.data)
+    gu_type, dn_type = int(gu_t.tensor_type), int(dn_t.tensor_type)
+    layout, expert_blob = expert_plan(gu_type, dn_type, gu, dn)
     with open(out / "experts.bin", "wb") as f:
         for e in range(NE):
-            f.write(blob_of(gu[e], dn[e]))
+            raw = blob_of(gu[e], dn[e]) if layout == "s2" else gu[e].tobytes() + dn[e].tobytes()
+            assert len(raw) == expert_blob, (e, len(raw), expert_blob)
+            f.write(raw)
+    (out / "experts.txt").write_text(
+        f"version 1\nlayout {layout}\ngate_up_type {gu_type}\ndown_type {dn_type}\nblob_bytes {expert_blob}\n",
+        encoding="utf-8",
+    )
     lines = []
     off = 0
     with open(out / "dense.bin", "wb") as f:
@@ -101,7 +132,8 @@ def main() -> int:
             lines.append(f"{short} {kind} {rows} {cols} {off} {len(raw)}")
             off += len(raw)
     (out / "dense.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"experts.bin {NE * BLOB} B, dense.bin {off} B, {len(lines)} tensors -> {out}")
+    print(f"experts.bin {NE * expert_blob} B ({QTYPE_NAMES[gu_type]} {layout}), "
+          f"dense.bin {off} B, {len(lines)} tensors -> {out}")
     for l in lines:
         print("  " + l)
     return 0

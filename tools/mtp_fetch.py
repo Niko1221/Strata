@@ -8,6 +8,10 @@ at the start of each shard, so HTTP range requests can read the headers and then
     python tools/mtp_fetch.py fetch --out DIR [--only SUBSTR]  # the MTP tensors themselves, resumable
     python tools/mtp_fetch.py verify --out DIR             # the fetched tensors against SHA256 (exit 3: bad ones)
 
+Set STRATA_MTP_REPO=owner/model and STRATA_MTP_REVISION=commit to fetch the MTP block from a compatible
+fine-tune instead of the default Qwen checkpoint.  This is opt-in; without those variables the URLs and pinned
+SHA256 checks are byte-for-byte the original defaults.
+
 `fetch` writes one raw file per tensor plus `mtp-manifest.json` (dtype, shape, source shard, byte range,
 sha256). It never downloads anything but the ranges named in the headers. Nothing here runs a model.
 
@@ -33,7 +37,8 @@ PINNED_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
 REVISION = os.environ.get("STRATA_MTP_REVISION") or PINNED_REVISION
 # #495: HF_ENDPOINT (a mirror, e.g. https://hf-mirror.com) serves the same revision; the SHA256 checks below still apply
 HF_ENDPOINT = (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or "https://huggingface.co"
-REPO = HF_ENDPOINT + "/Qwen/Qwen3.8-Flash-Next/resolve/%s/" % REVISION
+SOURCE_REPO = (os.environ.get("STRATA_MTP_REPO") or "Qwen/Qwen3.8-Flash-Next").strip().strip("/")
+REPO = HF_ENDPOINT + "/%s/resolve/%s/" % (SOURCE_REPO, REVISION)
 PINNED = HF_ENDPOINT + "/Qwen/Qwen3.8-Flash-Next/resolve/%s/" % PINNED_REVISION   # SHA256's revision
 # STRATA_SOURCE=modelscope (setup's --source): the same checkpoint from ModelScope.  It serves the repository's current
 # files, not a pinned revision, so REPO and PINNED are one URL here: every tensor is still checked against the pinned

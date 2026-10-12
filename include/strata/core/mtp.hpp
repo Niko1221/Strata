@@ -16,7 +16,8 @@
 //   * the attention is DENSE over every cell the layer has seen - identical to the model's sparse selection
 //     below 2,051 cells - so speculative cells (draft steps, rejected window rows) never touch indexer state and
 //     are simply overwritten when their positions are processed again;
-//   * all 512 routed experts live in VRAM (708 MB) and run through the grouped hit kernels.
+//   * all 512 routed experts live in VRAM and run through the grouped hit kernels.  The legacy Q2_0 runtime uses
+//     its S2 layout; runtimes with experts.txt may instead use native Q4_0 or Q8_0 GGUF rows.
 #pragma once
 
 #include "strata/core/layer.hpp"
@@ -237,6 +238,10 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    bool expert_native_ = false;
+    int expert_gu_type_ = 42, expert_d_type_ = 42;
+    uint64_t expert_blob_bytes_ = 0;
+    std::string expert_layout_ = "s2";
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;
