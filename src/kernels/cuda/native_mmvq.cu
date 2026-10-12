@@ -2584,13 +2584,30 @@ constexpr IlRows kIlRows_86[] = {
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
     {11, {{1, 2, 2, 2, 2}, {1, 1, 1, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K (two runs; 2560x10240 at 4 columns 120 -> 70 us)
 };
+// Turing (sm_75): read off mmvq_il_parity --bench --emit-table on a CMP 50HX (TU102, unlocked to RTX 2080 Ti clocks), the
+// same 3% rule.  IQ4_XS 2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3 columns 1781 -> 1097 us.
+constexpr IlRows kIlRows_75[] = {
+    {23, {{0, 4, 2, 2, 2}, {4, 4, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 4, 4, 4, 4}, {1, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 4, 4, 4, 4}, {1, 4, 2, 4, 4}, {1, 4, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 2, 2, 2}, {0, 4, 4, 4, 4}, {0, 4, 4, 2, 2}}},   // Q6_K
+    {11, {{1, 2, 2, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 2, 2, 2}}},   // Q3_K
+};
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
 constexpr Il1Rows kIl1Rows_86[] = {
     {11, {0, 1, 1, 1, 1}},   // Q3_K: 2560x10240 60 -> 43 us, 6144x2560 30 -> 26 us on the A4000
 };
+constexpr Il1Rows kIl1Rows_75[] = {   // CMP 50HX, as kIlRows_75
+    {23, {0, 2, 2, 2, 2}},   // IQ4_XS
+    {12, {0, 0, 2, 2, 2}},   // Q4_K
+    {13, {0, 0, 1, 1, 2}},   // Q5_K
+    {14, {0, 0, 2, 1, 1}},   // Q6_K
+    {11, {0, 2, 2, 2, 2}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {75, kIl1Rows_75, sizeof(kIl1Rows_75) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
 };
 bool il_env_on(const char* name) {
@@ -2603,6 +2620,7 @@ struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
+    {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on a CMP 50HX
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
@@ -2684,6 +2702,8 @@ namespace {
 // native_mmvq's kernels unchanged
 // Volta (PR 1401): opt-in with STRATA_SM70_TABLE=1 until the author confirms on a V100 with the final code
 bool sm70_opt_in() { const char* v = std::getenv("STRATA_SM70_TABLE"); return v != nullptr && std::atoi(v) != 0; }
+// Turing (sm_75): opt-in with STRATA_SM75_TABLE=1 until a second Turing card confirms the table
+bool sm75_opt_in() { const char* v = std::getenv("STRATA_SM75_TABLE"); return v != nullptr && std::atoi(v) != 0; }
 // Pascal (sm_60, GP100): the same interleaved kernels (bitwise equal to native_mmvq's, mmvq_il_parity), its own table
 // kIlRows_60.  STRATA_SM60_TABLE=0 keeps native_mmvq's kernels on a P100; any other value (or unset) uses the table.
 bool sm60_table_on() { const char* v = std::getenv("STRATA_SM60_TABLE"); return v == nullptr || std::atoi(v) != 0; }
@@ -2696,7 +2716,7 @@ bool il_arch_ok() {
         int minor = 0;
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 6 && minor == 0 && sm60_table_on()))) ? 1 : -1;
+                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 7 && minor == 5 && sm75_opt_in()) || (major == 6 && minor == 0 && sm60_table_on()))) ? 1 : -1;
     }
     return ok[dev] > 0;
 }
