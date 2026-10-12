@@ -187,35 +187,74 @@ __global__ void prescale_had_kernel(const uint16_t* __restrict__ x, const uint16
 // atomicAdd per column folds the block's k-group into z.  This replaced 16-thread blocks that
 // atomicAdd-ed per k-tile: 16-thread blocks cap at ~24 blocks/CU (≈19% occupancy) and every k-tile
 // serialized on the same z, which is what pinned the GEMV at ~11 tok/s.
-__global__ void gemv_kernel(const float* __restrict__ xh, const uint16_t* __restrict__ trellis,
-                            int ki, int nj, int words, int bits, int cb, const int* __restrict__ pinv,
-                            float* __restrict__ z) {
-    int j = blockIdx.x;
+constexpr int GEMV_T = 2;
+
+// The dense (single-matrix) GEMV: 256 threads (16 sub-groups of 16 output columns) and `GEMV_T` output
+// tiles per block, like the batched kernel, but with the matrix's geometry as scalars.
+//
+// **THE WINDOW GEOMETRY IS HOISTED OUT OF THE k LOOP.**  The two words a 16-bit window touches and the shift
+// between them depend only on the thread's 16 row positions (`tt[r]`, fixed for the block) and `bits`, not on
+// the tile the loop is walking.  Computing them per weight costs 3 multiplies and two integer modulos, and
+// with ~20 weights per thread (the old 8-way k split over 128 threads) that dominated the kernel: it ran at
+// 40-115 GB/s against the ~700 GB/s the card has.  Packed into one int per row: word0 | word1 << 8 | shift << 16.
+__global__ void __launch_bounds__(256, 6) gemv_kernel(const float* __restrict__ xh, const uint16_t* __restrict__ trellis,
+                                                      int ki, int nj, int words, int bits, int cb,
+                                                      const int* __restrict__ pinv, float* __restrict__ z) {
     int c = threadIdx.x & 15, sub = threadIdx.x >> 4;
-    int ns = gridDim.y * 8;
-    int cid = blockIdx.y * 8 + sub;
+    int ns = gridDim.y * 16;
+    int cid = blockIdx.y * 16 + sub;
     int k0 = (ki * cid) / ns, k1 = (ki * (cid + 1)) / ns;
     int tt[16];
     #pragma unroll
     for (int r = 0; r < 16; ++r) tt[r] = pinv[r * 16 + c];
-    float acc = 0;
+    const int nw = bits * 256 / 32;
+    int wo[16];
+    #pragma unroll
+    for (int r = 0; r < 16; ++r) {
+        const int b0 = tt[r] * bits + bits - 16 + 256 * bits;
+        const int b2 = b0 + 16;
+        const int i0 = b0 >> 5, i1 = (b2 - 1) >> 5;
+        wo[r] = (i0 % nw) | ((i1 % nw) << 8) | (((i1 + 1) * 32 - b2) << 16);
+    }
+    float acc[GEMV_T];
+    #pragma unroll
+    for (int t = 0; t < GEMV_T; ++t) acc[t] = 0;
     for (int i = k0; i < k1; ++i) {
-        const uint16_t* tw = trellis + (long)(i * nj + j) * words;
+        const uint32_t* twp[GEMV_T];
+        #pragma unroll
+        for (int t = 0; t < GEMV_T; ++t) {
+            int j = blockIdx.x + t * gridDim.x;
+            twp[t] = (j < nj) ? (const uint32_t*) (trellis + (long) (i * nj + j) * words) : nullptr;
+        }
         #pragma unroll
         for (int r = 0; r < 16; ++r) {
-            float wv = cb == 2 ? decode_mul1(read_window(tw, tt[r], bits))
-                               : __half2float(__ushort_as_half(decode_window(cb, read_window(tw, tt[r], bits))));
-            acc += xh[i * 16 + r] * wv;
+            const float xr = xh[i * 16 + r];
+            const int g = wo[r];
+            #pragma unroll
+            for (int t = 0; t < GEMV_T; ++t) {
+                if (twp[t] == nullptr) continue;
+                const uint64_t m = ((uint64_t) twp[t][g & 255] << 32) | twp[t][(g >> 8) & 255];
+                const uint16_t win = (uint16_t) (m >> (g >> 16));
+                const float wv = cb == 2 ? decode_mul1(win)
+                                         : __half2float(__ushort_as_half(decode_window(cb, win)));
+                acc[t] += xr * wv;
+            }
         }
     }
-    __shared__ float red[8][16];
-    red[sub][c] = acc;
+    __shared__ float red[GEMV_T][16][16];
+    #pragma unroll
+    for (int t = 0; t < GEMV_T; ++t) red[t][sub][c] = acc[t];
     __syncthreads();
     if (sub == 0) {
-        float s = 0;
         #pragma unroll
-        for (int k2 = 0; k2 < 8; ++k2) s += red[k2][c];
-        atomicAdd(&z[j * 16 + c], s);
+        for (int t = 0; t < GEMV_T; ++t) {
+            const int j = blockIdx.x + t * gridDim.x;
+            if (j >= nj) break;
+            float s = 0;
+            #pragma unroll
+            for (int k2 = 0; k2 < 16; ++k2) s += red[t][k2][c];
+            atomicAdd(&z[j * 16 + c], s);
+        }
     }
 }
 
@@ -248,9 +287,13 @@ void gemv_launch(const uint16_t* x, const uint16_t* suh, const uint16_t* svh, co
                  cudaStream_t st) {
     int k = ki * 16, n = nj * 16, words = 256 * bits / 16;
     prescale_had_kernel<<<k / HAD, HAD, 0, st>>>(x, suh, d_xh);
-    int gy = (ki + 7) / 8; if (gy > 16) gy = 16; if (gy < 1) gy = 1;
+    // A k split so the block count fills the machine: at least ~256 blocks, and never more than one row per
+    // sub.  gy = 1 (each sub walks ki/16 rows) is the fast case for the big matrices; the small ones (the
+    // shared expert's 40 output tiles) need the split or they run on 5k threads.
+    int gy = 1;
+    while (gy < 16 && ((nj + GEMV_T - 1) / GEMV_T) * gy < 256 && ki >= (gy + 1) * 16) ++gy;
     (void) cudaMemsetAsync(d_z, 0, (size_t)n * 4, st);
-    gemv_kernel<<<dim3(nj, gy), 128, 0, st>>>(d_xh, trellis, ki, nj, words, bits, cb, d_pinv, d_z);
+    gemv_kernel<<<dim3((nj + GEMV_T - 1) / GEMV_T, gy), 256, 0, st>>>(d_xh, trellis, ki, nj, words, bits, cb, d_pinv, d_z);
     had_postscale_kernel<<<n / HAD, HAD, 0, st>>>(d_z, svh, y);
 }
 
@@ -333,24 +376,36 @@ __global__ void __launch_bounds__(256, 6) gemv_batched_kernel(const float* __res
     int tt[16];
     #pragma unroll
     for (int r = 0; r < 16; ++r) tt[r] = pinv[r * 16 + c];
+    // the window geometry for this thread's 16 rows: fixed for the whole k loop (see gemv_kernel)
+    const int nw = bits * 256 / 32;
+    int wo[16];
+    #pragma unroll
+    for (int r = 0; r < 16; ++r) {
+        const int b0 = tt[r] * bits + bits - 16 + 256 * bits;
+        const int b2 = b0 + 16;
+        const int i0 = b0 >> 5, i1 = (b2 - 1) >> 5;
+        wo[r] = (i0 % nw) | ((i1 % nw) << 8) | (((i1 + 1) * 32 - b2) << 16);
+    }
     float acc[T];
     #pragma unroll
     for (int t = 0; t < T; ++t) acc[t] = 0;
     for (int i = k0; i < k1; ++i) {
-        const uint16_t* twp[T];
+        const uint32_t* twp[T];
         #pragma unroll
         for (int t = 0; t < T; ++t) {
             int j = blockIdx.x + t * gridDim.x;
-            twp[t] = (j < nj) ? trellis + (long)(i * nj + j) * words : nullptr;
+            twp[t] = (j < nj) ? (const uint32_t*) (trellis + (long)(i * nj + j) * words) : nullptr;
         }
-        #pragma unroll 4
+        #pragma unroll
         for (int r = 0; r < 16; ++r) {
             float xr = xhe[i * 16 + r];
+            const int g = wo[r];
             #pragma unroll
             for (int t = 0; t < T; ++t) {
                 if (!twp[t]) continue;
-                float wv = cb == 2 ? decode_mul1(read_window(twp[t], tt[r], bits))
-                                   : __half2float(__ushort_as_half(decode_window(cb, read_window(twp[t], tt[r], bits))));
+                const uint64_t m = ((uint64_t) twp[t][g & 255] << 32) | twp[t][(g >> 8) & 255];
+                const uint16_t win = (uint16_t) (m >> (g >> 16));
+                float wv = cb == 2 ? decode_mul1(win) : __half2float(__ushort_as_half(decode_window(cb, win)));
                 acc[t] += xr * wv;
             }
         }
@@ -405,7 +460,6 @@ __global__ void accum_batched_kernel(const uint16_t* __restrict__ d, const float
 
 }  // namespace
 
-constexpr int GEMV_T = 2;
 
 namespace {
 
