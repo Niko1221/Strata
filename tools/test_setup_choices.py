@@ -191,15 +191,26 @@ class VsRange(unittest.TestCase):
         seen = []
         with mock.patch.object(setup.Path, "exists", lambda self: True),                 mock.patch.object(setup, "out", lambda cmd, *a, **k: seen.append(cmd) or "C:/VS"):
             setup.find_vcvars(cuda_v)
-        return seen[0][seen[0].index("-version") + 1]
+        return seen[0][seen[0].index("-version") + 1] if "-version" in seen[0] else None
 
     def test_the_range_follows_the_toolkit(self):
-        self.assertEqual(self.asked(None), "[16.0,18.0)")
+        self.assertIsNone(self.asked(None))      # #881: without CUDA vswhere gets no version range
         self.assertEqual(self.asked((13, 0)), "[16.0,18.0)")
         self.assertEqual(self.asked((13, 2)), "[16.0,18.0)")
         self.assertEqual(self.asked((13, 3)), "[16.0,19.0)")
         self.assertEqual(self.asked((14, 0)), "[16.0,19.0)")
 
+
+    def test_vcvars_by_hand(self):
+        """#881: STRATA_VCVARS names a vcvars64.bat directly, for an install vswhere cannot use."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            bat = Path(d) / "vcvars64.bat"
+            bat.write_text("rem")
+            with mock.patch.dict(os.environ, {"STRATA_VCVARS": str(bat)}):
+                self.assertEqual(setup.find_vcvars(), bat)
+            with mock.patch.dict(os.environ, {"STRATA_VCVARS": str(Path(d) / "missing.bat")}):
+                self.assertIsNone(setup.find_vcvars())
 
 class ExperimentalSm60(unittest.TestCase):
     """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
@@ -536,6 +547,69 @@ class CudaVision(unittest.TestCase):
                 self.assertEqual([t for t, _ in built], ["strata-vision"])
                 self.assertIn("-DSTRATA_PORTABLE=OFF", built[0][1])
                 self.assertIn(f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}", built[0][1])
+
+
+class SwiftIq3s(unittest.TestCase):
+    """#1651: Swift 1.5 has its own IQ3_S tier since 2026-10-08 (ukisai's Swift-1.5 GGUF repo) - the model choice
+    must not hide it behind the qwen family.  Names and sizes checked against the Hub listing when written."""
+
+    def test_iq3_s_is_a_swift_choice(self):
+        self.assertIn("swift", setup.MODELS["IQ3_S"].get("families", ("qwen", "swift")))
+
+    def test_the_published_file_names(self):
+        fam = setup.FAMILIES["swift"]
+        self.assertEqual(setup.model_shards(fam, "IQ3_S"), 2)
+        self.assertEqual([setup.model_file(fam, "IQ3_S", i) for i in (1, 2)],
+                         ["Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                          "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"])
+
+
+class HostCompilers(unittest.TestCase):
+    """#1645: CC / CXX / CUDAHOSTCXX name the build's compilers - handed to CMake as -D, so a build folder that is
+    already configured picks them up too (CXX alone reaches CMake only on the first configure: the reporter's
+    `CXX=g++-14` run died at the last step).  CUDAHOSTCXX is nvcc's host compiler and defaults to CXX."""
+
+    def test_env_names_the_compilers(self):
+        with mock.patch.dict(os.environ, {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": "g++-14-alt"}):
+            self.assertEqual(setup.host_compiler_defs(True), ["-DCMAKE_C_COMPILER=gcc-14",
+                                                              "-DCMAKE_CXX_COMPILER=g++-14",
+                                                              "-DCMAKE_CUDA_HOST_COMPILER=g++-14-alt"])
+
+    def test_cudahostcxx_defaults_to_cxx_and_needs_cuda(self):
+        with mock.patch.dict(os.environ, {"CC": "", "CXX": "g++-14", "CUDAHOSTCXX": ""}):
+            self.assertEqual(setup.host_compiler_defs(True), ["-DCMAKE_CXX_COMPILER=g++-14",
+                                                              "-DCMAKE_CUDA_HOST_COMPILER=g++-14"])
+            self.assertEqual(setup.host_compiler_defs(False), ["-DCMAKE_CXX_COMPILER=g++-14"])   # a C++-only project
+
+    def test_unset_adds_nothing(self):
+        with mock.patch.dict(os.environ, {"CC": "", "CXX": "", "CUDAHOSTCXX": ""}):
+            self.assertEqual(setup.host_compiler_defs(True), [])
+
+    def test_the_defs_reach_cmake(self):
+        """The engine's and the CUDA encoder's configure both take them."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "old"}))
+            built = []
+
+            def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+                built.append((target, defs))
+                (bdir / "bin").mkdir(parents=True, exist_ok=True)
+                (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+                (bdir / setup.EXE).write_bytes(b"engine")
+
+            env = {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": ""}
+            with mock.patch.dict(os.environ, env), mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "new"), \
+                    mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
+                    mock.patch.object(setup, "source_version", lambda: "test"):
+                quiet(setup.build_engine, {"arch": "86"}, "gpu", True, "llama")
+        for target, defs in built:
+            self.assertIn("-DCMAKE_CXX_COMPILER=g++-14", defs, target)
+            self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=g++-14", defs, target)
 
 
 if __name__ == "__main__":

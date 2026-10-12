@@ -5,6 +5,7 @@
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
 #include "strata/kernels/cpu/iq_avx2.hpp"
+#include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
@@ -42,28 +43,48 @@ bool kq256_on() {
     return v;
 }
 
+/// The older-CPU tier's gate/up kernel (iq_avx1.cpp, compiled for AVX and gated on cpu_avx1_ok()): without it
+/// every expert on an AVX-only CPU (STRATA_ISA_FLOOR=avx builds: Sandy/Ivy Bridge, Xeon E5 v1/v2, Bulldozer) runs
+/// on ggml-cpu's scalar `_generic` dots.  Only where AVX2 is absent, so a modern CPU's rounding never moves.
+bool iq128_on() {
+    static const bool v = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_IQ128") == nullptr;
+    return v;
+}
+
 /// Which multi-token kernel `native_gu_rows` hands this group to: 5 = the AVX-512 i-quant one, 2 = the AVX-2
-/// one, 0 = none, so ggml-cpu's per-token `vec_dot`.  Every one of those kernels addresses the ASSEMBLED blob
-/// (`blob + up_off`), which is why a caller holding the three slices must not be given one; `native_rows_sliceable`
-/// is this same answer for that caller.
+/// one, 1 = the AVX1 (128-bit) one of the older-CPU tier, 0 = none, so ggml-cpu's per-token `vec_dot`.  Every
+/// one of those kernels addresses the ASSEMBLED blob (`blob + up_off`), which is why a caller holding the three
+/// slices must not be given one; `native_rows_sliceable` is this same answer for that caller.
 int gu_multi_kind(int gu_type, int nt) {
     if (nt < native_gu_mt_min(gu_type)) return 0;
     // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps
     // ggml-cpu for it, as before (its rows would round differently).
     const bool cpu512 = cpu_avx512_ok();
-    if (!(iq512_supported(gu_type) || (!cpu512 && iq256_supported(gu_type)))) return 0;
-    if (iq512_on() && iq512_supported(gu_type)) return 5;
-    if (iq256_on() && iq256_supported(gu_type)) return 2;
+    if (iq512_supported(gu_type) || (!cpu512 && iq256_supported(gu_type))) {
+        if (iq512_on() && iq512_supported(gu_type)) return 5;
+        if (iq256_on() && iq256_supported(gu_type)) return 2;
+    }
+    // The AVX-1 tier's formats are not the AVX-2 set (IQ3_XXS/IQ3_S/IQ2_S/IQ4_XS), and it is reached only where
+    // AVX2 is absent - `iq128_on` says so - so an AVX-2 or AVX-512 CPU never arrives here.  The same #152
+    // `mt_min` rule as the other two kernels applies (checked at the top), and STRATA_IQ_MT_MIN=1 takes this
+    // kernel for one token too; iq_avx1_parity checks every width bit for bit.
+    if (iq128_on() && iq128_supported(gu_type)) return 1;
     return 0;
 }
 
-/// As `gu_multi_kind`, for the down rows: 8 = the Q5_1/Q8_0 kernel, 20 = IQ4_NL's, 0 = ggml-cpu's per-token dot.
+/// As `gu_multi_kind`, for the down rows: 8 = the Q5_1/Q8_0 kernel, 20 = IQ4_NL's, 1 = the AVX1 (128-bit) one of
+/// the older-CPU tier, 0 = ggml-cpu's per-token dot.
 int down_multi_kind(int d_type, int nt) {
-    if (!cpu_avx2_ok()) return 0;   // both kernels below are /arch:AVX2 translation units
-    if (kq256_on() && nt >= 2 && (d_type == 7 || d_type == 8)) return 8;
-    const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
-    static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
-    if (nt >= mt_min && d_type == 20 && iq4nl_mt) return 20;
+    if (cpu_avx2_ok()) {   // both AVX-2 kernels below are /arch:AVX2 translation units
+        if (kq256_on() && nt >= 2 && (d_type == 7 || d_type == 8)) return 8;
+        const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;
+        static const int mt_min = [] { const char* e = std::getenv("STRATA_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
+        if (nt >= mt_min && d_type == 20 && iq4nl_mt) return 20;
+        return 0;
+    }
+    // the older-CPU tier: IQ4_NL and Q2_0 down rows in 128-bit, where ggml-cpu's dots for both are scalar.  No
+    // group-size rule on this one: the AVX-1 tier takes a down row for one token too.
+    if (iq128_on() && iq128_down_supported(d_type)) return 1;
     return 0;
 }
 
@@ -138,15 +159,23 @@ bool q8k_avx2(int type) {
     static const bool on = cpu_avx2_ok() && std::getenv("STRATA_NO_Q8K_AVX2") == nullptr;
     return on && type == (int) GGML_TYPE_Q8_K;
 }
+// the older CPUs' copy (iq_avx1.cpp): byte-identical like the AVX-2 one, and only where AVX2 is absent (same
+// policy as STRATA_NO_IQ128 above; STRATA_NO_Q8K_AVX1=1 keeps ggml's scalar reference on those CPUs).
+bool q8k_avx1(int type) {
+    static const bool on = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_Q8K_AVX1") == nullptr;
+    return on && type == (int) GGML_TYPE_Q8_K;
+}
 }  // namespace
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
+    if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
+    if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
 }
 
@@ -190,7 +219,10 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     if (const int kind = gu_multi_kind(f.gu_type, nt)) {
         if (kind == 5)
             iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
-        else iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+        else if (kind == 2)
+            iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+        else   // 1: the AVX-1 tier's 128-bit kernel (an AVX-only CPU; see `iq128_on`)
+            iq128_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
         return;
     }
     // ggml-cpu's vec_dot, reached through the slice form: the blob's two halves ARE its gate and up rows.
@@ -203,7 +235,9 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
     if (const int kind = down_multi_kind(f.d_type, nt)) {
         if (kind == 8) kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
-        else iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        else if (kind == 20) iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        else   // 1: the AVX-1 tier's 128-bit kernel (an AVX-only CPU; see `iq128_on`)
+            iq128_down_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     native_down_rows_ptr(f, blob + f.down_off, hq, nt, out, r0, r1);
@@ -269,8 +303,9 @@ void native_gu_rows_slice(const NativeFmt& f, const uint8_t* gate, const uint8_t
         if (const int kind = gu_multi_kind(f.gu_type, nt)) {
             if (kind == 5)
                 iq512_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
-            else
+            else if (kind == 2)
                 iq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+            else iq128_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
             return;
         }
     }
@@ -282,7 +317,8 @@ void native_down_rows_slice(const NativeFmt& f, const uint8_t* down, const void*
     if (slice_mt_down_on()) {
         if (const int kind = down_multi_kind(f.d_type, nt)) {
             if (kind == 8) kq256_rows(f.d_type, down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
-            else iq4nl256_down_rows(down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            else if (kind == 20) iq4nl256_down_rows(down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            else iq128_down_rows(f.d_type, down, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
             return;
         }
         // `down_multi_kind` only names the two kernels someone wired to it (Q5_1/Q8_0 and IQ4_NL).  The row-dot

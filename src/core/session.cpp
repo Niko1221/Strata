@@ -11,6 +11,7 @@
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#include "strata/platform/aux_cpus.hpp"
 #include "strata/kernels/ngram.hpp"
 
 #include <cuda_runtime.h>
@@ -652,6 +653,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
             pinned = pinned_core.valid;
         }
     }
+    strata::aux_cpus::note_owned_thread();   // the host: --aux-cpus leaves it where it is
     return true;
 }
 

@@ -3,6 +3,7 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -23,6 +24,15 @@ extern "C" cudaError_t __wrap_cudaMemcpy(void* dst, const void* src, size_t n, c
     std::memcpy(dst, src, n);
     return cudaSuccess;
 }
+// the snapshot/checkpoint copies go through a private non-blocking stream (conversation_copy.hpp)
+extern "C" cudaError_t __wrap_cudaGetDevice(int* dev) { *dev = 0; return cudaSuccess; }
+extern "C" cudaError_t __wrap_cudaStreamCreateWithFlags(cudaStream_t* s, unsigned int) {
+    *s = reinterpret_cast<cudaStream_t>(static_cast<uintptr_t>(1)); return cudaSuccess;
+}
+extern "C" cudaError_t __wrap_cudaMemcpyAsync(void* dst, const void* src, size_t n, cudaMemcpyKind, cudaStream_t) {
+    return __wrap_cudaMemcpy(dst, src, n, cudaMemcpyDefault);
+}
+extern "C" cudaError_t __wrap_cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
 extern "C" cudaError_t __wrap_cudaDeviceSynchronize() {
     return ++sync_calls == fail_sync ? cudaErrorUnknown : cudaSuccess;
 }
