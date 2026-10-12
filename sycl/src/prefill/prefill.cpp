@@ -644,8 +644,8 @@ struct Prefill::Impl {
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
     bool borrowed = false;
-    dpct::queue_ptr cs = &dpct::get_in_order_queue(),
-                    copy = &dpct::get_in_order_queue();
+    dpct::queue_ptr cs = &dpct::get_in_order_queue(); // borrowed; never destroyed here
+    dpct::queue_ptr copy = nullptr; // owned: init() creates it; release() destroys it
     Gemm gemm;
     std::vector<void*> owned;
     // chunk buffers
@@ -724,7 +724,7 @@ struct Prefill::Impl {
     // KV streaming: one layer's whole K/V, staged from the host copy per layer and chunk (identity layout)
     strata::kernels::KvHostPools stage;
     int32_t* ident_table = nullptr;
-    dpct::queue_ptr kv_copy = &dpct::get_in_order_queue();
+    dpct::queue_ptr kv_copy = nullptr; // owned: created only when KV prefetch is enabled
     dpct::event_ptr kv_released = nullptr, kv_ready = nullptr;
     // layer split: the device, and the hand-off to the next stage (two pinned chunk buffers, used in turn)
     int device = -1;

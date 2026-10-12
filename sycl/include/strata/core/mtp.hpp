@@ -236,9 +236,8 @@ private:
     dpct::experimental::command_graph_exec_ptr prefill_dev_exec_[9] = {};
     int32_t* pf_dev_ = nullptr;   ///< E-4: a prompt's rows' token / step / position records, uploaded at once
     int64_t pf_cap_ = 0;          ///< its capacity in ints
-    dpct::queue_ptr side_ =
-        &dpct::get_in_order_queue(); // the shared expert's branch of the draft
-                                     // graphs (CUDA)
+    dpct::queue_ptr side_ = nullptr; // load() creates this owned shared-expert branch queue;
+                                     // an unloaded/failed-load drafter owns no queue
     dpct::event_ptr sh_fork_ = nullptr, sh_join_ = nullptr;
     dpct::experimental::command_graph_exec_ptr round_exec_[9] = {};
 
