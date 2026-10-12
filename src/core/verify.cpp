@@ -1464,8 +1464,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // STRATA_ROUTE_PRIOR=lambda (opt-in, changes the output): the top-10 picked again with a logit bonus for the
         // resident experts; the weights stay the router's (route_prior.cu)
         static const float route_prior = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
-        if (route_prior > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr)
-            route_prior_top10(logits_ + tb * NE, hits_.d_res + l * g.n_expert, route_prior, ids_ + tb * K, w_ + tb * K, n, cs);
+        // STRATA_ROUTE_PRIOR_MAP=<one digit per layer> (with STRATA_ROUTE_PRIOR > 0): the bonus per layer, digit/10
+        // ('5' = 0.5, '0' = off for that layer; layers past the map's end keep STRATA_ROUTE_PRIOR).  The layers react to a
+        // swapped expert differently (the tail skip's per-layer KL: the last 12 layers half the first ones').
+        static const std::string prior_map = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR_MAP"); return std::string(v ? v : ""); }();
+        float lam_l = route_prior;
+        if (!prior_map.empty() && l < (int64_t) prior_map.size()) {
+            const char c = prior_map[(size_t) l];
+            lam_l = c >= '0' && c <= '9' ? (float) (c - '0') / 10.0f : route_prior;
+        }
+        if (route_prior > 0.0f && lam_l > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr)
+            route_prior_top10(logits_ + tb * NE, hits_.d_res + l * g.n_expert, lam_l, ids_ + tb * K, w_ + tb * K, n, cs);
         if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
             // STRATA_ROUTE_RESIDENT: after the router, before the plan/doorbell read ids_/w_ (opt-in, changes the output)
             try {

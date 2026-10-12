@@ -1660,7 +1660,19 @@ median over the rounds (ratio of tokens/s, default over `=0`; rounds in which th
 
 The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile, `phaseA-tests/cuda-profile.md`); a 2-GPU
 split that holds nearly every expert (hit rate 99.7%) gains nothing. It does not touch prompt reading. Switches that stay opt-in and are not part of this:
-`STRATA_ROUTE_PRIOR` (adds speed, doubles the KL), `STRATA_ROUTE_RESIDENT` and `STRATA_ROUTE_RESIDENT_MTP` (the latter is not faster than the former).
+`STRATA_ROUTE_PRIOR` (adds speed, doubles the KL; `STRATA_ROUTE_PRIOR_MAP` below takes most of that KL back), `STRATA_ROUTE_RESIDENT` and `STRATA_ROUTE_RESIDENT_MTP` (the latter is not faster than the former).
+
+`STRATA_ROUTE_PRIOR_MAP=<one digit per layer>` (with `STRATA_ROUTE_PRIOR` > 0, opt-in, changes the output) sets the bonus per layer:
+digit / 10, `0` turns it off for that layer, layers past the map keep `STRATA_ROUTE_PRIOR`. The first layers react most to a swapped
+expert. On an RTX 5070 Ti Laptop 12 GB (Swift 1.5 IQ3_XXS, 47 prompts teacher-forced against the same build without the prior):
+
+| `STRATA_ROUTE_PRIOR=0.5` with | KL (all / code) | decode tok/s (agent turns, mirrored runs) |
+| --- | --- | --- |
+| no map (every layer 0.5) | 0.141 / 0.198 | 113.9 |
+| `000000000000` + 36 x `5` (layers 12-47) | 0.108 / 0.147 | 113.0 (-0.7 %, within the 3 % run-to-run spread) |
+| layers 12-23 and 36-47 only | 0.095 / 0.128 | 108.1 (-5.0 %) |
+
+Per band of 12 layers (prior only there): layers 0-11 0.111, 12-23 0.072, 24-35 0.069, 36-47 0.057.
 
 ## The PCIe share of the missed experts is set from the CPU's speed (CUDA, single GPU, no `--pcie-frac`)
 
