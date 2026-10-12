@@ -10305,7 +10305,9 @@ int main(int argc, char** argv) {
                     if (!pr.empty()) std::fprintf(stderr, "strata batch GPU stages, stage %d (ms/window):%s\n", k + 1, pr.c_str());
                 }
                 bt_windows = bt_rows = 0;
-                strata::core::progress().busy.store(false);
+                // (not while a prompt is read in pieces in a request: the slots decoded between them, and the watchdog
+                // stays on for the rest of the read; the request's end turns it off)
+                if (!in_prompt_read) strata::core::progress().busy.store(false);
             }
             return true;
         };
