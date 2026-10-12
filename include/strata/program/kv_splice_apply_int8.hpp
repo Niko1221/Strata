@@ -26,12 +26,14 @@
 // transport's identity path (CPU build) aliases the buffers directly.  V is never
 // touched; this header only stages K codes + K scales.
 //
-// FAIL-CLOSED.  Anything outside the supported config (kv_hybrid / kv_q4 / kv_resident >
-// 0 / layer_split / kv_rot -- the opt-in STRATA_KV_ROT=1 -- K is stored through a
-// Hadamard rotation that the splice's RoPE-only math does not undo) returns
+// FAIL-CLOSED.  Outside the supported config the helpers return
 // SpliceStatus::Unsupported* WITHOUT side effects, matching the A1.3 fail-closed pattern.
-// The startup guard in suffix_reuse.hpp:188-204 keeps refusing q4_0 / k8v4 / kv_resident /
-// layer_split at flag-parse; the runtime guard below is the second layer.
+// Supported: fp16, int8, int8 + STRATA_KV_ROT=1 (the H -> R(delta) -> H sandwich below),
+// and k8v4 (the hybrid K half is byte-identical int8 storage; V is never touched).
+// --kv q4_0 splices through rotate_qsa_tail_inplace_q4 (the Q4 codec helper here).
+// Still refused everywhere: kv_resident > 0 and layer_split (memory layouts, not codecs);
+// head_dim != 256 in a rotated domain (fwht256 is order-256; fail-closed inside the
+// helpers).  The startup guard in suffix_reuse.hpp is the first layer; these are second.
 #pragma once
 
 #include "strata/core/layer.hpp"                  // QsaState (kv_int8 / k_q / k_scale / kv_mode)
