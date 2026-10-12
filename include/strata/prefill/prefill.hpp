@@ -251,6 +251,9 @@ public:
     /// REMOTE STAGE: `on_chunk` reads no row before this position (the drafter's window starts later), so the worker
     /// sends back only the rows from it - `skip` rows fewer for the chunks before it.  Per prompt; default all rows.
     void set_remote_rows_from(int64_t pos) { remote_rows_from_ = pos; }
+    /// REMOTE STAGE, a relay worker: a wait for its next worker to take a chunk (`remote_send`) gets this allowance
+    /// instead of the watchdog's limit - the link's own timeouts end it and the next worker watches itself.  0: watched.
+    void set_send_allowance(int seconds) { send_allow_s_ = seconds; }
     /// REMOTE STAGE, the worker's side: this stage does not start at layer 0 and has no previous stage in this
     /// process - its rows for the next `run` (host, pinned; one chunk) and whether the main prompt is one chunk.
     void set_hand_in(const float* rows) { hand_in_ = rows; }
@@ -284,6 +287,7 @@ private:
     bool remote_tail(int64_t T, int64_t pos0, int64_t skip, int device, std::string& err);
     std::future<bool> send_run_;        ///< remote-stage: the last chunk's send
     std::string send_err_, recv_err_;
+    int send_allow_s_ = 0;              ///< set_send_allowance
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     std::vector<int> tap_layers_;

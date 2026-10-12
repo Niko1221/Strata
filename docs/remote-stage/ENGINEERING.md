@@ -54,7 +54,16 @@ process checks the worker's hello for it too. The hello is 192 bytes in
 every protocol, so an older peer is refused for its protocol number. A peer that sends no hello within 10 s is dropped; after
 the hello the worker waits for messages without a time limit (the next prompt may be hours away), while sends and the
 main process's receives time out after `STRATA_REMOTE_TIMEOUT_S` (300 s). Sockets: `TCP_NODELAY`, 8 MiB buffers,
-keepalive after 30 s idle, 3 probes 10 s apart.
+keepalive after 30 s idle, 3 probes 10 s apart. The engine's stall watchdog (issue #29, `STRATA_WATCHDOG_S`) watches
+each message a worker serves (a window, a prompt chunk, a commit, a reset, a position table) and is idle between
+them, so a worker stuck on its GPU ends with its stall report instead of holding every later main process at the
+hello. A relay's waits for its next worker (a connect, its taking a prompt chunk, a window's or a reset's reply) get an allowance of
+`STRATA_REMOTE_TIMEOUT_S` + 150 s instead: the link's timeouts end them, and a stuck next worker ends alone, with its
+own report. `STRATA_REMOTE_STALL_AT=N` (a test hook) blocks the worker's Nth window. Checked on CUDA (the 3080 + 2080 Ti
+pair, `STRATA_REMOTE_STALL_AT=60 STRATA_WATCHDOG_S=20` on the worker): the worker wrote its stall report 20 s into the
+blocked window and exited; the request in flight failed 25-26 s after it was sent (`remote stage: the peer closed the
+connection`), and the next request failed after 66-68 s (two runs), when the server's three starts had each ended with
+`cannot connect to HOST:PORT: Connection refused`, since nothing starts a worker again.
 
 **Bytes, Qwen3.8-Flash-Next** (n_embd 2560, 4 hyper-connection streams, everything fp32):
 

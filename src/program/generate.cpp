@@ -1345,6 +1345,24 @@ std::string stage_text() {
     return s;
 }
 
+// remote stage, a relay worker: a wait for its next worker (a connect, a reply) ends by the link's own timeouts
+// (STRATA_REMOTE_TIMEOUT_S; a connect's SYN tries, about two minutes on Linux), and the next worker has its own
+// watchdog.  So it is an allowance here, not this process's stall: a stuck next worker ends alone, with its own
+// report, and a stall report here names the wait.  The serving thread's only.
+struct NextWorkerWait {
+    const char* was;
+    explicit NextWorkerWait(const char* where) : was(strata::core::progress().where.load()) {
+        strata::core::progress_at(where);
+        strata::core::progress_allow(strata::net::io_timeout_s() + 150);
+    }
+    ~NextWorkerWait() {
+        strata::core::progress_at(was);
+        strata::core::progress_allow(0);
+    }
+    NextWorkerWait(const NextWorkerWait&) = delete;
+    NextWorkerWait& operator=(const NextWorkerWait&) = delete;
+};
+
 #if !defined(_WIN32)
 // #605: whether `path` is on a rotational disk (1), not (0) or unknown (-1), from sysfs; `dev` is the disk's name
 int on_rotational_disk(const std::string& path, std::string& dev) {
@@ -3023,7 +3041,9 @@ int main(int argc, char** argv) {
             for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
         split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto;
-        if (split_same && o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0) {
+        // (a remote stage is a split on one GPU here too: it turns parking off below instead of refusing it)
+        if (split_same && o.remote_stage.empty() && o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 &&
+            o.prompt_cache > 0) {
             std::fprintf(stderr, "strata serve: conversation parking does not support a layer split on one GPU "
                                  "(--split-device 0); disable parking with --conversation-cache-mib 0\n");
             return 2;
@@ -3081,6 +3101,11 @@ int main(int argc, char** argv) {
             return 2;
         }
         // conversation checkpoints hold only this process's layers: every prompt is read from token 0
+        if (remote_main)
+            std::fprintf(stderr, "strata generate: remote stage: conversation checkpoints are off, every prompt is read "
+                                 "from token 0%s\n",
+                         o.conversation_cache_mib > 0 ? "; conversation parking is off (--conversation-cache-mib ignored)"
+                                                      : "");
         o.prompt_cache = 0;
         o.conversation_cache_mib = 0;
         o.prompt_cache_every = 0;
@@ -8910,6 +8935,7 @@ int main(int argc, char** argv) {
                     return relay.send(tk, T, p0, flags, in, row_f, relay_skip, e);
                 };
                 sp.remote_recv = nullptr;
+                sp.set_send_allowance(strata::net::io_timeout_s() + 150);   // as NextWorkerWait
             }
             if (share_pool) sp.set_cpu_pool(&pool);
             if (!sp.init(wt, g, ss, prefill_src, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes,
@@ -11653,7 +11679,37 @@ int main(int argc, char** argv) {
                 double wk_own_ms = 0, wk_next_ms = 0;
                 int64_t wk_windows = 0;
                 double wk_wait0 = 0, wk_pool0 = 0, wk_host0 = 0;   // the verifier's counters at the last line
+                // the stall watchdog (issue #29) watches each message this worker serves, as it watches a request in
+                // the main process: a window, a prompt chunk or a commit that does not move for STRATA_WATCHDOG_S ends
+                // the worker with its stall report.  Without it a worker stuck on its GPU never ended: the main
+                // process's own watchdog ended the main process, and every new one waited at the hello
+                // (STRATA_REMOTE_TIMEOUT_S) for a worker that could no longer answer.  Between messages it is idle.
+                struct WkBusy {
+                    explicit WkBusy(const char* where) {
+                        strata::core::progress().allow_until_ms.store(0);
+                        strata::core::progress().busy.store(true);
+                        strata::core::progress_at(where);
+                    }
+                    ~WkBusy() {
+                        strata::core::progress_beat();
+                        strata::core::progress().busy.store(false);
+                        strata::core::progress_at("idle");
+                    }
+                };
+                // test hook (STRATA_REMOTE_STALL_AT=N): this worker's Nth window blocks without a beat, for the
+                // watchdog's check
+                static const int64_t wk_stall_at = [] {
+                    const char* v = std::getenv("STRATA_REMOTE_STALL_AT");
+                    return v ? (int64_t) std::atoll(v) : 0;
+                }();
+                int64_t wk_runs = 0;
                 hs.run = [&](int T, const int32_t* tokens, int64_t pos0, std::string& e) -> bool {
+                    const WkBusy busy("stage worker window");
+                    if (wk_stall_at > 0 && ++wk_runs == wk_stall_at) {
+                        std::fprintf(stderr, "strata stage worker: STRATA_REMOTE_STALL_AT=%lld: this window blocks\n",
+                                     (long long) wk_stall_at);
+                        for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
                     const auto wk_t0 = Clock::now();
                     // a prompt's loan goes back before a window reads the cache (as the request loop does)
                     if (!refill(e)) return false;
@@ -11680,9 +11736,11 @@ int main(int argc, char** argv) {
                     if (aflipped) apply_pending(true);   // every layer's copies were waited for in the window
                     const auto wk_t1 = Clock::now();
                     // a relay worker: the next worker runs the rest; its rows are this window's reply
-                    if (stage_relay &&
-                        !next_link.run(T, tokens, pos0, wk_relay, (size_t) T * HBF, wk_out, (size_t) T * HBF, e))
-                        return false;
+                    if (stage_relay) {
+                        const NextWorkerWait wait("stage worker: the next worker's window");
+                        if (!next_link.run(T, tokens, pos0, wk_relay, (size_t) T * HBF, wk_out, (size_t) T * HBF, e))
+                            return false;
+                    }
                     if (wk_timing) {
                         wk_own_ms += std::chrono::duration<double, std::milli>(wk_t1 - wk_t0).count();
                         wk_next_ms += std::chrono::duration<double, std::milli>(Clock::now() - wk_t1).count();
@@ -11708,6 +11766,7 @@ int main(int argc, char** argv) {
                     return true;
                 };
                 hs.commit = [&](int n_keep, std::string& e) -> bool {
+                    const WkBusy busy("stage worker commit");
                     if (stage_relay && !next_link.commit(n_keep, e)) return false;   // the next worker commits meanwhile
                     if (!ver.commit(n_keep, e) || !ver.wait_commit(e)) return false;
                     // the adaptive tier on this worker's layers, every adapt_every windows (the main process has its own)
@@ -11719,6 +11778,7 @@ int main(int argc, char** argv) {
                 };
                 hs.prefill = [&](const int64_t* tokens, int64_t T, int64_t p0, int64_t flags, int64_t skip,
                                  const float* rows_in, float* rows_out, std::string& e) -> bool {
+                    const WkBusy busy("stage worker prompt chunk");
                     pf_cur_out = rows_out;
                     relay_skip = skip;   // a relay worker passes the main process's skip on
                     // the prompt path's buffers out of this worker's cache, for the main process's chunk size (a
@@ -11741,6 +11801,9 @@ int main(int argc, char** argv) {
                     mine_next.vision = main_vision;   // the main process's (a worker started with --vision has it)
                     std::memcpy(mine_next.token, stage_token.data(), stage_token.size());
                     for (int i = 0;; ++i) {
+                        // each try can block (a connect's SYN tries, the hello's reply): its own allowance (as in
+                        // NextWorkerWait), not a stall
+                        strata::core::progress_allow(strata::net::io_timeout_s() + 150);
                         next_link.close();
                         if (next_link.connect(o.stage_next, mine_next, peer_next, e)) break;
                         // a refusal (token, context, chunk) or a different model does not change by waiting
@@ -11757,7 +11820,9 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 hs.reset = [&](std::string& e) -> bool {
+                    const WkBusy busy("stage worker reset");
                     if (stage_relay) {   // the next worker zeroes its session too (a broken link is made again)
+                        const NextWorkerWait wait("stage worker: the next worker's reset");
                         if (!relay.wait(e) && next_link.connected()) return false;
                         if (!next_link.connected() && !connect_next(e)) return false;
                         if (!next_link.reset(e)) return false;
@@ -11794,6 +11859,7 @@ int main(int argc, char** argv) {
                 };
                 if (o.vision)
                     hs.positions = [&](const int32_t* table, int64_t cells_in, std::string& e) -> bool {
+                        const WkBusy busy("stage worker positions");
                         const int64_t cells = (int64_t) mrope_host.size() / 3;
                         if (table != nullptr && cells_in > cells) {
                             e = "the main process's position table (" + std::to_string(cells_in) +
@@ -11801,6 +11867,7 @@ int main(int argc, char** argv) {
                             return false;
                         }
                         if (stage_relay) {   // the next worker's layers too (its link is made again after a hello)
+                            const NextWorkerWait wait("stage worker: the next worker's positions");
                             if (!relay.wait(e) && next_link.connected()) return false;
                             if (!next_link.connected() && !connect_next(e)) return false;
                             if (!next_link.positions(table, cells_in, e)) return false;

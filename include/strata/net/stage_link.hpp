@@ -78,6 +78,9 @@ struct StageHello {
 // one size across protocols: an older peer's hello is read whole and refused for its protocol, not as malformed
 static_assert(sizeof(StageHello) == 192, "the hello's size");
 
+/// Seconds a send or receive on a link may block before the link counts as dead (STRATA_REMOTE_TIMEOUT_S, default 300).
+int io_timeout_s();
+
 /// Running totals of one side's traffic (STRATA_REMOTE_TIMING=1 prints them).
 struct StageStats {
     uint64_t runs = 0, commits = 0, prefills = 0, resets = 0;

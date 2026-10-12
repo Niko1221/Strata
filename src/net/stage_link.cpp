@@ -35,6 +35,17 @@
 
 namespace strata::net {
 
+// Seconds a read or write may block before the link counts as dead (STRATA_REMOTE_TIMEOUT_S; a prompt chunk on a
+// slow worker can take several seconds, a first window after a long prompt a few more).
+int io_timeout_s() {
+    static const int s = [] {
+        const char* v = std::getenv("STRATA_REMOTE_TIMEOUT_S");
+        const int n = v != nullptr ? std::atoi(v) : 0;
+        return n > 0 ? n : 300;
+    }();
+    return s;
+}
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -125,17 +136,6 @@ const char* gai_err(int rc) { return gai_strerrorA(rc); }   // the narrow one wh
 #else
 const char* gai_err(int rc) { return gai_strerror(rc); }
 #endif
-
-// Seconds a read or write may block before the link counts as dead (STRATA_REMOTE_TIMEOUT_S; a prompt chunk on a
-// slow worker can take several seconds, a first window after a long prompt a few more).
-int io_timeout_s() {
-    static const int s = [] {
-        const char* v = std::getenv("STRATA_REMOTE_TIMEOUT_S");
-        const int n = v != nullptr ? std::atoi(v) : 0;
-        return n > 0 ? n : 300;
-    }();
-    return s;
-}
 
 void tune_socket(sock_t fd) {
     set_opt<int>(fd, IPPROTO_TCP, TCP_NODELAY, 1);

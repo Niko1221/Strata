@@ -130,6 +130,30 @@ namespace strata::prefill {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// remote-stage: a wait for the last chunk's send. On a relay worker (set_send_allowance) that is its next worker
+// taking the chunk, an allowance and not this process's stall, as the worker's other waits for its next worker
+// (generate.cpp's NextWorkerWait); where the progress was is restored after it.
+struct SendWait {
+    const char* where;
+    int64_t detail, chunk;
+    int allow_s;
+    explicit SendWait(int s)
+        : where(core::progress().where.load()), detail(core::progress().detail.load()),
+          chunk(core::progress().chunk.load()), allow_s(s) {
+        if (allow_s <= 0) return;
+        core::progress_at("stage worker: the next worker's prompt chunk");
+        core::progress_allow(allow_s);
+    }
+    ~SendWait() {
+        if (allow_s <= 0) return;
+        core::progress_at(where, detail, chunk);
+        core::progress_allow(0);
+    }
+    SendWait(const SendWait&) = delete;
+    SendWait& operator=(const SendWait&) = delete;
+};
+
 constexpr float EPS = 1e-6f;
 constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
@@ -4917,7 +4941,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // remote-stage: the sends go out in order, one at a time - the last chunk's first (so the one two chunks
             // ago, which used this slot, is out too)
             const auto t_layers = Clock::now();
-            if (remote_send && send_run_.valid() && !send_run_.get()) { err = send_err_; return false; }
+            if (remote_send && send_run_.valid()) {
+                const SendWait wait(send_allow_s_);
+                if (!send_run_.get()) { err = send_err_; return false; }
+            }
             const auto t_sent = Clock::now();
             // (0 with remote_send: a remote stage's prompt path has no local next stage, and only that one makes the
             // pieces' events - so the remote send below always reads a hand-off the host has waited for)
@@ -5173,9 +5200,12 @@ bool Prefill::remote_tail(int64_t T, int64_t pos0, int64_t skip, int device, std
 bool Prefill::drain_pipeline(std::string& err) {
     bool ok = true;
 
-    if (send_run_.valid() && !send_run_.get()) {   // remote-stage: the last send
-        err = send_err_;
-        ok = false;
+    if (send_run_.valid()) {   // remote-stage: the last send
+        const SendWait wait(send_allow_s_);
+        if (!send_run_.get()) {
+            err = send_err_;
+            ok = false;
+        }
     }
     if (next_run_.valid()) {
         if (!next_run_.get()) {
