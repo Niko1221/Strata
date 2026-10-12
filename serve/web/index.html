@@ -16,17 +16,20 @@
     document.documentElement.dataset.theme = t;
   } catch (e) {}
 </script>
+<link rel="stylesheet" href="web/wide-layout.css">
 </head>
-<body>
+<body data-layout="all">
 <header class="st-header">
-  <span class="st-header__brand">Strata</span>
+  <a class="st-header__brand st-brand-link" id="brand-link" href="https://github.com/Niko1221/Strata/tree/main" target="_blank" rel="noopener noreferrer">Strata</a>
   <nav class="st-tabs" role="tablist" aria-label="Views">
-    <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
+    <button class="st-tab" role="tab" id="tab-btn-settings" aria-controls="drawer" aria-selected="false" data-tab="settings" title="Sampling and thinking">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>Settings</button>
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
