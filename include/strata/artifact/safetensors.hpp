@@ -248,6 +248,10 @@ public:
     const std::map<std::string, StTensor>& tensors() const { return tensors_; }
     const std::string& path() const { return path_; }
     size_t size() const { return size_; }
+    /// Where the tensor's bytes are in the FILE: `path()` + this + `t.begin` is a pread offset.  A caller
+    /// that reads with pread avoids the mmap's per-page faults, which cost ~33x on a page-cached read
+    /// (measured: 0.3 GB/s through the mmap against 10.4 GB/s with preadv on the same 60 expert tensors).
+    size_t data_offset() const { return data_offset_; }
 
 private:
     std::string path_;

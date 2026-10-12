@@ -6,12 +6,28 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#define STRATA_EXL3_PAUSE() _mm_pause()
+#else
+#define STRATA_EXL3_PAUSE() ((void) 0)
+#endif
 
 namespace strata::kernels {
 
@@ -128,7 +144,150 @@ struct Exl3ExpertStream::Impl {
     long long hits = 0, misses = 0;
     double up_ms = 0, ffn_ms = 0, d2h_ms = 0, call_ms = 0;
 
+    // ---- the miss reads
+    //
+    // **A MISS IS READ WITH `pread`, NOT OUT OF THE MMAP.**  Copying a tensor out of the mmap faults every
+    // 4 KiB page on the way in: measured on 60 real expert tensors, 0.3 GB/s through the mmap against
+    // 10.4 GB/s with `preadv` into a reused buffer, both from the page cache.  The read is the whole of the
+    // doorbell: the token graph spins while the host fetches the expert.
+    //
+    // The destination is pinned staging, one buffer per worker, so the kernel writes straight into memory
+    // the H2D can DMA from: no pageable staging copy, and the buffer's own pages never fault again.
+    struct Job { uint16_t* dst; const uint16_t* src; int fd; size_t off; size_t bytes; };
+    std::vector<Job> jobs;
+    std::vector<std::thread> workers;
+    // **TWO BUFFERS PER WORKER, WITH AN EVENT ON EACH.**  The DMA out of a staging buffer is asynchronous,
+    // so the next pread into the same buffer would overwrite data the DMA has not read yet (that is how the
+    // first version produced NaNs).  Two buffers let a worker read into one while the other drains, and the
+    // event orders the reuse.
+    struct Stage { uint8_t* buf[2] = {nullptr, nullptr}; cudaEvent_t done[2] = {nullptr, nullptr}; int turn = 0; };
+    std::vector<Stage> stage;          // one per worker (one for the sequential fallback)
+    size_t stage_bytes = 0;
+    std::map<std::string, int> fds;    // shard path -> fd, opened once
+    std::mutex api_mu;                 // concurrent enqueues to one stream are not safe on the null stream
+    std::atomic<size_t> job_at{0};
+    std::atomic<uint64_t> work_done{0};
+    std::mutex work_mu;
+    std::condition_variable work_cv;
+    uint64_t work_gen = 0;             // guarded by work_mu
+    bool work_quit = false;            // guarded by work_mu
+    int n_workers = 0;
+    cudaStream_t work_stream = nullptr;
+
+    void stage_one(const Job& j, Stage& stg) {
+        if (j.bytes == 0) return;
+        const uint16_t* src = j.src;
+#if !defined(_WIN32)
+        if (j.fd >= 0 && stg.buf[0] != nullptr) {
+            const int b = stg.turn;
+            stg.turn ^= 1;
+            if (stg.done[b] != nullptr) (void) cudaEventSynchronize(stg.done[b]);
+            const ssize_t got = ::pread(j.fd, stg.buf[b], j.bytes, (off_t) j.off);
+            if (got == (ssize_t) j.bytes) {
+                src = (const uint16_t*) stg.buf[b];
+                {
+                    // **ONE ENQUEUE AT A TIME.**  The workers read in parallel, but two threads enqueueing
+                    // `cudaMemcpyAsync` on the same (legacy default) stream raced: the same run produced
+                    // different tokens with 4 workers and identical ones with 1.  The copies are asynchronous,
+                    // so serialising only the call costs nothing.
+                    const std::lock_guard<std::mutex> lk(api_mu);
+                    (void) cudaMemcpyAsync(j.dst, src, j.bytes, cudaMemcpyHostToDevice, work_stream);
+                    if (stg.done[b] != nullptr) (void) cudaEventRecord(stg.done[b], work_stream);
+                }
+                return;
+            }
+            std::fprintf(stderr, "strata generate: EXL3 expert read: pread %zu B at %zu: %zd\n", j.bytes, j.off, got);
+        }
+#endif
+        {
+            const std::lock_guard<std::mutex> lk(api_mu);
+            (void) cudaMemcpyAsync(j.dst, src, j.bytes, cudaMemcpyHostToDevice, work_stream);
+        }
+    }
+
+    // Queue one expert's nine pieces: the FILE location (for the pread) and the mmap pointer (the fallback).
+    void queue_expert(const std::string& b, const Slot* gs, const Slot* us, const Slot* ds,
+                      const Exl3Linear& Lg, const Exl3Linear& Lu, const Exl3Linear& Ld) {
+        std::string path; size_t off = 0, bytes = 0;
+        auto push = [&](uint16_t* dst, const std::string& base, const char* plane, const uint16_t* src, size_t n) {
+            // STRATA_EXL3_NO_PREAD=1 reads through the mmap instead (an A/B arm for the pread path)
+            static const bool no_pread = std::getenv("STRATA_EXL3_NO_PREAD") != nullptr;
+            const int fd = (!no_pread && model->locate(base + plane, path, off, bytes) && bytes == n) ? fd_of(path) : -1;
+            jobs.push_back({dst, src, fd, off, n});
+        };
+        const std::string bg = b + "gate_proj", bu = b + "up_proj", bd = b + "down_proj";
+        push(gs->tr, bg, ".trellis", Lg.trellis, gs->trb);
+        push(gs->suh, bg, ".suh", Lg.suh, gs->suhb);
+        push(gs->svh, bg, ".svh", Lg.svh, gs->svhb);
+        push(us->tr, bu, ".trellis", Lu.trellis, us->trb);
+        push(us->suh, bu, ".suh", Lu.suh, us->suhb);
+        push(us->svh, bu, ".svh", Lu.svh, us->svhb);
+        push(ds->tr, bd, ".trellis", Ld.trellis, ds->trb);
+        push(ds->suh, bd, ".suh", Ld.suh, ds->suhb);
+        push(ds->svh, bd, ".svh", Ld.svh, ds->svhb);
+    }
+
+    int fd_of(const std::string& path) {
+#if defined(_WIN32)
+        (void) path;
+        return -1;
+#else
+        auto it = fds.find(path);
+        if (it != fds.end()) return it->second;
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        fds[path] = fd;
+        return fd;
+#endif
+    }
+
+    void stage_parallel() {
+        if (jobs.empty()) return;
+        if (workers.empty()) {
+            for (const Job& j : jobs) stage_one(j, stage[0]);
+            return;
+        }
+        job_at.store(0, std::memory_order_relaxed);
+        work_done.store(0, std::memory_order_relaxed);
+        {
+            const std::lock_guard<std::mutex> lk(work_mu);
+            ++work_gen;
+        }
+        work_cv.notify_all();
+        while (work_done.load(std::memory_order_acquire) < (uint64_t) n_workers) STRATA_EXL3_PAUSE();
+    }
+
+    void worker_loop(int wid) {
+        uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(work_mu);
+                work_cv.wait(lk, [&] { return work_quit || work_gen != seen; });
+                if (work_quit) return;
+                seen = work_gen;
+            }
+            for (;;) {
+                const size_t i = job_at.fetch_add(1, std::memory_order_relaxed);
+                if (i >= jobs.size()) break;
+                stage_one(jobs[i], stage[(size_t) wid]);
+            }
+            work_done.fetch_add(1, std::memory_order_release);
+        }
+    }
+
     ~Impl() {
+        {
+            const std::lock_guard<std::mutex> lk(work_mu);
+            work_quit = true;
+        }
+        work_cv.notify_all();
+        for (std::thread& t : workers) if (t.joinable()) t.join();
+        for (Stage& st : stage) {
+            for (uint8_t* p : st.buf) if (p != nullptr) (void) cudaFreeHost(p);
+            for (cudaEvent_t e : st.done) if (e != nullptr) (void) cudaEventDestroy(e);
+        }
+#if !defined(_WIN32)
+        for (auto& kv : fds) if (kv.second >= 0) (void) ::close(kv.second);
+#endif
         for (void* p : { (void*) d_x, (void*) d_rows, (void*) d_out }) (void) cudaFree(p);
         for (auto& v : { &scratch.g, &scratch.u, &scratch.d })
             for (Slot& s : *v) { (void) cudaFree(s.tr); (void) cudaFree(s.suh); (void) cudaFree(s.svh); }
@@ -144,6 +303,29 @@ Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int
     impl_->model = std::make_unique<Exl3Model>(model_dir);
     impl_->n_embd = n_embd;
     impl_->n_layers = n_layers;
+    impl_->work_stream = (cudaStream_t) stream;   // the stream the staging copies go on (nullptr: the default one)
+    // The staging workers: enough to saturate the host's memory bandwidth on the miss reads, not more.
+    const char* nw = std::getenv("STRATA_EXL3_WORKERS");
+    impl_->n_workers = nw != nullptr ? std::atoi(nw) : 4;
+    // the largest piece any layer's expert has (the bitrate can differ per layer)
+    for (int l = 0; l < n_layers; ++l) {
+        const std::string b = "model.language_model.layers." + std::to_string(l) + ".mlp.experts.0.";
+        for (const char* p : {"gate_proj", "up_proj", "down_proj"}) {
+            Exl3Linear L = impl_->model->linear(b + p);
+            const size_t trb = (size_t) L.ki * L.nj * (256 * L.bits / 16) * 2;
+            impl_->stage_bytes = std::max(impl_->stage_bytes, std::max(trb, (size_t) (L.in() + L.out()) * 2));
+        }
+    }
+    impl_->stage.resize((size_t) (impl_->n_workers > 0 ? impl_->n_workers : 1));
+    for (Impl::Stage& stg : impl_->stage)
+        for (int b = 0; b < 2; ++b) {
+            if (cudaMallocHost((void**) &stg.buf[b], impl_->stage_bytes) != cudaSuccess) stg.buf[b] = nullptr;
+            else if (cudaEventCreateWithFlags(&stg.done[b], cudaEventDisableTiming) != cudaSuccess) stg.done[b] = nullptr;
+        }
+    if (impl_->n_workers > 0) {
+        impl_->workers.reserve((size_t) impl_->n_workers);
+        for (int i = 0; i < impl_->n_workers; ++i) impl_->workers.emplace_back([im = impl_, i] { im->worker_loop(i); });
+    }
     const int mk = impl_->max_k;
     auto alloc = [](uint16_t** p, size_t bytes) { if (cudaMalloc((void**) p, bytes ? bytes : 1) != cudaSuccess) std::abort(); };
     alloc(&impl_->d_x, (size_t) n_embd * 2);
@@ -254,6 +436,7 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
     const auto t_up0 = std::chrono::steady_clock::now();
     f32_to_f16_rows_kernel<<<(unsigned)((n + 255) / 256), 256, 0, st>>>(x_f32, impl_->d_x, n);
 
+    impl_->jobs.clear();
     // ---- which slots this token's k experts live in.  A cache hit costs nothing; a miss reads the
     // expert out of the mmap and uploads it into the least recently used slot of this layer.
     std::vector<Exl3Mat> gm, um, dm;
@@ -282,15 +465,8 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
                 Exl3Linear Lg = impl_->model->linear(b + "gate_proj");
                 Exl3Linear Lu = impl_->model->linear(b + "up_proj");
                 Exl3Linear Ld = impl_->model->linear(b + "down_proj");
-                upload16(cache->g[(size_t) s].tr, Lg.trellis, cache->g[(size_t) s].trb, st);
-                upload16(cache->g[(size_t) s].suh, Lg.suh, cache->g[(size_t) s].suhb, st);
-                upload16(cache->g[(size_t) s].svh, Lg.svh, cache->g[(size_t) s].svhb, st);
-                upload16(cache->u[(size_t) s].tr, Lu.trellis, cache->u[(size_t) s].trb, st);
-                upload16(cache->u[(size_t) s].suh, Lu.suh, cache->u[(size_t) s].suhb, st);
-                upload16(cache->u[(size_t) s].svh, Lu.svh, cache->u[(size_t) s].svhb, st);
-                upload16(cache->d[(size_t) s].tr, Ld.trellis, cache->d[(size_t) s].trb, st);
-                upload16(cache->d[(size_t) s].suh, Ld.suh, cache->d[(size_t) s].suhb, st);
-                upload16(cache->d[(size_t) s].svh, Ld.svh, cache->d[(size_t) s].svhb, st);
+                impl_->queue_expert(b, &cache->g[(size_t) s], &cache->u[(size_t) s], &cache->d[(size_t) s],
+                                    Lg, Lu, Ld);
                 cache->at[e] = s;
             }
             cache->tick[(size_t) s] = ++cache->clock;
@@ -305,20 +481,14 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
             Exl3Linear Lg = impl_->model->linear(b + "gate_proj");
             Exl3Linear Lu = impl_->model->linear(b + "up_proj");
             Exl3Linear Ld = impl_->model->linear(b + "down_proj");
-            upload16(impl_->scratch.g[(size_t) i].tr, Lg.trellis, impl_->scratch.g[(size_t) i].trb, st);
-            upload16(impl_->scratch.g[(size_t) i].suh, Lg.suh, impl_->scratch.g[(size_t) i].suhb, st);
-            upload16(impl_->scratch.g[(size_t) i].svh, Lg.svh, impl_->scratch.g[(size_t) i].svhb, st);
-            upload16(impl_->scratch.u[(size_t) i].tr, Lu.trellis, impl_->scratch.u[(size_t) i].trb, st);
-            upload16(impl_->scratch.u[(size_t) i].suh, Lu.suh, impl_->scratch.u[(size_t) i].suhb, st);
-            upload16(impl_->scratch.u[(size_t) i].svh, Lu.svh, impl_->scratch.u[(size_t) i].svhb, st);
-            upload16(impl_->scratch.d[(size_t) i].tr, Ld.trellis, impl_->scratch.d[(size_t) i].trb, st);
-            upload16(impl_->scratch.d[(size_t) i].suh, Ld.suh, impl_->scratch.d[(size_t) i].suhb, st);
-            upload16(impl_->scratch.d[(size_t) i].svh, Ld.svh, impl_->scratch.d[(size_t) i].svhb, st);
+            impl_->queue_expert(b, &impl_->scratch.g[(size_t) i], &impl_->scratch.u[(size_t) i],
+                                &impl_->scratch.d[(size_t) i], Lg, Lu, Ld);
             gm[(size_t) i] = impl_->scratch.gm[(size_t) i];
             um[(size_t) i] = impl_->scratch.um[(size_t) i];
             dm[(size_t) i] = impl_->scratch.dm[(size_t) i];
         }
     }
+    impl_->stage_parallel();
     const auto t_up1 = std::chrono::steady_clock::now();
     exl3_moe_rows(gm.data(), um.data(), dm.data(), ids, k, impl_->d_x, impl_->d_rows, stream);
     const auto t_ffn1 = std::chrono::steady_clock::now();

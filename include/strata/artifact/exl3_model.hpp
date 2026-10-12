@@ -81,6 +81,18 @@ public:
     }
 
     bool has(const std::string& base) const { return weight_map_.count(base + ".trellis") != 0; }
+    /// The shard path and the FILE byte range of a tensor, for readers that pread instead of touching the mmap.
+    bool locate(const std::string& name, std::string& path, size_t& off, size_t& bytes) const {
+        auto it = weight_map_.find(name);
+        if (it == weight_map_.end()) return false;
+        const SafetensorsFile& sf = shard(it->second);
+        const StTensor* t = sf.find(name);
+        if (t == nullptr) return false;
+        path = dir_ + "/" + it->second;
+        off = sf.data_offset() + t->begin;
+        bytes = t->nbytes();
+        return true;
+    }
     size_t tensor_count() const { return weight_map_.size(); }
 
     Exl3Linear linear(const std::string& base) const {
