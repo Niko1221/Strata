@@ -266,8 +266,8 @@ Measured on one **Radeon Pro W7800** (gfx1100, 32 GB), 8-thread CPU pool, the mo
 | --- | --- |
 | `strata-exl3-pack --run` | 1079 roles, 2117.4 MiB EXL3 linears, 2679.3 MiB staged, 301 dense projections, 0 faults |
 | load (`--exl3`) | 15.4 s |
-| prefill | 7.0 tok/s (14 tokens) |
-| decode | 8.9 tok/s (40 tokens, capital-of-France prompt); 3.0-4.4 tok/s on a cold page cache |
+| prefill | 8.4 tok/s (14 tokens) |
+| decode | 10.8 tok/s (40 tokens, capital-of-France prompt, steady state); 3.0-4.4 tok/s on a cold page cache |
 | expert FFN | 0.37-0.46 ms/layer (measured earlier, 48 layers) |
 
 Routed experts are cached in VRAM: `--expert-cache N` keeps N experts per layer (`auto` or unset sizes it from the
@@ -278,12 +278,28 @@ the same experts again.  Measured on the same machine, same prompt, third run of
 | `--expert-cache` | decode | prefill |
 | --- | --- | --- |
 | 0 | 5.5 tok/s | 4.9 tok/s |
-| auto (315 slots/layer, 26.3 GiB) | 8.9 tok/s | 7.0 tok/s |
+| auto (315 slots/layer, 26.3 GiB) | 10.8 tok/s | 8.4 tok/s |
 
-The hit rate settles at 70-94% per token and the output tokens are bit-identical with and without the cache: the
-weights are the same bytes and the kernels the same.  `STRATA_EXL3_TIME=1` prints the per-token hit rate and the
-upload/ffn/d2h split.  A 30 GB machine cannot hold the 49 GB model in the page cache, so the cold-cache numbers
-depend on how much of it the drive has to read again.
+Two more passes after the cache:
+
+- **the dense GEMV** (`gemv_kernel`) recomputed each weight's window geometry (3 multiplies and two integer
+  modulos) inside the k loop, ran 128 threads with one output tile per block, and split k 8 rows at a time: 100 us
+  per call, 30 ms of a 130 ms token, 40-115 GB/s.  Hoisting the geometry, 256 threads, two output tiles per block
+  and a k split that keeps ~256 blocks in flight took it to 22.6 ms and the decode 8.9 -> 10.2 tok/s.
+- **the misses are read with `pread`, spread over four threads.**  A page-cached tensor copied through the mmap
+  faults every 4 KiB page (measured: 0.3 GB/s against 10.4 GB/s with `preadv` into a reused buffer), and one
+  thread did all of it.  `Exl3Model::locate` gives the file offset; the workers read into pinned staging (two
+  buffers each, with an event, because the DMA out of a staging buffer is asynchronous) and the caller's stream
+  orders the copies before the FFN.  Upload 24 -> 13 ms per token, decode 9.6 -> 10.8 tok/s.
+
+What the token is made of now (W7800, 40 tokens, one decode token): the expert FFN 17 ms, the dense GEMVs 23 ms,
+the expert reads 13-27 ms (the cache hit rate is 70-94%, so this tracks the routing), the hyper-connections ~12 ms,
+and the rest in the layer's smaller kernels.  The per-layer chain is serial by construction (router -> host reads
+-> expert FFN -> combine -> next layer), so the next wins are in the pieces, not in the schedule.
+
+The output tokens are unchanged by the cache: the same expert bytes and the same FFN kernels either way.  The
+engine's QSA sparse selection is not run-to-run deterministic on its own (about 1 run in 4 differs in a later
+token), which is independent of the EXL3 path and of these changes.
 
 The prompts answer correctly, with and without PLE:
 
