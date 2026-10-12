@@ -124,7 +124,7 @@ int main() {
         const auto a = s.put(key(1, 1), 4096, make_fill(1));
         const auto b = s.put(key(2, 2), 4096, make_fill(2));
         CHECK(a.present() && b.present(), "两份都写进去了");
-        s.find(key(1, 1));                             // 把 1 用一次（它变成最新）
+        (void) s.find(key(1, 1));                        // 把 1 用一次（它变成最新）—— 要的是副作用
         const auto c = s.put(key(3, 3), 4096, make_fill(3));
         CHECK(c.present(), "第三份写入成功");
         CHECK(s.stats().evicted_keys >= 1, "★ 有键被淘汰出记忆");
@@ -145,7 +145,7 @@ int main() {
         DiskParkBlobStream s({path, 64});
         CHECK(!s.get(DiskParkBlobRef{0, 0}, [](std::uint64_t, const std::uint8_t*, std::size_t) { return true; }),
               "空区间 ⇒ false");
-        CHECK(!s.get(DiskParkBlobRef{1u << 40, 16}, [](std::uint64_t, const std::uint8_t*, std::size_t) { return true; }),
+        CHECK(!s.get(DiskParkBlobRef{(std::uint64_t(1) << 40), 16}, [](std::uint64_t, const std::uint8_t*, std::size_t) { return true; }),
               "越界区间 ⇒ false");
         const auto r = s.find(key(0xAAAA, 0xBBBB));
         CHECK(!s.get(r, [](std::uint64_t, const std::uint8_t*, std::size_t) { return false; }),
