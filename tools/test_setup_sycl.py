@@ -224,5 +224,85 @@ class ToSycl(unittest.TestCase):
         self.assertFalse(m.small_card(32.0, "xe"))
 
 
+class IntegratedGpu(unittest.TestCase):
+    """An integrated Arc on xe (measured: the Arc 140T, PCI 8086:7d51, 62 GiB): found at PCI 00:02.0 with its memory
+    as the RAM, run natively on the host's oneAPI with the host's paths, sized by the RAM it shares. On i915 it is not
+    offered (setup says how to boot with xe). A discrete card at another slot is listed as before."""
+
+    mod = staticmethod(ToSycl.mod)
+
+    @staticmethod
+    def drm(root: Path, cards):
+        """A fake /sys/class/drm: cards = [(slot, devid, driver)]."""
+        for i, (slot, devid, driver) in enumerate(cards):
+            dev = root / "devices" / slot
+            (dev).mkdir(parents=True)
+            (dev / "vendor").write_text("0x8086\n")
+            (dev / "device").write_text(f"0x{devid}\n")
+            (root / "drivers" / driver).mkdir(parents=True, exist_ok=True)
+            (dev / "driver").symlink_to(root / "drivers" / driver)
+            (dev / "resource").write_text("0x0 0x0 0x0\n0x0 0x0 0x0\n0x4000000000 0x43ffffffff 0x0\n")
+            (root / "drm" / f"card{i}").mkdir(parents=True)
+            (root / "drm" / f"card{i}" / "device").symlink_to(dev)
+        return str(root / "drm")
+
+    def test_the_140t_on_xe_is_integrated_and_a_discrete_card_is_unchanged(self):
+        m = self.mod()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(m.S, "ram_gb", return_value=62.0):
+            found = m.intel_gpus(self.drm(Path(d), [("0000:00:02.0", "7d51", "xe"), ("0000:03:00.0", "e223", "xe")]))
+        igpu, card = found
+        self.assertEqual(igpu["name"], "Intel Arc 140T")
+        self.assertTrue(igpu["igpu"] and igpu["uma"])
+        self.assertEqual(igpu["vram_gb"], 62.0 - m.S.UMA_OS_LEFT_GB)
+        self.assertEqual(card, {"index": 1, "name": "Intel Arc Pro B70", "vram_gb": 32.0, "arch": "xe", "driver": "xe",
+                                "devid": "e223"})
+        self.assertLess(m.S.amd_rank(card), m.S.amd_rank(igpu))   # setup picks the discrete card first
+
+    def test_an_integrated_gpu_on_i915_is_not_offered_but_named(self):
+        m = self.mod()
+        with tempfile.TemporaryDirectory() as d:
+            drm = self.drm(Path(d), [("0000:00:02.0", "7d51", "i915")])
+            self.assertEqual(m.intel_gpus(drm), [])
+            self.assertEqual(m.i915_igpus(drm), ["7d51"])
+
+    def test_the_fit_rule_follows_the_140t(self):
+        m = self.mod()
+        for model in ("IQ1_M", "IQ2_XS"):                # ran with 10-13 GiB left at 62 GiB
+            self.assertTrue(m.igpu_fits(model, 62.2), model)
+        self.assertFalse(m.igpu_fits("IQ3_XXS", 62.2))    # 3-4 GiB left: does not run well
+        self.assertTrue(m.igpu_fits("IQ3_XXS", 96.0))
+
+    def cfg(self, extra=()):
+        return {"exe": "x", "cwd": "/home/u/Strata", "lib_dirs": [], "env": {"X": "1"},
+                "args": ["--pack", "/home/u/Strata-data/packs/p", "--native", "/home/u/Strata-data/models/a.gguf",
+                         "--expert-cache", "auto", "--prefill", "auto", "--max-context", "98304", "--kv", "int8",
+                         "--kv-resident", "32768", *extra]}
+
+    def test_config_runs_natively_with_the_host_paths(self):
+        m = self.mod()
+        c = m.to_sycl_igpu(self.cfg(), m.ROOT / "build-sycl" / "strata", {}, "7d51")
+        self.assertEqual(c["exe"], str(m.ROOT / "sycl" / "serve" / "strata-sycl-native.sh"))
+        self.assertNotIn("sycl_root", c)
+        self.assertEqual(c["args"][c["args"].index("--pack") + 1], "/home/u/Strata-data/packs/p")
+        self.assertIn("--stream-experts", c["args"])
+        self.assertNotIn("--kv-resident", c["args"])
+        self.assertEqual(c["args"][c["args"].index("--prefill") + 1], "auto")
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "2048")
+        self.assertEqual(c["env"], {"SYCL_CACHE_PERSISTENT": "1"})
+        self.assertEqual(c["backend"], "sycl")
+
+    def test_the_persistent_cache_only_on_the_measured_gpu_and_an_aot_build_named(self):
+        m = self.mod()
+        c = m.to_sycl_igpu(self.cfg(["--vram-reserve-mib", "500"]), m.ROOT / "build-sycl-aot" / "strata", {}, "64a0")
+        self.assertEqual(c["env"], {"STRATA_SYCL_BIN": "build-sycl-aot/strata"})
+        self.assertEqual(c["args"].count("--vram-reserve-mib"), 1)
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "500")
+
+    def test_the_native_launcher_resolves_the_binary_in_the_repo(self):
+        src = (ROOT / "sycl" / "serve" / "strata-sycl-native.sh").read_text(encoding="utf-8")
+        self.assertIn('bin=${STRATA_SYCL_BIN:-build-sycl/strata}', src)
+        self.assertIn('case "$bin" in /*) ;; *) bin=$here/$bin ;; esac', src)
+
+
 if __name__ == "__main__":
     unittest.main()

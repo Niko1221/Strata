@@ -69,6 +69,8 @@ questions are setup's own. What changes:
   64K up when the RAM holds the KV. A `model_switcher` or `sampling` block from an earlier config is kept.
   `run-<model>.sh` starts `sycl/serve/server_intel.py`.
 - **Arc A-series (`i915`, e.g. the A750 with 8 GB):** a different config, see "Arc A750 and the other Alchemist cards" below.
+- **An integrated Arc (`xe`, e.g. the Arc 140T):** no Docker, the engine runs on the PC's own oneAPI; see "Integrated
+  Arc" below.
 - **Engine settings:** the config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every variable starting with
   `STRATA_`, `ONEAPI_`, `UR_`, `IGC_`, `SYCL_` or `ZES_` into the container and sets `STRATA_VERIFY_DEVICE_PLAN=1`,
   `STRATA_VERIFY_NO_HOST=1` and `STRATA_STAGER_THREADS=12` unless the environment says otherwise (for example
@@ -777,6 +779,21 @@ RAM: it reports 58 GiB of global memory and no free-memory query.
   (`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, `STRATA_STAGER_THREADS=12`, `STRATA_NO_MULTI_GR=1`), each one
   overridden by the config's `"env"` (`0` turns one off), and gives the engine an OOM score of 1000, so that a PC out of
   memory loses the engine and not the desktop. `STRATA_SYCL_BIN` names another binary (relative to the checkout or absolute).
+
+**With setup.** `./setup.sh --backend sycl` finds the integrated GPU in sysfs (an Intel GPU at PCI `00:02.0` on `xe`) and needs
+oneAPI in `/opt/intel/oneapi` (or `ONEAPI_ROOT`) and the engine in `build-sycl` (or `build-sycl-aot`); Docker is not used. What
+changes from a card:
+
+- **Which size fits.** A model needs its shard 1 plus 20 GiB of RAM (the 14 GiB the measured runs used beside shard 1, and
+  6 GiB more). The size menu marks the sizes that need more, recommends the first one that fits, and asks before it installs
+  one that does not (`--model X --yes` installs it anyway). `--check` says the same per model.
+- **The config.** As the one below: the launcher as `exe`, the PC's own paths, `--stream-experts`, no KV streaming (the KV is in
+  the same RAM either way), the VRAM reserve as on a card (1,024 MiB up to 32K, 2,048 above), `--draft-vocab en`, and
+  `SYCL_CACHE_PERSISTENT=1` on the 140T only (it crashed on Xe2). An AOT build adds `STRATA_SYCL_BIN`.
+- **On `i915`** setup stops and names the kernel command line that moves the GPU to `xe`.
+
+On the 140T, `./setup.sh --backend sycl --family coder --model IQ1_M --context 98304 --no-start --yes` wrote the config below
+(less `"fit_max_tokens"`) and `run-coder-iq1_m.sh`.
 
 **Running it by hand.** A config like this, started with
 `.venv/bin/python sycl/serve/server_intel.py --engine strata --config strata-coder-iq1_m.json --port 8080`:
