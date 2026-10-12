@@ -573,7 +573,7 @@ struct Options {
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
-    bool pcie_frac_auto = false;     ///< CUDA single-GPU serve, no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
+    bool pcie_frac_auto = false;     ///< single-GPU serve (CUDA + HIP/gfx1100), no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
     double pcie_probe_gbps = 0.0;    ///< the start-up probe's reading (for PcieAuto)
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
@@ -1614,6 +1614,22 @@ static bool pcie_auto_split_ok() {
            strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
 #else
     return true;
+#endif
+}
+
+// gfx1100 (RX 7900 XT/XTX/GRE): the same refinement, gate-measured on the one other arch it has run
+// on (paired no-regression: 4 alternating starts at 64K, prefill 2189 base vs 2180 with it, decode
+// 65.4 vs 65.4; engagement under serve measured: the share refines 0.55 -> 0.25 from the pool's
+// 42-45 us/missed expert and the probed 28.4-28.5 GB/s link).  Nothing is claimed for the unmeasured
+// archs: they keep the gate's "earlier behaviour".
+[[maybe_unused]] static bool pcie_auto_fork_arch_ok() {
+#if defined(STRATA_USE_HIP)
+    int dev = 0;
+    cudaDeviceProp p{};
+    return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+           strata::kernels::gfx_arch_is(p.gcnArchName, "gfx1100");
+#else
+    return false;
 #endif
 }
 
@@ -2802,7 +2818,13 @@ int main(int argc, char** argv) {
             o.pcie_frac = pcie_frac_for_gbps(bw, base);
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s) -> pcie_frac %.2f "
                                  "(default %.2f)\n", bw, bursts.c_str(), o.pcie_frac, base);
-            o.pcie_frac_auto = (o.layer_split.empty() || pcie_auto_split_ok()) && decode_defaults_arch_ok() && !pf_old;
+            // 0.1.43 upstream: split opt-in + gfx12 default-on (decode_defaults_arch_ok).  gfx1100 joins it:
+            // the refinement is engine-generic (pool timings + miss counts vs the probed link), the start-up
+            // probe here is already best-of-4 with +-0.7% spread, and on gfx1100 it is gate-measured
+            // (pcie_auto_fork_arch_ok).  Every other AMD part keeps its earlier behaviour;
+            // STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule everywhere.
+            o.pcie_frac_auto = (o.layer_split.empty() || pcie_auto_split_ok()) && !pf_old &&
+                               (decode_defaults_arch_ok() || pcie_auto_fork_arch_ok());
             o.pcie_probe_gbps = bw;
         } else {
             o.pcie_frac = base;
