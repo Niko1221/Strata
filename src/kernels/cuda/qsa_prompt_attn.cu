@@ -438,6 +438,19 @@ struct Smem2 {
     float lsum[16];
     float mrow[16];
 };
+// Turing (register staging): one stage - the next chunk's pieces wait in registers until this chunk's p.v is done -
+// and the q.k partials of cell group nt (8 cells) in the 512 bytes of the warp's own K slice that held those cells
+// (read by then), so a block takes ~19.7 KB and three fit a Turing SM (one did, at 45.6 KB: four warps on four
+// schedulers, every latency exposed)
+struct Smem2T {
+    int8_t kv[1][4][2][CH2][64];
+    float sc[1][4][2][CH2];
+    float p[16][CH2 + 1];
+    float qmax[4];
+    float alpha[16];
+    float lsum[16];
+    float mrow[16];
+};
 
 __device__ __forceinline__ int swz(int cell, int byte) {   // byte offset of (cell, byte) in a stage slice
     return cell * 64 + ((((byte >> 4) ^ (cell >> 1)) & 3) << 4) + (byte & 15);
@@ -468,7 +481,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
                                                                  int page_size, float scale_log2,
                                                                  float* __restrict__ attn, int cap) {
     extern __shared__ __align__(16) unsigned char smem_raw[];
+#if STRATA_PA_SM80
     Smem2& S = *reinterpret_cast<Smem2*>(smem_raw);
+#define PA2_PART(w, r, c) S.part[w][r][c]
+#else
+    Smem2T& S = *reinterpret_cast<Smem2T*>(smem_raw);
+    // the partial of (row r, cell c) of warp w: cell group c / 8's 512 bytes of w's K slice, [row][cell % 8]
+#define PA2_PART(w, r, c) reinterpret_cast<const float*>(&S.kv[0][w][0][0][0])[((c) >> 3) * 128 + (r) * 8 + ((c) & 7)]
+#endif
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
@@ -565,9 +585,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
 
     for (int ci = 0; ci < n_chunks; ++ci) {
-        const int st = ci & 1, c0 = ci * CH2;
+#if STRATA_PA_SM80
+        const int st = ci & 1, nst = st ^ 1, c0 = ci * CH2;
+#else
+        const int st = 0, nst = 0, c0 = ci * CH2;
+#endif
         const bool more = ci + 1 < n_chunks;
-        if (more) issue(r_next, st ^ 1, ksn, vsn);
+        if (more) issue(r_next, nst, ksn, vsn);
         cp_async_commit();
         r_next = row_of(cell_next2);
         cell_next2 = cell_of((ci + 3) * CH2 + lane);
@@ -590,10 +614,19 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             }
             const int c = nt * 8 + 2 * tig;
             const float s0 = S.sc[st][warp][0][c], s1 = S.sc[st][warp][0][c + 1];
+#if STRATA_PA_SM80
             S.part[warp][gid][c] = tg[0] * s0;
             S.part[warp][gid][c + 1] = tg[1] * s1;
             S.part[warp][gid + 8][c] = tg[2] * s0;
             S.part[warp][gid + 8][c + 1] = tg[3] * s1;
+#else
+            __syncwarp();   // every lane has read the group's cells: their 512 bytes take its partials
+            float* pp = reinterpret_cast<float*>(&S.kv[0][warp][0][0][0]) + nt * 128;
+            pp[gid * 8 + 2 * tig] = tg[0] * s0;
+            pp[gid * 8 + 2 * tig + 1] = tg[1] * s1;
+            pp[(gid + 8) * 8 + 2 * tig] = tg[2] * s0;
+            pp[(gid + 8) * 8 + 2 * tig + 1] = tg[3] * s1;
+#endif
         }
         __syncthreads();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
@@ -603,7 +636,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
                 const int c = sub * 4 + j;
-                x[j] = c0 + c < n ? (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * qdown
+                x[j] = c0 + c < n ? (((PA2_PART(0, r, c) + PA2_PART(1, r, c)) + PA2_PART(2, r, c)) + PA2_PART(3, r, c)) * qdown
                                   : -INFINITY;
                 mx = fmaxf(mx, x[j]);
             }
@@ -682,10 +715,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             }
         }
         if (more) {
-            S.sc[st ^ 1][warp][0][lane] = ksn;
-            S.sc[st ^ 1][warp][1][lane] = vsn;
+            S.sc[nst][warp][0][lane] = ksn;
+            S.sc[nst][warp][1][lane] = vsn;
 #if !STRATA_PA_SM80
-            store_stage(st ^ 1);
+            store_stage(nst);
 #endif
         }
         __syncwarp();
@@ -702,13 +735,21 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     }
 }
 
+#undef PA2_PART
+
 bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs this on several)
+    static int t75[64] = {};     // 1: Turing (the kernel's single-stage layout, Smem2T), 2: not
     int dev = 0;
     cudaGetDevice(&dev);
-    const int bytes = (int) sizeof(Smem2);
     if (dev < 0 || dev >= 64) return false;
+    if (!t75[dev]) {
+        int major = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        t75[dev] = major < 8 ? 1 : 2;
+    }
+    const int bytes = (int) (t75[dev] == 1 ? sizeof(Smem2T) : sizeof(Smem2));
     if (!attr[dev]) {
         if (cudaFuncSetAttribute(prompt_attn_i8_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
