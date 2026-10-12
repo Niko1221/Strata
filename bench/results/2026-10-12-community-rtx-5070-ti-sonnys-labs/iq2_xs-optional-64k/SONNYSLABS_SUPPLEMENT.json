@@ -1,0 +1,71 @@
+{
+  "status": "submission_authorized_by_user",
+  "source_commit": "7695859aa13afb248bdb4d36f9b2e95707db079d",
+  "tag_object": "16374b3e6dfe452a163c3a961ae5faa3b4aec84b",
+  "llama_cpp_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "model_files": [
+    {
+      "quant": "IQ2_XS",
+      "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+      "filename": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+      "size_bytes": 39225954592,
+      "sha256": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7"
+    },
+    {
+      "quant": "IQ2_XS",
+      "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+      "filename": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+      "size_bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    }
+  ],
+  "image_tag": "sonnyslabs/strata:0.1.43-sm120-v2",
+  "image_id": "sha256:f759e6167315dac77292d394a470240493dad78de6d23dd270eaa5c7ffc3e143",
+  "engine_sha256": "ffae66a01126cbf32723380d249f49dff5387a35292c52818fb7e2ea6734837f",
+  "build": "CUDA 13.0.0, SM120, vision disabled, locally compiled before runtime",
+  "driver": "615.71.09",
+  "cuda_driver_api_reported": "13.4",
+  "hardware": {
+    "gpu": "RTX 5070 Ti",
+    "gpu_vram_mib": 16303,
+    "cpu": "Ryzen 5 5600G, 6 cores/12 threads",
+    "installed_ram_gb": 64,
+    "os_usable_ram_gib": 58.8,
+    "memory_scope_note": "Original upstream RAM field detects OS-usable memory. Installed capacity independently confirmed from four 16 GB DIMMs.",
+    "lxc_memory_gib": 52,
+    "docker_memory_limit_gib": 48,
+    "docker_swap_limit_gib": 0,
+    "client_cpu_limit": 1,
+    "engine_cpu_limit": 10,
+    "nvme": "WDC WDS100T2B0C-00PXH0",
+    "pcie_active": "Gen3 x16",
+    "gpu_power_limit_w": 300
+  },
+  "runtime": "Dedicated unprivileged Debian 13 LXC on Debian 13.7/Proxmox 9.2.20; kernel 7.0.14-17-pve; Docker 26.1.5; NVIDIA Toolkit 1.20.1-1",
+  "cache_state": "Warmed resident process; upstream warmup discarded. Model preparation warmed filesystem cache. No storage-cold claim. Fresh official prompts have unique tags; follow-up prompt reuse is measured separately.",
+  "measurement": "Unmodified ./bench.sh and tools/strata_bench.py; three repetitions, thinking off; upstream engine throughput and client streaming TTFT semantics retained.",
+  "runtime_network": "Docker network none; benchmark client shares isolated loopback namespace; no external/LAN access or host-port publication.",
+  "background_load": "Existing LXC workloads stopped; one-second host/LXC/container telemetry active. No model downloads, packing or vulnerability scanning during timed official runs.",
+  "settings": {
+    "low_ram": true,
+    "kv": "int8",
+    "requested_spec": 4,
+    "spec_min_p": 0.5,
+    "kv_resident": 32768,
+    "expert_cache": "auto",
+    "prefill": "auto",
+    "vram_reserve_mib_requested": 1024,
+    "resident_experts": true,
+    "route_tail_skip": "upstream default 7; missed-expert skipping affects approximation and is retained for both quants",
+    "metric_note": "Requested spec=4; engine_info exposes mtp_max and a separate aggregate spec/lookup field. Do not interpret all speculation as MTP alone."
+  },
+  "limitations": [
+    "Speed suite does not measure answer quality. Separate Sonny Labs scoring and needle tests are supplied separately.",
+    "Optional two-client test uses one serial service slot; --batch is off. Combined throughput includes queueing, not concurrent GPU batching.",
+    "Upstream --url mode does not write engine-log-excerpt.txt; original logs are retained in experiment evidence."
+  ],
+  "public_report": "https://report5.firetussin.com/",
+  "submission_note": "Original README.md/results.json preserved byte-for-byte; supplement status/public report metadata updated for authorized submission."
+}
