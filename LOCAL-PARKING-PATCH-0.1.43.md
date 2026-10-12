@@ -1,12 +1,20 @@
-# Local parking patch on Strata 0.1.42
+# Local parking patch on Strata 0.1.43
 
-This tree is upstream `v0.1.42` (`61b3fb5d`, also `upstream/main`) plus the parking fixes from this PC's
-0.1.40.1 build that 0.1.42 does not already contain. It replaces the `fork-local-baseline` branch, which
-ran the engine before.
+This tree is upstream `upstream/main` (`7695859a`, tag `v0.1.43`) plus the parking fixes this PC's 0.1.40.1 build
+already had and 0.1.43 does not. The patch was written against `v0.1.42` and rebased onto 0.1.43; it applies with
+no conflicts, and 0.1.43 did not fix any of what it addresses - the loop it replaces is still upstream's, at
+`git show v0.1.43:src/program/generate.cpp` 7915-7930, and the unattributed failure line is still at 7966 and
+7975 there.
 
-Branch: `fork-0.1.42` (from tag `v0.1.42`).
+Branch: `fork-0.1.42`, rebased onto `park-0.1.43` (a branch at `upstream/main`). Rebased with `git rebase --onto
+park-0.1.43 v0.1.42 fork-0.1.42`; all ten commits applied cleanly.
 Owner of the original fix work: `D:\AI_envs\aider_olymp\project_strata_ivanov\strata_fork_main`
 (branch `fork-main`), whose full write-up is `CONVERSATION_PARKING_ROOT_CAUSE.md` there.
+
+Upstream's 0.1.43 does touch this cache in one place: `ConversationCache::clear()` (#879, non-finite logits) drops
+every parked conversation and the retained K/V. It is a poison purge, not an admission path, so it needs none of
+this patch's handling - and it is consistent with it, since `clear()` zeroes `reuse_` and `evictable_bytes()` never
+counted it.
 
 ## The failure this addresses
 
@@ -104,31 +112,34 @@ reported with a size or a cause, so no setting could be shown to relate to them 
 stock release binary, 140 MB, still containing the old string and none of the new ones. No parking fix has run
 on this machine yet.
 
-## What 0.1.42 already fixes, so it was not re-applied
+## What upstream already fixes, so it was not re-applied
 
-`src/core/conversation_memory.cpp` line 286 admits on
-`min(ullAvailPhys, ullAvailPageFile)` under a `#1607` comment: *the commit limit (RAM + page file) refuses
+`src/core/conversation_memory.cpp` admits on
+`min(ullAvailPhys, ullAvailPageFile)` under a `#1607` comment (v0.1.43 line 286 of the unpatched file): *the
+commit limit (RAM + page file) refuses
 an allocation while physical RAM is still free*. That is the primary cause found on this machine, and
 upstream now measures it. Raising the page file or lowering `--conversation-cache-min-free-mib` cannot fix
 that cause on its own, which is why the earlier configuration experiments on this PC did not either.
 
+All of this held in 0.1.42 and still holds in 0.1.43: nothing in the 72 commits between the tags changed the
+park path, the admission helper, or `ConversationCache` apart from the `clear()` noted at the top.
+
 `src/program/generate.cpp` also gained the physical-RAM admission gate with an evict-until-it-fits loop and
 `--memory-limit-mib`. Those are upstream's, kept as-is.
 
-## What was still broken in 0.1.42, and the port
+## What was still broken, and the port
 
-13 edits: 5 source files (+178/-21 lines) and 2 test files (+85). Verified by `git show --numstat` on the
-local commit `0b0ae6be` on branch `fork-0.1.42`.
+7 files, +529/-35, read with `git diff --numstat upstream/main` on this tree: the two headers and
+`conversation_memory.cpp` (the admission helper), both `generate.cpp` copies, and the two test files.
 
 ### 1. The eviction loop bounds itself by what cannot be freed — `conversation_cache.hpp`, `generate.cpp`
 
-Upstream's loop (`v0.1.42` only - the `while` at `git show v0.1.42:src/program/generate.cpp` lines 7801-7803;
-v0.1.40 has no such
-loop, which is why the 0.1.40 log above shows no evictions at all) is bounded by `conversations.slots()` and
+Upstream's loop (the `while` at `git show v0.1.43:src/program/generate.cpp` lines 7915-7930; it is new since
+v0.1.40, which is why the 0.1.40 log above shows no evictions at all) is bounded by `conversations.slots()` and
 gated on `conversations.size() > 0`, and it calls `evict_oldest()` unconditionally. Two categories of memory
-are charged in `bytes()` but are **not** `evict_oldest()` material: the retained K/V (`reuse_`, see
-`conversation_cache.hpp` line 207, `bytes() { return bytes_ + reuse_.bytes(); }`) and entries holding a pinned
-shared prefix (`evict_oldest()` skips them, line 284). So a park asking for more than the evictable total
+are charged in `bytes()` but are **not** `evict_oldest()` material: the retained K/V (`reuse_`; `bytes()` is
+`bytes_ + reuse_.bytes()` in `conversation_cache.hpp`, and `evict_oldest()` never touches `reuse_`) and entries
+holding a pinned shared prefix (`evict_oldest()`'s `find_if` picks only `!e.pinned()`). So a park asking for more than the evictable total
 spends conversations one at a time, evicts everything it can, and still refuses. That last claim is read off the
 code, not off the log - the 0.1.40 log cannot show it, because that engine never ran the loop. Section 1b runs
 both loops against one state and asserts the difference. This is defect B in
@@ -162,8 +173,8 @@ answered. Two things that changed with the move, both deliberate:
   not win, and `short_by` is taken from the newest reading that round obtained - after every eviction the
   helper re-samples before it can end, so no eviction is ever reported against an older reading than itself.
 
-The move itself was then checked rather than asserted: `conversation_cache_test.cpp` runs the loop exactly as it
-stood in `generate.cpp` before the move (`git show 3ae6a9ec:src/program/generate.cpp` 7817-7851) and
+The move itself was then checked rather than asserted: `conversation_cache_test.cpp` runs the loop exactly as
+upstream still has it (`git show v0.1.43:src/program/generate.cpp` 7915-7930) and
 `evict_for_admission()` over a twelve-case table of readings (flat, improving, improving-then-fitting, worsening,
 a request above the whole cache, an empty cache, a roomy reading, one entry with one byte needed,
 `additional == 0` twice, and telemetry unavailable twice), each case with its own cache and its own reading
@@ -190,7 +201,7 @@ with a reading that never changes (the Windows case: commit stays charged while 
 the two loops are asserted to do on that state:
 
 ```
-old loop (upstream v0.1.42, size()/slots() bound): admitted=0 evicted=3 still_parked=0
+old loop (upstream v0.1.43, size()/slots() bound): admitted=0 evicted=3 still_parked=0
 new loop (evict_for_admission):                    admitted=0 evicted=1 stalled=1  2 still parked
 ```
 
@@ -345,6 +356,35 @@ After the last comment-only edit to the test file, `build_tests_clean` was recom
 warnings) and re-run: 4281 / 32 checks, `ctest` 43/43. The `[131/131]` figure is the from-scratch pass; the
 figures above it are what the final source produces in either directory.
 
+### Re-run after rebasing onto upstream 0.1.43
+
+The rebase changes no source of this patch (the net diff against `upstream/main` is the same seven files as
+against `v0.1.42`); the check counts move only because 0.1.43 added its own tests to `conversation_cache_test.cpp`
+(#879's `clear()`, five checks), so 4281 + 5 = 4286. Fresh configure, fresh directory:
+
+```
+cmake -S . -B build_043 -G Ninja (fresh dir)          -> CFG_OK
+  note: STRATA_BUILD_CONVERSATION_TESTS=ON is required - the parking tests are behind that option,
+        and STRATA_BUILD_TESTS=ON alone configures with no test targets at all.
+cmake --build build_043 -j 8                          -> BUILD_EXIT=0, 85 objects, 1 warning
+                                                        (dequant.cpp(41) C4456 - upstream, untouched here)
+build_043\conversation_cache_test.exe                 -> conversation_cache_test: 4286 checks passed
+build_043\conversation_memory_test.exe                -> conversation_memory_test: 32 checks passed
+build_043\conversation_split_failure_test.exe         -> stages 1/2/3 allocation-failure cases preserved: 8/12/16
+ctest --test-dir build_043                            -> 100% tests passed out of 43 (2 skipped: CPU-only)
+git diff --check upstream/main HEAD                   -> clean
+cmake --build build_cuda_120 -j 6                     -> CUDA_EXIT=0, no errors
+build_cuda_120\strata.exe --version                   -> strata 0.1.43
+  string audit of that exe: "allocation failed; skip parking" ABSENT; "allocation failed at the capture",
+  "skip parking after the capture", "skip parking after the checkpoint split", "memory admission",
+  "could not have fitted it", "freeing every parked byte", "reserves but will not commit" all present.
+```
+
+Two reference fixes came with the rebase, for the reason AGENTS.md records: a branch-local SHA stops naming the
+blob it points at as soon as the branch moves. The test comment and two doc passages that cited `3ae6a9ec` now
+cite `git show v0.1.43:src/program/generate.cpp` 7915-7930, and `git cat-file -t` confirms both `3ae6a9ec` and
+the numstat commit `0b0ae6be` are no longer reachable from any branch.
+
 Verified in the built binary, against the running 0.1.40.1 one:
 
 | string | new `build_cuda_new\strata.exe` | running `project_strata_temp\engine\strata.exe` |
@@ -454,7 +494,9 @@ The non-ASCII audit of both park copies reports `non_ascii_bytes=0` and `bom=Fal
 
 A second read of the refactor (same reviewer role, conversation
 `67eb3fed-f0dd-42d6-a2aa-631dc5367193`) found no behaviour change: it walked the helper against the inline loop
-as it stood at `3ae6a9ec` and reported the two equivalent on every reachable input, including `additional == 0`,
+as it stood then (the branch commit `3ae6a9ec`, since rebased away; upstream still has the same loop at
+`git show v0.1.43:src/program/generate.cpp` 7915-7930) and reported the two equivalent on every reachable input,
+including `additional == 0`,
 the `hopeless` case, a flat reading, and `sample()` returning `nullopt`; it confirmed the loop terminates without
 the dropped `slots()` bound, that `admitted` is never set without a reading saying so, and that there is no
 unsigned underflow in `additional + floor - *available`. It raised five points to fix and six nice-to-haves. Each
@@ -549,7 +591,7 @@ remain unvalidated at runtime.
 ## Limitations
 
 * **SYCL is not compiled.** Both park copies were edited (`src/program/generate.cpp` and
-  `sycl/src/program/generate.cpp` - `git grep park_current_body v0.1.42` finds exactly these two), but no Intel
+  `sycl/src/program/generate.cpp` - `git grep park_current_body v0.1.43` finds exactly these two), but no Intel
   oneAPI toolchain is installed on this machine, so `sycl/src/program/generate.cpp` was reviewed by hand and not
   compiled. The edits there are the same three as the CUDA side minus the probe, and use no SYCL-specific API.
   The header fixes do reach the SYCL build: `sycl/CMakeLists.txt:110` adds `${STRATA_ROOT}/include` to the

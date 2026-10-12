@@ -57,12 +57,18 @@ credentials in the prompt. On the answer, check its APIs, paths and commands aga
 this repository before applying it, continue from the current state without repeating
 finished investigation, and escalate again only for a genuinely new blocker.
 
-## Parking on Windows (local finding, 0.1.42)
+## Parking on Windows (local finding, 0.1.42, rebased onto 0.1.43)
 The engine on this PC runs out of the system commit limit, not physical RAM: the locked expert
 arena and the WDDM device allocations are charged against commit. `conversation_memory.cpp`
 admits on `min(ullAvailPhys, ullAvailPageFile)`; that is the number to read. When parking is
-refused, `LOCAL-PARKING-PATCH-0.1.42.md` lists what the local tree changes on top of upstream
+refused, `LOCAL-PARKING-PATCH-0.1.43.md` lists what the local tree changes on top of upstream
 and why, and the refusal lines now print both resources and the process' own commit.
+Upstream 0.1.43 did not fix any of it: its park path still carries the `slots()`-bounded loop
+(`v0.1.43` `src/program/generate.cpp` 7915-7930) and the unattributed failure line. The patch
+rebases onto it with no conflicts. Never pin a test or doc reference to a branch-local SHA -
+after a rebase it names nothing; cite a tag blob instead.
+The parking tests are behind `STRATA_BUILD_CONVERSATION_TESTS=ON`; `STRATA_BUILD_TESTS=ON` alone
+configures with no test targets, which reads as a clean build with nothing tested.
 Build notes for this machine: the old `build_cuda`/`build_tests` caches are configured for a
 different path and cannot be re-rooted - configure fresh with
 `-DFETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=.../_deps/strata_llamacpp-src` to avoid a re-download.

@@ -557,9 +557,10 @@ int main() {
         check(short_round.short_by == need + floor - last,
               "the refusal reports how far the last reading fell short");
 
-        // The move out of generate.cpp must not change what the loop decides. Run the loop as it stood before the
-        // move (git show 3ae6a9ec:src/program/generate.cpp) and the helper over the same states: a fresh cache and a
-        // fresh reading program for each, so the two cannot share mutable state.
+        // The move out of generate.cpp must not change what the loop decides. Run the loop as upstream still has it
+        // (git show v0.1.43:src/program/generate.cpp 7915-7930) and the helper over the same states: a fresh cache
+        // and a fresh reading program for each, so the two cannot share mutable state. Pinned to a tag, not to a
+        // local commit: a branch-local SHA stops naming this blob as soon as the branch is rebased.
         auto before_move = [](ConversationCache& c, const size_t additional, const uint64_t floor,
                              auto&& sample) {
             size_t evicted = 0;
