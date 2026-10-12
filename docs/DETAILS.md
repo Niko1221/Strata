@@ -2080,7 +2080,10 @@ with the length.
 
 A request can set `fps`, `max_frames`, `tokens`, `total_tokens` and `max_side` for one video; `"max_tokens"` in the
 `"vision"` section caps every frame pair as it caps a picture. The server waits up to 30 minutes for a video's encoding
-(`STRATA_VISION_VIDEO_S` in seconds, 0 = no limit), where a picture gets 300 s (`STRATA_VISION_ENCODE_S`).
+(`STRATA_VISION_VIDEO_S` in seconds, 0 = no limit), where a picture gets 300 s (`STRATA_VISION_ENCODE_S`). While a video
+is being prepared, `GET /status` and `GET /metrics` report `state: "preparing_video"`, `video_preparing`, and the
+latest bounded `video_progress` object (`stage`, `done`, `total`, and `unit`). The encoder reports one progress line per
+64-frame preparation batch; a second video waits in the preparation queue instead of starting unbounded work.
 
 **Measured** (encoder on an RTX 5070 Ti, built with CUDA 12.8 for sm_120, or an i9-13900K's 16 threads; the model
 IQ2_XS on the 5070 Ti, or IQ3_S on an RTX 2080 Ti with 94 GB of RAM; thinking off; frame pairs at most 448

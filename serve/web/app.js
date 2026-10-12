@@ -256,6 +256,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }
+  } else if (live.state === "preparing_video") {
+    const vp = live.video_progress || {};
+    const stage = (vp.stage || "preparing video").replace(/_/g, " ");
+    label = stage[0].toUpperCase() + stage.slice(1);
+    prog.dataset.tone = "info";
+    if (Number.isFinite(vp.done) && Number.isFinite(vp.total) && vp.total > 0) {
+      pct = Math.min(100, (100 * vp.done) / vp.total);
+      detail = `${fmt(vp.done)} / ${fmt(vp.total)} ${vp.unit || "items"} · ${fmt(pct)}%`;
+    } else {
+      detail = "Preparing video…";
+    }
   } else if (live.state === "generating") {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
