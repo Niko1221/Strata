@@ -182,7 +182,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s, int first_T = 1) {
         std::vector<uint32_t> a((std::size_t) T * c.n_out), b(a.size());
         ck(cudaMemcpy(a.data(), yref, ybytes, cudaMemcpyDeviceToHost), "read ref");
         double pack_us = 0;
-        double best_ref = 0, best_il[5] = {};
+        double best_ref = 0, best_il[5] = {}, table_ratio[5] = {};
         if (bench && T >= 2)
             pack_us = time_calls([&](int) { native_q8_1_interleave(xq, xil, c.n_in, T, s); }, 128, s);
         for (int r : {0, 1, 2, 4}) {
@@ -218,7 +218,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s, int first_T = 1) {
                 auto ref = [&](int i) { native_mmvq(c.type, dw[i % copies], xq, yref, c.n_in, c.n_out, T, s); };
                 auto il = [&](int i) { native_mmvq_il(c.type, dw[i % copies], xq, xil, yil, c.n_in, c.n_out, T, s); };
                 for (int i = 0; i < reps; ++i) { ref(i); il(i); }
-                std::vector<double> refs, ils, ratios;
+                std::vector<double> refs, ils, ratios, kernel_ratios;
                 for (int pair = 0; pair < 7; ++pair) {
                     double a_us, b_us;
                     if (pair % 2) { b_us = time_calls(il, reps, s); a_us = time_calls(ref, reps, s); }
@@ -226,9 +226,11 @@ int run_case(const Case& c, bool bench, cudaStream_t s, int first_T = 1) {
                     refs.push_back(a_us);
                     ils.push_back(b_us);
                     ratios.push_back((b_us + pack_us) / a_us);
+                    kernel_ratios.push_back(b_us / a_us);
                 }
                 best_ref = median(refs);
                 best_il[r] = median(ils);
+                table_ratio[r] = median(kernel_ratios);
                 std::printf("BENCH %-26s T=%d rows=%d actual=%d multi=%.3f[%.3f,%.3f] il=%.3f[%.3f,%.3f] pack=%.3f us ratio=%.4f[%.4f,%.4f] pairs=7 reps=%d\n",
                             c.name, T, r, actual, median(refs), *std::min_element(refs.begin(), refs.end()),
                             *std::max_element(refs.begin(), refs.end()), median(ils),
@@ -240,7 +242,8 @@ int run_case(const Case& c, bool bench, cudaStream_t s, int first_T = 1) {
         }
         native_mmvq_il_tune(0);
         if (bench) {
-            g_cells.push_back({c.type, T, c.n_out, best_ref, {0, best_il[1], best_il[2], 0, best_il[4]}});
+            // Each forced row choice has its own paired baseline, not the last choice's timing.
+            g_cells.push_back({c.type, T, c.n_out, 1.0, {0, table_ratio[1], table_ratio[2], 0, table_ratio[4]}});
             std::printf("BENCH %-26s T=%d  multi %.1f us | il rows1 %.1f rows2 %.1f rows4 %.1f us\n", c.name, T, best_ref,
                         best_il[1], best_il[2], best_il[4]);
         }
