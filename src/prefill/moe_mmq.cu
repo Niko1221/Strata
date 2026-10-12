@@ -182,6 +182,19 @@ void quantize(const float* x, const int32_t* ids, void* xq, int t, int64_t cols,
     ck(cudaGetLastError(), "quantize");
 }
 
+void quantize_scatter(const float* x, const int32_t* slot, const int32_t* src, void* xq, int t, int64_t cols, int64_t ld,
+                      int64_t tokens, int k_used, void* stream) {
+    if (tokens <= 0 || k_used <= 0) return;
+    static const bool gather = [] { const char* e = std::getenv("STRATA_QUANT_GATHER"); return e != nullptr && std::atoi(e) != 0; }();
+    if (gather) {
+        quantize(x, src, xq, t, cols, ld, tokens * k_used, stream);
+        return;
+    }
+    quantize_scatter_mmq_q8_1_cuda(x, slot, xq, (ggml_type) t, cols, ld, pad512(cols), tokens, tokens * k_used, k_used,
+                                   (cudaStream_t) stream);
+    ck(cudaGetLastError(), "quantize_scatter");
+}
+
 Context::Context() {
     int dev = 0;
     cudaGetDevice(&dev);
