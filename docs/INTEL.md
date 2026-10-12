@@ -42,6 +42,7 @@ MTP draft layer and the context and KV questions are setup's own.
 | Fit rule | A model that does not fit the card at the default context gets a context down the ladder 32K, 16K, 8K, a smaller prompt chunk and a lower reserve until it does. Setup prints one plain line per change. |
 | Prompt chunk | 4,096 tokens; 8,192 on a Battlemage card with 24 GB or more above 32K context. A `--prefill` in the config is kept. |
 | Alchemist (A-series) | A different config: [Arc A750 and the other Alchemist cards](#arc-a750-and-the-other-alchemist-cards). |
+| Integrated Arc (`xe`, e.g. the Arc 140T) | No Docker: the engine runs on the PC's own oneAPI. A RAM fit rule instead of the VRAM one; see [Integrated Arc](#integrated-arc-the-arc-140t). |
 | Engine settings | The config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every `STRATA_`, `ONEAPI_`, `UR_`, `IGC_`, `SYCL_` and `ZES_` variable and sets `STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1` and `STRATA_STAGER_THREADS=12` unless the environment says otherwise (for example `"env": {"STRATA_VERIFY_NO_HOST": "0"}`). A value of `0` is not passed on, because the engine tests these switches by presence. |
 
 The models, packs and checkout must sit under the folder `strata-sycl.sh` mounts at `/work` (the one above the checkout, or
@@ -329,6 +330,21 @@ Docker. Only the Arc 140T (PCI id 7d51, Xe-LPG+) on the `xe` driver was tested.
   (`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, `STRATA_STAGER_THREADS=12`, `STRATA_NO_MULTI_GR=1`), each one
   overridden by the config's `"env"` (`0` turns one off), and gives the engine an OOM score of 1000, so that a PC out of memory
   loses the engine and not the desktop. `STRATA_SYCL_BIN` names another binary (relative to the checkout or absolute).
+
+**With setup.** `./setup.sh --backend sycl` finds the integrated GPU in sysfs (an Intel GPU at PCI `00:02.0` on `xe`). It needs
+oneAPI in `/opt/intel/oneapi` (or `ONEAPI_ROOT`) and the engine in `build-sycl` (or `build-sycl-aot`); Docker is not used. What
+changes from a card:
+
+| Part | On an integrated Arc |
+| --- | --- |
+| Which size fits | A model needs its shard 1 plus 20 GiB of RAM (the 14 GiB the measured runs used beside shard 1, and 6 GiB more). The size menu marks the sizes that need more, recommends the first one that fits, and asks before it installs one that does not (`--model X --yes` installs it anyway). `--check` says the same per model; a Gyro size is "not tested". |
+| Config | As the one below: the launcher as `exe`, the PC's own paths, `--stream-experts`, no KV streaming (the KV is in the same RAM either way), the VRAM reserve as on a card (1,024 MiB up to 32K, 2,048 above), `--draft-vocab en`, and `SYCL_CACHE_PERSISTENT=1` on the 140T only (it crashed on Xe2). An AOT build adds `STRATA_SYCL_BIN`. |
+| n-gram table | Read from the SSD: setup's `--ple-io ram` is left out, because here the RAM is the GPU's memory. A `--ple-io ram` you give is kept. |
+| Pictures | Off (nobody has run them on an integrated GPU yet); `--vision yes` turns them on. |
+| `i915` | Setup stops and names the kernel command line that moves the GPU to `xe`. |
+
+On the 140T, `./setup.sh --backend sycl --family coder --model IQ1_M --context 98304 --no-start --yes` wrote the config below
+(less `"fit_max_tokens"`) and `run-coder-iq1_m.sh`.
 
 **Running it by hand.** A config like this, started with
 `.venv/bin/python sycl/serve/server_intel.py --engine strata --config strata-coder-iq1_m.json --port 8080`:
