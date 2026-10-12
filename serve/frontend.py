@@ -212,7 +212,7 @@ def _parts_of(content):
         elif part.get("type") in VIDEO_PARTS:
             src, opts = _video_source(part)
             items.append({"type": "video", "source": src, "options": opts})
-        elif part.get("type") in TEXT_PARTS and "text" in part:)
+        elif part.get("type") in TEXT_PARTS and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
 
