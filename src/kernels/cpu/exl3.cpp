@@ -97,14 +97,19 @@ uint16_t decode_window(Exl3Codebook cb, uint16_t window) {
 
 // ---- 16-bit sliding windows over one packed tile ----
 
-uint16_t window16(const uint16_t* words, int nwords, int start) {
-    int total = nwords * 16;
-    uint32_t v = 0;
-    for (int k = 0; k < 16; ++k) {
-        int b = (start + k) % total;
-        v |= (uint32_t)((words[b >> 4] >> (b & 15)) & 1) << k;
-    }
-    return (uint16_t)v;
+// The window for stored position `v`: the 16 bits ending at bit (v+1)*bits, read with ExLlamaV3's funnel
+// shift over the packed uint32 words (unpack_trellis / dq).  NOT a linear LSB bitstream read - the encoder
+// packs per 16-value span, MSB-first, then byte-swaps, so the linear read did not reproduce the weights.
+uint16_t window16(const uint16_t* words, int nwords, int bits, int v) {
+    const uint32_t* p32 = (const uint32_t*) words;
+    const int nw = nwords / 2;                          // == bits * 256 / 32
+    const int b0 = v * bits + bits - 16 + 256 * bits;
+    const int b2 = b0 + 16;
+    const int i0r = b0 >> 5, i1r = (b2 - 1) >> 5;
+    const int s1 = (i1r + 1) * 32 - b2;
+    const uint32_t a = p32[i0r % nw], b = p32[i1r % nw];
+    const uint64_t m = ((uint64_t) a << 32) | (uint64_t) b;
+    return (uint16_t)((m >> s1) & 0xFFFF);
 }
 
 // tensor_core_perm: tc[j] == row_major[perm[j]] (quantize.py).
@@ -190,10 +195,7 @@ void exl3_decode_tile(const uint16_t* trellis_words, int bits, const uint16_t* l
     build_perm(perm);
     uint16_t tc[256];
     for (int t = 0; t < 256; ++t) {
-        int start = t * bits + bits - 16;
-        int total = 256 * bits;
-        start = ((start % total) + total) % total;
-        tc[t] = lut[window16(trellis_words, 256 * bits / 16, start)];
+        tc[t] = lut[window16(trellis_words, 256 * bits / 16, bits, t)];
     }
     for (int j = 0; j < 256; ++j) out_row_major[perm[j]] = tc[j];
 }

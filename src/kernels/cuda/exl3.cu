@@ -40,17 +40,19 @@ __device__ __forceinline__ uint32_t lop3(uint32_t a, uint32_t b, uint32_t c, uin
     return r;
 }
 
-// The 16-bit sliding window at bit offset `start`, read word-wise (a funnel shift over uint32).  The
-// earliest positions wrap around the tile end (their window starts before bit 0), so the second word
-// wraps to 0 - a compare, not the two integer `%` operations the first version paid per weight.
-__device__ __forceinline__ uint16_t read_window(const uint16_t* __restrict__ tw, int start, int total_bits) {
-    const uint32_t* w32 = (const uint32_t*) tw;
-    int n32 = total_bits >> 5;
-    int i0 = start >> 5;
-    int sh = start & 31;
-    uint32_t v = w32[i0] >> sh;
-    if (sh + 16 > 32) { int i1 = i0 + 1; if (i1 >= n32) i1 = 0; v |= w32[i1] << (32 - sh); }
-    return (uint16_t)(v & 0xFFFF);
+// The window for stored position `pos`: the 16 bits ending at bit (pos+1)*bits, read with ExLlamaV3's
+// funnel shift over the packed uint32 words (unpack_trellis / dq).  NOT a linear LSB read - the encoder
+// packs per 16-value span, MSB-first, then byte-swaps.
+__device__ __forceinline__ uint16_t read_window(const uint16_t* __restrict__ tw, int pos, int bits) {
+    const uint32_t* p32 = (const uint32_t*) tw;
+    const int nw = bits * 256 / 32;
+    const int b0 = pos * bits + bits - 16 + 256 * bits;
+    const int b2 = b0 + 16;
+    const int i0r = b0 >> 5, i1r = (b2 - 1) >> 5;
+    const int s1 = (i1r + 1) * 32 - b2;
+    const uint32_t a = p32[i0r % nw], b = p32[i1r % nw];
+    const unsigned long long m = ((unsigned long long) a << 32) | (unsigned long long) b;
+    return (uint16_t)((m >> s1) & 0xFFFF);
 }
 
 // mul1 codebook, folded to pure ALU.  decode_window computes h2f(bytesum(w*C)+0x6400) with the software
@@ -81,10 +83,7 @@ __global__ void decode_kernel(const uint16_t* __restrict__ trellis, int ki, int 
                               int cb, uint16_t* __restrict__ what, int n) {
     int i = blockIdx.y, j = blockIdx.x, t = threadIdx.x; (void)ki;
     const uint16_t* tw = trellis + (long)(i * nj + j) * words;
-    int total = 256 * bits;
-    int start = t * bits + bits - 16; start = ((start % total) + total) % total;
-    unsigned v = 0;
-    for (int k2 = 0; k2 < 16; ++k2) { int b = (start + k2) % total; v |= (unsigned)((tw[b >> 4] >> (b & 15)) & 1) << k2; }
+    unsigned v = read_window(tw, t, bits);
     int g = t >> 3, s = t & 7;
     int r0 = (g % 4) * 2, r1 = r0 + 1, r2 = r0 + 8, r3 = r0 + 9, c0 = g / 4, c1 = c0 + 8;
     int r = (s & 3) == 0 ? r0 : (s & 3) == 1 ? r1 : (s & 3) == 2 ? r2 : r3;
@@ -193,7 +192,6 @@ __global__ void gemv_kernel(const float* __restrict__ xh, const uint16_t* __rest
                             float* __restrict__ z) {
     int j = blockIdx.x;
     int c = threadIdx.x & 15, sub = threadIdx.x >> 4;
-    int total = 256 * bits;
     int ns = gridDim.y * 8;
     int cid = blockIdx.y * 8 + sub;
     int k0 = (ki * cid) / ns, k1 = (ki * (cid + 1)) / ns;
@@ -205,9 +203,8 @@ __global__ void gemv_kernel(const float* __restrict__ xh, const uint16_t* __rest
         const uint16_t* tw = trellis + (long)(i * nj + j) * words;
         #pragma unroll
         for (int r = 0; r < 16; ++r) {
-            int start = tt[r] * bits + bits - 16; if (start < 0) start += total;
-            float wv = cb == 2 ? decode_mul1(read_window(tw, start, total))
-                               : __half2float(__ushort_as_half(decode_window(cb, read_window(tw, start, total))));
+            float wv = cb == 2 ? decode_mul1(read_window(tw, tt[r], bits))
+                               : __half2float(__ushort_as_half(decode_window(cb, read_window(tw, tt[r], bits))));
             acc += xh[i * 16 + r] * wv;
         }
     }
@@ -327,7 +324,7 @@ __global__ void __launch_bounds__(256, 6) gemv_batched_kernel(const float* __res
     int e = blockIdx.z;
     int c = threadIdx.x & 15, sub = threadIdx.x >> 4;
     int ki = mats[e].ki, nj = mats[e].nj, bits = mats[e].bits, cb = mats[e].cb;
-    int total = 256 * bits, words = 256 * bits / 16;
+    int words = 256 * bits / 16;
     int ns = gridDim.y * 16;
     int cid = blockIdx.y * 16 + sub;
     int k0 = (ki * cid) / ns, k1 = (ki * (cid + 1)) / ns;
@@ -348,13 +345,12 @@ __global__ void __launch_bounds__(256, 6) gemv_batched_kernel(const float* __res
         }
         #pragma unroll 4
         for (int r = 0; r < 16; ++r) {
-            int start = tt[r] * bits + bits - 16; if (start < 0) start += total;
             float xr = xhe[i * 16 + r];
             #pragma unroll
             for (int t = 0; t < T; ++t) {
                 if (!twp[t]) continue;
-                float wv = cb == 2 ? decode_mul1(read_window(twp[t], start, total))
-                                   : __half2float(__ushort_as_half(decode_window(cb, read_window(twp[t], start, total))));
+                float wv = cb == 2 ? decode_mul1(read_window(twp[t], tt[r], bits))
+                                   : __half2float(__ushort_as_half(decode_window(cb, read_window(twp[t], tt[r], bits))));
                 acc[t] += xr * wv;
             }
         }
