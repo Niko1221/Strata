@@ -4877,8 +4877,6 @@ int main(int argc, char** argv) {
     strata::core::PeerExperts peer;
     std::vector<std::pair<int32_t, int32_t>> peer_ranked;
     std::vector<int64_t> sized_slots;
-    strata::core::PeerPlacement peer_placement;
-    std::vector<uint64_t> peer_layer_bytes;
     uint64_t peer_primary_reserve = 0;
     if (peer_capacity) {
         // Phase one: the peer's real scratch allocations precede both expert
@@ -4904,11 +4902,12 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         if (!auto_cache)
             primary_cap = std::min(primary_cap, (uint64_t) std::max(o.expert_cache, 0) * lay.max_blob);
-        for (int64_t l = 0; l < g.n_layers; ++l) peer_layer_bytes.push_back(lay.blob_bytes(l));
-        auto& placement = peer_placement;
+        std::vector<uint64_t> layer_bytes;
+        for (int64_t l = 0; l < g.n_layers; ++l) layer_bytes.push_back(lay.blob_bytes(l));
+        strata::core::PeerPlacement placement;
         try {
             placement = strata::core::plan_peer_placement(
-                profile, peer_layer_bytes, (int32_t) g.n_expert, primary_cap, peer_cap,
+                profile, layer_bytes, (int32_t) g.n_expert, primary_cap, peer_cap,
                 o.peer_slots > 0 ? (size_t) o.peer_slots : std::numeric_limits<size_t>::max());
         } catch (const std::invalid_argument& e) {
             std::fprintf(stderr, "strata generate: capacity-aware %s\n", e.what());
@@ -5152,9 +5151,8 @@ int main(int argc, char** argv) {
         // keep the first `keep_bytes` of the cache (the profile's hottest experts first); false when nothing is left
         auto shrink_to = [&](int64_t keep_bytes) -> bool {
             if (peer_capacity) {
-                strata::core::trim_peer_primary(peer_placement, peer_layer_bytes,
-                                               (uint64_t) std::max<int64_t>(keep_bytes, 0));
-                sized_slots.resize(peer_placement.primary.size());
+                sized_slots.resize(strata::core::peer_primary_slot_prefix(
+                    sized_slots, (uint64_t) std::max<int64_t>(keep_bytes, 0)));
                 o.expert_cache = (int) sized_slots.size();
                 return o.expert_cache > 0;
             }
@@ -5625,8 +5623,9 @@ int main(int argc, char** argv) {
         if (peer_capacity) {
             int64_t primary_count = 0, peer_count = 0, missed_count = 0;
             uint64_t primary_bytes = 0, peer_bytes = 0;
+            const auto& lay = strata::kernels::cpu::expert_layout();
             for (int64_t l = 0; l < g.n_layers; ++l) {
-                const uint64_t b = (peer_layer_bytes[(size_t) l] + 255) / 256 * 256;
+                const uint64_t b = (lay.blob_bytes(l) + 255) / 256 * 256;
                 for (int64_t e = 0; e < g.n_expert; ++e) {
                     if (xcache.slot_of(l, e) >= 0) { ++primary_count; primary_bytes += b; }
                     else if (peer.valid() && peer.has(l, e)) { ++peer_count; peer_bytes += b; }

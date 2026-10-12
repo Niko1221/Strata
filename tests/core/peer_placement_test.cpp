@@ -100,26 +100,23 @@ int main() {
     // live-free correction. Do not keep reporting the original 760 misses.
     const uint64_t blob = 1748480;
     const std::vector<uint64_t> uniform(48, blob - 1);
-    auto trimmed = plan_peer_placement(hot, uniform, 512, 10230 * blob, 13586 * blob);
-    check(trimmed.primary.size() == 10230 && trimmed.peer.size() == 13586 && trimmed.missed.size() == 760,
+    const auto initial = plan_peer_placement(hot, uniform, 512, 10230 * blob, 13586 * blob);
+    check(initial.primary.size() == 10230 && initial.peer.size() == 13586 && initial.missed.size() == 760,
           "initial planned ownership uses exactly the intended slot capacities");
-    const auto original_primary = trimmed.primary;
-    strata::core::trim_peer_primary(trimmed, uniform, 9614 * blob + blob - 256);
-    invariant(trimmed, uniform, 512, 9614 * blob + blob - 256, 13586 * blob);
-    check(trimmed.primary.size() == 9614 && trimmed.peer.size() == 13586 && trimmed.missed.size() == 1376,
+    std::vector<int64_t> slots;
+    for (const auto& pr : initial.primary) slots.push_back((int64_t) uniform[(size_t) pr.first]);
+    using strata::core::peer_primary_slot_prefix;
+    const size_t keep = peer_primary_slot_prefix(slots, 9614 * blob + blob - 256);
+    check(keep == 9614 && initial.primary.size() - keep == 616 &&
+          48 * 512 - keep - initial.peer.size() == 1376,
           "aligned allocation correction moves precisely 616 primary pairs into misses");
-    check(trimmed.primary == std::vector<Pair>(original_primary.begin(), original_primary.begin() + 9614),
-          "allocation retry retains admission order and sized-slot ownership");
-    strata::core::trim_peer_primary(trimmed, uniform, 9614 * blob);
-    check(trimmed.primary.size() == 9614 && trimmed.missed.size() == 1376,
-          "repeated correction does not duplicate dropped pairs");
-    strata::core::trim_peer_primary(trimmed, uniform, 0);
-    invariant(trimmed, uniform, 512, 0, 13586 * blob);
-    check(trimmed.primary.empty() && trimmed.missed.size() == 10990, "zero capacity removes every primary slot");
-    auto mixed = plan_peer_placement({}, {257, 769}, 2, 3072, 0);
-    strata::core::trim_peer_primary(mixed, {257, 769}, 1535);
-    invariant(mixed, {257, 769}, 2, 1535, 0);
-    check(mixed.primary.size() == 1 && mixed.primary_bytes == 512,
+    slots.resize(keep);
+    check(peer_primary_slot_prefix(slots, 9614 * blob) == keep &&
+          peer_primary_slot_prefix(slots, 10230 * blob) == keep,
+          "repeated correction never grows the retained slot prefix");
+    check(peer_primary_slot_prefix(slots, 0) == 0, "zero capacity removes every primary slot");
+    check(peer_primary_slot_prefix({257, 769, 257}, 1535) == 1 &&
+          peer_primary_slot_prefix({257, 769, 257}, 1536) == 2,
           "heterogeneous allocation prefix cannot retain a partially fitting aligned slot");
     using strata::core::peer_primary_writeback_give;
     constexpr int64_t mib = 1ll << 20;

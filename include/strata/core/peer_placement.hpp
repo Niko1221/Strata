@@ -31,21 +31,17 @@ inline int64_t peer_primary_writeback_give(int64_t live_free, int64_t held_back,
     return give;
 }
 
-// Allocation retries keep a prefix, so the slot sizes and ownership must be
-// trimmed together. The peer fill can subsequently backfill these misses.
-inline void trim_peer_primary(PeerPlacement& plan, const std::vector<uint64_t>& layer_bytes,
-                              uint64_t keep_bytes) {
+// Allocation retries retain a prefix of the admission-order sized slots.
+inline size_t peer_primary_slot_prefix(const std::vector<int64_t>& slot_bytes, uint64_t keep_bytes) {
     uint64_t used = 0;
     size_t keep = 0;
-    while (keep < plan.primary.size()) {
-        const uint64_t b = (layer_bytes[(size_t) plan.primary[keep].first] + 255) / 256 * 256;
+    while (keep < slot_bytes.size()) {
+        const uint64_t b = ((uint64_t) slot_bytes[keep] + 255) / 256 * 256;
         if (b > keep_bytes - used) break;
         used += b;
         ++keep;
     }
-    plan.missed.insert(plan.missed.end(), plan.primary.begin() + keep, plan.primary.end());
-    plan.primary.resize(keep);
-    plan.primary_bytes = used;
+    return keep;
 }
 
 // STRP v1 records rank, not counts. Reciprocal square-root rank is a load proxy,
