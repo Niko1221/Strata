@@ -1,0 +1,1831 @@
+{
+  "dual-reference": {
+    "checks": [
+      {
+        "name": "anthropic_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "openai_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "single_image_0",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 3.3311376000056043,
+          "engine": {
+            "projection": null,
+            "time": 1791468131.2568817,
+            "duration_s": 2.9,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2536.6,
+            "decode_ms": 390.2,
+            "decode_tok_s": 92.3,
+            "hit_rate": 0.822,
+            "pcie_share": 0.002,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_1",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 3.2584968000883237,
+          "engine": {
+            "projection": null,
+            "time": 1791468134.60721,
+            "duration_s": 2.9,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2516.7,
+            "decode_ms": 359.8,
+            "decode_tok_s": 100.1,
+            "hit_rate": 0.885,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_2",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 3.2399315999355167,
+          "engine": {
+            "projection": null,
+            "time": 1791468137.8806098,
+            "duration_s": 2.9,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2504.5,
+            "decode_ms": 365.9,
+            "decode_tok_s": 98.4,
+            "hit_rate": 0.92,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "four_images_0",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "actual": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "client_seconds": 5.849785799975507,
+          "engine": {
+            "projection": null,
+            "time": 1791468142.1979702,
+            "duration_s": 4.5,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 49,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 49,
+            "prompt_ms": 3967.7,
+            "decode_ms": 453.5,
+            "decode_tok_s": 108.0,
+            "hit_rate": 0.889,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 36,
+            "drafts_accepted": 36
+          }
+        }
+      },
+      {
+        "name": "four_images_1",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "actual": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "client_seconds": 5.765196300111711,
+          "engine": {
+            "projection": null,
+            "time": 1791468148.1044524,
+            "duration_s": 4.4,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 3951.8,
+            "decode_ms": 397.1,
+            "decode_tok_s": 110.8,
+            "hit_rate": 0.943,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 33,
+            "drafts_accepted": 33
+          }
+        }
+      },
+      {
+        "name": "four_images_2",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "actual": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "client_seconds": 5.768730900017545,
+          "engine": {
+            "projection": null,
+            "time": 1791468153.9509335,
+            "duration_s": 4.4,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 3959.9,
+            "decode_ms": 374.6,
+            "decode_tok_s": 117.5,
+            "hit_rate": 0.966,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 33,
+            "drafts_accepted": 33
+          }
+        }
+      },
+      {
+        "name": "two_clients_serial_queue",
+        "passed": true,
+        "detail": {
+          "results": [
+            {
+              "request": 1,
+              "answer": "QUEUE-1",
+              "client_seconds": 3.926235100021586
+            },
+            {
+              "request": 2,
+              "answer": "QUEUE-2",
+              "client_seconds": 7.830669100047089
+            }
+          ],
+          "meaning": "Two client requests, engine parallel=1; both completed. Not a throughput/concurrency scaling benchmark."
+        }
+      },
+      {
+        "name": "claude_code_repair",
+        "passed": false,
+        "error": "AssertionError({'model': 'IQ2_XS', 'passed': 28, 'total': 29, 'checks': [{'name': 'timeout-valid-None', 'passed': True}, {'name': \"timeout-valid-''\", 'passed': False, 'error': 'ValueError(\"invalid timeout: \\'\\'\")'}, {'name': \"timeout-valid-'  '\", 'passed': True}, {'name': 'timeout-valid-0', 'passed': True}, {'name': 'timeout-valid-12', 'passed': True}, {'name': \"timeout-valid-' 007 '\", 'passed': True}, {'name': 'timeout-default', 'passed': True}, {'name': 'timeout-invalid-True', 'passed': True}, {'name': 'timeout-invalid-False', 'passed': True}, {'name': 'timeout-invalid-1.5', 'passed': True}, {'name': 'timeout-invalid--1', 'passed': True}, {'name': \"timeout-invalid-'-1'\", 'passed': True}, {'name': \"timeout-invalid-'+2'\", 'passed': True}, {'name': \"timeout-invalid-'2.0'\", 'passed': True}, {'name': \"timeout-invalid-'１２'\", 'passed': True}, {'name': 'timeout-invalid-[]', 'passed': True}, {'name': 'timeout-invalid-{}', 'passed': True}, {'name': 'cache-capacity-0', 'passed': True}, {'name': 'cache-capacity--1', 'passed': True}, {'name': 'cache-capacity-True', 'passed': True}, {'name': 'cache-capacity-1.5', 'passed': True}, {'name': \"cache-capacity-'2'\", 'passed': True}, {'name': 'cache_promote', 'passed': True}, {'name': 'cache_update', 'passed': True}, {'name': 'cache_falsy', 'passed': True}, {'name': 'cache_one', 'passed': True}, {'name': 'records-first-generator-identity', 'passed': True}, {'name': 'records-missing-none-mutation', 'passed': True}, {'name': 'records-empty', 'passed': True}], 'scope': 'One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark.'})"
+      }
+    ],
+    "coding": {
+      "model": "IQ2_XS",
+      "passed": 28,
+      "total": 29,
+      "checks": [
+        {
+          "name": "timeout-valid-None",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-''",
+          "passed": false,
+          "error": "ValueError(\"invalid timeout: ''\")"
+        },
+        {
+          "name": "timeout-valid-'  '",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-0",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-12",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-' 007 '",
+          "passed": true
+        },
+        {
+          "name": "timeout-default",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-True",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-False",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-1.5",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid--1",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'-1'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'+2'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'2.0'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'１２'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-[]",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-{}",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-0",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity--1",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-True",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-1.5",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-'2'",
+          "passed": true
+        },
+        {
+          "name": "cache_promote",
+          "passed": true
+        },
+        {
+          "name": "cache_update",
+          "passed": true
+        },
+        {
+          "name": "cache_falsy",
+          "passed": true
+        },
+        {
+          "name": "cache_one",
+          "passed": true
+        },
+        {
+          "name": "records-first-generator-identity",
+          "passed": true
+        },
+        {
+          "name": "records-missing-none-mutation",
+          "passed": true
+        },
+        {
+          "name": "records-empty",
+          "passed": true
+        }
+      ],
+      "scope": "One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark."
+    },
+    "coding_scaling": {
+      "rows": [
+        {
+          "capacity": 128,
+          "median_ns_per_eviction": 360.028074908314,
+          "samples": [
+            360.028074908314,
+            364.06860459692325,
+            354.382326150926
+          ]
+        },
+        {
+          "capacity": 4096,
+          "median_ns_per_eviction": 394.40918087052523,
+          "samples": [
+            394.40918087052523,
+            391.4032014051827,
+            415.3655979166615
+          ]
+        },
+        {
+          "capacity": 65536,
+          "median_ns_per_eviction": 455.8959965095255,
+          "samples": [
+            449.4232186402769,
+            455.8959965095255,
+            460.47668433857325
+          ]
+        }
+      ],
+      "large_to_small_ratio": 1.266279016228458,
+      "flag_for_complexity_review": false,
+      "method": "3 repeats, 32768 new insertions each, prefilled cache; measured implementation scaling, not a proof of complexity."
+    }
+  },
+  "tri-first": {
+    "checks": [
+      {
+        "name": "anthropic_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "openai_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "single_image_0",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.0931929000653327,
+          "engine": {
+            "projection": null,
+            "time": 1791468828.5431468,
+            "duration_s": 1.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1467.2,
+            "decode_ms": 247.4,
+            "decode_tok_s": 145.5,
+            "hit_rate": 0.993,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_1",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.12263479991816,
+          "engine": {
+            "projection": null,
+            "time": 1791468830.6801121,
+            "duration_s": 1.8,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1458.7,
+            "decode_ms": 289.3,
+            "decode_tok_s": 124.4,
+            "hit_rate": 0.997,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_2",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.056510300026275,
+          "engine": {
+            "projection": null,
+            "time": 1791468832.8179836,
+            "duration_s": 1.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1446.4,
+            "decode_ms": 241.7,
+            "decode_tok_s": 148.9,
+            "hit_rate": 0.998,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "four_images_0",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "actual": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "client_seconds": 4.833028000080958,
+          "engine": {
+            "projection": null,
+            "time": 1791468835.9835067,
+            "duration_s": 3.4,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 3012.0,
+            "decode_ms": 370.1,
+            "decode_tok_s": 118.9,
+            "hit_rate": 0.994,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 34,
+            "drafts_accepted": 34
+          }
+        }
+      },
+      {
+        "name": "four_images_1",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "actual": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "client_seconds": 4.68678520002868,
+          "engine": {
+            "projection": null,
+            "time": 1791468840.8877006,
+            "duration_s": 3.3,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 2949.6,
+            "decode_ms": 296.7,
+            "decode_tok_s": 148.3,
+            "hit_rate": 0.997,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 33,
+            "drafts_accepted": 33
+          }
+        }
+      },
+      {
+        "name": "four_images_2",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "actual": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "client_seconds": 4.749744799919426,
+          "engine": {
+            "projection": null,
+            "time": 1791468845.6172893,
+            "duration_s": 3.4,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 2985.6,
+            "decode_ms": 344.4,
+            "decode_tok_s": 127.8,
+            "hit_rate": 0.998,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 34,
+            "drafts_accepted": 34
+          }
+        }
+      },
+      {
+        "name": "two_clients_serial_queue",
+        "passed": true,
+        "detail": {
+          "results": [
+            {
+              "request": 1,
+              "answer": "QUEUE-1",
+              "client_seconds": 2.624665000010282
+            },
+            {
+              "request": 2,
+              "answer": "QUEUE-2",
+              "client_seconds": 5.283151599927805
+            }
+          ],
+          "meaning": "Two client requests, engine parallel=1; both completed. Not a throughput/concurrency scaling benchmark."
+        }
+      },
+      {
+        "name": "claude_code_repair",
+        "passed": true,
+        "detail": {
+          "client_wall_seconds": 32.19464220001828,
+          "passed": 29,
+          "total": 29,
+          "scope": "One synthetic Claude Code repair task, no shell tool; not a broad coding score."
+        }
+      }
+    ],
+    "coding": {
+      "model": "IQ2_XS",
+      "passed": 29,
+      "total": 29,
+      "checks": [
+        {
+          "name": "timeout-valid-None",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-''",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-'  '",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-0",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-12",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-' 007 '",
+          "passed": true
+        },
+        {
+          "name": "timeout-default",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-True",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-False",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-1.5",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid--1",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'-1'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'+2'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'2.0'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'１２'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-[]",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-{}",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-0",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity--1",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-True",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-1.5",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-'2'",
+          "passed": true
+        },
+        {
+          "name": "cache_promote",
+          "passed": true
+        },
+        {
+          "name": "cache_update",
+          "passed": true
+        },
+        {
+          "name": "cache_falsy",
+          "passed": true
+        },
+        {
+          "name": "cache_one",
+          "passed": true
+        },
+        {
+          "name": "records-first-generator-identity",
+          "passed": true
+        },
+        {
+          "name": "records-missing-none-mutation",
+          "passed": true
+        },
+        {
+          "name": "records-empty",
+          "passed": true
+        }
+      ],
+      "scope": "One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark."
+    },
+    "coding_scaling": {
+      "rows": [
+        {
+          "capacity": 128,
+          "median_ns_per_eviction": 350.8209225344672,
+          "samples": [
+            352.8411873787718,
+            349.4689941874185,
+            350.8209225344672
+          ]
+        },
+        {
+          "capacity": 4096,
+          "median_ns_per_eviction": 390.9301753424188,
+          "samples": [
+            393.59131065452857,
+            388.95568721386553,
+            390.9301753424188
+          ]
+        },
+        {
+          "capacity": 65536,
+          "median_ns_per_eviction": 447.6074195736146,
+          "samples": [
+            449.0478495711159,
+            440.9851079856253,
+            447.6074195736146
+          ]
+        }
+      ],
+      "large_to_small_ratio": 1.2758857605752931,
+      "flag_for_complexity_review": false,
+      "method": "3 repeats, 32768 new insertions each, prefilled cache; measured implementation scaling, not a proof of complexity."
+    }
+  },
+  "tri-last": {
+    "checks": [
+      {
+        "name": "anthropic_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "openai_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "single_image_0",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.1224178000120446,
+          "engine": {
+            "projection": null,
+            "time": 1791469882.275173,
+            "duration_s": 1.8,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1414.9,
+            "decode_ms": 319.0,
+            "decode_tok_s": 112.9,
+            "hit_rate": 0.989,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_1",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.0504726000363007,
+          "engine": {
+            "projection": null,
+            "time": 1791469884.4169035,
+            "duration_s": 1.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1389.0,
+            "decode_ms": 279.6,
+            "decode_tok_s": 128.8,
+            "hit_rate": 0.994,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_2",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.05580689990893,
+          "engine": {
+            "projection": null,
+            "time": 1791469886.5058696,
+            "duration_s": 1.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 1385.4,
+            "decode_ms": 275.6,
+            "decode_tok_s": 130.6,
+            "hit_rate": 0.996,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "four_images_0",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "actual": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "client_seconds": 4.563547499943525,
+          "engine": {
+            "projection": null,
+            "time": 1791469889.614756,
+            "duration_s": 3.2,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 2784.7,
+            "decode_ms": 347.5,
+            "decode_tok_s": 126.6,
+            "hit_rate": 0.993,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 36,
+            "drafts_accepted": 34
+          }
+        }
+      },
+      {
+        "name": "four_images_1",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "actual": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "client_seconds": 4.5657498999498785,
+          "engine": {
+            "projection": null,
+            "time": 1791469894.2381773,
+            "duration_s": 3.2,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 49,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 49,
+            "prompt_ms": 2786.0,
+            "decode_ms": 364.2,
+            "decode_tok_s": 134.5,
+            "hit_rate": 0.996,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 36,
+            "drafts_accepted": 36
+          }
+        }
+      },
+      {
+        "name": "four_images_2",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "actual": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "client_seconds": 4.51167469995562,
+          "engine": {
+            "projection": null,
+            "time": 1791469898.8959403,
+            "duration_s": 3.1,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 2775.2,
+            "decode_ms": 309.0,
+            "decode_tok_s": 142.4,
+            "hit_rate": 0.999,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 33,
+            "drafts_accepted": 33
+          }
+        }
+      },
+      {
+        "name": "two_clients_serial_queue",
+        "passed": true,
+        "detail": {
+          "results": [
+            {
+              "request": 1,
+              "answer": "QUEUE-1",
+              "client_seconds": 2.474079899955541
+            },
+            {
+              "request": 2,
+              "answer": "QUEUE-2",
+              "client_seconds": 4.874618300003931
+            }
+          ],
+          "meaning": "Two client requests, engine parallel=1; both completed. Not a throughput/concurrency scaling benchmark."
+        }
+      },
+      {
+        "name": "claude_code_repair",
+        "passed": true,
+        "detail": {
+          "client_wall_seconds": 55.06129270000383,
+          "passed": 29,
+          "total": 29,
+          "scope": "One synthetic Claude Code repair task, no shell tool; not a broad coding score."
+        }
+      }
+    ],
+    "coding": {
+      "model": "IQ2_XS",
+      "passed": 29,
+      "total": 29,
+      "checks": [
+        {
+          "name": "timeout-valid-None",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-''",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-'  '",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-0",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-12",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-' 007 '",
+          "passed": true
+        },
+        {
+          "name": "timeout-default",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-True",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-False",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-1.5",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid--1",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'-1'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'+2'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'2.0'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'１２'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-[]",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-{}",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-0",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity--1",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-True",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-1.5",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-'2'",
+          "passed": true
+        },
+        {
+          "name": "cache_promote",
+          "passed": true
+        },
+        {
+          "name": "cache_update",
+          "passed": true
+        },
+        {
+          "name": "cache_falsy",
+          "passed": true
+        },
+        {
+          "name": "cache_one",
+          "passed": true
+        },
+        {
+          "name": "records-first-generator-identity",
+          "passed": true
+        },
+        {
+          "name": "records-missing-none-mutation",
+          "passed": true
+        },
+        {
+          "name": "records-empty",
+          "passed": true
+        }
+      ],
+      "scope": "One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark."
+    },
+    "coding_scaling": {
+      "rows": [
+        {
+          "capacity": 128,
+          "median_ns_per_eviction": 353.076170966915,
+          "samples": [
+            353.076170966915,
+            352.10876347946396,
+            354.5196527454664
+          ]
+        },
+        {
+          "capacity": 4096,
+          "median_ns_per_eviction": 386.4257820396233,
+          "samples": [
+            388.2537846777723,
+            386.4257820396233,
+            382.5134271551178
+          ]
+        },
+        {
+          "capacity": 65536,
+          "median_ns_per_eviction": 448.165895505781,
+          "samples": [
+            453.9367672862227,
+            448.165895505781,
+            442.25158646327145
+          ]
+        }
+      ],
+      "large_to_small_ratio": 1.26931787630544,
+      "flag_for_complexity_review": false,
+      "method": "3 repeats, 32768 new insertions each, prefilled cache; measured implementation scaling, not a proof of complexity."
+    }
+  },
+  "dual-vision-pro": {
+    "checks": [
+      {
+        "name": "anthropic_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "openai_tool_roundtrip",
+        "passed": true,
+        "detail": {
+          "expected": 42,
+          "actual": "42"
+        }
+      },
+      {
+        "name": "single_image_0",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4827",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 3.161640299949795,
+          "engine": {
+            "projection": null,
+            "time": 1791470839.4987984,
+            "duration_s": 2.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2334.1,
+            "decode_ms": 357.1,
+            "decode_tok_s": 100.8,
+            "hit_rate": 0.855,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_1",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4828",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.9143948999699205,
+          "engine": {
+            "projection": null,
+            "time": 1791470842.445797,
+            "duration_s": 2.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2330.2,
+            "decode_ms": 354.2,
+            "decode_tok_s": 101.6,
+            "hit_rate": 0.915,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "single_image_2",
+        "passed": true,
+        "detail": {
+          "actual": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "expected": {
+            "code": "VX-4829",
+            "total": 37,
+            "blue_squares": 3
+          },
+          "client_seconds": 2.871003899956122,
+          "engine": {
+            "projection": null,
+            "time": 1791470845.3889883,
+            "duration_s": 2.7,
+            "finish": "stop",
+            "prompt_tokens": 719,
+            "reused": 0,
+            "output_tokens": 36,
+            "prompt_total": 719,
+            "prompt_read": 719,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 36,
+            "prompt_ms": 2313.3,
+            "decode_ms": 331.4,
+            "decode_tok_s": 108.6,
+            "hit_rate": 0.945,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 27,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "four_images_0",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "actual": [
+            "VT-9300",
+            "VT-9301",
+            "VT-9302",
+            "VT-9303"
+          ],
+          "client_seconds": 5.003329199971631,
+          "engine": {
+            "projection": null,
+            "time": 1791470848.876354,
+            "duration_s": 4.2,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 3761.9,
+            "decode_ms": 410.8,
+            "decode_tok_s": 107.1,
+            "hit_rate": 0.912,
+            "pcie_share": 0.001,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 34,
+            "drafts_accepted": 34
+          }
+        }
+      },
+      {
+        "name": "four_images_1",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "actual": [
+            "VT-9304",
+            "VT-9305",
+            "VT-9306",
+            "VT-9307"
+          ],
+          "client_seconds": 4.960815700003877,
+          "engine": {
+            "projection": null,
+            "time": 1791470853.9185345,
+            "duration_s": 4.2,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 44,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 44,
+            "prompt_ms": 3781.2,
+            "decode_ms": 377.8,
+            "decode_tok_s": 116.5,
+            "hit_rate": 0.961,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 33,
+            "drafts_accepted": 33
+          }
+        }
+      },
+      {
+        "name": "four_images_2",
+        "passed": true,
+        "detail": {
+          "expected": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "actual": [
+            "VT-9308",
+            "VT-9309",
+            "VT-9310",
+            "VT-9311"
+          ],
+          "client_seconds": 4.900123800034635,
+          "engine": {
+            "projection": null,
+            "time": 1791470858.954543,
+            "duration_s": 4.1,
+            "finish": "stop",
+            "prompt_tokens": 2767,
+            "reused": 0,
+            "output_tokens": 38,
+            "prompt_total": 2767,
+            "prompt_read": 2767,
+            "reasoning_recoveries": 0,
+            "reasoning_repeat_coverage": 0.0,
+            "engine_generated": 38,
+            "prompt_ms": 3751.2,
+            "decode_ms": 327.6,
+            "decode_tok_s": 116.0,
+            "hit_rate": 0.969,
+            "pcie_share": 0.0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "drafts_offered": 30,
+            "drafts_accepted": 27
+          }
+        }
+      },
+      {
+        "name": "two_clients_serial_queue",
+        "passed": true,
+        "detail": {
+          "results": [
+            {
+              "request": 1,
+              "answer": "QUEUE-1",
+              "client_seconds": 7.408416999969631
+            },
+            {
+              "request": 2,
+              "answer": "QUEUE-2",
+              "client_seconds": 3.7304455999983475
+            }
+          ],
+          "meaning": "Two client requests, engine parallel=1; both completed. Not a throughput/concurrency scaling benchmark."
+        }
+      },
+      {
+        "name": "claude_code_repair",
+        "passed": false,
+        "error": "AssertionError({'model': 'IQ2_XS', 'passed': 27, 'total': 29, 'checks': [{'name': 'timeout-valid-None', 'passed': True}, {'name': \"timeout-valid-''\", 'passed': False, 'error': \"ValueError('timeout string must be stripped ASCII decimal digits')\"}, {'name': \"timeout-valid-'  '\", 'passed': True}, {'name': 'timeout-valid-0', 'passed': True}, {'name': 'timeout-valid-12', 'passed': True}, {'name': \"timeout-valid-' 007 '\", 'passed': False, 'error': \"ValueError('timeout string must be stripped ASCII decimal digits')\"}, {'name': 'timeout-default', 'passed': True}, {'name': 'timeout-invalid-True', 'passed': True}, {'name': 'timeout-invalid-False', 'passed': True}, {'name': 'timeout-invalid-1.5', 'passed': True}, {'name': 'timeout-invalid--1', 'passed': True}, {'name': \"timeout-invalid-'-1'\", 'passed': True}, {'name': \"timeout-invalid-'+2'\", 'passed': True}, {'name': \"timeout-invalid-'2.0'\", 'passed': True}, {'name': \"timeout-invalid-'１２'\", 'passed': True}, {'name': 'timeout-invalid-[]', 'passed': True}, {'name': 'timeout-invalid-{}', 'passed': True}, {'name': 'cache-capacity-0', 'passed': True}, {'name': 'cache-capacity--1', 'passed': True}, {'name': 'cache-capacity-True', 'passed': True}, {'name': 'cache-capacity-1.5', 'passed': True}, {'name': \"cache-capacity-'2'\", 'passed': True}, {'name': 'cache_promote', 'passed': True}, {'name': 'cache_update', 'passed': True}, {'name': 'cache_falsy', 'passed': True}, {'name': 'cache_one', 'passed': True}, {'name': 'records-first-generator-identity', 'passed': True}, {'name': 'records-missing-none-mutation', 'passed': True}, {'name': 'records-empty', 'passed': True}], 'scope': 'One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark.'})"
+      }
+    ],
+    "coding": {
+      "model": "IQ2_XS",
+      "passed": 27,
+      "total": 29,
+      "checks": [
+        {
+          "name": "timeout-valid-None",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-''",
+          "passed": false,
+          "error": "ValueError('timeout string must be stripped ASCII decimal digits')"
+        },
+        {
+          "name": "timeout-valid-'  '",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-0",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-12",
+          "passed": true
+        },
+        {
+          "name": "timeout-valid-' 007 '",
+          "passed": false,
+          "error": "ValueError('timeout string must be stripped ASCII decimal digits')"
+        },
+        {
+          "name": "timeout-default",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-True",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-False",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-1.5",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid--1",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'-1'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'+2'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'2.0'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-'１２'",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-[]",
+          "passed": true
+        },
+        {
+          "name": "timeout-invalid-{}",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-0",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity--1",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-True",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-1.5",
+          "passed": true
+        },
+        {
+          "name": "cache-capacity-'2'",
+          "passed": true
+        },
+        {
+          "name": "cache_promote",
+          "passed": true
+        },
+        {
+          "name": "cache_update",
+          "passed": true
+        },
+        {
+          "name": "cache_falsy",
+          "passed": true
+        },
+        {
+          "name": "cache_one",
+          "passed": true
+        },
+        {
+          "name": "records-first-generator-identity",
+          "passed": true
+        },
+        {
+          "name": "records-missing-none-mutation",
+          "passed": true
+        },
+        {
+          "name": "records-empty",
+          "passed": true
+        }
+      ],
+      "scope": "One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark."
+    },
+    "coding_scaling": {
+      "rows": [
+        {
+          "capacity": 128,
+          "median_ns_per_eviction": 343.69812240697684,
+          "samples": [
+            342.5201420270696,
+            347.25341535590815,
+            343.69812240697684
+          ]
+        },
+        {
+          "capacity": 4096,
+          "median_ns_per_eviction": 379.269412320582,
+          "samples": [
+            376.1779758804096,
+            381.33850210897435,
+            379.269412320582
+          ]
+        },
+        {
+          "capacity": 65536,
+          "median_ns_per_eviction": 433.2244856186662,
+          "samples": [
+            427.75573660946975,
+            433.2244856186662,
+            434.70459232253233
+          ]
+        }
+      ],
+      "large_to_small_ratio": 1.2604796400536638,
+      "flag_for_complexity_review": false,
+      "method": "3 repeats, 32768 new insertions each, prefilled cache; measured implementation scaling, not a proof of complexity."
+    }
+  }
+}

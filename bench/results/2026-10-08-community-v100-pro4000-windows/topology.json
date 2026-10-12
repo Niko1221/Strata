@@ -1,0 +1,44 @@
+{
+  "devices": [
+    {
+      "cuda_ordinal": 0,
+      "name": "NVIDIA RTX PRO 4000 Blackwell",
+      "bus": "0000:01:00.0",
+      "compute_capability": [
+        12,
+        0
+      ],
+      "peer_access_supported": {
+        "1": false,
+        "2": false
+      }
+    },
+    {
+      "cuda_ordinal": 1,
+      "name": "Tesla V100-SXM2-16GB",
+      "bus": "0000:83:00.0",
+      "compute_capability": [
+        7,
+        0
+      ],
+      "peer_access_supported": {
+        "0": false,
+        "2": true
+      }
+    },
+    {
+      "cuda_ordinal": 2,
+      "name": "Tesla V100-SXM2-16GB",
+      "bus": "0000:84:00.0",
+      "compute_capability": [
+        7,
+        0
+      ],
+      "peer_access_supported": {
+        "0": false,
+        "1": true
+      }
+    }
+  ],
+  "note": "Driver enumeration only, no context or peer throughput benchmark. Layer split uses staged host hand-off and does not require P2P."
+}
