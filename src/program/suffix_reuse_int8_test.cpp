@@ -36,6 +36,7 @@
 #include "strata/core/layout.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_q4.hpp"   // T11.d: kv_q4_bytes_per_head (the hybrid's V half)
 #include "strata/program/kv_q8_quant.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/program/kv_splice.hpp"
@@ -323,18 +324,60 @@ int main() {
         check(splice_scope_guard_int8(true, false, false, 0, false, /*kv_rot=*/true)
               == SpliceStatus::UnsupportedFormat,
               "T11.c: guard REFUSES int8+kv_rot (STRATA_KV_ROT=1 Hadamard domain)");
+        check(splice_scope_guard_int8(/*kv_int8=*/true, /*kv_q4=*/false, /*kv_hybrid=*/true,
+                                      /*kv_resident=*/0, /*layer_split=*/false, /*kv_rot=*/false)
+              == SpliceStatus::NoOp,
+              "T11.c: guard ACCEPTS hybrid k8v4 (K half is byte-identical int8; V untouched)");
         check(splice_scope_guard_int8(false, true, false, 0, false, false)
               == SpliceStatus::UnsupportedFormat,
               "T11.c: guard still refuses q4_0");
-        check(splice_scope_guard_int8(false, false, true, 0, false, false)
-              == SpliceStatus::UnsupportedFormat,
-              "T11.c: guard still refuses hybrid k8v4");
         check(splice_scope_guard_int8(false, false, false, 32, false, false)
               == SpliceStatus::UnsupportedResident,
               "T11.c: guard still refuses kv_resident (streaming ring)");
         check(splice_scope_guard_int8(false, false, false, 0, true, false)
               == SpliceStatus::UnsupportedSplit,
               "T11.c: guard still refuses layer split");
+
+        // ---- T11.d: hybrid k8v4 parity - the K rotation is layout-independent ----
+        // The hybrid's K half is the same codes+scales storage (layer.cpp:736), so the same
+        // splice on a hybrid-shaped state must produce BITWISE the same K result as on a
+        // plain-int8 state, and the Q4_0 V bytes must be untouched (V is position-free).
+        {
+            std::vector<int8_t>  h_k_q = k_q_before;
+            std::vector<uint16_t> h_k_scale = k_scale_before;
+            std::vector<uint8_t> h_v_q4(pool_rows * strata::kernels::kv_q4_bytes_per_head(head_dim), 0);
+            for (size_t i = 0; i < h_v_q4.size(); ++i) h_v_q4[i] = (uint8_t) (i * 37 + 11);
+            strata::core::QsaState hst;
+            hst.kv_int8 = true;      // the hybrid's K half is quantized int8 (kv_q8)
+            hst.kv_hybrid = true;
+            hst.k_q = h_k_q.data();
+            hst.k_scale = h_k_scale.data();
+            hst.v_q4 = h_v_q4.data();   // the hybrid's V half (rotated Q4_0; opaque here)
+            hst.kv_mode = 0;
+            hst.max_cells = max_cells;
+            hst.n_pages = n_pages;
+            hst.n_slots = n_pages;
+            hst.cos_tab = cos_tab.data();
+            hst.sin_tab = sin_tab.data();
+            hst.owns_rope = false;
+            const bool hok = rotate_qsa_tail_inplace_int8(
+                hst, head_dim, n_rot, n_head_kv, max_pos, page_size,
+                edit_pos, old_suffix_len, /*uniform=*/true, delta, /*deltas=*/nullptr,
+                /*pool_rows=*/(int64_t) pool_rows);
+            check(hok, "T11.d: hybrid-shaped state splices (same helper, K half is int8)");
+            int k_diff = 0;
+            for (size_t i = 0; i < k_q.size(); ++i)
+                if (h_k_q[i] != k_q[i]) ++k_diff;
+            int ks_diff = 0;
+            for (size_t i = 0; i < k_scale.size(); ++i)
+                if (h_k_scale[i] != k_scale[i]) ++ks_diff;
+            check(k_diff == 0 && ks_diff == 0,
+                  "T11.d: hybrid K result BITWISE == plain-int8 K result (layout-independent)");
+            int v4_diff = 0;
+            for (size_t i = 0; i < h_v_q4.size(); ++i)
+                if (h_v_q4[i] != (uint8_t) (i * 37 + 11)) ++v4_diff;
+            check(v4_diff == 0, "T11.d: hybrid V (Q4_0 bytes) byte-identical after the splice");
+        }
     }
 
     std::printf(g_fail ? "FAIL\n" : "PASS\n");

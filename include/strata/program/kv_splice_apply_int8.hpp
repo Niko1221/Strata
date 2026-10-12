@@ -74,7 +74,10 @@ inline SpliceStatus splice_scope_guard_int8(bool kv_int8, bool kv_q4, bool kv_hy
     // pure RoPE math would compound the rotation.  Refuse for now (dequant+invH+rotate+H+requant
     // is a follow-up; the daily preset does not set STRATA_KV_ROT=1, see generate.cpp:2162).
     if (kv_rot) return SpliceStatus::UnsupportedFormat;
-    if (kv_hybrid) return SpliceStatus::UnsupportedFormat;
+    // Hybrid K8V4 is ACCEPTED: layer.cpp:736 stores its K exactly like plain int8 (k_q codes +
+    // k_scale scales at the same offsets, kv_pool_bytes:654-658 sizes the K half identically),
+    // and the splice only ever rewrites K - V (here rotated Q4_0) is position-free and untouched.
+    // --kv-resident still refuses below, hybrid streaming included.
     if (kv_q4) return SpliceStatus::UnsupportedFormat;
     if (kv_resident > 0) return SpliceStatus::UnsupportedResident;
     if (layer_split_active) return SpliceStatus::UnsupportedSplit;
