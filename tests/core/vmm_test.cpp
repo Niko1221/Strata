@@ -22,6 +22,11 @@ int main() {
     }
     const uint64_t G = strata::core::vmm_granularity();
     CHECK(G >= 4096);
+#if defined(STRATA_USE_HIP)
+    // HIP's minimum granularity is 4 KiB on gfx1201 and hipMemGetInfo counts each such chunk as 2 MiB: the chunk is the
+    // recommended granularity (vmm.cpp)
+    CHECK(G >= (2u << 20));
+#endif
     VmmRange a, b;
     CHECK(a.reserve(8 * G + 1));   // rounds up
     CHECK(a.chunks() == 9);
