@@ -266,9 +266,24 @@ Measured on one **Radeon Pro W7800** (gfx1100, 32 GB), 8-thread CPU pool, the mo
 | --- | --- |
 | `strata-exl3-pack --run` | 1079 roles, 2117.4 MiB EXL3 linears, 2679.3 MiB staged, 301 dense projections, 0 faults |
 | load (`--exl3`) | 15.4 s |
-| prefill | 3.95 tok/s (14 tokens) |
-| decode | 2.30 tok/s (42 tokens, capital-of-France prompt); 2.51 tok/s (80 tokens, Hello-World prompt, PLE) |
-| expert FFN | 0.37–0.46 ms/layer (measured earlier, 48 layers) |
+| prefill | 7.0 tok/s (14 tokens) |
+| decode | 8.9 tok/s (40 tokens, capital-of-France prompt); 3.0-4.4 tok/s on a cold page cache |
+| expert FFN | 0.37-0.46 ms/layer (measured earlier, 48 layers) |
+
+Routed experts are cached in VRAM: `--expert-cache N` keeps N experts per layer (`auto` or unset sizes it from the
+free VRAM after the stream's own buffers, 0 turns it off).  Without it the stream reads and uploads every routed
+expert on every token: 8 experts x 48 layers x 1.86 MB = 890 MB per token at 3.05bpw, and the router picks most of
+the same experts again.  Measured on the same machine, same prompt, third run of each (steady state):
+
+| `--expert-cache` | decode | prefill |
+| --- | --- | --- |
+| 0 | 5.5 tok/s | 4.9 tok/s |
+| auto (315 slots/layer, 26.3 GiB) | 8.9 tok/s | 7.0 tok/s |
+
+The hit rate settles at 70-94% per token and the output tokens are bit-identical with and without the cache: the
+weights are the same bytes and the kernels the same.  `STRATA_EXL3_TIME=1` prints the per-token hit rate and the
+upload/ffn/d2h split.  A 30 GB machine cannot hold the 49 GB model in the page cache, so the cold-cache numbers
+depend on how much of it the drive has to read again.
 
 The prompts answer correctly, with and without PLE:
 
