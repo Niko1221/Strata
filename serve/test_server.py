@@ -602,8 +602,10 @@ class VideoParts(unittest.TestCase):
         def encode(self, source):
             return self.img, 3
 
-        def encode_video(self, source, opts, keep=()):
+        def encode_video(self, source, opts, keep=(), progress=None, cancel=None):
             self.opts.append(opts)
+            if progress is not None:
+                progress(2, 2)
             # "<0.2 seconds>" (two text ids), then two frame pairs of 2 and 4 cells between start/end ids 900/901
             return self.vid, 6, [[70, 71], [900], 2, [901, 72], [900], 4, [901]]
 
@@ -687,6 +689,21 @@ class VideoParts(unittest.TestCase):
         finally:
             slot.release()
 
+    def test_cancelled_video_fifo_wait_does_not_leak_the_slot(self):
+        self.assertTrue(self.svc.fifo.acquire())
+        cancel = threading.Event()
+        timer = threading.Timer(0.05, cancel.set)
+        timer.start()
+        try:
+            with self.assertRaisesRegex(ValueError, "video request cancelled"):
+                self.svc.prepare([{"role": "user", "content": [{"type": "video", "source": "a.mp4"}]}],
+                                 None, {}, cancel=cancel)
+            self.assertEqual(self.svc.status["queued"], 0)
+            self.assertEqual(self.svc.video_preparing, 0)
+        finally:
+            self.svc.fifo.release()
+            timer.join()
+
     def test_request_shapes(self):
         from serve.frontend import anthropic_to_messages, openai_to_messages, videos_of
         msgs, _, _ = openai_to_messages({"messages": [{"role": "user", "content": [
@@ -732,10 +749,14 @@ class VideoParts(unittest.TestCase):
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache, v.video = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}, \
             dict(VIDEO_DEFAULTS)
+        v.stopped = False
         v.proc = mock.Mock()
-        v.proc.stdout.readline.side_effect = ["OK 6 2 4 120\n", "LAYOUT T5;I2;T6;I4\n"]
+        v.proc.poll.return_value = None
+        v.proc.stdout.readline.side_effect = ["VPROG 2 2\n", "OK 6 2 4 120\n", "LAYOUT T5;I2;T6;I4\n"]
+        progress = []
         with mock.patch.object(Vision, "load", return_value=b"mp4"):
-            path, n, layout = v.encode_video("x", {"max_frames": 4})
+            path, n, layout = v.encode_video("x", {"max_frames": 4}, progress=lambda d, t: progress.append((d, t)))
+            self.assertEqual(progress, [(2, 2)])
             again = v.encode_video("x", {"max_frames": 4})          # cached: the encoder is not asked twice
         line = v.proc.stdin.write.call_args_list[0].args[0]
         # fps, frames, max side, tokens per pair, the whole video's budget, min per pair, then names relative to the
@@ -756,7 +777,9 @@ class VideoParts(unittest.TestCase):
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache, v.video = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}, \
             dict(VIDEO_DEFAULTS)
+        v.stopped = False
         v.proc = mock.Mock(stdin=Gone())
+        v.proc.poll.return_value = None
         with mock.patch.object(Vision, "load", return_value=b"mp4"):
             with self.assertRaises(BrokenPipeError):
                 v.encode_video("x", {})
