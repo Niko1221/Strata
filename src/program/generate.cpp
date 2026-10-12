@@ -12536,7 +12536,7 @@ int main(int argc, char** argv) {
                                 sstatus != strata::program::suffix_reuse::SpliceStatus::NoOp) {
                                 const char* reason =
                                     (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedFormat)
-                                        ? "kv format is q4_0 / hybrid / STRATA_KV_ROT=1 (Phase 3 follow-up: int8 IS supported)"
+                                        ? "head_dim != 256 with a rotated format, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
                                         : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedResident)
                                           ? "kv_resident > 0 (streaming-ring splice is Phase 3)"
                                           : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedSplit)
