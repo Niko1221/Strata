@@ -79,6 +79,28 @@ void native_grouped_set_v1(bool v1);
 /// The bench only: the AMD kernel layout (STRATA_EXP_MODE values; -1 = the environment's) and the phase
 /// (0 all, 1 gate/up + SwiGLU + quantize, 2 down).
 void native_expert_set_mode(int mode, int phase);
+
+/// EXPDEC (STRATA_EXPDEC=1, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
+/// memory and computes several rows per lane, the same sums per (row, entry) as the default kernels (bitwise), for
+/// gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S at n_embd 2560 and down IQ4_NL / Q2_0 at n_ff 640; other layouts
+/// keep the default kernels.  Set before graph capture; captured graphs keep the kernels they captured.
+void native_expert_set_expdec(int on);
+int native_expert_expdec();
+/// Its knobs, read from the environment at startup (STRATA_EXPDEC_R 1 | 2, _DR 1 | 2 | 4, _MINB 2 | 4, _D20 0 | 1,
+/// _RB, _DRB, _MINBLK): gate/up and down rows per lane, the gate/up kernel's __launch_bounds__ minimum blocks per SM
+/// (2 = up to 128 registers, 4 = up to 64), EXPDEC for the IQ4_NL down too, gate/up and down rows per block (0 = auto
+/// from the launch's groups), the auto rule's minimum blocks.  In the setter a field <= 0 (< 0 for the two rows per
+/// block and down_iq4_nl) keeps the current value.
+/// `down` (STRATA_EXPDEC_DOWN, default 0): EXPDEC for the down too; by default only the gate/up (in the engine the
+/// Q2_0 down was ~10% slower with EXPDEC, docs/EXPERTDEC.md par. 7).
+struct NativeExpertExpdecParams {
+    int gu_rows_per_lane = 0, down_rows_per_lane = 0, gu_min_blocks_per_sm = 0, down_iq4_nl = -1, down = -1;
+    int gu_rows_per_block = -1, down_rows_per_block = -1, min_blocks = 0;
+};
+void native_expert_set_expdec_params(const NativeExpertExpdecParams& p);
+NativeExpertExpdecParams native_expert_expdec_params();
+/// Whether EXPDEC has kernels for this layout's gate/up and down (the bench's check).
+bool native_expert_expdec_takes(const NativeExpertLayout& L, bool& gu, bool& down);
 /// `iq_mmvq` and `native_expert_grouped` decode each weight part once and apply it to every column / entry;
 /// true selects the older kernels that decode it again per column (STRATA_OLD_IQ_MMVQ=1 at startup).  Both give
 /// bitwise the same results.  Set before graph capture; captured graphs keep the kernels they captured.
