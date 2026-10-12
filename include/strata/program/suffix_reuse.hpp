@@ -195,14 +195,10 @@ inline std::string validate_suffix_reuse_options(int64_t cache_suffix_reuse, int
     if (cache_suffix_reuse <= 0) return {};
     if (prompt_cache < 2)
         return "--cache-suffix-reuse N requires --prompt-cache >= 2";
-    if (kv_format == "q4_0")
-        return "--cache-suffix-reuse N requires --kv fp16 or --kv int8 (q4_0 is a Phase 3 follow-up; "
-               "see plans/2026-10-11_184000-strata-suffix-reuse-phase2-v2.md Tasks 2+4)";
-    // K8V4 hybrid: ACCEPTED (same acceptance as int8).  The hybrid's K half is byte-identical
-    // int8 storage (layer.cpp:736: k_q codes + k_scale scales at the same offsets), and the
-    // splice rewrites K only - V (rotated Q4_0) is position-free and never touched.  Falls
-    // through to the kv_resident / layer_split refusals below, exactly like plain int8.
-    if (kv_format != "fp16" && kv_format != "int8" && kv_format != "k8v4")
+    // q4_0: ACCEPTED (same as int8/k8v4).  The Q4 helper does the exact H-sandwich with
+    // Q4_0 dequant/requant (suffix_reuse_int8_test T11.f measures the codec noise); falls
+    // through to the kv_resident / layer_split refusals below like every quant format.
+    if (kv_format != "fp16" && kv_format != "int8" && kv_format != "k8v4" && kv_format != "q4_0")
         return "--cache-suffix-reuse N requires --kv fp16 or --kv int8 (see plans/2026-10-11_184000-strata-suffix-reuse-phase2-v2.md)";
     if (kv_resident > 0)
         return "--cache-suffix-reuse N is unsupported with --kv-resident (streaming-ring splice "
