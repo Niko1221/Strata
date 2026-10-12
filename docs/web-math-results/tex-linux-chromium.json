@@ -1,0 +1,82 @@
+{
+  "browser": "chromium",
+  "vendor_bytes": 0,
+  "equations": [
+    {
+      "name": "fraction",
+      "ok": true,
+      "reason": null,
+      "ms": 1958.0999999940395,
+      "cached_ms": 0.10000002384185791
+    },
+    {
+      "name": "integral",
+      "ok": true,
+      "reason": null,
+      "ms": 1963.2000000178814,
+      "cached_ms": 0.19999998807907104
+    },
+    {
+      "name": "sum",
+      "ok": true,
+      "reason": null,
+      "ms": 1955.4000000059605,
+      "cached_ms": 0.09999999403953552
+    },
+    {
+      "name": "matrix",
+      "ok": true,
+      "reason": null,
+      "ms": 1956.9000000059605,
+      "cached_ms": 0
+    },
+    {
+      "name": "cases",
+      "ok": true,
+      "reason": null,
+      "ms": 1960.699999988079,
+      "cached_ms": 0.09999999403953552
+    },
+    {
+      "name": "aligned",
+      "ok": true,
+      "reason": null,
+      "ms": 2006.699999988079,
+      "cached_ms": 0.09999999403953552
+    },
+    {
+      "name": "unicode",
+      "ok": true,
+      "reason": null,
+      "ms": 1955.0999999940395,
+      "cached_ms": 0
+    },
+    {
+      "name": "invalid",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 1633.800000011921,
+      "cached_ms": 0.09999999403953552
+    },
+    {
+      "name": "unsupported",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 1635.8999999761581,
+      "cached_ms": 0
+    },
+    {
+      "name": "loop",
+      "ok": false,
+      "reason": "limit",
+      "ms": 5145.800000011921,
+      "cached_ms": 0.09999999403953552
+    }
+  ],
+  "cold_chat_ms": 6026.44,
+  "vendor_transfer_bytes": 0,
+  "platform": "Linux",
+  "cpu": "Intel Core i7-2600",
+  "worker_transport": "local Docker 28.5.1 Unix socket",
+  "playwright": "1.63.0"
+}

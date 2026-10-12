@@ -1,0 +1,15 @@
+{
+  "image": "sha256:d420fe04568dce256c5f09e9f2d037565eb4ee73b23b84dc1cf0686161dcc373",
+  "memory_bytes": 536870912,
+  "cpu_nanocpus": 1000000000,
+  "pids_limit": 64,
+  "network": "none",
+  "read_only": true,
+  "mounts": [],
+  "cap_drop": [
+    "ALL"
+  ],
+  "security_opt": [
+    "no-new-privileges"
+  ]
+}
