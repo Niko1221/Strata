@@ -452,6 +452,12 @@ app. It has three tabs:
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
+The Monitor's **Token usage and cost** card keeps the tokens and the measured watt-hours per day across starts, next
+to the run config (`strata-<model>.usage.json`). By default it adds up every model that has such a file in the same
+folder - the whole folder's bill - and **About > Settings > Token usage and cost** shows the models one by one
+instead, in the card and in its per-day list. The prices it multiplies by (and the price of a kilowatt-hour) are in
+**About > Token pricing** (`strata-<model>.pricing.json`).
+
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
 `http://127.0.0.1:8080/v1` for your apps.
 

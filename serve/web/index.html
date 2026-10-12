@@ -147,11 +147,17 @@
 
       <div class="st-card usage-card" id="usage-card" hidden>
         <div class="req-head"><span class="card-title">Token usage and cost</span>
-          <span class="muted small" id="usage-pricing-note"></span></div>
+          <span class="muted small" id="usage-pricing-note"></span>
+          <div class="seg seg--2 seg--sm" id="usage-scope-card" role="radiogroup" aria-label="Token usage and cost">
+            <button type="button" role="radio" data-v="merged" aria-checked="true">Merged</button>
+            <button type="button" role="radio" data-v="models" aria-checked="false">By model</button>
+          </div>
+        </div>
         <dl class="facts" id="usage-facts"></dl>
         <div class="table-wrap" id="usage-days-wrap" hidden>
           <table class="st-table">
-            <thead><tr><th>Day</th><th class="num">Requests</th><th class="num">Prompt</th><th class="num">Reused</th>
+            <thead><tr><th>Day</th><th id="usage-model-th" hidden>Model</th><th class="num">Requests</th>
+              <th class="num">Prompt</th><th class="num">Reused</th>
               <th class="num">Output</th><th class="num">kWh</th><th class="num">Cost</th></tr></thead>
             <tbody id="usage-days-body"></tbody>
           </table>
@@ -182,6 +188,15 @@
         <div class="st-field">
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+        </div>
+        <div class="st-field">
+          <label class="st-label" for="usage-scope">Token usage and cost <output>the Monitor's card and its list</output></label>
+          <div class="seg seg--2" id="usage-scope" role="radiogroup" aria-label="Token usage and cost">
+            <button type="button" role="radio" data-v="merged" aria-checked="true">Merged</button>
+            <button type="button" role="radio" data-v="models" aria-checked="false">By model</button>
+          </div>
+          <span class="muted small">Merged adds up every model whose usage file sits next to this run config;
+            By model lists them one by one.</span>
         </div>
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>

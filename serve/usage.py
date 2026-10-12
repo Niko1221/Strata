@@ -6,6 +6,10 @@ A pricing block turns the tokens into money (strata-<model>.pricing.json, or the
 prices per million tokens, with a separate price for prompt tokens the conversation cache reused - the same shape
 the API providers bill.  DEFAULT_PRICING is the starting point; every field can be set to one's own.
 
+One folder usually holds the usage file of every model one has run, so the Monitor can also add them up (the
+default) or tell them apart ("By model" in the web app's Settings).  That reads the other files and never writes to
+them; each model is named after the "model_name" of the run config beside its file, which is what one calls it.
+
 Electricity is billed the same way.  The sampler (serve/telemetry.py) hands every GPU power reading to
 record_energy(), which keeps watt-hours per day: the whole box is what one pays for, so the card's own watt-hours
 are added to `other_watts` (CPU, board, drives) times the seconds sampled, and `price_per_kwh` is what a
@@ -37,6 +41,9 @@ POWER_KEYS = ("price_per_kwh", "other_watts")
 COUNT_KEYS = ("requests", "prompt_tokens", "reused", "output_tokens", "energy_wh", "busy_wh", "seconds")
 COUNT_FLOATS = ("energy_wh", "busy_wh", "seconds")     # the rest of them are whole counts
 
+# one usage file per model, next to its run config: strata-<model>.usage.json <- strata-<model>.json
+USAGE_SUFFIX = ".usage.json"
+
 
 def count_value(key: str, value) -> float | int:
     """One stored counter as its own type: the watt-hours and the seconds are fractional, the counts are not.
@@ -48,6 +55,46 @@ def count_value(key: str, value) -> float | int:
     if n != n:                                          # NaN would spread through every sum
         n = 0.0
     return round(max(0.0, n), 4) if key in COUNT_FLOATS else int(max(0.0, n))
+
+
+def read_days(path) -> dict[str, dict]:
+    """The per-day counts in one usage file.  A file that is missing, unreadable or half written reads as the days
+    it does hold (nothing here may stop the server), and every count goes through count_value()."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict) or not isinstance(d.get("days"), dict):
+        return {}
+    return {k: {kk: count_value(kk, vv) for kk, vv in v.items() if kk in COUNT_KEYS}
+            for k, v in d["days"].items() if isinstance(v, dict)}
+
+
+def model_name(usage_path) -> str:
+    """What the model behind one usage file is called: the "model_name" of the run config it sits next to
+    (strata-<model>.usage.json <-> strata-<model>.json), or the file's own stem when there is no readable one.
+    A config one edited by hand, or a file someone copied here, still names itself."""
+    p = Path(usage_path)
+    stem = p.name[:-len(USAGE_SUFFIX)] if p.name.endswith(USAGE_SUFFIX) else p.stem
+    try:
+        cfg = json.loads(p.with_name(stem + ".json").read_text(encoding="utf-8-sig"))
+        name = cfg.get("model_name") if isinstance(cfg, dict) else None
+    except (OSError, ValueError):
+        name = None
+    return name.strip() if isinstance(name, str) and name.strip() else stem
+
+
+def summed(days_list) -> dict[str, dict]:
+    """Several models' per-day counts added up: a day then holds what every model did on it.  This is what the
+    Monitor shows when it is not showing the models apart - the whole folder's bill."""
+    out: dict[str, dict] = {}
+    for days in days_list:
+        for day, counts in days.items():
+            row = out.setdefault(day, {k: 0 for k in COUNT_KEYS})
+            for k in COUNT_KEYS:
+                v = float(counts.get(k) or 0.0)
+                row[k] = round(row[k] + v, 4) if k in COUNT_FLOATS else int(row[k] + v)
+    return out
 
 
 def clean_pricing(d, base: dict | None = None) -> dict:
@@ -103,6 +150,22 @@ def cost_of(counts: dict, pricing: dict | None = None) -> dict:
             "energy_cost": round(ec, 6), "total_cost": round(ic + cc + oc + ec, 6)}
 
 
+def days_view(days: dict[str, dict], pricing: dict | None = None, today: str | None = None) -> dict:
+    """The rows the Monitor draws from one set of per-day counts (one model's, or the folder's added up): today,
+    the last 14 days newest first, and the all-time sum - each with its cost at `pricing`."""
+    today = today or time.strftime("%Y-%m-%d")
+    empty = {k: 0 for k in COUNT_KEYS}
+    total = {k: count_value(k, sum(float(d.get(k) or 0.0) for d in days.values())) for k in COUNT_KEYS}
+
+    def row(name: str, counts: dict) -> dict:
+        return {"date": name, **{k: count_value(k, counts.get(k)) for k in COUNT_KEYS},
+                "cost": cost_of(counts, pricing)}
+
+    return {"today": row(today, days.get(today, empty)),
+            "days": [row(k, v) for k, v in sorted(days.items(), reverse=True)[:14]],
+            "total": row("total", total)}
+
+
 class UsageStore:
     """Per-day token counts and watt-hours, kept in a JSON file when one is given (next to the run config) and in
     memory always.  record() runs once per finished request; the file is small and rewritten whole, which at a few
@@ -113,16 +176,8 @@ class UsageStore:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else None
         self.lock = threading.Lock()
-        self.days: dict[str, dict] = {}
+        self.days: dict[str, dict] = read_days(self.path) if self.path else {}
         self._saved_at = 0.0
-        if self.path:
-            try:
-                d = json.loads(self.path.read_text(encoding="utf-8-sig"))
-                if isinstance(d, dict) and isinstance(d.get("days"), dict):
-                    self.days = {k: {kk: count_value(kk, vv) for kk, vv in v.items() if kk in COUNT_KEYS}
-                                 for k, v in d["days"].items() if isinstance(v, dict)}
-            except (OSError, ValueError):
-                self.days = {}
 
     @staticmethod
     def _today() -> str:
@@ -185,18 +240,55 @@ class UsageStore:
         except OSError as e:
             print(f"[strata] could not save the usage stats: {e}", flush=True)
 
-    def view(self, pricing: dict | None = None) -> dict:
-        """GET /usage and the Monitor's card: today, the last 14 days newest first, and the all-time sum -
-        each with its cost at `pricing`."""
+    def snapshot(self) -> dict[str, dict]:
+        """A copy of the per-day counts, taken under the lock: the power path records while a caller is adding
+        days up, and a dict that changes under an iteration is not worth the risk."""
         with self.lock:
-            days = {k: dict(v) for k, v in self.days.items()}
-        empty = {k: 0 for k in COUNT_KEYS}
-        total = {k: count_value(k, sum(float(d.get(k) or 0.0) for d in days.values())) for k in COUNT_KEYS}
+            return {k: dict(v) for k, v in self.days.items()}
 
-        def row(name: str, counts: dict) -> dict:
-            return {"date": name, **{k: count_value(k, counts.get(k)) for k in COUNT_KEYS},
-                    "cost": cost_of(counts, pricing)}
+    def view(self, pricing: dict | None = None) -> dict:
+        """GET /usage and the Monitor's card: today, the last 14 days newest first, and the all-time sum of this
+        model - each with its cost at `pricing`."""
+        return days_view(self.snapshot(), pricing, self._today())
 
-        return {"today": row(self._today(), days.get(self._today(), empty)),
-                "days": [row(k, v) for k, v in sorted(days.items(), reverse=True)[:14]],
-                "total": row("total", total)}
+
+class ModelsUsage:
+    """The models sharing the running model's folder, read from their own usage files: one entry per model_name,
+    which is what "By model" on the Monitor's card shows, and what the card's default adds up.
+
+    The model the server is running is not read from its file here - its counts live in the UsageStore and are
+    fresher, because the power sampler keeps them in memory between saves.  Everything else is a few small files
+    per folder, read at most once per poll: /metrics is asked once a second and the files change only when a
+    request or a save lands, so days are kept until mtime or size moves.  Nothing is written."""
+
+    def __init__(self, path: str | Path | None = None):
+        self.path = Path(path) if path else None
+        self._cache: dict[str, tuple[int, int, dict[str, dict]]] = {}
+
+    def _days(self, p: Path) -> dict[str, dict]:
+        try:
+            st = p.stat()
+        except OSError:
+            return {}
+        hit = self._cache.get(str(p))
+        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+            return hit[2]
+        days = read_days(p)
+        self._cache[str(p)] = (st.st_mtime_ns, st.st_size, days)
+        return days
+
+    def models(self, live_days: dict[str, dict] | None = None, live_name: str = "") -> list[tuple[str, dict]]:
+        """Every model's per-day counts, the running one (from memory) included.  Two run configs that carry the
+        same model_name - the same model at another context or quantisation - are one model and add up; a file
+        whose config is gone names itself after the file.  Unsorted: the caller knows the prices to sort by."""
+        found: dict[str, dict] = {}
+        if self.path and self.path.parent.is_dir():
+            for p in sorted(self.path.parent.glob("*" + USAGE_SUFFIX)):
+                if self.path and p.name == self.path.name:
+                    continue                            # the live model: the caller hands its counts in
+                name, days = model_name(p), self._days(p)
+                found[name] = summed([found[name], days]) if name in found else days
+        if live_name or live_days:
+            name, days = live_name or "this model", dict(live_days or {})
+            found[name] = summed([found[name], days]) if name in found else days
+        return list(found.items())
