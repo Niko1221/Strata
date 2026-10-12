@@ -11124,8 +11124,18 @@ int main(int argc, char** argv) {
             // #879: an earlier window met non-finite logits.  The poison sits in a conversation's K/V and recurrent
             // state, so nothing that may hold it is continued: the live session, every checkpoint, every parked
             // conversation and every idle batch slot go, and this prompt is read from token 0 (resume == 0 below)
+            // ★ #879 x 磁盘停放层：NaN 之后【这一轮】不能从磁盘取回 K/V。
+            //   上游把 live、所有检查点、所有停放会话全清了，理由是
+            //   "the poison sits in a conversation's K/V and recurrent state"；而磁盘层里
+            //   存着同一批会话的 K/V，取回点又在这个清理块【之后】跑 —— 等于把上游刚
+            //   扔掉的东西原样捡回来，还会让 resume 变成磁盘的 frontier 而不是 0。
+            //   写入侧不需要门：上游的 `if (nf_hit) live_ok = false;` 就在 P9 追加块前面，
+            //   而追加块测 live_ok，被污染的那一轮本来就追加不进去。
+            //   只挡这一轮：下一个请求从磁盘取回，与上游允许从 session 文件恢复是一致的。
+            bool nan_poisoned = false;
             if (nan_flush) {
                 nan_flush = false;
+                nan_poisoned = true;   // ★ 见上面的注释
                 const size_t n_checks = checks.size();
                 live_ok = false;
                 checks.clear();
@@ -11203,7 +11213,7 @@ int main(int argc, char** argv) {
             // ★★★ P12：**流式那条作为额外候选**（快照那条照旧、仍在上面）。
             //   复用下游全部校验与 incoming.emplace ⇒ 出错就自然回退到快照/重算。
             //   流程照 probes/m5.cpp（已逐字节验证）。
-            if (disk_park_stream && disk_park_blob && ids.size() > 1) {
+            if (disk_park_stream && disk_park_blob && ids.size() > 1 && !nan_poisoned) {
                 std::vector<std::int32_t> s_ids;
                 s_ids.reserve(ids.size());
                 for (const auto& t : ids) s_ids.push_back((std::int32_t) t);
@@ -11394,7 +11404,7 @@ int main(int argc, char** argv) {
             //   用 STRATA_P13_LOG_RESTORE=1 打开做实验。
             static const bool p13_log_restore_on = std::getenv("STRATA_P13_LOG_RESTORE") != nullptr;
             if (p13_log_restore_on && disk_park_stream && disk_park_stream->enabled() &&
-                ids.size() > 1 && !disk_image.has_value() && !mem_hit) {
+                ids.size() > 1 && !disk_image.has_value() && !mem_hit && !nan_poisoned) {
                 // ★★★ 候选摘要必须覆盖【所有已存在的会话目录】——
                 //   会话目录名 = 它第一次建立时那个前缀的摘要，那个长度【事先不知道】，
                 //   所以不能靠"按百分比猜几个长度"（实测猜的分数一个都没命中）。
