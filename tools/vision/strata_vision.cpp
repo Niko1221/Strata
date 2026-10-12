@@ -5,8 +5,12 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--device <GPU>]
+//   strata-vision --list-devices
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
+// --device (with --gpu) names the GPU to run on: ggml's name for it ("Vulkan1", "CUDA0") or its PCI address
+// ("0000:03:00.0", or "03:00.0" for domain 0).  Without it mtmd takes ggml's first discrete GPU, then its first
+// integrated one.  --list-devices prints the GPUs this build sees, one per line, and exits.
 //
 // Resident: prints "READY <n_embd>", then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
@@ -20,6 +24,7 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <cctype>
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <unistd.h>
@@ -52,11 +57,59 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
     return !img.empty() && !out.empty();
 }
 
+std::string lower(std::string s) {
+    for (char& c : s) c = (char) std::tolower((unsigned char) c);
+    return s;
+}
+
+bool is_gpu(ggml_backend_dev_t d) {
+    const enum ggml_backend_dev_type t = ggml_backend_dev_type(d);
+    return t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
+}
+
+// the device's PCI address as its backend reports it ("0000:03:00.0"), lower case; empty when it reports none
+// (ggml-vulkan needs VK_EXT_pci_bus_info for it)
+std::string pci_of(ggml_backend_dev_t d) {
+    ggml_backend_dev_props p{};
+    ggml_backend_dev_get_props(d, &p);
+    return p.device_id ? lower(p.device_id) : std::string();
+}
+
+// --device: a GPU by ggml's name for it or by PCI address.  The address is what stays put: the order of the GPUs
+// differs between CUDA, HIP and Vulkan, and on one PC between Vulkan drivers, so a number names different cards.
+ggml_backend_dev_t find_device(const std::string& want) {
+    const std::string w = lower(want);
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (!is_gpu(d)) continue;
+        const std::string pci = pci_of(d);
+        if (lower(ggml_backend_dev_name(d)) == w || (!pci.empty() && (pci == w || pci == "0000:" + w))) return d;
+    }
+    return nullptr;
+}
+
+void list_devices() {
+    int n = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (!is_gpu(d)) continue;
+        size_t free_b = 0, total_b = 0;
+        ggml_backend_dev_memory(d, &free_b, &total_b);
+        const std::string pci = pci_of(d);
+        std::printf("%-10s %-13s %-10s %7.0f MiB  %s\n", ggml_backend_dev_name(d), pci.empty() ? "-" : pci.c_str(),
+                    ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_IGPU ? "integrated" : "discrete",
+                    (double) total_b / (1024.0 * 1024.0), ggml_backend_dev_description(d));
+        ++n;
+    }
+    if (n == 0) std::printf("no GPU: this strata-vision is built for the CPU only, or no driver sees a GPU\n");
+    std::fflush(stdout);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string mmproj, model;
-    bool gpu = false;
+    std::string mmproj, model, device;
+    bool gpu = false, list = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
@@ -72,6 +125,8 @@ int main(int argc, char** argv) {
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
         else if (a == "--min-tokens") min_tokens = std::atoi(next().c_str());   // mtmd image_min_tokens (#767)
+        else if (a == "--device") device = next();
+        else if (a == "--list-devices") list = true;
         else if (a == "--flash-attn") {   // FA keeps K and V in FP16; off = the attention in FP32
             const std::string v = next();
             fa = v == "on" ? LLAMA_FLASH_ATTN_TYPE_ENABLED : v == "off" ? LLAMA_FLASH_ATTN_TYPE_DISABLED
@@ -80,10 +135,21 @@ int main(int argc, char** argv) {
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
+    if (list) {
+        llama_log_set(quiet_log, nullptr);
+        list_devices();
+        return 0;
+    }
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: strata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--device <GPU>]\n"
+                             "       strata-vision --list-devices\n");
         return 2;
+    }
+    if (!device.empty() && !gpu) {
+        std::printf("ERR --device %s needs --gpu (the encoder runs on the CPU without it)\n", device.c_str());
+        std::fflush(stdout);
+        return 1;
     }
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
     // 150-260 expert slots less for the engine beside it).  Before anything reaches the CUDA runtime.
@@ -97,6 +163,19 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+
+    ggml_backend_dev_t dev = nullptr;
+    if (!device.empty()) {
+        dev = find_device(device);
+        if (!dev) {
+            std::printf("ERR no GPU %s here (strata-vision --list-devices lists the ones it sees)\n", device.c_str());
+            std::fflush(stdout);
+            return 1;
+        }
+        const std::string pci = pci_of(dev);
+        std::fprintf(stderr, "strata-vision: on %s (%s%s%s)\n", ggml_backend_dev_name(dev),
+                     ggml_backend_dev_description(dev), pci.empty() ? "" : ", ", pci.c_str());
+    }
 
     const auto load_t0 = std::chrono::steady_clock::now();
 #if !defined(_WIN32)
@@ -119,6 +198,7 @@ int main(int argc, char** argv) {
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;
+    if (dev) cp.device = dev;
     cp.print_timings = false;
     cp.warmup = false;
     // On the CPU "auto" turns flash attention on.  ggml's fast (tiled) CPU kernel for it needs the head size, 72 in this

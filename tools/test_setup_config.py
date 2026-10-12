@@ -84,7 +84,8 @@ class CarryOver(unittest.TestCase):
             mm.write_bytes(b"")
             old = {"exe": "e", "args": ["--kv", "int8", "--threads", "8"], "sampling": {"temperature": 0.7},
                    "env": {"STRATA_RESIDENT_PIN": "0", "MY_VAR": "1"},
-                   "vision": {"exe": "v", "mmproj": str(mm), "gpu": False, "max_tokens": 300, "min_tokens": 64}}
+                   "vision": {"exe": "v", "mmproj": str(mm), "gpu": False, "max_tokens": 300, "min_tokens": 64,
+                              "device": "0000:03:00.0"}}
             p.write_text(json.dumps(old), encoding="utf-8")
             new = {"exe": "e2", "args": ["--kv", "int8"],
                    "vision": {"exe": "v2", "mmproj": str(Path(d) / "mmproj-BF16.gguf"), "gpu": False, "max_tokens": 300}}
@@ -94,6 +95,7 @@ class CarryOver(unittest.TestCase):
             self.assertEqual(got["env"], {"MY_VAR": "1"})                 # setup's own env entry is setup's to write
             self.assertEqual(got["vision"]["mmproj"], str(mm))            # a Q8_0 mmproj of the user's own (#625)
             self.assertEqual(got["vision"]["min_tokens"], 64)
+            self.assertEqual(got["vision"]["device"], "0000:03:00.0")
             self.assertEqual(got["exe"], "e2")
             self.assertEqual(json.loads((Path(d) / "strata-x.json.bak").read_text(encoding="utf-8")), old)
             self.assertIn("--threads", out)

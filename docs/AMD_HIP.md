@@ -49,12 +49,65 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
+- **Limits for now:** setup builds the image encoder for the CPU only (`--vision cpu`, 0.1.32); by hand it also runs
+  on the GPU, see [Images on the GPU through Vulkan](#images-on-the-gpu-through-vulkan-linux-by-hand). Setup does not offer the tuning
   (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
+
+## Images on the GPU through Vulkan (Linux, by hand)
+
+The image encoder (`tools/vision`) built with ggml's Vulkan backend runs on a Radeon through Mesa's RADV driver (no
+ROCm needed for it). `"device"` in the `"vision"` section puts it on a chosen GPU: a second card, or the integrated
+Radeon of a Ryzen APU, so the engine's card keeps its VRAM for the expert cache. Setup does not build it yet (#1768
+adds `--vision gpu` for AMD to setup); by hand, after a setup run with `--vision cpu` (which fetches llama.cpp into
+`third_party/llama.cpp` and writes the `"vision"` section):
+
+```sh
+sudo apt install libvulkan-dev glslc mesa-vulkan-drivers      # Ubuntu 26.04; the shader compiler and the RADV driver
+cmake -S tools/vision -B build-vision-vk -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp \
+      -DSTRATA_VISION_VULKAN=ON -DSTRATA_PORTABLE=OFF
+cmake --build build-vision-vk --target strata-vision -j
+build-vision-vk/bin/strata-vision --list-devices
+```
+
+`--list-devices` prints the GPUs the encoder sees (here a Ryzen 7 7840U with two RX 6950 XT on OCuLink):
+
+```
+Vulkan0    0000:6a:00.0  integrated   33054 MiB  AMD Radeon 780M Graphics (RADV PHOENIX)
+Vulkan1    0000:03:00.0  discrete     16368 MiB  AMD Radeon RX 6950 XT (RADV NAVI21)
+Vulkan2    0000:06:00.0  discrete     16368 MiB  AMD Radeon RX 6950 XT (RADV NAVI21)
+```
+
+Then, in `strata-<model>.json`, point `"exe"` in the `"vision"` section at a copy of that `strata-vision`, and set
+`"gpu": true` and `"device"` to the PCI address of the GPU it should use (the engine's own card, another card, or the
+integrated one). Use the address, not the number: Vulkan numbers the GPUs its own way, not as HIP does (`--gpu`,
+`"gpu"`), and `"cuda_device"` does not reach a Vulkan encoder. The address changes too when a card is missing at boot (the cards behind later
+ports get lower bus numbers), so after a card drops out, check `--list-devices` again. Without `"device"` the encoder takes the first discrete
+GPU in Vulkan's order, which can be the engine's card. When it shares the engine's card, raise `--vram-reserve-mib` in
+`"args"` to 1300: with the 700 that images get by default the encoder still runs, with no error, but 3 to 10 times
+slower (it needs about 1 GB of VRAM at 1,024 image tokens).
+
+Measured on that PC (Ubuntu 26.04, kernel 7.0, Mesa 26.0.8; the engine, 0.1.42 with IQ3_XXS, on the RX 6950 XT at
+`0000:06:00.0`; BF16 mmproj; a 1024x768 picture). The encoder's own time per picture (`OK ... ms`), 3 runs after the
+warm-up:
+
+| Encoder | 300 image tokens | 768 image tokens |
+| --- | --- | --- |
+| CPU, 8 threads (AVX-512 build) | 3.0-3.8 s | 11.0-11.2 s |
+| RX 6950 XT, the other card (`"device": "0000:03:00.0"`) | 0.15 s | 0.36-0.37 s |
+| Radeon 780M, integrated (`"device": "0000:6a:00.0"`) | 0.79-0.80 s | 2.11-2.12 s |
+| RX 6950 XT, the engine's card, `--vram-reserve-mib 700` | 0.51-0.52 s | 3.0-3.5 s |
+| RX 6950 XT, the engine's card, `--vram-reserve-mib 1300` | 0.15 s | 0.36 s |
+
+With 1300 the expert cache had 3,593 slots instead of 3,954 (5.86 GiB instead of 6.45 GiB). Against the CPU encoder,
+the cosine of the embeddings per image token was 0.9997 on average on both GPUs, the lowest single token 0.953 (RX 6950
+XT) and 0.892 (780M); the two RX 6950 XT gave bit-identical embeddings. Through the server, a question about the
+picture's shapes, colours and text got the same correct answer with each encoder, the whole answer in 8.8 s (RX 6950
+XT), 10.7 s (780M) and 19.7 s (CPU). Not tested: other Radeon generations, Windows (#1768), and a Vulkan encoder
+sharing a card with a multi-GPU split.
 
 ## Windows
 
@@ -200,7 +253,8 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
 compositor fails with "Failed to pin framebuffer with error -12".
 
-The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder for now (`--vision cpu`).
+The installer supports this backend (see "Install with setup" above). Setup builds the image encoder for the CPU
+(`--vision cpu`); on the GPU by hand, see [Images on the GPU through Vulkan](#images-on-the-gpu-through-vulkan-linux-by-hand).
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
 **Opt-in switches for RDNA2 prompts and hangs (0.1.40, off by default):** `STRATA_DENSE_MMQ=1` (#820, HIP) runs the

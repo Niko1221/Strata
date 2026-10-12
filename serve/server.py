@@ -2011,6 +2011,8 @@ class Vision:
             args += ["--max-tokens", str(cfg["max_tokens"])]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        if cfg.get("device") not in (None, ""):         # the encoder's own GPU, by name or PCI address (a hand-edited key;
+            args += ["--device", str(cfg["device"])]   # strata-vision --list-devices lists them)
         self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.proc = None

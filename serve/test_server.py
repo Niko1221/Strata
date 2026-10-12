@@ -4954,7 +4954,8 @@ class PromptProgressBatch(unittest.TestCase):
 
 
 class VisionArgs(unittest.TestCase):
-    """#767: vision.min_tokens reaches the encoder as --min-tokens (mtmd's image_min_tokens)."""
+    """#767: vision.min_tokens reaches the encoder as --min-tokens (mtmd's image_min_tokens); vision.device as
+    --device (the encoder's GPU by name or PCI address)."""
 
     def args_for(self, cfg):
         import serve.server as server
@@ -4980,6 +4981,13 @@ class VisionArgs(unittest.TestCase):
         self.assertNotIn("--min-tokens", base)
         self.assertEqual(self.args_for({"max_tokens": 1024, "min_tokens": 768})[-4:],
                          ["--max-tokens", "1024", "--min-tokens", "768"])
+
+    def test_device_is_passed_only_when_set(self):
+        self.assertNotIn("--device", self.args_for({"gpu": True}))
+        self.assertNotIn("--device", self.args_for({"gpu": True, "device": ""}))
+        self.assertEqual(self.args_for({"gpu": True, "max_tokens": 1024, "device": "0000:03:00.0"})[-2:],
+                         ["--device", "0000:03:00.0"])
+        self.assertEqual(self.args_for({"gpu": True, "device": "Vulkan1"})[-2:], ["--device", "Vulkan1"])
 
 
 class VisionCacheEviction(unittest.TestCase):

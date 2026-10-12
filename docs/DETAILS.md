@@ -1475,6 +1475,18 @@ like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encod
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
 encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
+**The encoder's GPU by address:** `"device"` in the `"vision"` section (edit it by hand; a setup run again keeps it)
+names the GPU the encoder runs on, by its PCI address (`"0000:03:00.0"`, or `"03:00.0"`) or by ggml's name for it
+(`"Vulkan1"`, `"CUDA0"`), and is passed to `strata-vision` as `--device`. `strata-vision --list-devices` prints the
+GPUs it sees with both. Without it nothing changes: the encoder takes ggml's first discrete GPU, then the first
+integrated one. The address names the same card for every backend, where numbers do not: CUDA, HIP and Vulkan each
+number the cards their own way (on a PC with 4x RTX 5090, with `CUDA_VISIBLE_DEVICES=2` the card at `0000:41:00.0` is
+`CUDA0` to the encoder). Two limits: the address stays put only while the same cards are there (on Linux, an eGPU that did not
+come up at boot moved the card behind the next port from bus 06 to 03 and the integrated GPU from 6a to 67), and
+it comes from the driver: AMD's and Intel's Windows drivers do not report it to Vulkan, so `--list-devices` shows
+`-` there and the name is the way to choose. It is how a Vulkan encoder on AMD gets a card of its own or the integrated GPU
+([AMD_HIP.md](AMD_HIP.md#images-on-the-gpu-through-vulkan-linux-by-hand), with measurements).
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
