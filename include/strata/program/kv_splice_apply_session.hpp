@@ -50,7 +50,8 @@ inline SpliceStatus apply_splice(const SuffixHookOutcome& out,
         // ---- int8 path (Phase 3).  Uses the int8-aware guard; refuses if STRATA_KV_ROT=1
         //      put K through a Hadamard rotation (out of scope for the daily preset).
         const SpliceStatus g_status = splice_scope_guard_int8(
-            /*kv_int8=*/true, /*kv_q4=*/kv_other, /*kv_hybrid=*/strata::core::qsa_kv_hybrid(),
+            /*kv_int8=*/true, /*kv_q4=*/kv_other,
+            /*kv_hybrid=*/false,   // accepted since the k8v4 lift: the hybrid K half is int8
             kv_res_now, layer_split_active, /*kv_rot=*/strata::core::qsa_kv_int8_rotate());
         if (g_status != SpliceStatus::NoOp) {
             const char* reason = (g_status == SpliceStatus::UnsupportedResident)

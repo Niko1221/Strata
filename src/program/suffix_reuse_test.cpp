@@ -352,8 +352,8 @@ int main() {
               "T8: flag on + --kv int8: guard PASSES (Phase 3 int8 splice)");
         check(!validate_suffix_reuse_options(10, 6, "q4_0", 0, false).empty(),
               "T8: flag on + --kv q4_0: guard rejects (Phase 3 follow-up)");
-        check(!validate_suffix_reuse_options(10, 6, "k8v4", 0, false).empty(),
-              "T8: flag on + --kv k8v4 (hybrid): guard rejects (Phase 3 follow-up)");
+        check(validate_suffix_reuse_options(10, 6, "k8v4", 0, false).empty(),
+              "T8: flag on + --kv k8v4 (hybrid): guard PASSES (K half is int8; V untouched)");
         check(!validate_suffix_reuse_options(10, 6, "fp16", 20480, false).empty(),
               "T8: flag on + --kv-resident 20480: guard rejects with --kv-resident note (Phase 3)");
         // flag on, everything OK - PASSES (both fp16 and int8 are now supported)
