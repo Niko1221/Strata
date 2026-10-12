@@ -1,0 +1,15 @@
+[strata] engine started: <…> --serve --pack <…> --native <…> --ple-gguf <…> --expert-profile <…> --prefill auto:32768 --spec 4 --spec-min-p 0.70 --mtp <…> --max-context 196608 --kv q4_0 --kv-resident 32768 --vram-reserve-mib 450 --pool-workers 15 --pcie-frac 0.10 --pipeline-windows 2 --mtp-max-t 3 --suffix-draft 4 --layer-split 27 --ple-row-cache 1048576 --conversation-cache-mib 8192 --conversation-cache-slots 4 --conversation-cache-min-free-mib 2560 --adapt-swaps 96 --adapt-every 4 --lookup-chain 3 --mtp-draft-vocab <…> --trim-stage-weights --expert-profile-save <…> --expert-profile-save-every 60
+strata generate: native pack: <…> experts (largest blob 2.66 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.4 s)
+strata generate: 169 native projection matrices, 1691.04 MiB of weights, in 0.6 s
+strata generate: layer split: CUDA1 holds its weights; 9.36 GiB free (its session follows the split search)
+strata generate: profile <…> 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 196608 cells per QSA layer in VRAM, the K/V in 0.63 GiB of pinned RAM
+strata generate: layer split: CUDA1 holds its weights, session [27, 48) and the head; 8.38 GiB free
+strata mtp: draft layer loaded, 822 MiB of VRAM (experts 675, dense 111), files read in 0.51 s (1545 MiB/s)
+strata generate: --pipeline-windows 2: 290 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 8.30 GiB free, 450 MiB reserved (+0 MiB for the draft head) -> 3054 slots
+strata generate: expert cache 3616 slots, 7.57 GiB of VRAM; policy is
+strata generate: pre-filled 3616 of 3616 slots from the profile in 0.4 s (20453 MB/s); slot 0 verified
+strata generate: layer split: CUDA1 runs layers 27-47, expert cache 3098 slots (6.78 GiB), 3098 of its 10752 profiled pairs; slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 6714 resident experts, decided on the device
