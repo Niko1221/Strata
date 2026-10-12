@@ -266,9 +266,10 @@ Measured on one **Radeon Pro W7800** (gfx1100, 32 GB), 8-thread CPU pool, the mo
 | --- | --- |
 | `strata-exl3-pack --run` | 1079 roles, 2117.4 MiB EXL3 linears, 2679.3 MiB staged, 301 dense projections, 0 faults |
 | load (`--exl3`) | 15.4 s |
-| prefill | 8.4 tok/s (14 tokens) |
-| decode | 10.8 tok/s (40 tokens, capital-of-France prompt, steady state); 3.0-4.4 tok/s on a cold page cache |
-| expert FFN | 0.37-0.46 ms/layer (measured earlier, 48 layers) |
+| prefill | 9.0 tok/s (14 tokens) |
+| decode | 11.9 tok/s (40 tokens, capital-of-France prompt, steady state); 3.0-4.4 tok/s on a cold page cache |
+| expert FFN | 0.36 ms/layer on the GPU (48 layers); 493 ms/layer on one CPU thread |
+| layer 0 / 47 vs CPU | rel 1.1e-3 / 1.0e-3 |
 
 Routed experts are cached in VRAM: `--expert-cache N` keeps N experts per layer (`auto` or unset sizes it from the
 free VRAM after the stream's own buffers, 0 turns it off).  Without it the stream reads and uploads every routed
@@ -278,7 +279,7 @@ the same experts again.  Measured on the same machine, same prompt, third run of
 | `--expert-cache` | decode | prefill |
 | --- | --- | --- |
 | 0 | 5.5 tok/s | 4.9 tok/s |
-| auto (315 slots/layer, 26.3 GiB) | 10.8 tok/s | 8.4 tok/s |
+| auto (315 slots/layer, 26.3 GiB) | 11.9 tok/s | 9.0 tok/s |
 
 Two more passes after the cache:
 
@@ -292,10 +293,35 @@ Two more passes after the cache:
   buffers each, with an event, because the DMA out of a staging buffer is asynchronous) and the caller's stream
   orders the copies before the FFN.  Upload 24 -> 13 ms per token, decode 9.6 -> 10.8 tok/s.
 
-What the token is made of now (W7800, 40 tokens, one decode token): the expert FFN 17 ms, the dense GEMVs 23 ms,
-the expert reads 13-27 ms (the cache hit rate is 70-94%, so this tracks the routing), the hyper-connections ~12 ms,
-and the rest in the layer's smaller kernels.  The per-layer chain is serial by construction (router -> host reads
--> expert FFN -> combine -> next layer), so the next wins are in the pieces, not in the schedule.
+Two more passes on the same idea (the pieces, not the schedule):
+
+- **the resident half's FFN is enqueued before the staging workers start** and the miss half follows the staging
+  copies, with a small kernel scattering both parts back into the router's order.  The copies moved to a stream
+  of their own: on the caller's stream they queued behind that FFN, and the double-buffered workers then blocked
+  on their own DMA events for its whole length (staging 24 -> 37 ms/token when it was first tried on one stream).
+- **`gr_inject_kernel` and `gr_down_kernel` got four partial sums.**  `gr_inject` is one block of four warps
+  walking 10,240 elements in 320 dependent steps: 75 us per call, 7.2 ms/token over 96 calls, from 4 warps out of
+  the whole machine.  (The 4-accumulator experiment recorded in `gr_down_kernel` came out neutral on the card of
+  that round; on the W7800 it helps.)
+
+What the token is made of now (W7800, 40 tokens, one decode token): the expert FFN 17 ms (the miss half ~5), the
+dense GEMVs 23 ms, the expert reads 13-27 ms (the cache hit rate is 70-94%, so this tracks the routing), the
+hyper-connections ~7 ms, and the rest in the layer's smaller kernels.  The per-layer chain is serial by
+construction (router -> host reads -> expert FFN -> combine -> next layer), so the next wins are in the pieces,
+not in the schedule.
+
+**Why a GGUF pack of the same model decodes faster.**  Measured, not guessed:
+
+- **A trellis weight costs about two loads and eleven ALU ops to decode**; a ggml block quant's `vec_dot` costs
+  about one load per 4-5 weights and 1-2 ALU.  The dense GEMV is load-instruction-bound: 3.5 G dense weights x 2
+  loads per token, 23 ms.  Requantizing the dense linears to Q5_K at load and serving them through the engine's
+  native MMVQ was built and measured (`strata-exl3-native`, 2560x10240): **0.94x** on `in_proj_qkv`, **0.29x** on
+  the shared expert's 640-wide matrices (the MMVQ call has a ~110 us floor) and **2.6x** only on `lm_head`, with a
+  25 s load-time cost.  Rejected on the measurement.
+- **The experts cannot go on the CPU pool the way a GGUF pack's do.**  The engine overlaps a GGUF pack's CPU
+  expert work with the GPU's dense work; the CPU's EXL3 folded GEMV measures **493 ms/layer** against the GPU's
+  **0.36 ms/layer** (`strata-exl3-moe`, 10 experts), 1370x.  The trellis decode has to stay on the GPU, and its
+  streaming is on the per-layer critical path.
 
 The output tokens are unchanged by the cache: the same expert bytes and the same FFN kernels either way.  The
 engine's QSA sparse selection is not run-to-run deterministic on its own (about 1 run in 4 differs in a later
