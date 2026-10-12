@@ -383,6 +383,18 @@ void test_pin_pacing() {
     require(meminfo_bytes(info, "MemFree") == 1284096ull * 1024, "MemFree was misread");
     require(meminfo_bytes(info, "MemAvailable") == 33463296ull * 1024, "MemAvailable was misread");
     require(meminfo_bytes(info, "Mem") == 0 && meminfo_bytes(info, "Shmem") == 0, "an absent key was not 0");
+    // 0.1.42 (dual-socket report): node 1 full of another model's cache, node 0 empty of it
+    require(numa_pin_free(100 * GiB, {}) == 100 * GiB && numa_pin_free(100 * GiB, {100 * GiB}) == 100 * GiB,
+            "a single-node host's figure changed");
+    require(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}) == 4 * GiB, "an emptied node did not lower the figure");
+    require(numa_pin_free(40 * GiB, {20 * GiB, 20 * GiB}) == 40 * GiB, "balanced nodes changed the figure");
+    require(numa_pin_free(10 * GiB, {50 * GiB, 50 * GiB}) == 10 * GiB, "the total must still bound it");
+    require(pin_depends_on_reclaim(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}), 26 * GiB, 4 * GiB),
+            "an unbalanced two-node host was not paced");
+    require(page_cache_hint(info).find("drop_caches") != std::string::npos &&
+            page_cache_hint(info).find("STRATA_DROP_CACHE_ON_EXIT") != std::string::npos &&
+            page_cache_hint(info).find("52.0 GiB") != std::string::npos, "the cache hint is incomplete");
+    require(page_cache_hint("MemFree: 100 kB\nCached: 1000 kB\n").empty(), "a small cache was reported");
 }
 
 void test_resident_memory_budget() {

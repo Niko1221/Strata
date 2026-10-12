@@ -116,6 +116,29 @@ class RouteChoice(unittest.TestCase):
         b.up = False
         self.assertEqual(e.route(ids), -1)
 
+    def test_nonfinite_forgets_the_replica(self):
+        """#879: after DONE ... nonfinite the engine holds no conversation: the router forgets that replica."""
+        from serve.server import EngineNonFinite
+
+        class NonFinite(FakeEngine):
+            def generate(self, ids, max_new, sampling, cancel):
+                yield 7
+                raise EngineNonFinite("the engine's logits became non-finite (#879)")
+
+        e = ReplicaEngine([NonFinite(), NonFinite()])
+        other, ids = [9] * (BLOCK * 4), list(range(BLOCK * 3))
+        e.router.note(0, other)
+        e.router.note(1, other)
+        k = 0
+        e.inflight[k] += 1                                          # as route() counts it
+        with mock.patch.object(e, "route", return_value=k):
+            with self.assertRaises(EngineNonFinite):
+                list(e.generate(ids, 10, {}, threading.Event()))
+        self.assertEqual(e.router.matched(ids)[k], 0)
+        self.assertEqual(e.router.matched(other)[k], 0)             # its older conversations too
+        self.assertEqual(e.router.matched(other)[1 - k], len(other))
+        self.assertEqual(e.inflight[k], 0)
+
     def test_batch_is_the_sum(self):
         self.assertEqual(ReplicaEngine([FakeEngine(4), FakeEngine(4)]).batch, 8)
         self.assertEqual(ReplicaEngine([FakeEngine(0), FakeEngine(0)]).batch, 2)

@@ -108,6 +108,10 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream);
 void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream);
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
                            const int32_t* count, void* stream);
+/// copy_rows_from_mapped after spinning on *flag >= value (every block's thread 0 polls the mapped flag; the
+/// wait_flag_ge launch it replaces is one dependent kernel node, ~2.4 us on a gfx1201 graph).
+void copy_rows_from_mapped_after(const uint32_t* flag, uint32_t value, float* dst, const float* src, int64_t rows,
+                                 int64_t width, const int32_t* hit_rows, const int32_t* count, void* stream);
 
 /// Plan v0.3 P3: the doorbell's payload and its ring in ONE kernel.  Copies `x` (n floats), `ids` and `weights`
 /// (k each) into the mapped host regions, fences, and increments the mapped sequence number - replacing three
