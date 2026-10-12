@@ -136,12 +136,18 @@ class Controller:
         if self.settings.engine != 'mock':
             if status.get('cache_max_tokens') != self.selected['context']:
                 raise RuntimeError('Effective context mismatch')
-            if expected_version and status.get('engine', '').lstrip('v') != expected_version.lstrip('v'):
+            if expected_version and status.get('engine') not in (expected_version.lstrip('v'), 'v' + expected_version.lstrip('v')):
                 raise RuntimeError('Effective engine version mismatch')
         if self.settings.engine != 'mock':
             actual_version = status.get('engine', '')
-            updates.version(actual_version)
-            self.version = actual_version.lstrip('v')
+            try:
+                updates.version(actual_version)
+            except ValueError:
+                if expected_version:
+                    raise
+                self.version = 'unknown'
+            else:
+                self.version = actual_version.lstrip('v')
         self.effective = {**self.selected, 'context': status.get('cache_max_tokens')}
         self.phase, self.model, self.api, self.error = 'ready', 'loaded', 'available', ''
         self.accepting = True

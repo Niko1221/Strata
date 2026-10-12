@@ -153,6 +153,12 @@ internal sealed class ManagedTray : ApplicationContext
             try { snapshot = json.Deserialize<Dictionary<string, object>>(raw); }
             catch (ArgumentException) { Notice("Invalid controller status."); }
         }
+        // Output callbacks may deliver the final sanitized error after process exit.
+        // Apply it on every tick, including ticks after controllerEnded.
+        if (snapshot != null)
+        {
+            error.Text = Text(snapshot, "error"); error.Visible = error.Text != "" && error.Text != "unknown";
+        }
         if (child.HasExited)
         {
             if (controllerEnded) return;
@@ -173,7 +179,6 @@ internal sealed class ManagedTray : ApplicationContext
         web.Text = "Web UI: " + Text(snapshot, "web") + " (anonymous probe)";
         model.Text = "Model state: " + Text(snapshot, "model");
         lifecycle.Text = "Lifecycle: " + Text(snapshot, "phase") + "; admitted requests " + Text(snapshot, "active");
-        error.Text = Text(snapshot, "error"); error.Visible = error.Text != "" && error.Text != "unknown";
         object value;
         bool busy = snapshot.TryGetValue("busy", out value) && value is bool && (bool)value;
         var selected = snapshot.ContainsKey("selected") ? snapshot["selected"] as Dictionary<string, object> : null;

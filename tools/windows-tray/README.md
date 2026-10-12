@@ -80,7 +80,9 @@ an anonymous inference request.
   default Windows application. Save the file, then choose **Apply configuration
   / Restart**. Saving alone does not restart inference. Missing files disable
   the action. **Open Tray configuration** opens the profile-list/port settings;
-  those settings take effect on the next Tray launch.
+  those settings take effect on the next Tray launch. If the saved selection no longer
+  matches the profile list, the next launch resets selections to the first profile
+  and the configured defaults.
 - **Open Web UI** opens the stable loopback endpoint in your browser. Its
   anonymous reachability status does not verify a signed-in session or generation.
 - **Open logs** opens the adjacent `<tray-config-stem>.state/logs` directory.
@@ -122,7 +124,9 @@ These checks trust the official release publisher; they are not code signing.
 Changed Python requirements, unknown backend metadata, custom vision/library
 profiles, unavailable assets and incompatible runtime families require a manual
 update using official setup. Locally compiled/SYCL engines are not rebuilt by
-the Tray. Failures disable automatic installation and show an error; there is
+the Tray. An unrecognized engine version is shown as unknown and prevents automatic
+version comparison, but does not prevent normal startup. Failures disable automatic
+installation and show an error; there is
 no silent rollback or repeated activation loop. Previous files are retained.
 Use local logs to resolve the cause, then explicitly restart or install again.
 Tray UI code itself is updated by rebuilding this directory, not by replacing a

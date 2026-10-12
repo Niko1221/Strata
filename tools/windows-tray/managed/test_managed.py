@@ -51,6 +51,21 @@ class ConfigTests(unittest.TestCase):
             atomic_json(settings.state / 'selection.json', selected)
             self.assertEqual(Settings(root / 'tray.json').selection(), selected)
 
+    def test_removed_selected_profile_recovers_persisted_defaults(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = fixture(root)
+            atomic_json(settings.state / 'selection.json', {**settings.selection(), 'idle': 600})
+            value = json.loads(settings.path.read_text())
+            value['profiles'] = {'Renamed': 'model.json'}
+            atomic_json(settings.path, value)
+            current = Settings(settings.path)
+            selected = current.selection()
+            self.assertEqual(selected['profile'], 'Renamed')
+            self.assertEqual(selected['idle'], 300)
+            self.assertEqual(json.loads((current.state / 'selection.json').read_text()), selected)
+            self.assertEqual(Controller(current).selected, selected)
+
     def test_reject_invalid_and_changed_auth(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -179,6 +194,30 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.controller.backend.stop()
         await self.client.close()
         self.temp.cleanup()
+
+    async def test_development_version_starts_but_update_requires_exact_version(self):
+        c = self.controller
+        c.settings.engine = 'strata'
+        class Backend:
+            alive = True
+            pid = 42
+            def listener_owned(self, p): return True
+            async def start(self, *args): pass
+            async def stop(self): self.alive = False
+        c.backend = Backend()
+        status = {'loaded': True, 'model': 'test-model', 'cache_max_tokens': c.selected['context']}
+        async def control(path, *args):
+            return {'status': 'ok', 'service': 'strata'} if path == '/health' else status
+        c.control = control
+        for engine in ('0.1.43-dev', None, '0.1.43'):
+            with self.subTest(engine=engine):
+                status['engine'] = engine
+                await c.launch({'model_name': 'test-model'}, None)
+                self.assertEqual(c.phase, 'ready')
+                self.assertEqual(c.version, '0.1.43' if engine == '0.1.43' else 'unknown')
+        status['engine'] = '0.1.43-dev'
+        with self.assertRaisesRegex(RuntimeError, 'version mismatch'):
+            await c.launch({'model_name': 'test-model'}, None, '0.1.44')
 
     async def test_official_mock_lifecycle_auth_and_config(self):
         c = self.controller

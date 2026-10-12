@@ -126,8 +126,17 @@ class Settings:
         value = {'profile': first, 'context': int(profile['args'][profile['args'].index('--max-context') + 1]),
                  'idle': profile.get('idle_unload_s', 300), 'auto': self.auto}
         path = self.state / 'selection.json'
+        self.validate_selection(value)
         if path.exists():
-            value = read_json(path)
+            saved = read_json(path)
+            try:
+                self.validate_selection(saved)
+            except ValueError:
+                # A renamed/removed profile must not make every future launch fail.
+                # Reset only persisted selection; invalid source config still fails.
+                atomic_json(path, value)
+            else:
+                value = saved
         self.validate_selection(value)
         return value
 
