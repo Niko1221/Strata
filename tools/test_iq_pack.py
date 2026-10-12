@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # runnable from the r
 from _paths import add_gguf_py
 add_gguf_py()
 from gguf import GGUFWriter, GGMLQuantizationType as Q, quants
+import embd_bf16_pack
 import iq_pack
 
 
@@ -732,6 +733,79 @@ class NativeExpertsV5Tests(unittest.TestCase):
             self.assertIn("only v3 and v4", log)
             self.assertFalse((out / "native_experts.txt").exists())
             self.assertFalse((out / "hadamard.txt").exists())
+
+
+class EmbeddingBf16Tests(unittest.TestCase):
+    """tools/embd_bf16_pack.py --gguf: a GGUF's token embedding (Q6_K, as in Signal and Gyro-S) as a BF16 file."""
+    VOCAB, DIM = 6, 512                            # Q6_K blocks are 256 wide: two to a row
+
+    def q6_k_rows(self):
+        """Random Q6_K rows. gguf-py cannot quantize Q6_K, so each 210-byte block is built from random quants and
+        scales and a finite F16 `d`."""
+        rng = np.random.RandomState(7)
+        blocks = self.VOCAB * self.DIM // 256
+        raw = np.empty((blocks, 210), np.uint8)
+        raw[:, :192] = rng.randint(0, 256, (blocks, 192))                 # ql (128) + qh (64)
+        raw[:, 192:208] = rng.randint(-20, 20, (blocks, 16)).astype(np.int8).view(np.uint8)
+        raw[:, 208:] = np.frombuffer(np.float16(0.01).tobytes(), np.uint8)
+        return raw.reshape(self.VOCAB, -1)
+
+    def write_shard(self, path, tensors, split):
+        writer = GGUFWriter(path, "qwen4exp")
+        writer.add_uint16("split.no", split[0])
+        writer.add_uint16("split.count", split[1])
+        writer.add_int32("split.tensors.count", split[2])
+        for name, data, kind in tensors:
+            writer.add_tensor(name, data, raw_dtype=kind)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+
+    def run_pack(self, path, tensor, out):
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            embd_bf16_pack.from_gguf(path, tensor, out)
+        return log.getvalue()
+
+    def test_q6_k_table_comes_out_as_bf16_in_a_split_model(self):
+        raw = self.q6_k_rows()
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            self.write_shard(root / "model-00001-of-00002.gguf",
+                             [("blk.0.attn_qkv.weight", quants.quantize(np.ones((2, 32), np.float32), Q.Q8_0), Q.Q8_0)], (0, 2, 2))
+            self.write_shard(root / "model-00002-of-00002.gguf", [("token_embd.weight", raw, Q.Q6_K)], (1, 2, 2))
+            out = root / "embd" / "token-embd-bf16.gguf"
+            with patch.object(embd_bf16_pack, "ROWS", 4):                  # 6 rows: a pass of 4, then one of 2
+                log = self.run_pack(root / "model-00001-of-00002.gguf", "token_embd.weight", out)
+
+            made = iq_pack.G.GGUFFile(out)
+            (t,) = made.tensors
+            self.assertEqual((t.name, t.type_name, list(t.shape)), ("token_embd.weight", "BF16", [self.DIM, self.VOCAB]))
+            body = out.read_bytes()[made.data_start + t.offset:]
+            want = quants.quantize(quants.dequantize(raw, Q.Q6_K).astype(np.float32), Q.BF16).tobytes()
+            self.assertEqual(len(body), self.VOCAB * self.DIM * 2)
+            self.assertEqual(body, want)
+            self.assertIn(b"dequantize->bf16 round-to-nearest-even (Q6_K)", out.read_bytes()[:made.data_start])
+            self.assertIn("worst rounding error", log)
+            self.assertFalse(out.with_suffix(out.suffix + ".part").exists())
+
+    def test_missing_and_non_table_tensors_are_refused(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            source = root / "model.gguf"
+            vector = np.ones((256,), np.float32)
+            writer = GGUFWriter(source, "qwen4exp")
+            writer.add_tensor("blk.0.attn_norm.weight", vector)
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
+            out = root / "out.gguf"
+            with self.assertRaisesRegex(SystemExit, "holds no token_embd.weight"):
+                self.run_pack(source, "token_embd.weight", out)
+            with self.assertRaisesRegex(SystemExit, "is 1-D"):
+                self.run_pack(source, "blk.0.attn_norm.weight", out)
+            self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":
