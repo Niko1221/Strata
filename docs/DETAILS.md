@@ -833,6 +833,13 @@ print(r.choices[0].message.content)
   second call's parameters merge into the first). Anything else in those forms stays the text it is. Measured on
   1,462 agent turns (Qwen3.8 under Claude Code, from signalnine/q27's drift corpus): 98.3% read as intended with it,
   92.9% without. Off by default, so what a client gets back is unchanged unless you turn it on.
+- **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
+  today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
+  are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
+  read ~14K tokens again. `"env_to_user": true` moves that block to the front of the first user message: the system
+  turn is then the same for every session and the disk prefix cache restores it. Measured (RTX 5070 Ti Laptop, Swift 1.5
+  IQ3_XXS, a new opencode session in a second folder): first request 14,073 tokens with 13,693 from the cache, 1.1 s,
+  against 14,753 read, 11.9 s, without it; the model still answered the folder and date correctly (3/3). Off by default.
 - **Prefill progress in the stream (opt-in).** `"return_progress": true` puts that progress on the stream instead of
   sending only the keep-alive, as one extra field on a chunk with an empty delta: `prompt_progress` with `total`,
   `cache`, `processed` and `time_ms`. Those are llama.cpp's four fields and mean the same there (`time_ms` is the time
