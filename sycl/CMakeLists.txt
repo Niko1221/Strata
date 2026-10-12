@@ -254,6 +254,8 @@ if(STRATA_SYCL_PARITY)
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
     add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
   endforeach()
+  target_link_libraries(gdn_parity PRIVATE strata_prefill)  # prefill recurrence variant tests
+  add_test(NAME prefill_gdn_parity COMMAND gdn_parity --selftest --prefill-only)
   # #1795: iq_parity and ple_parity are registered as the top-level CMakeLists.txt does, not by the loop above
   # (iq_parity takes a fixture directory, not --selftest; ple_parity reads real artifacts from the engine root).
   foreach(p IN ITEMS iq ple)
