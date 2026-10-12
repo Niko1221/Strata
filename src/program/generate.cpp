@@ -5190,6 +5190,7 @@ int main(int argc, char** argv) {
             for (const int64_t s : sized_slots) b += (s + 255) / 256 * 256;
             return b;
         };
+        int64_t cache_writeback_reserve = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
         // With `--expert-cache auto` the reserve must still be free once the slots are WRITTEN: under WDDM an
         // allocation is not resident until it is touched, and the free figure read before it can be ~1 GB too
         // high.  A cache sized from it filled the card to 0 MiB, the driver then paged, and a request that needed a
@@ -5199,6 +5200,8 @@ int main(int argc, char** argv) {
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
         int zero_reads = 0;
+        // The opt-in plan already includes its still-pending allocations.
+        if (peer_capacity) cache_writeback_reserve = (int64_t) peer_primary_reserve;
         for (int attempt = 0;; ++attempt) {
             bool ok = false;
             if (fake_fails > 0) {
@@ -5240,10 +5243,7 @@ int main(int argc, char** argv) {
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
-            // The opt-in plan holds back later draft/owned-prefill allocations
-            // too. A live-free correction must not spend those bytes.
-            const int64_t want = peer_capacity ? (int64_t) peer_primary_reserve
-                                               : ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
+            const int64_t want = cache_writeback_reserve;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
