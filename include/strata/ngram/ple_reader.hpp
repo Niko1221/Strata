@@ -36,6 +36,8 @@ struct ReaderStats {
     double wait_us = 0;           ///< time `collect` spent blocked
     double submit_us = 0;         ///< time spent inside the read submission call (non-zero = it blocks)
     double read_us_sum = 0;       ///< sum of per-read latencies (issue to completion)
+    double read_us_max = 0;       ///< the slowest read (all of them, not only the percentile ring)
+    uint64_t slow_reads = 0;      ///< reads that took more than 100 ms
     uint64_t late_injected = 0;   ///< reads delayed by fault injection
     uint64_t keepalive_reads = 0; ///< pages read only to keep the SSD awake (not in `reads`, `bytes` or latencies)
     double keepalive_us_max = 0;  ///< the slowest of them

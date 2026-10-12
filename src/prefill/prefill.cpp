@@ -2227,7 +2227,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 });
             }
             ple_buf ^= 1;
-            stats_.ms_ple += ms_since(tp);
+            const double waited = ms_since(tp);
+            stats_.ms_ple += waited;
+            // a chunk that waited long for its rows: the SSD stalled (the read-ahead normally hides the reads)
+            if (waited > 1000.0)
+                std::fprintf(stderr, "strata prefill: the chunk at token %lld waited %.0f ms for its PLE rows\n",
+                             (long long) c0, waited);
             return true;
         };
         for (int64_t t = 0; t < T; ++t) { prev[0] = prev[1]; prev[1] = (int32_t) tokens[c0 + t]; }

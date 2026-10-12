@@ -141,6 +141,8 @@ struct PleReader::Impl {
 
     void record_latency(double us) {
         stats.read_us_sum += us;
+        stats.read_us_max = std::max(stats.read_us_max, us);
+        if (us > 100e3) ++stats.slow_reads;
         if (stats.read_us.size() < LATENCY_RING) stats.read_us.push_back((float) us);
         else stats.read_us[ring_pos++ % LATENCY_RING] = (float) us;
     }
