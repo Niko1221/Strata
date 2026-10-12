@@ -119,6 +119,18 @@ These are the levers, in rough order of impact (all implemented in the reference
 
 ## Verification
 
+Every released bitrate branch is checked on its own weights, not just 3.05: `tools/exl3/fetch_branch_tensors.py`
+pulls one expert and one dense linear out of each branch's shards (a few MB) and `strata-exl3-gpu` compares
+the GPU decode-GEMV against the CPU reference on them.  Measured on the Radeon PRO W7800:
+
+| branch | expert K | attn K | GPU vs CPU |
+| --- | --- | --- | --- |
+| 2.05bpw_h4_ng4 | 2 | 4 | rel 2.9e-4 |
+| 3.05bpw_h5_ng5 | 3 | 5 | rel 2.9e-4 |
+| 4.05bpw_h6_ng6 | 4 | 6 | rel 2.9e-4 |
+| 5.05bpw_h6_ng6 | 5 | 7 | rel 2.9e-4 |
+| 6.05bpw_h6_ng6 | 6 | 8 | rel 2.9e-4 |
+
 `tools/exl3/codebook.py` and `tools/exl3/reconstruct.py` are a bit-exact numpy transcription of the
 codebook, window extraction, tile permutation and Hadamard. `tools/test_exl3_codebook.py` +
 `tools/test_exl3_reconstruct.py` (**15 tests, no model needed**) check the constants, the `lop3`
