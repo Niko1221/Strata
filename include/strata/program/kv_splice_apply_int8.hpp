@@ -50,6 +50,25 @@
 
 namespace strata::program::suffix_reuse {
 
+/// Host FWHT-256 (Sylvester construction, 1/sqrt(256) normalized) - bit-exact same math
+/// as the engine's kv_q4.hpp fwht256_cuda (kv_q4_parity.cpp:46-62 is the reference the
+/// parity test pins it to).  H is its own inverse (H*H = I), which is what the kv_rot
+/// splice sandwich relies on.  The splice is a host-loop helper by design (a tail of a
+/// few thousand rows), so the row is already staged on the host when this runs.
+inline void fwht256_row_host(float* x) {
+    constexpr int n = 256;
+    for (int s = 1; s < n; s *= 2)
+        for (int i = 0; i < n; i += 2 * s)
+            for (int j = 0; j < s; ++j) {
+                const float u = x[i + j];
+                const float v = x[i + j + s];
+                x[i + j]     = u + v;
+                x[i + j + s] = u - v;
+            }
+    const float inv = 1.0f / 16.0f;   // 1/sqrt(256)
+    for (int i = 0; i < n; ++i) x[i] *= inv;
+}
+
 /// Phase 3 runtime scope guard for the int8 splice.  Returns Rotated/`NoOp` when the
 /// config is supported; otherwise one of the `Unsupported*` codes WITHOUT side effects.
 /// This is the int8-aware version of `splice_scope_guard` (kv_splice_apply.hpp:72-79):
@@ -62,6 +81,8 @@ namespace strata::program::suffix_reuse {
 inline SpliceStatus splice_scope_guard_int8(bool kv_int8, bool kv_q4, bool kv_hybrid,
                                             int64_t kv_resident, bool layer_split_active,
                                             bool kv_rot) {
+    (void) kv_rot;   // accepted since the H-sandwich landed; head_dim!=256 refuses inside the helper
+    (void) kv_hybrid;   // accepted (k8v4): the hybrid K half is int8; V is untouched
     if (!kv_int8) {
         // fp16 path: never comes here (the dispatch is the caller's); the q4/hybrid/resident
         // /split refusals are still enforced for safety.
@@ -70,14 +91,11 @@ inline SpliceStatus splice_scope_guard_int8(bool kv_int8, bool kv_q4, bool kv_hy
         if (layer_split_active) return SpliceStatus::UnsupportedSplit;
         return SpliceStatus::NoOp;   // fp16 K is the OTHER helper's domain
     }
-    // int8 path.  kv_rot on == STRATA_KV_ROT=1: K is stored Hadamard-rotated; the splice's
-    // pure RoPE math would compound the rotation.  Refuse for now (dequant+invH+rotate+H+requant
-    // is a follow-up; the daily preset does not set STRATA_KV_ROT=1, see generate.cpp:2162).
-    if (kv_rot) return SpliceStatus::UnsupportedFormat;
-    // Hybrid K8V4 is ACCEPTED: layer.cpp:736 stores its K exactly like plain int8 (k_q codes +
-    // k_scale scales at the same offsets, kv_pool_bytes:654-658 sizes the K half identically),
-    // and the splice only ever rewrites K - V (here rotated Q4_0) is position-free and untouched.
-    // --kv-resident still refuses below, hybrid streaming included.
+    // int8 path.  kv_rot on == STRATA_KV_ROT=1: K rows are stored Hadamard-rotated; the
+    // splice now handles it with the H -> R(delta) -> H sandwich (kv_splice_apply_int8.hpp;
+    // H*H = I so the math is exact, and the requant count is unchanged).  The only refusal
+    // left for kv_rot is head_dim != 256, enforced fail-closed INSIDE the rotation helper
+    // (fwht256 is order-256 only) - not a config-level refusal.
     if (kv_q4) return SpliceStatus::UnsupportedFormat;
     if (kv_resident > 0) return SpliceStatus::UnsupportedResident;
     if (layer_split_active) return SpliceStatus::UnsupportedSplit;
@@ -124,6 +142,11 @@ inline bool rotate_qsa_tail_inplace_int8(strata::core::QsaState& st,
     if (!uniform && deltas == nullptr) return false;
     if (page_size <= 0) page_size = 1;
     if (head_dim % strata::kernels::KV_Q8_GROUP != 0) return false;        // writer's invariant (kv_q8.cu:22-26)
+    // STRATA_KV_ROT=1: K rows are stored Hadamard-rotated (fwht256, kv_q4.hpp).  The splice
+    // must undo H, apply the RoPE delta, re-apply H (H*H = I).  fwht256 is order-256 only:
+    // a head_dim other than 256 in the rotated domain is refused fail-closed (the splice
+    // helper would mix wrong).  The engine's rotated configs are all head_dim 256 today.
+    if (st.kv_rot && head_dim != 256) return false;
     if ((int64_t) n_rot > head_dim) return false;
     const int groups = head_dim / strata::kernels::KV_Q8_GROUP;
     // Bounds: every position the loop touches must land inside the pool's rows.
@@ -191,9 +214,15 @@ inline bool rotate_qsa_tail_inplace_int8(strata::core::QsaState& st,
             //    around the rotation - the dequant is fp32, the rotation is fp32, the requant
             //    is fp32, the dequant in the gather is fp16.  The fp16 path does 2 fp16
             //    round-trips; the int8 path does 1 int8 round-trip on each end.  Bounded by T11.b).
+            //    STRATA_KV_ROT=1: the stored row is H*R(p)*k (queries are H'd too, H^T*H = I),
+            //    so dequant gives H*R(p)*k; undo H, rotate by delta, re-apply H to get
+            //    H*R(delta)*H * (H*R(p)*k) = H*R(p+delta)*k - the exact stored form at the
+            //    new position.  SAME single requant as the unrotated path (no extra noise).
+            if (st.kv_rot) fwht256_row_host(row_scratch);
             strata::program::suffix_reuse::rotate_k_by_delta(
                 row_scratch, 1, head_dim, n_rot, (int) p, delta_row,
                 cos_tab, sin_tab, max_pos);
+            if (st.kv_rot) fwht256_row_host(row_scratch);
             // 3. Requant: writer's math.  Per group, amax over the 64 rotated fp32 values
             //    (fabs), scale = f16(f32(amax/127)) (the round-to-nearest-even bit pattern
             //    the writer stores), code = clamp(rint(x / sf), -127, 127).  Mirrors
