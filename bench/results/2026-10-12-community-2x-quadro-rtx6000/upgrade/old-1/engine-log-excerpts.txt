@@ -1,0 +1,94 @@
+### elog-long00.txt
+strata serve: prompt 21702 tokens = 0 reused + 21702 read in 13431 ms (1615.9 tok/s), 29 generated in 415 ms (70.0 tok/s), drafts accepted 17 of 23, 2 checkpoints
+strata serve: decode expert cache hit rate: 96.3% (16058 hits / 16677 lookups); 123 more read by the GPU over PCIe or from another GPU (0.7% of all 16800 routed)
+strata serve: KV streaming: 89.15% of 126318 block reads hit VRAM, 55.2 MiB read from RAM
+
+### elog-long01.txt
+strata serve: prompt 21737 tokens = 0 reused + 21737 read in 13489 ms (1611.5 tok/s), 34 generated in 460 ms (73.9 tok/s), drafts accepted 20 of 24, 2 checkpoints
+strata serve: decode expert cache hit rate: 96.4% (17462 hits / 18113 lookups); 127 more read by the GPU over PCIe or from another GPU (0.7% of all 18240 routed)
+strata serve: KV streaming: 89.45% of 135558 block reads hit VRAM, 57.6 MiB read from RAM
+
+### elog-medium00.txt
+strata serve: prompt 5472 tokens = 0 reused + 5472 read in 5180 ms (1056.3 tok/s), 37 generated in 658 ms (56.2 tok/s), drafts accepted 21 of 25, 1 checkpoints
+strata serve: decode expert cache hit rate: 85.7% (16283 hits / 19010 lookups); 670 more read by the GPU over PCIe or from another GPU (3.4% of all 19680 routed)
+strata serve: KV streaming: 94.86% of 144804 block reads hit VRAM, 30.0 MiB read from RAM
+
+### elog-medium01.txt
+strata serve: prompt 5462 tokens = 0 reused + 5462 read in 5163 ms (1057.9 tok/s), 38 generated in 581 ms (65.4 tok/s), drafts accepted 21 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 93.3% (18052 hits / 19357 lookups); 323 more read by the GPU over PCIe or from another GPU (1.6% of all 19680 routed)
+strata serve: KV streaming: 94.74% of 144816 block reads hit VRAM, 30.7 MiB read from RAM
+
+### elog-medium02.txt
+strata serve: prompt 5464 tokens = 0 reused + 5464 read in 5167 ms (1057.5 tok/s), 29 generated in 415 ms (69.8 tok/s), drafts accepted 17 of 19, 1 checkpoints
+strata serve: decode expert cache hit rate: 93.8% (13759 hits / 14672 lookups); 208 more read by the GPU over PCIe or from another GPU (1.4% of all 14880 routed)
+strata serve: KV streaming: 93.59% of 114000 block reads hit VRAM, 29.4 MiB read from RAM
+
+### elog-short00.txt
+strata serve: prompt 27 tokens = 0 reused + 27 read in 359 ms (75.2 tok/s), 186 generated in 2502 ms (74.3 tok/s), drafts accepted 138 of 144, 1 checkpoints
+strata serve: decode expert cache hit rate: 90.4% (81667 hits / 90366 lookups); 2754 more read by the GPU over PCIe or from another GPU (3.0% of all 93120 routed)
+strata serve: KV streaming: 99.11% of 36282 block reads hit VRAM, 1.3 MiB read from RAM
+
+### elog-short01.txt
+strata serve: prompt 24 tokens = 0 reused + 24 read in 353 ms (67.9 tok/s), 89 generated in 1582 ms (56.2 tok/s), drafts accepted 45 of 86, 1 checkpoints
+strata serve: decode expert cache hit rate: 94.3% (59065 hits / 62640 lookups); 720 more read by the GPU over PCIe or from another GPU (1.1% of all 63360 routed)
+strata serve: KV streaming: 98.82% of 14688 block reads hit VRAM, 0.7 MiB read from RAM
+
+### elog-short02.txt
+strata serve: prompt 28 tokens = 0 reused + 28 read in 381 ms (73.5 tok/s), 35 generated in 504 ms (69.5 tok/s), drafts accepted 26 of 30, 1 checkpoints
+strata serve: decode expert cache hit rate: 89.8% (17203 hits / 19166 lookups); 514 more read by the GPU over PCIe or from another GPU (2.6% of all 19680 routed)
+strata serve: KV streaming: 97.32% of 3576 block reads hit VRAM, 0.4 MiB read from RAM
+
+### elog-short03.txt
+strata serve: prompt 25 tokens = 0 reused + 25 read in 332 ms (75.3 tok/s), 115 generated in 1701 ms (67.6 tok/s), drafts accepted 83 of 91, 1 checkpoints
+strata serve: decode expert cache hit rate: 88.7% (51438 hits / 58009 lookups); 1991 more read by the GPU over PCIe or from another GPU (3.3% of all 60000 routed)
+strata serve: KV streaming: 98.64% of 15936 block reads hit VRAM, 0.9 MiB read from RAM
+
+### elog-short04.txt
+strata serve: prompt 22 tokens = 0 reused + 22 read in 338 ms (65.2 tok/s), 256 generated in 4059 ms (63.1 tok/s), drafts accepted 168 of 223, 1 checkpoints
+strata serve: decode expert cache hit rate: 89.6% (130048 hits / 145168 lookups); 4112 more read by the GPU over PCIe or from another GPU (2.8% of all 149280 routed)
+strata serve: KV streaming: 99.41% of 71274 block reads hit VRAM, 1.7 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 2 drafts accepted
+
+### elog-short05.txt
+strata serve: prompt 25 tokens = 0 reused + 25 read in 376 ms (66.5 tok/s), 256 generated in 4205 ms (60.9 tok/s), drafts accepted 173 of 224, 1 checkpoints
+strata serve: decode expert cache hit rate: 88.6% (127125 hits / 143530 lookups); 4790 more read by the GPU over PCIe or from another GPU (3.2% of all 148320 routed)
+strata serve: KV streaming: 99.42% of 73932 block reads hit VRAM, 1.7 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 5 drafts accepted
+
+### elog-short06.txt
+strata serve: prompt 25 tokens = 0 reused + 25 read in 367 ms (68.2 tok/s), 120 generated in 2143 ms (56.0 tok/s), drafts accepted 64 of 103, 1 checkpoints
+strata serve: decode expert cache hit rate: 91.8% (69167 hits / 75341 lookups); 1459 more read by the GPU over PCIe or from another GPU (1.9% of all 76800 routed)
+strata serve: KV streaming: 98.96% of 21384 block reads hit VRAM, 0.9 MiB read from RAM
+
+### elog-short07.txt
+strata serve: prompt 29 tokens = 0 reused + 29 read in 435 ms (66.6 tok/s), 256 generated in 3803 ms (67.3 tok/s), drafts accepted 179 of 222, 1 checkpoints
+strata serve: decode expert cache hit rate: 89.9% (126382 hits / 140569 lookups); 3911 more read by the GPU over PCIe or from another GPU (2.7% of all 144480 routed)
+strata serve: KV streaming: 99.40% of 71892 block reads hit VRAM, 1.7 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 2 of 2 drafts accepted
+
+### elog-short08.txt
+strata serve: prompt 23 tokens = 0 reused + 23 read in 364 ms (63.2 tok/s), 256 generated in 3749 ms (68.3 tok/s), drafts accepted 152 of 217, 1 checkpoints
+strata serve: decode expert cache hit rate: 94.4% (143917 hits / 152375 lookups); 1705 more read by the GPU over PCIe or from another GPU (1.1% of all 154080 routed)
+strata serve: KV streaming: 99.43% of 73254 block reads hit VRAM, 1.7 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 2 drafts accepted
+
+### elog-short09.txt
+strata serve: prompt 25 tokens = 0 reused + 25 read in 344 ms (72.7 tok/s), 256 generated in 3729 ms (68.6 tok/s), drafts accepted 175 of 220, 1 checkpoints
+strata serve: decode expert cache hit rate: 91.2% (129211 hits / 141705 lookups); 3255 more read by the GPU over PCIe or from another GPU (2.2% of all 144960 routed)
+strata serve: KV streaming: 99.39% of 69894 block reads hit VRAM, 1.7 MiB read from RAM
+strata serve: suffix drafts: 8 windows, 23 of 23 drafts accepted
+
+### elog-short10.txt
+strata serve: prompt 19 tokens = 0 reused + 19 read in 294 ms (64.6 tok/s), 256 generated in 3721 ms (68.8 tok/s), drafts accepted 170 of 223, 1 checkpoints
+strata serve: decode expert cache hit rate: 92.2% (134523 hits / 145948 lookups); 2852 more read by the GPU over PCIe or from another GPU (1.9% of all 148800 routed)
+strata serve: KV streaming: 99.39% of 67416 block reads hit VRAM, 1.7 MiB read from RAM
+
+### elog-short11.txt
+strata serve: prompt 26 tokens = 0 reused + 26 read in 418 ms (62.2 tok/s), 256 generated in 4184 ms (61.2 tok/s), drafts accepted 150 of 241, 1 checkpoints
+strata serve: decode expert cache hit rate: 93.0% (152869 hits / 164384 lookups); 2656 more read by the GPU over PCIe or from another GPU (1.6% of all 167040 routed)
+strata serve: KV streaming: 99.48% of 82110 block reads hit VRAM, 1.7 MiB read from RAM
+
+### elog-xlong00.txt
+strata serve: prompt 43440 tokens = 0 reused + 43440 read in 24266 ms (1790.2 tok/s), 41 generated in 570 ms (71.9 tok/s), drafts accepted 29 of 31, 3 checkpoints
+strata serve: decode expert cache hit rate: 95.3% (20824 hits / 21843 lookups); 237 more read by the GPU over PCIe or from another GPU (1.1% of all 22080 routed)
+strata serve: KV streaming: 86.23% of 160212 block reads hit VRAM, 88.8 MiB read from RAM
