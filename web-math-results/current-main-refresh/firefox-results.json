@@ -1,0 +1,75 @@
+{
+  "browser": "firefox",
+  "vendor_bytes": 0,
+  "equations": [
+    {
+      "name": "fraction",
+      "ok": true,
+      "reason": null,
+      "ms": 2872,
+      "cached_ms": 0
+    },
+    {
+      "name": "integral",
+      "ok": true,
+      "reason": null,
+      "ms": 2711,
+      "cached_ms": 0
+    },
+    {
+      "name": "sum",
+      "ok": true,
+      "reason": null,
+      "ms": 2953,
+      "cached_ms": 1
+    },
+    {
+      "name": "matrix",
+      "ok": true,
+      "reason": null,
+      "ms": 2846,
+      "cached_ms": 0
+    },
+    {
+      "name": "cases",
+      "ok": true,
+      "reason": null,
+      "ms": 2739,
+      "cached_ms": 0
+    },
+    {
+      "name": "aligned",
+      "ok": true,
+      "reason": null,
+      "ms": 3318,
+      "cached_ms": 0
+    },
+    {
+      "name": "unicode",
+      "ok": true,
+      "reason": null,
+      "ms": 3029,
+      "cached_ms": 0
+    },
+    {
+      "name": "invalid",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 3308,
+      "cached_ms": 0
+    },
+    {
+      "name": "unsupported",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 2220,
+      "cached_ms": 0
+    },
+    {
+      "name": "loop",
+      "skipped": "TeX compilation has no time limit."
+    }
+  ],
+  "cold_chat_ms": 9151.89,
+  "vendor_transfer_bytes": 0
+}

@@ -1,0 +1,84 @@
+[
+  {
+    "name": "fraction",
+    "ok": true,
+    "reason": null,
+    "ms": 4601.17
+  },
+  {
+    "name": "integral",
+    "ok": true,
+    "reason": null,
+    "ms": 3772.57
+  },
+  {
+    "name": "sum",
+    "ok": true,
+    "reason": null,
+    "ms": 3956.0
+  },
+  {
+    "name": "matrix",
+    "ok": true,
+    "reason": null,
+    "ms": 3828.37
+  },
+  {
+    "name": "cases",
+    "ok": true,
+    "reason": null,
+    "ms": 5403.42
+  },
+  {
+    "name": "aligned",
+    "ok": true,
+    "reason": null,
+    "ms": 6016.83
+  },
+  {
+    "name": "unicode",
+    "ok": true,
+    "reason": null,
+    "ms": 5161.06
+  },
+  {
+    "name": "invalid",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 4914.2
+  },
+  {
+    "name": "unsupported",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 4114.36
+  },
+  {
+    "name": "loop",
+    "skipped": "No compiler time limit; unbounded macro loop requires operator cancellation."
+  },
+  {
+    "name": "file-read",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 4126.66
+  },
+  {
+    "name": "lua-file-read",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 6713.44
+  },
+  {
+    "name": "lua-execute",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 8382.1
+  },
+  {
+    "name": "lua-loop",
+    "ok": false,
+    "reason": "invalid",
+    "ms": 10906.33
+  }
+]

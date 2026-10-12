@@ -1,0 +1,36 @@
+{
+  "container": "strata-math-tex-pr1833-no-budget-20261011",
+  "image_id": "sha256:a2f44a16371ade5eae8c0dd4fbb8201383f74a10d55728aaca37713ec87b4e1a",
+  "image_size_bytes": 7040120419,
+  "worker_sha256": "527107c98d6cc9747903ab64d561daa7ef4643df19b7d4faf29b40dd9905578c",
+  "packages_sha256": "9083ece5e0210243ee10372a087a3dc267cd09b77aca9813de73e286dcd73754",
+  "host_config": {
+    "NetworkMode": "none",
+    "ReadonlyRootfs": true,
+    "Memory": 536870912,
+    "MemorySwap": 536870912,
+    "NanoCpus": 1000000000,
+    "PidsLimit": 64,
+    "Tmpfs": {
+      "/tmp": "rw,nosuid,nodev,noexec,size=128m"
+    },
+    "CapDrop": [
+      "ALL"
+    ],
+    "SecurityOpt": [
+      "no-new-privileges"
+    ]
+  },
+  "mounts": [],
+  "user": "65534:65534",
+  "compiler_time_budget_seconds": null,
+  "host_transport_timeout_seconds": null,
+  "tex_browser_conversion_timeout_seconds": null,
+  "unit_tests": {
+    "passed": 41
+  },
+  "notes": [
+    "Chromium initial chat overlapped the tail of the standalone corpus run; timings are descriptive, not controlled performance measurements.",
+    "Infinite recursive TeX macro fixture explicitly skipped because compilation has no time limit."
+  ]
+}

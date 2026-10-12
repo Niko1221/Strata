@@ -1,0 +1,81 @@
+{
+  "browser": "firefox",
+  "vendor_bytes": 558792,
+  "equations": [
+    {
+      "name": "fraction",
+      "ok": true,
+      "reason": null,
+      "ms": 16,
+      "cached_ms": 0
+    },
+    {
+      "name": "integral",
+      "ok": true,
+      "reason": null,
+      "ms": 19,
+      "cached_ms": 0
+    },
+    {
+      "name": "sum",
+      "ok": true,
+      "reason": null,
+      "ms": 12,
+      "cached_ms": 0
+    },
+    {
+      "name": "matrix",
+      "ok": true,
+      "reason": null,
+      "ms": 13,
+      "cached_ms": 0
+    },
+    {
+      "name": "cases",
+      "ok": true,
+      "reason": null,
+      "ms": 18,
+      "cached_ms": 0
+    },
+    {
+      "name": "aligned",
+      "ok": true,
+      "reason": null,
+      "ms": 12,
+      "cached_ms": 0
+    },
+    {
+      "name": "unicode",
+      "ok": true,
+      "reason": null,
+      "ms": 13,
+      "cached_ms": 0
+    },
+    {
+      "name": "invalid",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 3,
+      "cached_ms": 0
+    },
+    {
+      "name": "unsupported",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 2,
+      "cached_ms": 0
+    },
+    {
+      "name": "loop",
+      "ok": false,
+      "reason": "invalid",
+      "ms": 7,
+      "cached_ms": 0
+    }
+  ],
+  "cold_chat_ms": 343.37,
+  "vendor_transfer_bytes": 345581,
+  "platform": "Windows",
+  "cpu": "Intel Core i7-8650U",
+  "playwright": "1.63.0"
+}
