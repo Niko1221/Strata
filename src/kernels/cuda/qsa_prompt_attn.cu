@@ -444,7 +444,8 @@ __device__ __forceinline__ int swz(int cell, int byte) {   // byte offset of (ce
 }
 __device__ __forceinline__ void cp_async16(void* smem, const void* gmem, bool valid) {
 #if !STRATA_PA_SM80
-    __trap();
+    (void) smem; (void) gmem; (void) valid;
+    __trap();   // not reached on Turing (the register-staged pipeline replaces it there)
 #else
     const unsigned sa = (unsigned) __cvta_generic_to_shared(smem);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(sa), "l"(gmem), "r"(valid ? 16 : 0));
@@ -516,6 +517,19 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
         const long long page = (long long) __ldg(p.page_table + cell / page_size);
         return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
     };
+#if !STRATA_PA_SM80
+    // Turing (no cp.async): the warp's next pieces wait in registers and are stored into their stage after this
+    // chunk's p.v (store_stage) - the same bytes in the same places as the cp.async pipeline
+    uint4 rk[4], rv[4];
+    auto store_stage = [&](int st) {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
+            *reinterpret_cast<uint4*>(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16)) = rk[j];
+            *reinterpret_cast<uint4*>(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16)) = rv[j];
+        }
+    };
+#endif
     auto issue = [&](long long r, int st, float& ksr, float& vsr) {
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
@@ -523,8 +537,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
             const long long rr = __shfl_sync(0xffffffffu, r, cell);
             const bool ok = rr >= 0;
             const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
+#if STRATA_PA_SM80
             cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
             cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), p.v_q + off, ok);
+#else
+            (void) st;
+            rk[j] = ok ? __ldg(reinterpret_cast<const uint4*>(p.k_q + off)) : make_uint4(0, 0, 0, 0);
+            rv[j] = ok ? __ldg(reinterpret_cast<const uint4*>(p.v_q + off)) : make_uint4(0, 0, 0, 0);
+#endif
         }
         ksr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.k_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
         vsr = r >= 0 ? __half2float(__ushort_as_half(__ldg(p.v_scale + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
@@ -532,6 +552,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     float ksn, vsn;
     issue(row_of(cell_of(lane)), 0, ksn, vsn);
     cp_async_commit();
+#if !STRATA_PA_SM80
+    store_stage(0);
+#endif
     S.sc[0][warp][0][lane] = ksn;
     S.sc[0][warp][1][lane] = vsn;
     long long r_next = row_of(cell_of(CH2 + lane));
@@ -661,6 +684,9 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
         if (more) {
             S.sc[st ^ 1][warp][0][lane] = ksn;
             S.sc[st ^ 1][warp][1][lane] = vsn;
+#if !STRATA_PA_SM80
+            store_stage(st ^ 1);
+#endif
         }
         __syncwarp();
     }
@@ -1514,7 +1540,9 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         // exist before sm_80.
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
         if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        // Turing: v2 with register staging instead of cp.async, opt-in (STRATA_PA_V2T=1) until measured
+        static const bool v2t = [] { const char* e = std::getenv("STRATA_PA_V2T"); return e != nullptr && e[0] == '1'; }();
+        if (v1 || (turing && !v2t)) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;
