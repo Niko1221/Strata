@@ -328,7 +328,7 @@ class StartOnSeveralGpus(unittest.TestCase):
         code, out, asked, cfg = self.offer(["--resident-experts"], "y")
         self.assertIn("[n]", asked[0])
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
+        self.assertEqual(cfg["args"], ["--mmap-experts"])   # #1447: no helper cache, no --remote-expert-opt
         code, out, asked, cfg = self.offer(["--mmap-experts"], None)           # other configs: as before
         self.assertEqual(cfg["gpu"], [0, 1])
 
@@ -341,7 +341,7 @@ class StartOnSeveralGpus(unittest.TestCase):
             code, out, asked, cfg = self.offer(["--resident-experts"], None)   # --yes: the recommendation
             self.assertIsNone(code, out)
             self.assertEqual(cfg["gpu"], [0, 1])
-            self.assertEqual(cfg["args"], ["--resident-experts", "--remote-expert-opt"])
+            self.assertEqual(cfg["args"], ["--resident-experts"])
             self.assertNotIn("OS file cache", out)
 
     def test_start_with_gpus(self):
@@ -360,7 +360,7 @@ class StartOnSeveralGpus(unittest.TestCase):
             cfg = json.loads(p.read_text())
         self.assertIsNone(code, out)
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
+        self.assertEqual(cfg["args"], ["--mmap-experts"])   # #1447: no helper cache, no --remote-expert-opt
         self.assertIn("no layer split yet", out)
         self.assertTrue(call.called)
 
@@ -488,6 +488,7 @@ class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
     def go(self, ram, cards, model, *flags):
         return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
 
+    @mock.patch.object(setup, "is_wsl", lambda: False)   # #974: not WSL, as in install()
     def test_the_streaming_rule_is_the_flag_setup_writes(self):
         for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
                                                         ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):

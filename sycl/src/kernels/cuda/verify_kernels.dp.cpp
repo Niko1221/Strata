@@ -15,6 +15,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <vector>
 
 #ifndef STRATA_PLAN_LOCAL
 #define STRATA_PLAN_LOCAL 1   // 0: the original one-thread plan kernel (A/B)
@@ -2045,8 +2052,8 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __dpct_inline__ void wait_flag_ge_kernel(const volatile uint32_t *flag,
-                                         uint32_t value) {
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+                                         uint32_t value, uint32_t spin_max) {
+    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2077,7 +2084,7 @@ resident_plan_kernel(const int32_t *__restrict__ ids, int n, int k,
                      const unsigned long long *slot_off, long long blob,
                      int32_t *__restrict__ pl, long long capx, uint32_t *skip,
                      uint32_t ring, const unsigned long long *__restrict__ mir,
-                     volatile uint32_t *plan_err) {
+                     volatile uint32_t *plan_err, int32_t *usage) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t[kResidentPlanMax]>(
@@ -2102,6 +2109,9 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         s_ids[tid] = eid;
         slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
         if (slot < 0 && eid >= 0 && eid < n_expert && mir != nullptr) maddr = mir[eid];
+        if (usage != nullptr && eid >= 0 && eid < n_expert)   // the adaptive tier's routing counts (device side)
+            sycl::atomic_ref<int32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>(usage[eid]).fetch_add(1);
         if (slot < 0 && maddr == 0)
             dpct::atomic_fetch_or<sycl::access::address_space::generic_space>(
                 &s_bad, 1);
@@ -2309,9 +2319,9 @@ auto &s_id = *sycl::ext::oneapi::group_local_memory_for_overwrite<int32_t[128]>(
 }
 __dpct_inline__ void wait_flag_ge_or_kernel(const volatile uint32_t *flag,
                                             uint32_t value,
-                                            const volatile uint32_t *skip) {
+                                            const volatile uint32_t *skip, uint32_t spin_max) {
     if (strata::sys_load(skip) == value) return;
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2336,7 +2346,7 @@ code.
 */
 __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
                                          const sycl::float4 *src, long long n4,
-                                         const uint32_t *skip, uint32_t value) {
+                                         const uint32_t *skip, uint32_t value, bool pair) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const bool zero = *skip == value;
 #pragma unroll
@@ -2346,15 +2356,17 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
          i < n4; i += (long long)item_ct1.get_group_range(2) *
                       item_ct1.get_local_range(2))
         dst[i] = zero ? sycl::float4(0.f, 0.f, 0.f, 0.f)
-                      : const_cast<const sycl::float4 *>(src)[i];
+                      : (pair ? strata::load_mapped_float4(src + i) : const_cast<const sycl::float4 *>(src)[i]);
 }
 }  // namespace
 
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+int32_t* g_usage = nullptr;
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage) {
+    g_usage = usage;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
 }
@@ -2362,8 +2374,10 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
+    int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
     if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
         mir = g_mirror_table + (res_layer - g_mirror_res);
+    if (g_usage != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res) use = g_usage + (res_layer - g_mirror_res);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2377,12 +2391,13 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                     [[sycl::reqd_sub_group_size(32)]] {
                         resident_plan_kernel(
                             ids, n_entries, k, res_layer, n_expert, cache_base,
-                            slot_off, blob, plan, capx, skip, ring, mir, plan_err);
+                            slot_off, blob, plan, capx, skip, ring, mir, plan_err, use);
                     });
     }
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
+    const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2392,7 +2407,7 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
                 dpct_kernel_name<class wait_flag_ge_or_kernel_2b2de3>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_or_kernel(flag, value, skip);
+                    wait_flag_ge_or_kernel(flag, value, skip, spin_max);
                 });
     }
     check("wait_flag_ge_or");
@@ -2420,6 +2435,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
                               void* stream) {
     if (n <= 0) return;
     const long long n4 = n / 4;
+    const bool pair = strata::a770_fast();
     const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -2433,13 +2449,14 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     copy_or_zero_kernel((sycl::float4 *)dst,
                                         (const sycl::float4 *)src, n4,
-                                        skip, value);
+                                        skip, value, pair);
                 });
     }
     check("copy_or_zero_from_mapped");
 }
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
+    const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2448,7 +2465,7 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
             ->parallel_for<dpct_kernel_name<class wait_flag_ge_kernel_d7debf>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_kernel(flag, value);
+                    wait_flag_ge_kernel(flag, value, spin_max);
                 });
     }
     check("wait_flag_ge");
@@ -2515,32 +2532,54 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
     check("copy_indexed");
 }
 
-// a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
+// Opt-in GPU stage timestamps. DG2 has no comparable device-wide clock, so
+// read a live host USM clock uncached (the fork's gpu_stamp implementation).
+// The writer is joined before runtime teardown and exists only in profile mode.
 namespace {
-    __dpct_inline__ void gpu_stamp_kernel(unsigned long long *buf, int i) {
-    unsigned long long t;
-#if defined(STRATA_HIP_GFX906)
-    t = wall_clock64() * 40ull;   // gfx906: the wall clock runs at 25 MHz (hipDeviceAttributeWallClockRate) -> ns
-#elif defined(__HIPCC__)
-    t = wall_clock64() * 10ull;   // gfx10.3 / gfx11 / gfx12: a constant 100 MHz counter, in ns
-#else
-    /*
-    DPCT1053: Migration of device assembly code is not supported.
-    */
-    t = 0;   // SYCL: no %globaltimer equivalent; the stage profiler is inert on this backend
-#endif
-    buf[i] = t;
-} }
-void gpu_stamp(unsigned long long* buf, int i, void* stream) {
-    auto exp_props = sycl::ext::oneapi::experimental::properties{
-        sycl::ext::oneapi::experimental::use_root_sync};
+uint64_t profile_now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct ProfileHostClock {
+    sycl::context context;
+    uint64_t* word;
+    std::atomic<bool> stop{false};
+    std::thread writer;
+    explicit ProfileHostClock(const sycl::queue& q) : context(q.get_context()),
+        word(sycl::malloc_host<uint64_t>(8, context)) {
+        if (!word) throw std::runtime_error("gpu_stamp: host clock allocation failed");
+        __atomic_store_n(word, profile_now_ns(), __ATOMIC_RELEASE);
+        writer = std::thread([this] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                __atomic_store_n(word, profile_now_ns(), __ATOMIC_RELEASE);
+                for (int i = 0; i < 8; ++i) __builtin_ia32_pause();
+            }
+        });
+    }
+    ~ProfileHostClock() {
+        stop.store(true, std::memory_order_relaxed);
+        if (writer.joinable()) writer.join();
+        // Keep the word alive until context teardown, as in the fork: a graph
+        // may still retain its pointer when process-level statics are destroyed.
+    }
+};
+uint64_t* profile_clock_word(const sycl::queue& q) {
+    static std::mutex mu;
+    static std::vector<std::unique_ptr<ProfileHostClock>> clocks;
+    std::lock_guard<std::mutex> lock(mu);
+    for (const auto& clock : clocks) if (clock->context == q.get_context()) return clock->word;
+    clocks.push_back(std::make_unique<ProfileHostClock>(q));
+    return clocks.back()->word;
+}
+}
 
-    strata::q_of(stream)
-        ->parallel_for<dpct_kernel_name<class gpu_stamp_kernel_76ad79>>(
-            sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                gpu_stamp_kernel(buf, i);
-            });
+void gpu_stamp(unsigned long long* buf, int i, void* stream) {
+    auto& q = *strata::q_of(stream);
+    uint64_t* word = profile_clock_word(q);
+    q.single_task([=] {
+        sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::system);
+        buf[i] = strata::sys_load_mapped(word);
+    });
 }
 
 }  // namespace strata::kernels

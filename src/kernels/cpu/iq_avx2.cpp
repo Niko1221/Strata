@@ -453,10 +453,6 @@ void q8k_quant_avx2(const float* x, void* vy, int64_t k) {
     }
 }
 
-bool iq256_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
-}
-
 int iq256_variant() noexcept {
     // STRATA_IQ256_GATHER=0/1 for every core; unset, where the calling thread's core gathers faster (per thread: a
     // hybrid CPU's pool runs on P- and E-cores).  AVX-VNNI where cpu_avxvnni_ok().  The same bits either way.

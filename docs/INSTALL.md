@@ -222,7 +222,7 @@ With `--yes` setup takes the recommended answer to every question.
 ## Tuning for your PC
 
 Every PC is different: `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) measures a few engine settings
-on yours and keeps the fastest (about 5-10 minutes; on an RTX 5070 with a Ryzen 5 7600 it made the Coder 7% faster).
+on yours and keeps the fastest (about 15-30 minutes, longer on a slow card; on an RTX 5070 with a Ryzen 5 7600 it made the Coder 7% faster).
 It keeps a setting only when it is more than 3% faster, and the result is remembered per PC and model, so updates
 keep it. Measuring the CPU worker count needs a fresh engine, so the model is loaded more than once: the PC is
 busy, and can stop responding for a minute or two, once per restart. When it finishes it **starts the model**,
@@ -246,7 +246,7 @@ START-HERE.bat --no-browser                     do not open the chat page when t
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
-START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start
+START-HERE.bat --calibrate                      tune the engine for this PC (about 15-30 minutes, longer on a slow card), then start
 START-HERE.bat --check                          only check this PC
 ```
 

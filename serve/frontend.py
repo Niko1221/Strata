@@ -19,7 +19,9 @@ import json
 import logging
 import os
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -112,13 +114,17 @@ class ChatTemplate:
 
 
 # ------------------------------------------------------------------------------------------------ requests
+# The content-part types the readers take as text (a part with no type that has a "text" field reads as text too)
+TEXT_PARTS = ("text", "input_text", None)
+
+
 def _text_of(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") in
-                   ("text", "input_text", None))
+                   TEXT_PARTS)
 
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
@@ -182,9 +188,41 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
-        elif part.get("type") in ("text", "input_text", None) and "text" in part:
+        elif part.get("type") in TEXT_PARTS and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
+
+
+# The blocks a messages request may carry: text, the image parts, thinking, tool_use and tool_result.
+# redacted_thinking is allowed only to be dropped without an error: another server's encrypted reasoning, which
+# carries nothing this server can read - the same reason responses.py's _reasoning_text gives for another server's
+# encrypted_content.
+ANTHROPIC_BLOCKS = ("text",) + IMAGE_PARTS + ("thinking", "tool_use", "tool_result", "redacted_thinking")
+
+
+def _check_parts(content, path: str, kinds):
+    """A request's content parts (on chat) or content blocks (on messages), looked at while the request is converted.
+    A part whose type this server does not read (a file, audio, a document, Anthropic's tool_reference,
+    search_result, server_tool_use / web_search_tool_result blocks, ...) is left out of the prompt exactly as it always
+    was, with a debug line: real clients (Claude Code, Codex, opencode, Cline, Continue, Open WebUI) send such parts
+    next to text the model can answer from, so refusing them would break requests that work.  A "refusal" part is read
+    as its text, as /v1/responses does.  Content that is not a list, and a part that is not an object, passes through
+    unchanged."""
+    if not isinstance(content, list):
+        return content
+    out = content
+    for j, part in enumerate(content):
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "refusal":
+            if out is content:
+                out = list(content)
+            out[j] = {"type": "text", "text": part.get("refusal") or ""}
+        elif kind not in kinds:
+            LOGGER.debug("%s[%d].type: content part of type %r is not read by this server; left out of the prompt",
+                         path, j, kind)
+    return out
 
 
 def images_of(messages: list[dict]) -> list[str]:
@@ -315,6 +353,36 @@ def _object_list(value, name: str) -> list[dict]:
     return value
 
 
+_TOOL_ORDERS: "OrderedDict[frozenset, tuple]" = OrderedDict()   # a set of tool names -> the order it first came in
+_TOOL_ORDERS_LOCK = threading.Lock()
+_TOOL_ORDERS_MAX = 64
+
+
+def _stable_tool_order(tools: list[dict], name_of) -> list[dict]:
+    """The same set of tools comes back in the order it was first seen.  Clients send their tools in the order their
+    MCP servers finished registering, which can differ from one request (or one client restart) to the next, and the
+    template renders the tool list before the system prompt: one swap moves the shared prefix back thousands of
+    tokens and the whole conversation is read again (opencode issue 23571).  A request's first sight of a tool set
+    is untouched (so its prompt is byte for byte what the client sent); later requests with the same names in
+    another order are put back in that first order.  Duplicate names, or a single tool: left as sent."""
+    if len(tools) < 2:
+        return tools
+    names = [name_of(t) for t in tools]
+    if len(set(names)) != len(names):
+        return tools
+    key = frozenset(names)
+    with _TOOL_ORDERS_LOCK:
+        order = _TOOL_ORDERS.get(key)
+        if order is None:
+            _TOOL_ORDERS[key] = tuple(names)
+            while len(_TOOL_ORDERS) > _TOOL_ORDERS_MAX:
+                _TOOL_ORDERS.popitem(last=False)
+            return tools
+        _TOOL_ORDERS.move_to_end(key)
+    pos = {n: k for k, n in enumerate(order)}
+    return sorted(tools, key=lambda t: pos[name_of(t)])
+
+
 def _tool_list(value, wrapper: str | None) -> list[dict]:
     """#592: a request's "tools" as a list of tool objects, each with a name - in the OpenAI shape
     {"type": "function", "function": {"name": ...}} (`wrapper` "function"; a bare {"name": ...} is still taken), or
@@ -342,7 +410,7 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
             # AttributeError in the request thread - after the 200 and whatever the model had said before the call
             raise ValueError(f'tools[{i}] ({fn["name"]}): "{key}" must be an object (the JSON schema of its '
                              f"parameters), not {type(schema).__name__}")
-    return tools
+    return _stable_tool_order(tools, lambda t: (t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t)["name"])
 
 
 def tool_arguments(raw) -> dict:
@@ -365,11 +433,15 @@ def tool_arguments(raw) -> dict:
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
-    for m in _object_list(req.get("messages"), "messages"):
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
         role = m.get("role")
         if role == "developer":
             role = "system"
-        out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
+        # an image is read in a user, tool or assistant message; the system prompt takes text only, as _text_of reads
+        images = role in ("user", "tool", "assistant")
+        content = _check_parts(m.get("content"), f"messages[{i}].content",
+                               TEXT_PARTS + IMAGE_PARTS if images else TEXT_PARTS)
+        out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -432,9 +504,10 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     messages = []
     system = req.get("system")
     if system:
-        messages.append({"role": "system", "content": pin_billing_stamp(_text_of(system))})
-    for m in _object_list(req.get("messages"), "messages"):
-        content = m.get("content")
+        messages.append({"role": "system",
+                         "content": pin_billing_stamp(_text_of(_check_parts(system, "system", TEXT_PARTS)))})
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
+        content = _check_parts(m.get("content"), f"messages[{i}].content", ANTHROPIC_BLOCKS)
         if isinstance(content, str):
             messages.append({"role": m["role"], "content": content})
             continue
@@ -443,7 +516,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
         text, reasoning, calls, parts = [], [], [], []
-        for block in content or []:
+        for j, block in enumerate(content or []):
             kind = block.get("type")
             if kind == "text":
                 text.append(block.get("text", ""))
@@ -457,7 +530,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "tool_result":
                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
                 # path's tool messages already do; a text-only result is one string, as before.
-                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+                messages.append({"role": "tool", "content": _parts_of(_check_parts(
+                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
@@ -669,7 +743,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
-    name = body[len("<function="):body.index(">")]
+    name = body[len("<function="):body.index(">")].strip()      # `<function= capture>`: the model's stray space
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
@@ -767,13 +841,44 @@ class OutputParser:
             p = self.buf.find(FUNC_START, p + 1)
         return -1, False
 
+    @property
+    def line(self) -> str:
+        """Materialize the current line only for a decision, newline, or state snapshot."""
+        if self._line_blocks is not None:
+            self._line_blocks.extend(self._line_parts)
+            self._line_parts = ["".join(self._line_blocks)]
+            self._line_blocks = None
+        elif len(self._line_parts) > 1:
+            self._line_parts = ["".join(self._line_parts)]
+        return self._line_parts[0] if self._line_parts else ""
+
+    @line.setter
+    def line(self, text: str):
+        self._line_parts = [text] if text else []
+        self._line_blocks = None
+
     def _track(self, text: str) -> str:
         """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
         the current paragraph.  Returns the text."""
+        # Most token fragments stay on the current line. Fence and paragraph
+        # bookkeeping happens only when a newline completes that line.
+        if "\n" not in text:
+            if text:
+                self._line_parts.append(text)
+                if len(self._line_parts) == 64:
+                    # Release small fragment objects in bounded groups. Completed
+                    # blocks are never recopied until the full line is requested.
+                    if self._line_blocks is None:
+                        self._line_blocks = []
+                    self._line_blocks.append("".join(self._line_parts))
+                    self._line_parts.clear()
+            return text
         parts = text.split("\n")
         for k, part in enumerate(parts):
             if k < len(parts) - 1:
-                line, self.line = self.line + part, ""
+                line = self.line + part if self._line_parts or self._line_blocks else part
+                self._line_parts.clear()
+                self._line_blocks = None
                 s = line.lstrip()
                 if self.fence:
                     if s.startswith(self.fence * 3):
@@ -785,7 +890,8 @@ class OutputParser:
                 else:
                     self.ticks += line.count("`")
             else:
-                self.line += part
+                if part:
+                    self._line_parts.append(part)
         return text
 
     def _opener_ok(self) -> bool:
@@ -796,6 +902,19 @@ class OutputParser:
     def _in_code(self) -> bool:
         """The text so far leaves the next character inside a code fence or inline code."""
         return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+
+    def _quoted_think_end(self, i: int) -> bool | None:
+        """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
+        thinking: written right after a quote or backtick and followed by anything but a line break, as in `</think>`
+        or "</think>...".  The end of the thinking is followed by a line break.  None while the character after the
+        tag has not arrived."""
+        before = self.buf[i - 1] if i else self.line[-1:]
+        if before not in ('"', "'", "`"):
+            return False
+        after = self.buf[i + len(THINK_END):]
+        if not after:
+            return None
+        return after[0] not in "\r\n"
 
     def _release(self, deliver: bool) -> list[Event]:
         """Settle the calls waiting in self.pending: events for real calls, or all of it back as reasoning text."""
@@ -944,7 +1063,7 @@ class OutputParser:
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
-                        name = body[:end].strip()[len("<function="):].split(">", 1)[0]
+                        name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
                         if name in self.schemas:
                             call = parse_tool_call(body[:end], self.schemas.get(name))
                     except ValueError:
@@ -1005,6 +1124,16 @@ class OutputParser:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
+                quoted = self._quoted_think_end(i)
+                if quoted is None:                   # held like a partial tag until the character after it is here
+                    if i:
+                        out.append(Event("reasoning", self._track(self.buf[:i])))
+                        self.buf = self.buf[i:]
+                    return out
+                if quoted:                           # #537: a quoted `</think>` is reasoning text
+                    out.append(Event("reasoning", self._track(self.buf[:i + len(THINK_END)])))
+                    self.buf = self.buf[i + len(THINK_END):]
+                    continue
                 if i:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
@@ -1167,6 +1296,8 @@ class OutputParser:
             self.buf = ""
             self._reset_scan()
             return out
+        if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
+            self.buf, self.state = "", "content"
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
@@ -1178,7 +1309,7 @@ class OutputParser:
     def _finish_call(self, body: str) -> list[Event]:
         """A whole call body in the template's form -> its tool_call event.  With recover, one that still does not
         parse is the text it is instead of an error that ends the request."""
-        name = body.strip()[len(FUNC_START):].split(">", 1)[0]
+        name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
         bare, self.bare = self.bare, False
         try:
             call = parse_tool_call(body, self.schemas.get(name))

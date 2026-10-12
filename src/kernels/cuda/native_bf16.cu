@@ -75,8 +75,10 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
 // token keeps its own accumulator with exactly the single-row kernel's order (pairs, two ordered FMAs, the same warp
 // and block reductions), so each output is bit-identical to a bf16_f32_mmvf_kernel launch of its own.
 template <int BLOCK_SIZE, int NT, bool EXACT_T = true>
-__global__ void bf16_f32_mmvf_multi_kernel(const float* STRATA_PDL_RESTRICT x, int64_t ldx, const uint16_t* __restrict__ w,
-                                          float* STRATA_PDL_RESTRICT y, int64_t ldy, int n_in, int n_tok) {
+__global__ void bf16_f32_mmvf_multi_kernel(const float* x_, int64_t ldx, const uint16_t* __restrict__ w,
+                                          float* y_, int64_t ldy, int n_in, int n_tok) {
+    const float* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
+    float* STRATA_PDL_RESTRICT y = y_;
     const int t = threadIdx.x;
     const uint16_t* row = w + (size_t) blockIdx.x * n_in;
     const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);

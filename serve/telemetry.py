@@ -166,6 +166,69 @@ class _Amd:
         except (OSError, TypeError):
             return "AMD Radeon"
 
+    @staticmethod
+    def _gen(text):
+        """The PCIe generation of a link-speed file's contents ("16.0 GT/s PCIe" -> 4), or None."""
+        try:
+            return {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}[float(str(text).split()[0])]
+        except (ValueError, TypeError, IndexError, KeyError):
+            return None
+
+    @staticmethod
+    def _bdf(s):
+        """True for a sysfs pci device name ("0000:03:00.0"); nothing is imported for it."""
+        return (len(s) == 12 and s[4] == ":" and s[7] == ":" and s[10] == "." and s[11] in "01234567"
+                and all(c in "0123456789abcdef" for c in s[0:4] + s[5:7] + s[8:10]))
+
+    @staticmethod
+    def _read(d, name):
+        try:
+            with open(os.path.join(d, name), encoding="utf-8") as f:
+                return f.read().strip()
+        except (OSError, TypeError):
+            return None
+
+    def _hops(self):
+        """The PCIe devices between the root port and this card, the card last: the sysfs path names every
+        hop (a card behind a bridge chain has more than one; a directly attached card has one)."""
+        out, prefix = [], []
+        for part in os.path.realpath(self.dev or "").split("/"):
+            prefix.append(part)
+            if self._bdf(part):
+                out.append("/".join(prefix))
+        return out
+
+    def link(self):
+        """The PCIe link the card actually gets: the **narrowest/slowest hop** between the root port and the card,
+        from each hop's `max_link_speed` / `max_link_width` (the capability, so a power-saving downgrade or a Gen3
+        slot cannot make it read low).  A card that is Gen4 on its own hop but sits behind a Gen3 root port really
+        runs at Gen3, and that is the number a PCIe bandwidth budget needs.
+        `pcie_own_gen` keeps the card's own hop aside: the gap between the two is what a user has to see.
+
+        The bottleneck is only claimed when **every** hop of the path could be read; `pcie_path` reports how many
+        of them were ("4/4").  A kernel or a container that hides part of /sys/devices would otherwise drop the
+        unreadable hops in silence and report the card's own Gen4 hop as the whole path - i.e. be optimistic
+        exactly where it matters.  When the walk is incomplete the reading falls back to the card's own negotiated
+        link and pcie_path says so."""
+        hops = self._hops()
+        gens, widths, read = [], [], 0
+        for d in hops:
+            g = self._gen(_Amd._read(d, "max_link_speed"))
+            w = self._int(os.path.join(d, "max_link_width"))
+            read += 1 if (g is not None or w is not None) else 0
+            if g:
+                gens.append(g)
+            if w:
+                widths.append(w)
+        own = self.dev or ""
+        own_gen = self._gen(_Amd._read(own, "current_link_speed"))
+        whole = bool(hops) and read == len(hops)
+        gen = min(gens) if (whole and gens) else own_gen
+        width = min(widths) if (whole and widths) else self._int(os.path.join(own, "current_link_width"))
+        return {"pcie_gen": gen, "pcie_gen_max": gen, "pcie_own_gen": own_gen, "pcie_width": width,
+                "pcie_path": "%d/%d" % (read, len(hops))}
+
+
     def read(self):
         out = {"util": self._int(os.path.join(self.dev, "gpu_busy_percent")),
                "mem_used": self._int(os.path.join(self.dev, "mem_info_vram_used")),
@@ -179,6 +242,7 @@ class _Amd:
             out["power"] = p / 1e6 if p is not None else None
             cap = self._int(os.path.join(self.hwmon, "power1_cap"))
             out["power_limit"] = cap / 1e6 if cap is not None else None
+        out.update(self.link())
         return out
 
 
@@ -297,6 +361,7 @@ class Telemetry:
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
+        self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _disk(self):
@@ -305,6 +370,8 @@ class Telemetry:
         try:
             c = self.ps.disk_io_counters()
         except (OSError, RuntimeError):
+            return None, None
+        if c is None:   # psutil found no disk (a gVisor container, Windows with its disk counters off)
             return None, None
         t = time.time()
         prev, self._disk_prev = self._disk_prev, (t, c.read_bytes, c.write_bytes)
@@ -350,8 +417,12 @@ class Telemetry:
                 pass
         return s
 
+    def close(self):
+        """Ends the sampler thread (a server that stops, a test's service): it used to run for the life of the process."""
+        self._stop.set()
+
     def _loop(self):
-        while True:
+        while not self._stop.is_set():
             s = self.sample()
             with self.lock:
                 self.now = s
@@ -359,7 +430,7 @@ class Telemetry:
                           "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
-            time.sleep(1.0)
+            self._stop.wait(1.0)
 
     def snapshot(self):
         with self.lock:

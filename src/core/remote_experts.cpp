@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -93,6 +94,7 @@ void RemoteExperts::close() {
     DeviceScope scope(device_);
     if (scope.ok) {
         if (stream_) cudaStreamSynchronize(stream_);
+        if (read_stream_) cudaStreamSynchronize(read_stream_);
         cache_.close();
         if (d_x_) cudaFree(d_x_);
         if (d_out_) cudaFree(d_out_);
@@ -104,9 +106,11 @@ void RemoteExperts::close() {
         if (h_out_) cudaFreeHost(h_out_);
         if (h_meta_) cudaFreeHost(h_meta_);
         if (stream_) cudaStreamDestroy(stream_);
+        if (read_stream_) cudaStreamDestroy(read_stream_);
     }
     device_ = -1;
     stream_ = nullptr;
+    read_stream_ = nullptr;
     h_x_ = h_out_ = d_x_ = d_out_ = nullptr;
     h_meta_ = d_meta_ = nullptr;
     d_q8_ = nullptr;
@@ -204,6 +208,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
         check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device);
     if (!allocated) { close(); return false; }
+    if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
+        close();
+        return false;
+    }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
     // directly - two copies fewer per layer, each of which is a PCIe round trip.  STRATA_REMOTE_ZEROCOPY=0 copies.
     const char* zc = std::getenv("STRATA_REMOTE_ZEROCOPY");
@@ -338,4 +346,111 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     return true;
 }
 
+bool RemoteExperts::copy_cached_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst,
+                                      size_t n, uint8_t* hit, std::string& err) {
+    std::fill(hit, hit + n, 0);
+    if (device_ < 0 || read_stream_ == nullptr || n == 0) return true;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    DeviceScope scope(device_);
+    if (!scope.ok) { err = scope.error(device_); return false; }
+    std::lock_guard<std::mutex> lock(read_mu_);
+    bool queued = false;
+    for (size_t i = 0; i < n; ++i) {
+        if (dst[i] == nullptr) continue;
+        const int32_t slot = cache_.slot_of(layers[i], experts[i]);
+        if (slot < 0) continue;
+        const size_t bytes = (size_t) lay.blob_bytes(layers[i]);
+        if (!check(cudaMemcpyAsync(dst[i], cache_.device_slot(slot), bytes, cudaMemcpyDeviceToHost, read_stream_),
+                   "cache read", err, device_)) {
+            // Nothing may still be writing a caller's buffer when this returns.  If the drain succeeds, the
+            // hits queued before the failure are complete and the caller may keep them; if it does not,
+            // forget every hit and let the caller refill all of them from its fallback.
+            if (cudaStreamSynchronize(read_stream_) != cudaSuccess) std::fill(hit, hit + n, 0);
+            return false;
+        }
+        hit[i] = 1;
+        queued = true;
+    }
+    if (queued && !check(cudaStreamSynchronize(read_stream_), "cache read wait", err, device_)) {
+        std::fill(hit, hit + n, 0);   // a failed wait means no copied buffer may be trusted
+        return false;
+    }
+    return true;
+}
+
+bool RemotePrefillSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
+    if (dst != nullptr && from_helper(layer, expert)) {
+        const int32_t l = (int32_t) layer, e = (int32_t) expert;
+        uint8_t* d = dst;
+        std::string err;
+        for (RemoteExperts* h : helpers_) {
+            uint8_t got = 0;
+            const bool ok = h->copy_cached_blobs(&l, &e, &d, 1, &got, err);
+            if (got) {
+                helper_blobs_.fetch_add(1, std::memory_order_relaxed);
+                helper_bytes_.fetch_add(strata::kernels::cpu::expert_layout().blob_bytes(layer),
+                                        std::memory_order_relaxed);
+                return true;
+            }
+            if (!ok) break;
+        }
+        warn(err);
+    }
+    return fallback_.copy_blob(layer, expert, dst);
+}
+
+bool RemotePrefillSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (helpers_.empty() || n == 0) return fallback_.copy_blobs(layers, experts, dst, n);
+    thread_local std::vector<int32_t> hl, he;
+    thread_local std::vector<uint8_t*> hd;
+    thread_local std::vector<size_t> idx;
+    thread_local std::vector<uint8_t> got;
+    thread_local std::vector<uint8_t> served;
+    thread_local std::vector<int32_t> ml, me;
+    thread_local std::vector<uint8_t*> md;
+    thread_local std::vector<int> which;
+    which.assign(n, -1);
+    served.assign(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        if (dst[i] == nullptr) continue;
+        for (size_t k = 0; k < helpers_.size(); ++k)
+            if (helpers_[k]->holds(layers[i], experts[i])) { which[i] = (int) k; break; }
+    }
+    // One stream batch per helper, so several hits pay one wait; the misses go to the file source in one
+    // call, which keeps its own batched-read merging for them.
+    uint64_t blobs = 0, bytes = 0;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    for (size_t k = 0; k < helpers_.size(); ++k) {
+        hl.clear(); he.clear(); hd.clear(); idx.clear();
+        for (size_t i = 0; i < n; ++i)
+            if (which[i] == (int) k) {
+                hl.push_back(layers[i]); he.push_back(experts[i]); hd.push_back(dst[i]); idx.push_back(i);
+            }
+        if (hl.empty()) continue;
+        got.assign(hl.size(), 0);
+        std::string err;
+        if (!helpers_[k]->copy_cached_blobs(hl.data(), he.data(), hd.data(), hl.size(), got.data(), err)) warn(err);
+        for (size_t j = 0; j < got.size(); ++j)
+            if (got[j]) {
+                served[idx[j]] = 1;
+                ++blobs;
+                bytes += lay.blob_bytes(hl[j]);
+            }
+    }
+    if (blobs != 0) {
+        helper_blobs_.fetch_add(blobs, std::memory_order_relaxed);
+        helper_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    ml.clear(); me.clear(); md.clear();
+    for (size_t i = 0; i < n; ++i)
+        if (!served[i]) { ml.push_back(layers[i]); me.push_back(experts[i]); md.push_back(dst[i]); }
+    if (ml.empty()) return true;
+    return fallback_.copy_blobs(ml.data(), me.data(), md.data(), ml.size());
+}
+
+void RemotePrefillSource::warn(const std::string& err) {
+    if (err.empty() || warned_.exchange(true)) return;
+    std::fprintf(stderr, "prefill: a helper cache read failed (%s); the file source fills that blob instead\n",
+                 err.c_str());
+}
 } // namespace strata::core

@@ -78,6 +78,32 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(len(starts), 1 + len(CAL.worker_candidates(6)) + len(CAL.ADAPT_CANDIDATES))
         self.assertEqual(CAL.arg_value(starts[0], "--spec-min-p"), "0.5")   # measured against the product default
 
+    def test_a_failed_restart_keeps_the_measurements_1337(self):
+        # the top PCIe share wins by far; every later restart (the worker counts, the expert tier) fails to start
+        n = {"starts": 0}
+
+        def start(args):
+            n["starts"] += 1
+            if n["starts"] > 1:
+                raise RuntimeError("the engine exited before it was ready: cudaMalloc failed (213 MiB free)")
+            return FakeEngine(args, lambda f, p, w: 80.0 if f == 0.75 else 50.0, 6)
+        said = []
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=said.append)
+        self.assertEqual(res["settings"].get("--pcie-frac"), "0.75")        # steps 1-3 survived
+        self.assertGreater(len(res["report"]["failed_starts"]), 1)
+        self.assertTrue(any("did not start" in x and "cudaMalloc" in x for x in said))
+        self.assertEqual(res["report"]["workers"], {})
+        self.assertEqual(res["report"]["adapt"], {})
+
+    def test_one_failing_worker_count_only_drops_that_candidate_1337(self):
+        def start(args):
+            if CAL.arg_value(args, "--pool-workers") == "3":
+                raise RuntimeError("out of memory")
+            return FakeEngine(args, lambda f, p, w: 60.0 if w == 2 else 50.0, 6)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None)
+        self.assertEqual(res["settings"].get("--pool-workers"), "2")
+        self.assertEqual(list(res["report"]["failed_starts"]), ["3 workers"])
+
     def test_adaptive_tier(self):
         # a slow-RAM PC: swapping 160 experts per round is 10% faster, 80 is 2% (noise)
         res, starts = self.run_with(lambda f, p, w: 50.0, adapt={"160": 1.10, "80": 1.02})

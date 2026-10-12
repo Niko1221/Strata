@@ -25,6 +25,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
@@ -428,6 +429,7 @@ struct Options {
     std::string embd_gguf;
     /// Plan v0.3 P2: how the n-gram table is read. Direct (default) = unbuffered SSD reads, table never in RAM.
     std::string ple_io = "direct";
+    bool ple_io_explicit = false;      ///< --ple-io was given: the engine only warns when direct measures slow
     int64_t ple_row_cache = 1 << 20;   ///< bounded row cache (rows of 90 B); 0 disables
     int ple_inflight = 256;   // the prompt path reads a chunk's rows at once: 64 left the SSD half idle (32K: 303 -> 189 ms)
     double ple_delay_us = 0;           ///< fault injection: every row read completes no earlier than this
@@ -1498,24 +1500,20 @@ bool load_control_vectors(const Options& o, const strata::core::ModelGeometry& g
 // median would still follow a disturbance that lasts through half the bursts).  Each burst takes ~10 ms on an x16
 // PCIe 4 link, so the probe takes no longer than the one 1 GiB burst did.  `samples`, when given, gets every
 // burst's reading for the log.
-double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
+double probe_pcie_h2d_gbps(std::string *samples = nullptr, bool pin_source = false) try {
     constexpr size_t kBytes = 256ull << 20;
     constexpr int kBursts = 4;
     void* h = nullptr;
     void* d = nullptr;
-    if (DPCT_CHECK_ERROR(h = (void *)malloc(kBytes)) != 0) return -1.0;
+    // PR #1669: a pageable source made the copy engine fault on a layer split (VM_NOT_FOUND), so a split pins it. A single card keeps the
+    // pageable source of 0.1.41: pinned reads 1.7x faster, which moves the default pcie_frac (A750 0.28 -> 0.47, 10% slower decode).
+    if (DPCT_CHECK_ERROR(h = pin_source ? (void *)sycl::malloc_host(kBytes, dpct::get_in_order_queue()) : (void *)malloc(kBytes)) != 0 || h == nullptr) return -1.0;
     if (DPCT_CHECK_ERROR(d = (void *)sycl::malloc_device(
                              kBytes, dpct::get_in_order_queue())) != 0) {
-        free(h);
+        if (pin_source) sycl::free(h, dpct::get_in_order_queue()); else free(h);
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     dpct::get_in_order_queue().memcpy(
         d, h, kBytes).wait(); // warmup: context up, copy engine primed
     float ms[kBursts] = {};
@@ -1581,7 +1579,7 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     */
     if (!ok)(void) 0;
     sycl::free(d, dpct::get_in_order_queue());
-    free(h);
+    if (pin_source) sycl::free(h, dpct::get_in_order_queue()); else free(h);
     return bw;
 }
 catch (sycl::exception const &exc) {
@@ -1600,6 +1598,31 @@ double pcie_frac_for_gbps(double gbps, double base) {
 }
 
 }  // namespace
+
+// #1425 #1549 #1629: --ple-io direct (the default) does unbuffered random reads of the n-gram table; on some drives
+// (DRAM-less NVMe, Windows unbuffered I/O) they run at 34 MB/s or 4-8 tok/s and a prompt reads layer 1 for minutes.
+// Rows per second of a short cold probe: a few batches of random rows through the same batched reader a prompt chunk
+// uses, stopped after ~0.6 s. Returns <= 0 when nothing could be measured.
+static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
+    const uint64_t n = t.rows();
+    if (n < 4096) return -1.0;
+    constexpr size_t kTok = 4;   // 64 rows a batch
+    std::vector<uint32_t> rows(kTok * 16);
+    std::vector<float> out(kTok * 2560);
+    uint64_t x = 0x9E3779B97F4A7C15ull ^ n;
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t done = 0;
+    double el = 0;
+    for (int b = 0; b < 64; ++b) {
+        for (auto& r : rows) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; r = (uint32_t) (x % n); }
+        std::string e;
+        if (!t.gather_batch(rows.data(), kTok, out.data(), e)) return -1.0;
+        done += rows.size();
+        el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (el > 0.6) break;
+    }
+    return el > 0 ? (double) done / el : -1.0;
+}
 
 int main(int argc, char **argv) try {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
@@ -1687,7 +1710,7 @@ int main(int argc, char **argv) try {
         else if (a == "--dump-routing") o.dump_routing = next("--dump-routing");
         else if (a == "--ple-gguf") o.ple_gguf = next("--ple-gguf");
         else if (a == "--no-ple") o.no_ple = true;
-        else if (a == "--ple-io") o.ple_io = next("--ple-io");
+        else if (a == "--ple-io") { o.ple_io = next("--ple-io"); o.ple_io_explicit = true; }
         else if (a == "--ple-row-cache") o.ple_row_cache = std::atoll(next("--ple-row-cache"));
         else if (a == "--ple-inflight") o.ple_inflight = std::atoi(next("--ple-inflight"));
         else if (a == "--ple-delay-us") o.ple_delay_us = std::atof(next("--ple-delay-us"));
@@ -2143,12 +2166,42 @@ int main(int argc, char **argv) try {
     // SYCL port (the B70, 2026-09-30): lending cache slots to the prompt path costs ~1 s per prompt (2,184 tokens:
     // 610 vs 792 tok/s) but is what keeps every expert in VRAM at a long context - 80,000 tokens without it: the
     // reserve for the KV and the chunk buffers evicts ~1,900 experts, prompt 790 tok/s and decode 2 tok/s after it;
-    // with it: 1,062 tok/s and 39.5 tok/s. So by default only above a 32K context; the flags still decide.
+    // with it: 1,062 tok/s and 39.5 tok/s after it. So by default only above a 32K context; the flags still decide.
     // (0.1.31-0.1.32: borrowing hung in the first chunk of a long prompt; the prompt path's stager waited on the copy
     // queue's events from its own threads, which the Level Zero v2 adapter did not survive once its ring wrapped -
     // prefill.cpp, Stager::issued_one. Fixed 2026-10-01: a 40K prompt borrowing reads at 1,144 tok/s and decodes at
     // 69 tok/s after it, against 1,201 / 65 with its own buffers.)
-    if (!borrow_explicit) o.no_prefill_borrow = o.max_context <= 32768;
+    //
+    // 2026-10-08 (the A770): borrowing is BROKEN on Alchemist. Its prompt buffers are carved from the top of the
+    // ~10 GiB expert-cache allocation, and oneMKL's BF16 GEMM reads a wrong tile when an operand lies more than 4 GiB
+    // into its allocation (docs/INTEL.md); the borrowed operands hit that, so from the first full prefill chunk the
+    // router read garbage and prefill failed ("prefill: routed id out of range") or the engine segfaulted (measured:
+    // a 236-token prompt, mirrored and mmap configs alike). Keep Alchemist's prompt path on its own buffers (its own
+    // allocation, reserved exactly by owned_prefill_mib) and keep an automatic chunk under 4 GiB, until the SYCL BLAS
+    // stages operands as the CUDA/HIP shims do. Battlemage keeps the old default (its long prompts were measured
+    // correct with borrowing). --prefill-borrow overrides, for testing the staging fix. A layer split keeps its rule.
+    if (!borrow_explicit) {
+        static const bool alchemist = [] {
+            try {
+                // PCI device ids, the same table setup_intel.py uses: 56a0 A770, 56a1 A750, 56a2 A580, 56a5 A380,
+                // 56a6 A310, 5690 A770M
+                const unsigned id = dpct::get_current_device().get_info<sycl::ext::intel::info::device::device_id>();
+                // Only a card with room for an expert cache past 4 GiB can hit it: on an 8 GB A750 the cache was 0.34 GiB
+                // and the own-buffers reservation cost experts (prompt 72 -> 52 tok/s, decode -6%, 4K prompt, 4 rounds)
+                if (dpct::get_current_device().get_info<sycl::info::device::global_mem_size>() < (12ull << 30)) return false;
+                switch (id & 0xffffu) {
+                case 0x56a0: case 0x56a1: case 0x56a2: case 0x56a5: case 0x56a6: case 0x5690: return true;
+                default: return false;
+                }
+            } catch (...) { return false; }
+        }();
+        if (!multi_gpu && alchemist) {
+            o.no_prefill_borrow = true;
+            if (o.prefill_auto && o.prefill_chunk > 2048) o.prefill_chunk = o.prefill_auto_max = 2048;
+        } else {
+            o.no_prefill_borrow = o.max_context <= 32768;
+        }
+    }
 #if defined(STRATA_USE_HIP)
     {
         // every GPU this run uses must be an architecture the binary has code for (a gfx1100 build on a gfx1201
@@ -2224,6 +2277,7 @@ int main(int argc, char **argv) try {
         if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
         o.spec = std::max(o.spec, std::min(o.mtp_max_t + o.lookup_chain, 8));   // kVerifyMaxT
     }
+    strata::spin_drafts_need_long_bound(o.spec >= 2 && o.mtp.empty());   // spin_max: drafting without MTP waits long
     strata::core::layer_set_shared_early(!o.shared_late);
     if (!o.native_preset.empty()) {
         try {
@@ -2485,7 +2539,7 @@ int main(int argc, char **argv) try {
     if (o.pcie_frac < 0.0) {
         const double base = native_pack ? 0.55 : 0.2;
         std::string bursts;
-        const double bw = native_pack ? probe_pcie_h2d_gbps(&bursts) : -1.0;
+        const double bw = native_pack ? probe_pcie_h2d_gbps(&bursts, multi_gpu) : -1.0;
         if (!native_pack) {
             o.pcie_frac = base;
         } else if (bw > 0.0) {
@@ -2941,6 +2995,34 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        // Recommend, never force: when the default direct reads measure slow, switch to the mapped reads (40-100x
+        // faster on the reporters' drives); an explicit --ple-io direct is kept and only warned about.
+        if (pio.mode == strata::kernels::PleIo::Direct && std::getenv("STRATA_PLE_PROBE") == nullptr) {
+            constexpr double kSlowRowsPerS = 15000.0;   // ~60 MB/s of 4 KiB pages; a healthy NVMe is >100k
+            const double rps = ple_direct_rows_per_s(ple_table);
+            if (rps >= kSlowRowsPerS)
+                std::fprintf(stderr, "strata generate: PLE direct read probe: %.0f rows/s (fine)\n", rps);
+            if (rps > 0 && rps < kSlowRowsPerS) {
+                if (!o.ple_io_explicit) {
+                    std::fprintf(stderr, "strata generate: --ple-io direct measures slow here (%.0f rows/s, about %.0f MB/s of "
+                                         "random 4 KiB reads): using --ple-io mmap instead (the OS file cache holds the pages; "
+                                         "--ple-io direct forces the old mode, --ple-io ram keeps the table in RAM)\n",
+                                 rps, rps * 4096.0 / 1e6);
+                    ple_table.close();
+                    pio.mode = strata::kernels::PleIo::Mmap;
+                    pio.keepalive_ms = 0;
+                    if (!ple_table.open(o.ple_gguf, err, pio)) {
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return 1;
+                    }
+                } else {
+                    std::fprintf(stderr, "strata generate: WARNING: --ple-io direct measures slow here (%.0f rows/s, about %.0f "
+                                         "MB/s of random 4 KiB reads): a prompt can spend minutes reading layer 1 and trip the "
+                                         "stall watchdog (#1425, #1629). --ple-io mmap was 40-100x faster on such drives; "
+                                         "--ple-io ram needs the RAM for the table\n", rps, rps * 4096.0 / 1e6);
+                }
+            }
+        }
 #if !defined(_WIN32)
         if (pio.mode == strata::kernels::PleIo::Direct) {
             // #605: --ple-io direct's random reads (up to --ple-inflight at once) are for SSDs; a rotational disk
@@ -3257,7 +3339,7 @@ int main(int argc, char **argv) try {
         st.pcie_frac = o.pcie_frac;
         if (!pcie_given && native_pack) {
             std::string bursts;
-            const double bw = probe_pcie_h2d_gbps(&bursts);
+            const double bw = probe_pcie_h2d_gbps(&bursts, true);
             if (bw > 0.0) st.pcie_frac = pcie_frac_for_gbps(bw, 0.55);
             std::fprintf(stderr, "strata generate: layer split: CUDA%d PCIe probe %.1f GB/s (best of %s) -> pcie_frac "
                                  "%.2f\n", st.dev, bw, bursts.c_str(), st.pcie_frac);
@@ -4688,14 +4770,38 @@ int main(int argc, char **argv) try {
     unsigned long long* mirror_table_d = nullptr;   // [n_layers][n_expert] device-readable mirror addresses (0 = none)
     int64_t unmirrored_misses = 0;
     if (o.stream_experts && srcp == &gguf_src && o.expert_cache > 0) {
+        // #1054, #1440: with a layer split the mirror holds only the first GPU's layers. The pinned memory belongs to
+        // this GPU's context, and the later stages' caches do not exist yet (every later-stage expert would count as a
+        // miss: 20 GiB of RAM for experts the other card then holds, or one 39 GiB pinned allocation that fails).
+        const int64_t mirror_end = multi_gpu && !split_at.empty() ? split_at[0] : g.n_layers;
         std::vector<std::pair<int64_t, int64_t>> miss;
+        size_t n_true_miss = 0;   // the experts no slot holds; what follows them in `miss` are the lend candidates (below)
         for (const auto& pr : profile)   // the profile's order: the most-routed misses first, if the cap is reached
-            if (xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident) miss.push_back({pr.first, pr.second});
-        for (int64_t l = 0; l < g.n_layers; ++l)                     // pairs the profile does not list at all
+            if (pr.first < mirror_end && xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident)
+                miss.push_back({pr.first, pr.second});
+        for (int64_t l = 0; l < mirror_end; ++l)                     // pairs the profile does not list at all
             for (int64_t e = 0; e < g.n_expert; ++e)
                 if (xcache.slot_of(l, e) == strata::core::kNotResident &&
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
+        n_true_miss = miss.size();
+        // 0.1.43: the experts in the last slots - the ones a prompt's loan takes (Prefill::relayout lends the TAIL of the
+        // cache) - are mirrored too, after the real misses (the cap drops them first).  A lent expert is streamed during
+        // the prompt and put back after it; from the GGUF that was a pread at ~2.3 GB/s per expert (~1 s for a 4K prompt's
+        // 930 slots, 0.26 s for a 600-token prompt's 284), from the pinned mirror it is a DMA.  Their mirror entries are never
+        // read by a decode window: it only looks at a mirror address for an expert that has no slot.
+        // STRATA_LEND_MIRROR=0 turns it off; =N: the last N slots (default 10% of the cache with a loan, at most 1,200).
+        if (!o.no_prefill_borrow && o.prefill_chunk > 0 && !multi_gpu) {
+            const char* lm = std::getenv("STRATA_LEND_MIRROR");
+            const int64_t want_tail = lm ? std::atoll(lm) : std::min<int64_t>(xcache.slots() / 10, 1200);
+            if (want_tail > 0) {
+                const int64_t first_tail = xcache.slots() - std::min<int64_t>(want_tail, xcache.slots());
+                for (int64_t l = 0; l < mirror_end; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        if (const int64_t sl = xcache.slot_of(l, e); sl != strata::core::kNotResident && sl >= first_tail)
+                            miss.push_back({l, e});
+            }
+        }
         uint64_t avail = 0;
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
@@ -4713,8 +4819,8 @@ int main(int argc, char **argv) try {
                              err.c_str());
                 err.clear();
             } else {
-                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM mirrored in pinned host memory "
-                                     "(%.2f GiB, %.1f s); the GPU reads them over PCIe\n", (long long) got, miss.size(),
+                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM (+ %zu in the prompt loan's slots) mirrored in pinned host memory "
+                                     "(%.2f GiB, %.1f s); the GPU reads them over PCIe\n", (long long) got, n_true_miss, miss.size() - n_true_miss,
                              (double) gguf_src.mirrored_bytes() / 1073741824.0,
                              std::chrono::duration<double>(Clock::now() - tm).count());
                 // the device-built verify plan's view of it: each (layer, expert) -> its mirror address, 0 = none
@@ -4727,13 +4833,22 @@ int main(int argc, char **argv) try {
                 dpct::get_in_order_queue().memcpy(mirror_table_d, tab.data(), tab.size() * sizeof(unsigned long long)).wait();
             }
         }
-        unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
+        unmirrored_misses = (int64_t) n_true_miss - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.begin() + (ptrdiff_t) n_true_miss,
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
-        if (unmirrored_misses > 0 && [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }()) {
+        const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
+        if (unmirrored_misses > 0 && no_host) {
             std::fprintf(stderr, "strata generate: REFUSED: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
                                  "the device plan cannot run them and generation would lack a safe host fallback - raise "
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
             return 2;
+        }
+        // The same rule after the start: the mirror holds the start's misses only, so an expert an adaptive swap moves
+        // out of VRAM would be in neither, and the device plan would wait for a host that never serves it (every token
+        // 0 after a --batch window had counted misses and the tier swapped).
+        if (!miss.empty() && no_host && o.adapt_every > 0 && o.adapt_swaps > 0) {
+            std::fprintf(stderr, "strata generate: adaptive swaps off: with STRATA_VERIFY_NO_HOST an expert they move out of "
+                                 "VRAM would be neither there nor mirrored\n");
+            o.adapt_every = 0;
         }
     }
 
@@ -7395,7 +7510,7 @@ int main(int argc, char **argv) try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
-                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(),
+                if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
                         additional, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, or telemetry unavailable)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib);
@@ -7419,7 +7534,7 @@ int main(int argc, char **argv) try {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
-                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
+                if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(), 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after capture, or telemetry unavailable)\n");
                     return true;
                 }
@@ -9095,7 +9210,7 @@ int main(int argc, char **argv) try {
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         auto admit = [&](uint64_t need, std::string& why) {
-                            const auto avail = strata::core::conversation_available_memory();
+                            const auto avail = strata::core::available_host_bytes();
                             if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
                             why = "not enough RAM to save the session (" +
                                   (need == UINT64_MAX ? std::string("unknown") : std::to_string(need >> 20)) +
@@ -9153,7 +9268,7 @@ int main(int argc, char **argv) try {
                         limits.progress = moving;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         limits.admit = [floor, &o](uint64_t need, std::string& why) {
-                            const auto avail = strata::core::conversation_available_memory();
+                            const auto avail = strata::core::available_host_bytes();
                             if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
                                   std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " +
@@ -11941,7 +12056,13 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        int32_t* usage_dev = nullptr;   // STRATA_USAGE_DUMP=PATH: the device plan counts every routed expert (measurement)
+        const char* usage_dump = std::getenv("STRATA_USAGE_DUMP");
+        if (mirror_table_d && usage_dump && *usage_dump) {
+            usage_dev = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
+            dpct::get_in_order_queue().memset(usage_dev, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
+        }
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -12388,6 +12509,24 @@ int main(int argc, char **argv) try {
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,
                         drive.d.ms_run / rounds);
+        if (usage_dev != nullptr) {   // STRATA_USAGE_DUMP: the window's routing as make_profile.py reads it (layer, k=1, id, weight)
+            std::vector<int32_t> uh((size_t) (g.n_layers * g.n_expert));
+            dpct::get_in_order_queue().memcpy(uh.data(), usage_dev, uh.size() * 4).wait();
+            if (FILE* uf = std::fopen(usage_dump, "wb")) {
+                int64_t total = 0;
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        for (int32_t c = 0; c < uh[(size_t) (l * g.n_expert + e)]; ++c, ++total) {
+                            const int32_t hdr[3] = {(int32_t) l, 1, (int32_t) e};
+                            const float wgt[2] = {0.0f, 0.0f};
+                            std::fwrite(hdr, 4, 3, uf);
+                            std::fwrite(wgt, 4, 1, uf);   // (layer, k) + k ids + k weights: 8 + 8 bytes
+                        }
+                std::fclose(uf);
+                std::printf("%-24s %s (%lld routed entries counted on the device)\n", "usage dumped", usage_dump,
+                            (long long) total);
+            }
+        }
         if (rounds > 0 && !drive.d.usage.empty())
             std::printf("%-24s %lld experts swapped into the VRAM tier (every %d rounds, %.3f ms/round)\n", "adaptive tier",
                         (long long) swaps_total, o.adapt_every, ms_adapt / rounds);

@@ -18,7 +18,9 @@ What the engine does differently on this chip:
 - **gfx11 matrix cores.** The prompt attention, the block scorer, the prompt GEMMs and the prompt experts have WMMA kernels for
   gfx1100 / 1101 / 1102 / 1150 / 1151. A gfx11 part outside that list (gfx1103, gfx1152) is not given them: it takes the portable path.
 - **The hipBLASLt table** `tools/hip/gfx1151-hipblaslt-100401.txt` (ROCm 7.14.1's hipBLASLt 1.x `100401`), including the prompt shapes
-  at `--prefill 16384` (T 16383 / 16384).
+  at `--prefill 16384` (T 16383 / 16384). Setup's own ROCm for gfx1151 (the 7.14.0a20260608 wheels, hipBLASLt 1.4.0) takes
+  `tools/hip/gfx1151-hipblaslt-100400.txt`: the same shapes, calibrated against that library (docs/AMD_HIP.md, Tuning table).
+- **The expert cache and the RAM budget share the RAM.** For a model with a RAM budget (UD-IQ4_XS, UD-Q4_K_XL) setup writes a number for `--expert-cache` (the RAM less 24 GB less the budget), not `auto`: `auto` counts all the memory the OS can give back at start, and with a 55 GiB budget and a desktop open it took the room the OS needed (#1715, a global OOM on a 128 GB box). The number is in the config's `args`; `--expert-cache N` there sets it. An engine run by hand should pass one too.
 
 ## 1. The toolchain (no root needed)
 
@@ -111,7 +113,16 @@ export STRATA_HIP_WMMA=1        # the prompt attention on matrix cores
 export STRATA_SELECT_WMMA=1     # the block scorer on matrix cores
 export STRATA_HC_Q8=1           # the hyper-connection read from the GGUF's own Q8_0 projections
 export STRATA_PF_SWITCH_MIN_T=4096
+export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the fused experts too (below)
 ```
+
+`STRATA_PF_FUSED=1` reaches only chunks of `STRATA_PREFILL_STREAM_MIN` tokens or more (1,024 by default, the floor measured on
+a discrete card, where a smaller chunk does not pay for streaming every expert); a smaller read runs its experts through MMQ.
+With every expert in the unified memory nothing streams, and MMQ is the slow part: an agent's turn - a tool result of ~1,000
+tokens on a cached conversation - read in 3.1-6.0 s at 1,024 and 0.9-2.5 s at 128 (C2T8, `--no-prefill-borrow`; 12-turn
+replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,024 tokens or more already take; it is not
+under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
+pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
