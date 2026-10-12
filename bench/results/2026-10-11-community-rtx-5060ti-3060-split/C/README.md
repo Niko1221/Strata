@@ -3,15 +3,25 @@
 Measured on 2026-10-11 by @mmbeanz. Targets the live upstream debate:
 **#2010** (Linux CUDA, -21% decode), **#1975** (RTX 5090, IQ3_S -26%), **#1964** (4070 Ti,
 IQ3_XXS) and **PR #2011** (make the 0.1.43 default opt-in everywhere). Every regression
-reported so far is on a **single GPU**; this run measures the same flag on a **two-card
-layer split with `--pcie-frac 0.00`**.
+reported so far is on a **single GPU**; this run set out to measure the same flag on a
+**two-card layer split with `--pcie-frac 0.00`**.
 
-**Headline.** On this topology the flag is **not a lever we can see**: the prompt path is
-null to within run-to-run spread (**+0.14%** at 32K), and decode shows no significant
-difference (permutation p = 0.39), which **rules out the -21%/-26% class of regressions
-here** but cannot resolve effects smaller than roughly ±5-11% given per-request decode
-variance. So the reported regressions do not generalize to unequal-card layer splits with
-expert streaming disabled — the cost/benefit of `ADAPT_OVERLAP` is topology-dependent.
+**Headline, corrected 2026-10-12 after review in #2010: this A/B did not test the flag.**
+On a layer split the engine **disables adaptive overlap before consulting
+`STRATA_ADAPT_OVERLAP`** (`src/program/generate.cpp`, v0.1.43: `why = multi_gpu ||
+!stages.empty() ? "not on a layer split" : ...`; our config also carries a second gate,
+`--remote-expert-opt`). Both arms therefore ran the *same configuration* - overlap off -
+and the null result (prompt +0.14%, decode p=0.39, hit_rate p=0.92, `pcie_share` 0 on all
+40 requests in both arms) is the fingerprint of configuration equality, not a topology
+finding. Credit: @Krypto-Whitehat caught this in #2010 with the code check; our original
+headline ("the regressions do not reproduce on a split") is retracted.
+
+What the run *does* establish: (a) on a split the flag cannot cost anything, because the
+feature never runs there - the -21%/-26% class of regressions is structurally impossible
+on this topology; (b) 0.1.43 logs nothing about the flag in either state on a split (the
+banner prints only when the env var is set *and* the gate passes), which is why this run's
+engine log carries no `ADAPT_OVERLAP` lines at all - fixed by #2011's logging, shipped in
+0.1.43.1.
 
 ## Setup: identical to run A except one environment variable
 

@@ -116,11 +116,16 @@ measured - a soak with sampling is planned as a follow-up.
    default ON here. The unpriced cost is quality ("answers differ slightly")
    - needles pass 9/9 with it on. Related: #2007 (a T10 split measured -1.4%
    for `=7`), #1964.
-6. **`STRATA_ADAPT_OVERLAP` is null on this split (C).** 32K prompt +0.14%,
-   decode inside run-to-run spread (p=0.39), hit_rate identical (p=0.92):
-   the -21%/-26% single-GPU regressions (#2010, #1975) do not reproduce on
-   an unequal two-card split with `--pcie-frac 0.00`. The flag's cost is
-   topology-dependent - input for #2011's opt-in-everywhere proposal.
+6. **`STRATA_ADAPT_OVERLAP` is inert on layer splits (C, corrected after review in
+   #2010).** The engine disables the overlap before consulting the flag
+   (`generate.cpp`: `why = multi_gpu || !stages.empty() ? "not on a layer split"`;
+   `--remote-expert-opt` is a second gate), so our A/B ran the same configuration
+   twice - the null result (prompt +0.14%, decode p=0.39, hit_rate p=0.92,
+   `pcie_share` 0 on all 40) is the signature of that, not a topology finding, and
+   our original "does not reproduce on a split" headline is retracted. What stands:
+   the -21%/-26% single-GPU regressions (#2010, #1975) are structurally impossible
+   on a split, and 0.1.43 logs nothing about the flag in either arm (fixed by
+   #2011, shipped in 0.1.43.1). Thanks to @Krypto-Whitehat for the code check.
 7. **Tool findings (measurements of the tool, not the engine):** #2062
    confirmed and extended - `gpu_slug()` drops the second card
    (`2x-rtx-5060-ti`), the remote `machine` block blends client fields (3.8
