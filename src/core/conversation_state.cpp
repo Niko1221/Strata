@@ -1,5 +1,6 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
+#include "conversation_copy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,7 +33,7 @@ bool sync(std::string& error) {
 bool copy(void* dst, const void* src, size_t bytes, std::string& error) {
     if (!bytes) return true;
     if (!dst || !src) return fail(error, "missing running-state buffer");
-    const auto status = cudaMemcpy(dst, src, bytes, cudaMemcpyDefault);
+    const auto status = conversation_detail::copy_nonblocking(dst, src, bytes);
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
     return false;
@@ -174,6 +175,7 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
+    if (!sync(error)) return false;   // the copies below no longer ride the legacy stream's implicit ordering
     if (!copy(ss.gdn_state, c.gdn.data(), c.gdn.size(), error) ||
         !copy(ss.ple_hist, c.ple.data(), c.ple.size(), error)) return false;
     for (size_t j = 0; j < owned_qsa(ss); ++j) {
@@ -255,7 +257,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
     const size_t layers = owned_qsa(ss);
@@ -281,7 +283,7 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);

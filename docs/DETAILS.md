@@ -25,7 +25,7 @@ previous kernels (closer at 32K: teacher-forced KL 0.009 vs 0.012). The decode p
 argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previous kernels; the same tokens): Q2_0 output at 4K 89 -> 93.5, at 128K
 64.5 -> 76.4 tokens/s. `STRATA_PF_FUSED=0` keeps the previous prompt kernels (byte-identical answers to 0.1.35);
 `STRATA_PF_FUSED=1` also runs the native IQ packs' fused kernels (opt-in: IQ2_XS prompts +12% at 4K, +3% at 32K, the
-IQ3 packs about even); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
+IQ3 packs about even; on HIP they run on gfx11 and on gfx1200 / gfx1201, see AMD_HIP.md); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
 below are 0.1.26's.
 
 ### Prompt processing (tokens/s)
@@ -73,7 +73,8 @@ IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
 ran IQ3_S at 256K on 64 GB with RAM to spare (#406). In the low-RAM mode the KV cache stays in VRAM and the context
-does not count against RAM. IQ3_S (engine 0.1.4 or newer) is only published for the original model, not for Swift 1.5.
+does not count against RAM. IQ3_S (engine 0.1.4 or newer) is published for the original model and for Swift 1.5
+(the same shard layout as Swift's other sizes).
 
 **KV streaming (engine 0.1.5):** at 64K and more, setup keeps the context's KV cache in RAM and only the part the
 attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Q2_0 at 262K: 50.9 -> 62.6 tokens/s
@@ -167,8 +168,9 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
   RAM place of the one that replaces it, so the RAM copy keeps holding exactly what the GPU does not.
 - `--adapt-async 1` (opt-in, `--serve`): the swaps of a round advance between decode windows on a helper thread
-  (copy back, copy in, move into RAM) instead of one window waiting for the whole round. Not with `--batch` or
-  `--peer-device` (the blocking tier runs there). With `--pipeline-windows 2` (two windows in flight, see
+  (copy back, copy in, move into RAM) instead of one window waiting for the whole round. With `--batch` slots it
+  advances between their windows too (docs/BATCHING.md); not with `--batch-groups` or `--peer-device` (the blocking
+  tier runs there). With `--pipeline-windows 2` (two windows in flight, see
   [MULTI_GPU.md](MULTI_GPU.md)) the copies into the evicted slots and the moves into RAM also wait until the windows
   that were in flight when they were decided have completed (`STRATA_PIPELINE_ADAPT_ASYNC=0`: the blocking tier
   there). It is not bit-exact from run to run: which window first computes a swapped-in expert on the GPU (which
@@ -303,6 +305,12 @@ hits, the router, the head, ...). The GPU profile times every stage with events,
 use it to compare, not to measure speed. This works with every pack; `--gpu-stages` (a one-token replay of
 per-layer graphs) refuses a native (IQ) pack, which has no such graphs.
 
+**How good the next-layer expert prediction is (measurement only):** `STRATA_LOOKAHEAD_STATS=1` runs the router look-ahead on any expert tier and
+scores it against the routing of the next layer: every 100 windows the engine log has a `strata lookahead stats:` line with the experts per layer
+outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
+would cover, and the predictor thread's time per window. It costs CPU (the predictor is a thread beside the expert pool), so use it to measure, not to
+time. `tools/replay_cache_policy.py` replays a `--dump-routing` trace through the adaptive tier's swap policy offline.
+
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
 
@@ -375,7 +383,8 @@ START-HERE.bat --setup --family coder
 
 The setup's first question also offers **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)**,
 UkisAI's fine-tune of Qwen3.8-Flash-Next, trained to reach the answer with much less thinking (its authors: 63% fewer
-thinking tokens, 1.8x sooner answers, under 1% accuracy loss). Same architecture, the same three sizes, its own
+thinking tokens, 1.8x sooner answers, under 1% accuracy loss). Same architecture, the original's sizes except Q2_0,
+its own
 vision encoder; Strata runs it at the same speed (4K, IQ2_XS: 465 prompt / 78.7 output tokens/s, vs 467 / 78.3 for
 the original). Its authors recommend **IQ2_XS** (their Q2_0 is marked experimental). Its license is the Swift Open
 License 1.0 - read it on the model page.
@@ -554,8 +563,9 @@ server, three server options (all off by default; also as keys in `strata-<model
 | `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again |
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
+| | `"before_load_timeout_s": 120` | how long that command may run (default 120 s). When it exits non-zero or times out (a peer that is not running makes `curl` exit 7), the free VRAM decides: with `min_free_vram_mib` set and not enough free, the model is **not** loaded and the request gets **503** with `Retry-After`; with room (or no limit set) it loads, with a warning in the log. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads |
 
-`POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request (both
+`POST /unload` unloads it now (`409` while a request is running; `POST /unload?wait=1` waits for the running turn first, up to 300 s, or `?wait=<seconds>`, so a second server can really free the card) and `POST /load` loads it ahead of a request (both
 with `Content-Type: application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`);
 `/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets
 `is_sleeping` and the Monitor shows the state. Unloading ends the engine process - and the image encoder, when images
@@ -632,6 +642,28 @@ with the fallback off it still starts and degrades instead of failing - the slac
 worth more than the extra slots, which is the same ordering measured above (enkynakamura, #781; one 256-token sample
 per step, so the upper rows are noisy).
 
+**The free figure moves after startup.** The `... MiB of VRAM free with everything loaded` line is read before the
+verify windows are captured (each captured window, and each `--batch` slot layout, takes some tens of MiB: 538 MiB at
+that line was 395 MiB after the last capture in #2065, an RTX 4090 D with `--batch 2` at 262,144 context). Below about
+a gigabyte on Windows the driver can page GPU memory to system RAM instead of failing: decode fell from 91 to 3 tok/s
+at 70K tokens and then a window never finished, the watchdog stopping the engine after 60 s. From 0.1.43.1 each request
+re-reads the free VRAM, says `WARNING: only N MiB of VRAM free at the start of this request` once it is under 1 GiB
+(512 MiB elsewhere) with the `--vram-reserve-mib` that would leave room, and the stall report prints the figure. The
+engine only says it; the fix is a larger `--vram-reserve-mib`, a smaller `--max-context` or `--batch`, or
+`Prefer No Sysmem Fallback` for the engine.
+
+**A stall named "request" can be the OS paging the engine's own memory.** Before a request that switches
+conversation, the engine parks the outgoing one in RAM: copies of its running checkpoints and K/V, which then sit in
+ordinary memory until the conversation comes back. On a 64 GB PC with `--resident-budget-gib 40`, an 8 GiB conversation
+cache and a 256K context, the working set was 8-30 GB of 56 GB committed and the engine took about 190 page faults
+a second (under 1 MB/s if each is a pagefile read) in #2049: one silent step of more than 60 s, five times, on 0.1.41
+and 0.1.43 alike (thread dumps: the main thread inside the copy of the checkpoints, at the same instruction each time). The log's `verify window (last window, not the
+current stage) ... host at layer step 48; the GPU rang 48` line in that report is the previous request's last window,
+not the stalled one. From 0.1.43.1 the park is named in the stage (`request: parking the previous conversation`), its
+copies report progress to the watchdog, and Windows counts page faults at 8 a unit instead of 64 when it decides
+whether the file tier is busy. The cure for the slowness itself is memory: a smaller `--resident-budget-gib`, a smaller
+`--conversation-cache-mib`, or the pagefile on an SSD.
+
 ---
 
 ## Using it
@@ -649,6 +681,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 | The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
+| Request totals and what is running in Prometheus' text format, under llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 
 `GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
@@ -711,6 +744,14 @@ print(r.choices[0].message.content)
   Without a setting the model uses its own default, **high**. `none` answers at once (fastest); `low` keeps the thinking
   short. The levels are instructions the model was trained with, not a hard token limit: on easy questions all three
   think briefly, on hard ones `high` thinks longest and is most accurate.
+  To start with another level for every request that names none, put `"reasoning_effort": "low"` (or `none`, `medium`,
+  `high`) in `strata-<model>.json`, outside `"args"` (#1641): the engine has no such option, and `--reasoning-effort` in
+  `"args"` is moved to this key with a note at startup. The web app's shared Chat settings ("Use for other apps too") and a
+  request's own level win over it.
+- **Keep Windows awake while it works (opt-in, #1727).** `"prevent_sleep": true` in `strata-<model>.json` keeps the PC
+  from going to sleep while at least one request is running or waiting (Windows' `SetThreadExecutionState` with
+  `ES_SYSTEM_REQUIRED`; the screen may still turn off), and gives the normal sleep rules back when the server is idle
+  and when it exits. Default off. On Linux and macOS it does nothing (one line at startup says so).
 - **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` in a request (OpenAI or Anthropic) caps the
   thinking at N tokens: when it gets there the server ends it with a short wrap-up line and `</think>`, and the model
   answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
@@ -725,10 +766,39 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **Non-finite logits end the request and drop the cached state (#879, on by default).** Rarely, a window's logits
+  become NaN and the reply degenerates into token 0 (`!`) repeated (#606); the poison sits in the conversation's K/V
+  and recurrent state, so with the prompt cache every later turn of that conversation stays poisoned. The q8_1 clamps
+  of 0.1.39 and later remove the overflows found so far; this guard catches whatever cause is left. Every verify window
+  of `--serve` (the decode windows, the `--pipeline-windows` decode windows of a layer split, the prompt's short
+  tail, batch slots) checks its head logits on the GPU beside the greedy pick (one small kernel into mapped flags, read
+  after the sync the window already does). A flagged window emits none of its tokens, the engine prints one
+  `non-finite logits (#879)` line with the position, ends the request with `DONE ... nonfinite` (a slot:
+  `BDONE <slot> <n> nonfinite`), and the next request first drops the live session, every checkpoint, every parked
+  conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
+  prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
+  started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
+  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
+  answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
+  3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
+  guard on and off gave byte-identical answers in 3 pairs (one of them with `STRATA_ROUTE_TAIL_SKIP=0`, one with
+  `STRATA_SH_STREAM=0`); one more guard-off run differed from all the others from its first answer on, while a second
+  guard-off run matched the guard-on runs, so that was a difference between runs, not the guard. Its cost there: 4.8 us of GPU time a window on average (7.8 us at most), 0.009% of the decode
+  time (Nsight Systems, 424 windows). The one-shot command line (`strata` without `--serve`) and the Intel (SYCL) port
+  in `sycl/` do not check.
+  Debug switch: `STRATA_NAN_INJECT=<n>[,<n>...]` reports the n-th window the guard checks in the engine process
+  (counted from 1 over prompt-tail, decode and batch windows) as non-finite, to exercise the whole path without a real
+  fire. With `=1,60` on that 3080: a new chat's first window was flagged and the server sent the request again from
+  token 0 (the client saw one normal answer); the 60th, mid-reply in the next turn, ended that reply as `"length"`
+  after 58 tokens; the turn after it reused 0 cached tokens and answered normally.
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
-  measured over its last 2,000 words and punctuation marks (counting passages over the last 30,000 words). If at
+  measured over its last 2,000 words and punctuation marks (counting passages over the last 30,000 words), and its
+  last 2,048 characters are checked for a period of at most 64 characters (#1753: a loop written as one long word,
+  such as a 24k-digit string cycling an 11-digit pattern, is a single word to the count and never repeats one
+  token); a periodic tail counts as fully repeated. If at
   least 25% belong to 12-word passages seen three times, `"stop"` ends the reply there as `"length"` and says so in
   the server window. `"recover"` stops and drains that generation, then goes on once from all its generated token
   ids with the template's low-effort sentence in place of the xhigh one in the first system message (a splice of
@@ -932,12 +1002,98 @@ If reserving space for growth would evict another conversation, parking uses a
 full capture instead.
 Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
+`--conversation-cache-min-tokens N` (default 0 = park every conversation) parks only conversations of at least N
+tokens. A parked conversation costs one of the slots whatever its length, and parking is a switch-time decision, so a
+client that interleaves short side requests with one long conversation spends the cache on the side requests and, once
+it is full, evicts the long one oldest-first - exactly the reuse it wanted. Setting the minimum above the side
+requests' length keeps the long conversation parked. The check runs before `make_room()`, so a skipped park evicts
+nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
+parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
+conversations keep a slot.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
-physical-RAM headroom remain available: the engine checks before allocation and
-again after capture. Unknown telemetry or insufficient RAM skips parking. Windows
-uses `GlobalMemoryStatusEx`, Linux uses `MemAvailable`; these are host-level samples,
-not a reservation or enforcement of container/job memory limits. An 8 GiB budget
+RAM headroom remain available: the engine checks before allocation (against the
+snapshot's estimated size, less the K/V it already retains) and again after capture.
+Unknown telemetry or insufficient RAM skips parking, and the same figure and floor
+decide whether a session file may be saved or restored (below). An 8 GiB budget
 is a cap, not a recommendation for every machine.
+
+**The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three
+numbers, sampled each time it is asked and not a reservation (other writers can take the
+room afterwards):
+
+1. `MemAvailable` (Windows: `GlobalMemoryStatusEx`'s available physical memory).
+2. The room under each memory limit of the engine's own cgroup and of every ancestor
+   visible under `/sys/fs/cgroup` (the group named in `/proc/self/cgroup`, or the deepest
+   part of that path this mount shows): cgroup v2 `memory.max` and `memory.high`, each
+   minus `memory.current`; cgroup v1 `memory.limit_in_bytes` minus
+   `memory.usage_in_bytes` (both less the clean inactive file cache, below). `max` and v1's "unlimited" count as no limit; a file that is
+   absent (no memory controller at that level) is skipped; a file that is there but
+   cannot be read or parsed makes the cgroup terms unusable: without `--memory-limit-mib` the guard then uses
+   `MemAvailable` alone, as 0.1.41 did, and prints one warning per process; with the flag the sample is unknown, and unknown skips parking.
+3. `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB=N`; the flag wins, `0` = none):
+   N MiB is the total this engine's container or cgroup may use, minus what that
+   container uses now. Use it when the container cannot see its own limit. The usage
+   is `memory.current` of the top cgroup this mount shows (the container's own, in a
+   container with its own cgroup namespace); if that file cannot be read it is
+   `MemTotal - MemAvailable`, which is a weaker figure (it is only as true as the
+   container's `/proc/meminfo`), and if `MemTotal` is missing too the sample is
+   unknown. The cap is taken in addition to 1 and 2, never instead of them: whichever
+   number is smallest decides. It is an engine argument, so the server config carries it in
+   `args` (`"--memory-limit-mib", "102400"`); the variable also works from the config's
+   `"env"`.
+
+Usage is `memory.current` as the kernel reports it, **less one reclaimable kind: clean
+inactive file cache**. That is the group's own `memory.stat` `inactive_file` (cgroup v1:
+`total_inactive_file`), less its dirty and writeback pages when `memory.stat` lists them
+(`file_dirty`, `file_writeback`; v1 `total_dirty`, `total_writeback`), and never more than
+`memory.current`. The kernel gives such pages back at `memory.high` or the limit before
+it kills anything, and a loaded model's file reads leave a lot of them behind. Nothing
+else is credited: `active_file` (it holds the mlocked pages), `shmem` (pinned expert
+complements, the KV pool) and anonymous memory stay charged in full, since a kill at a
+hard limit is worse than a skipped park. For each limit the room is
+`limit - (memory.current - credit)`, so it never exceeds the limit. A `memory.stat` that is missing or cannot be
+parsed gives no credit; it does not make the sample unknown. The operator's cap uses the
+`memory.stat` of the same top group whose `memory.current` it reads. A parked
+conversation is part of the engine's own usage once captured; the check before
+capture is what stops it from growing past the cap.
+
+The startup log has one line for it, `strata generate: memory guard: limit X GiB
+(source: flag|cgroup|meminfo), current Y GiB, reclaimable cache credited Z GiB;
+available ...`, where `source` names the
+number that was smallest at that moment (`meminfo`: MemTotal and `MemTotal -
+MemAvailable`), and a skipped park or a refused save/restore says how much it had and
+from which source. The line is printed before the model is loaded, so its credit is the
+cache at that moment, not at the time of a park. Without a cgroup limit and without `--memory-limit-mib` the figure is
+plain `MemAvailable`, as before.
+
+What it does not touch: the startup sizing of the expert arena, the file tier's resident budget, the Windows commit
+check and `STRATA_PIN_GUARD` (#1250: whether to page-lock the expert copy in steps follows `MemFree`, and each step
+is checked against the cgroup-aware `host_available_memory`) keep their own probes (`--resident-budget-gib`, #633,
+#1250), and `--memory-limit-mib` does not reach them. This figure is for what runs after the start: parking a
+conversation and saving or restoring a session file, which read `MemAvailable` alone. `host_available_memory`
+(expert_source.cpp) and this figure both read the cgroup limits; this one also reads `memory.high` and the operator's
+cap; an unreadable cgroup file makes it fall back to `MemAvailable` (one warning), or unknown when a cap is set.
+
+Earlier measurement on a Proxmox LXC where the engine's container cannot see its limit (a 100 GiB cap on the parent
+cgroup, outside the container's namespace; the container's own `memory.max` and `memory.high` read `max`):
+`/proc/meminfo` showed about 25 GiB `MemAvailable` while about 1 GiB was really left, and right after the engine had
+loaded the container's `memory.current` was 98.29 GiB with `anon` 1.29 GiB, `shmem` 65.51 GiB, `inactive_file`
+3.81 GiB (clean page cache left from reading the model files) and `active_file` 0.01 GiB, of which the 3.8 GiB of
+clean cache is what the credit gives back. There `--memory-limit-mib 102400` is the cap, and the floor
+(`--conversation-cache-min-free-mib`) is measured against what is left under it: with the engine already near the cap,
+a floor of several GiB refuses every park; a few hundred MiB keeps a margin for the allocator and the kernel while
+letting a snapshot that really fits go through.
+
+Measured on the test machine (2x RTX 3080 20 GB, UD-Q4_K_XL, a 90 GiB container, resident RAM mode, 2 slots), one restart
+per arm, `--conversation-cache-min-free-mib 2048`. With `--memory-limit-mib 101376` (the cap our deployment runs with)
+the engine parked on every attempt: 135 parks and 0 skips over one run of 308 requests. With `--memory-limit-mib 78000`
+the start line read `limit 76.2 GiB (source: flag) ... available 73.0 GiB (MemAvailable 88.6 GiB)`, and 8 of 8 parking
+attempts were skipped (`skip parking (physical RAM admission; need 226 MiB plus 2048 MiB floor, 0 MiB available, source
+flag)`), none parked. The container's `memory.current` sat at 89.7-89.9 GiB, above the 76.2 GiB cap, so the headroom
+under the cap is 0, while `MemAvailable` read 15.7-15.9 GiB in the same samples; a check on `MemAvailable` alone would
+have let those parks through (the old check was not run). The requests were served normally (median of 6 decodes
+79.6 tok/s); only parking is refused, and the log says so. The unit test `memory_guard_test` (CPU only, no model) passes
+130 checks. Not measured: a cap between 78000 and 101376, a run without the flag, any effect on throughput.
 
 The shared snapshot core validates all layers and checkpoints before applying any
 state. Invalid entries are discarded; transfer/synchronization failure is fatal
@@ -971,6 +1127,26 @@ replaces a file, whose space comes back only after the rename. This is a preflig
 NAME may
 not contain a path, a drive, a stream (`:`), a Windows device name (`NUL`, `CON.bin`, `COM1`...), a control character,
 a leading dot or a trailing dot or space.
+
+`--session-save-reclaim` (an engine argument in the config's `args`, off by default) lets a SAVE that fails its
+RAM preflight first release reconstructible host caches: retained K/V buffers, oldest unpinned parked
+conversations, then unpinned checkpoints other than the one selected for the file. It stops as soon as measured
+available RAM meets the original allocation estimate plus `--conversation-cache-min-free-mib`; it does not lower
+that floor or assume that freed allocations have reached the OS. Pinned prefixes and the selected checkpoint
+stay intact, including their order and tie preference. Unknown RAM telemetry or an unknown allocation estimate
+does not evict anything. The usual admission check still runs before copying state.
+
+With this option the HTTP server also allows up to 30 seconds for physical RAM accounting to catch up after
+cache reclamation. Only an unpublished `memory` refusal from the SAVE RAM preflight is retried, at most three
+times, when measured available RAM reaches the reported estimate plus the original floor and 2 MiB for rounding.
+The same live engine process and service FIFO are held throughout; a process change, death, unknown telemetry
+or missing estimate ends the wait. This does not unload a model or trim another process's working set. Persistent
+pressure still returns the last refusal. The wait is outside the engine's reported `save_ms`.
+
+This can trade later prefix-cache hits for room to save. Released caches stay released even if admission or file
+I/O later fails; the current tokens, images, steering and live device state are unchanged. It cannot guarantee a
+SAVE under arbitrary memory pressure. With the option off, or enough RAM at the first probe, cache retention and
+the session file format are unchanged. RESTORE is unchanged.
 
 The request must be `Content-Type: application/json` (else `415`) and come from no browser page, Strata's own or a
 trusted origin (another site's `Origin` gets `403`, also with an API key); the Host and API-key checks apply as
@@ -1071,11 +1247,15 @@ engine arguments. The run config's optional `sampling` block sets the defaults f
 (`"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}`); a request's own fields always win, and with no
 block at all a request without sampling keys decodes greedy. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
-penalty is set) ride the same path; they count the tokens the request has consumed, so a repetition penalty
+penalty is set; llama.cpp's names `repeat_penalty` and `repeat_last_n` work too, in the config's `sampling` block and in a request, #1819) ride the same path; they count the tokens the request has consumed, so a repetition penalty
 suppresses what the model itself just said, not the prompt alone. Since engine 0.1.19 they apply to every token
 the speculative decoding checks at once, exactly as if it decoded one token at a time (before, only the first of
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
+
+**Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
+
+**Token biases (opt-in).** The chat API supports request-scoped `logit_bias` objects and token/bias pair lists on supporting CUDA/HIP engines without continuous batching. A value of -100 (or `false` in a pair list) excludes a token. Unsupported engines return an error. See [LOGIT_BIAS.md](LOGIT_BIAS.md) for formats, limits and validation.
 
 **Sampled drafting (opt-in, 0.1.40.2).** With temperature above 0 the engine keeps a draft only when it equals the token the model sampled for that position, and the draft layer proposes its best guess. Two opt-in switches change how the draft layer drafts a sampled request; greedy requests (temperature 0) are never touched and stay byte-identical. `STRATA_SPEC_COUPLED=1` (or `--coupled-draft`) drafts by sampling with the request's own settings and the random number the checking row will use; the text for a seed does not change. `STRATA_SPEC_PROB=1` is speculative rejection sampling: the draft layer samples its guess from its own distribution q, the check accepts it with probability min(1, p/q) (p is the model's distribution after penalties, top_k, top_p, min_p and temperature) and otherwise samples the replacement from the leftover distribution, so every token is distributed exactly as without drafts (the text for a seed then depends on the drafts, so it is reproducible only for the same engine, flags and prompt). Guesses without a distribution (prompt lookup, suffix drafts) keep the exact-match rule, which is already exact. Neither is faster in a way that holds up: on an RTX 3060 (IQ3_XXS, 200-token story and code answers, 10 interleaved pairs) the default's median output speed was 42.4 / 43.2 / 43.3 tok/s at temperature 0.3 / 0.7 / 1.0, coupled drafting 40.6 / 42.4 / 43.3 and rejection sampling 41.0 / 42.6 / 42.6, with run-to-run differences of up to 5% between repeats; drafts kept per round fell at 0.3 and rose by about 5 points at 1.0, which the cost of the longer sampled windows ate. `STRATA_SPEC_DEPTH=1` prints the acceptance by draft depth for each request; `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting to hotter requests. Proof that the rejection rule keeps the distribution: `spec_prob_test` (chi-square, 2 million trials per case) and `spec_verify_parity` (GPU against the host reference).
 
@@ -1397,10 +1577,14 @@ experts it reads from RAM as they are: the arena, the page-locked copy of the re
 `experts.bin`'s pages in the file cache (`--mmap-experts`), not only page-locked ones. Serve without `--batch`; on a
 layer split every stage has the pool and one stage at a time takes it for a chunk.
 
+**0.1.42: not armed by default when memory is short.** A 0.1.41 report (RTX 5090, RAM already tight) had chats failing and the engine restarting until `STRATA_PREFILL_CPU_SHARE=0` was set. The default is now skipped, with one line in the log saying why, when the RAM this process can get (the cgroup limit counts on Linux) is below the share's own buffers plus 3 GiB, when on Windows the commit limit (RAM + page file) has less than 4 GiB left beyond them, or when the experts it would read are file pages (the mapped `experts.bin` outside the GPU cache and the RAM copy) that the free RAM plus 3 GiB cannot keep. An explicit `STRATA_PREFILL_CPU_SHARE=auto` (or a number) is kept and only warns. The share's two page-locked buffers (about 50 MB) are now taken once, at their largest, and a failed allocation ends the share for that run instead of failing the request.
+
 When on, the CPU's rows are computed in the CPU's own activation format, so the output changes in the last bits (first
 token KL against off: mean 0.006, max 0.026 nats over 22 prompts; about half of the 32-token greedy answers on 500 and
 1,000-token prompts are identical, the rest part at a near tie after about 23 tokens). Chunks of 3,072 tokens and more
-read the same either way.
+read the same either way. `auto` picks the share from wall-clock timings, so the same request can be split
+differently - and answer differently - from one run to the next (a resumed conversation's re-read differed in 31 of
+1,536 teacher-forced argmax tokens, #1684); a fixed share repeats, `0` gives the exact bytes of a run without it.
 
 Prompt time, medians of 10 interleaved pairs (off / auto, ms, `--expert-cache 1500`):
 
@@ -1421,6 +1605,88 @@ expert here: none was page-locked):
 
 A coding agent's recorded conversation on the two cards (a 100K-token start, then 8 turns of 1-5K tokens of code, 128
 tokens written a turn, the same tokens read by both): 137.4 s off, 130.6 s auto (reading 121.1 -> 114.3 s).
+
+## Missed experts in a verify window: the tail is skipped (on by default on CUDA, `STRATA_ROUTE_TAIL_SKIP`)
+
+When a card cannot hold every routed expert, most of a decode token's waiting time is spent on the experts that are not in VRAM:
+their copy over PCIe or their rows on the CPU pool. In a verify window of several tokens, an expert that **every** token of the window
+routes at the bottom of its top 10 (rank 7 or lower, the smallest weights) adds little to any of them. **0.1.42: on by default on CUDA builds**:
+such a missed expert is neither copied nor computed, its contribution is zero, and the other experts keep the weight the router gave them
+(no renormalisation). An expert that any token ranks above 7, and every expert already in VRAM, is served as before.
+
+**`STRATA_ROUTE_TAIL_SKIP=0` turns it off** and restores the answers of a build without it byte for byte (checked: `mg_norepeat` 10 of 10 and `exact_pp` 4096 and 20000
+tokens identical to 0.1.42 without the change, on the RTX 3060, the RTX A4000 alone and as a 2-GPU split, and the Tesla P100). Another rank
+(`STRATA_ROUTE_TAIL_SKIP=8`, `=9`; 1-9 are accepted) is taken as given. The start-up line
+`STRATA_ROUTE_TAIL_SKIP=7 is ON (default)` names the opt-out.
+Since 0.1.43 the same default holds on HIP for gfx1200 / gfx1201 (RDNA4), under the same rules and with the same `STRATA_ROUTE_TAIL_SKIP=0` opt-out; other AMD parts are unchanged.
+
+Where it applies: serve on a CUDA build with one GPU or a layer split (every stage skips by itself). Not applied, and no line printed: when every expert is
+in VRAM (nothing is missed), with `--batch` / `parallel` slots (a window then mixes requests, and one request's skip would depend on another's
+tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds, and (0.1.42.1, #1884) when 90% or more
+of all the experts are in the GPU cache: the few misses are cheap there and the skip costs more draft acceptance than it saves (a Tesla V100 32 GB
+with Coder IQ1_M, 94.8% of the experts cached, 99.9% decode hits: draft acceptance 70.1% to 68.2%, decode 1-2% slower than 0.1.41). A start-up line
+says so; `STRATA_ROUTE_TAIL_SKIP=7` turns it on anyway, and `STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves the line (101 = never). On an AMD layer split the line is 60% (2x R9700 at 16 GB-equivalent: Q2_0 with 73% cached lost 6.1% story decode with the skip, IQ3_S with 45% cached gained 7-10%). The request log gets
+`route tail skip: N missed experts skipped` (cumulative) while it is active.
+
+**Answers differ slightly from 0.1.41** (`STRATA_ROUTE_TAIL_SKIP=0` brings them back). Teacher-forced KL of the decode path (the default's own greedy text and the default sampled at T=0.8, 28 chat prompts of code,
+reasoning, chat, six languages and long-document summaries, 220 tokens each, about 6,000 scored tokens per set, through the real verify windows with the MTP drafts;
+`phaseA-tests/cuda-route-kl.md`):
+
+| | RTX 3060 12 GB, IQ3_XXS | RTX A4000 16 GB, Q2_0 |
+|---|---|---|
+| KL(0.1.41 behaviour \|\| tail skip), mean, greedy / sampled text | 0.0058 / 0.0056 | 0.0032 / 0.0030 |
+| p99, max (greedy) | 0.061, 0.29 | 0.035, 0.32 |
+| top-1 token agreement | 97.7% / 97.5% | 98.2% / 98.2% |
+| perplexity of the forced text, skip / no skip | x1.011 / x1.007 | x1.005 / x1.003 |
+| KL of the first token after the prompt | 0.024 / 0.033 | 0.015 / 0.016 |
+| the same engine run twice (the floor; adaptive tier and CPU/GPU split depend on timing) | 0.0006-0.0007 | 0.0007 |
+| `STRATA_PREFILL_CPU_SHARE` on / off (already the default) | 0.0006-0.0007 (first token 0.002-0.0035) | 0.0005-0.0007 (first token 0.002-0.004) |
+| Q2_0 against IQ3_XXS, the same text | - | 0.1006 (p99 1.08, top-1 90.6%) |
+
+The effect is not even: code and reasoning prompts have a KL of 0.002-0.004, chat and non-English prompts 0.004-0.009.
+Task check, greedy, thinking off (HumanEval every second problem, 82; 30 generated reasoning tasks), default / tail skip:
+RTX 3060 76 and 78 of 82 / 78 of 82, reasoning 27 and 27 / 29; RTX A4000 76 and 76 / 76, reasoning 27 and 30 / 27. The runs do not separate the settings
+(one run each; a change of 3 reasoning tasks is noise).
+
+Decode speed, `STRATA_ROUTE_TAIL_SKIP` default against `=0`, 5 interleaved rounds on fresh engines, a story, a code answer and a 6K-token document, 200 tokens each,
+median over the rounds (ratio of tokens/s, default over `=0`; rounds in which the default was faster):
+
+| machine | story | code | 6K document | all three |
+|---|---|---|---|---|
+| RTX 3060 12 GB, IQ3_XXS, resident experts | 1.104 (5/5) | 1.197 (5/5) | 1.241 (5/5) | **1.156 (5/5)** |
+| RTX A4000 16 GB alone, Q2_0 | 1.151 (5/5) | 1.135 (5/5) | 1.101 (5/5) | **1.129 (5/5)** |
+| Tesla P100 16 GB, IQ3_XXS, `--pcie-frac 0.29` | 1.149 (5/5) | 1.182 (5/5) | 1.118 (5/5) | **1.146 (5/5)** |
+| two RTX A4000, layer split (hit rate 99.7%) | 0.987 (0/5) | 1.004 (5/5) | 1.002 (3/5) | 0.998 (1/5) |
+
+The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile, `phaseA-tests/cuda-profile.md`); a 2-GPU
+split that holds nearly every expert (hit rate 99.7%) gains nothing. It does not touch prompt reading. Switches that stay opt-in and are not part of this:
+`STRATA_ROUTE_PRIOR` (adds speed, doubles the KL), `STRATA_ROUTE_RESIDENT` and `STRATA_ROUTE_RESIDENT_MTP` (the latter is not faster than the former).
+
+## The PCIe share of the missed experts is set from the CPU's speed (CUDA, single GPU, no `--pcie-frac`)
+
+Of the experts missing from VRAM, a share goes over PCIe to the GPU and the rest is computed by the CPU pool; `--pcie-frac` sets the share.
+Up to 0.1.41 the default came from the PCIe probe only (0.55 from 20 GB/s up), which ignores how fast the CPU is: with the route tail skip on, the
+best share was 0.15-0.20 on an RTX 3060 (default 0.55), 0.20 on a Tesla P100 (default 0.29), and the RTX A4000 is flat from 0.15 to 0.40.
+
+Since 0.1.42, on CUDA with one GPU and no `--pcie-frac`, the share starts at the old value and is refined in the first decode windows from what the engine
+already times: the wall time of the CPU pool per missed expert. With `R` = expert bytes / that time (GB/s) and `L` = the probe's link speed, the share is
+`L / (L + 1.85 R)`, rounded to 0.05 and kept between 0.10 and 0.60; it is changed at most three times (after 48, 96 and 96 more windows, about 10 s of
+decoding), and only by a full step. Each change prints one `PCIe share:` line. A request that sets its own `pcie_frac` is left alone.
+**`--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the 0.1.41 rule.** Not used with a layer split, `--batch`, a peer GPU, when every
+expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it).
+
+Measured (interleaved pairs of whole engine runs, new default against `STRATA_PCIE_FRAC_DEFAULT=old`, medians, route tail skip on):
+
+| card | the pool takes | share (old -> new) | decode, new / old | pairs faster |
+|---|---|---|---|---|
+| RTX 3060 12 GB, IQ3_XXS | 32-37 us per expert | 0.55 -> 0.20 | **1.300** | 5/5 |
+| Tesla P100 16 GB, IQ3_XXS | 84-97 us | 0.29 -> 0.20-0.25 | 1.011 | 4/5 |
+| RTX A4000 16 GB, Q2_0 | 97-115 us | 0.30 -> 0.30 (unchanged) | 0.999 (same setting) | - |
+
+Explicit-share runs are byte-identical to 0.1.41 (`mg_norepeat` 10 of 10, `exact_pp` 4096 and 20000). With the new default the answers differ a little
+from the old default, as any change of the share does (CPU and GPU round differently): teacher-forced KL against the old default 0.0015 on the 3060
+(run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
+The sweeps behind the constant: `phaseA-tests/notes-142-pciefrac.md`.
 
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
@@ -1453,6 +1719,70 @@ the pairs in which the switched arm won). They are here so you can try them on y
   -0.1% (5/6). Boxes that hold all experts in RAM never use the stage buffers.
 - **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
   (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
+- **`STRATA_ADAPT_OVERLAP` (`=1` turns it on, on every backend; the startup log names the state and, when it cannot run, why): the adaptive tier's copies land while the next
+  window runs, with the same tokens.** The window takes the swaps at the same moment as with #463's wait (so the same experts run
+  on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
+  until that layer's copies have landed, instead of the whole window waiting for the round (about 10 ms every fourth window on
+  an A4000, PCIe 3.0 x16). One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`,
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`. On by default on CUDA on Linux since 0.1.43, opt-in on Windows and HIP;
+  opt-in on every backend since #2010, after an RTX 5090 Laptop lost 21% decode with it. What it is worth per box: an RTX A4000 (6
+  interleaved pairs each, decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%),
+  IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%), IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time) and a Tesla P100
+  (+4.4%) gain, but an RTX 5070 on Windows loses 2.6% on Q2_0 (IQ3_XXS no faster) and an RTX 5090 Laptop (WSL2, Core Ultra 9
+  275HX, native IQ3_XXS pack, `--expert-cache-per-layer`) loses 21%: 84.6 vs 106.6 tok/s medians of 5 generations of 256
+  tokens from one build, the slowest of the fast run above the fastest of the slow one (#2010).
+- **`STRATA_ADAPT_CALLBACK_WARMUP` (Linux, on by default since 0.1.43.1; =0 turns it off): start the GPU host-callback thread before the CPU
+  pool pins the host thread.** A callback thread created later can inherit the host's one-CPU affinity and compete
+  with the verifier spinning for its signal (#1975). The warm-up runs and synchronizes one no-op host callback before
+  constructing the pool; swap selection, per-layer callbacks and residency updates stay unchanged. On an RTX 5090 /
+  Ryzen 9 9950X, a paired 4K three-prompt test averaged 142.82 -> 207.75 tok/s. Other GPUs and drivers remain untested;
+  see the [reproducer, settings and limitations](../bench/results/2026-10-11-rtx-5090-callback-affinity/README.md).
+- **`STRATA_ADAPT_SIGNAL=host`: the overlap's per-layer "landed" signal as a host function** (the 0.1.43 way). From 0.1.43.1 the default is a
+  4-byte stream-ordered copy into pinned memory, which needs no driver callback thread: on a 20-core desktop (RTX 3060) the host
+  functions still cost ~7 ms per window with the thread started early, because the pool's workers occupy every other CPU.
+
+## Thread placement: `--aux-cpus` (Linux, off by default)
+
+The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
+core. A thread the engine starts after that inherits the host's one CPU: the adaptive tier's job thread, the prefill
+helpers, the router look-ahead. CUDA driver threads created before pinning can run on any allowed CPU, the workers'
+included; a lazily created host-callback thread can instead inherit the pinned host's one CPU (see the warm-up above).
+`--aux-cpus` puts every thread that is neither a pool worker nor the host thread on spare CPUs. It moves threads only and
+never changes a result.
+
+- **Which CPUs.** `--aux-cpus auto` (or `STRATA_AUX_CPUS=auto`): the SMT siblings of the host's core first, then the CPUs of
+  physical cores that have no pool worker. A CPU that shares a core with a worker is never taken; when no CPU is spare
+  the feature does nothing and the start-up line says so. A list (`--aux-cpus 24,26` or `24-27`) is used as given, minus
+  the host's CPU and the workers' CPUs, and only CPUs the process may run on. `--aux-cpus off` is the default.
+- **How.** Threads the engine starts pin themselves first thing: the adaptive tier's job thread and its per-round
+  threads, the prefill copy threads and helpers, the router look-ahead, the PLE reader, the file readers, the stdin reader
+  and the watchdog. The threads someone else started (the CUDA driver's) are moved by a sweep over `/proc/self/task`
+  once the pool exists and again at the start of every request. The pool's workers and the host thread are never moved,
+  and neither is a thread somebody pinned to one CPU. An explicit `STRATA_ADAPT_JOB_CPU` still wins for the adaptive tier's
+  job thread. `STRATA_AUX_STAGER=0` leaves the prefill copy threads where they were started: with a one-CPU spare set up
+  to 32 of them (`STRATA_STAGER_THREADS`) would share that CPU, which can slow the read of a long prompt.
+- **Per request.** `"strata_tune": {"aux_cpus": 1}` (`serve/server.py` forwards `1`, `0`, `true` and `false`) moves the
+  threads to the set; `0` puts every moved thread back to the placement it had. A request without the key goes back to the
+  start-up setting. With `--batch` the most recently admitted request's value holds, as for the other `strata_tune` keys.
+  An engine started without `--aux-cpus` plans the set anyway, so `1` takes `auto`.
+- **What it prints.** At start: `strata aux cpus: threads that are neither pool workers nor the host go to CPUs 24 (on;
+  N threads placed so far)`, or `(off at start; a request's aux_cpus=1 turns it on)`. A request that changes the state
+  prints `strata serve: aux cpus ON/off for this request`.
+- **Not covered.** Other processes (the Python launcher, a container runtime) and the engine's host thread.
+- **Measured.** One machine: 2x RTX 3080 20 GB at 220 W, Xeon E5-2696 v4 (24 logical CPUs in the container, 16 pool
+  workers each on its own CPU), UD-Q4_K_XL, layer split 23, `--batch-mtp`, two slots, adaptive tier on. `auto` put the
+  host thread on CPU 2 and the helper threads on CPU 24. Same binary in every arm, only the flag differs. Two pairs of
+  whole engine restarts in the order `auto`, off, `auto`, off (12 solo decodes and 10 two-stream rounds per restart,
+  medians): solo decode 79.7 and 80.4 tok/s with `auto` against 72.1 and 72.4 off (off / `auto` = 0.904 and 0.900), two
+  streams in aggregate 90.8 and 90.7 against 80.8 and 82.8 (0.890 and 0.912). The same configuration restarted twice
+  moved solo by 1.009 and 1.005 and two streams by 0.999 and 1.024. Live on one engine, switching per request with
+  `strata_tune` and rotating the order (20 solo requests per arm, 16 two-stream rounds): off / on = 0.888 solo and
+  0.917 two streams, against 0.985 and 0.990 for an A/A control of the same setting. The host thread's involuntary
+  context switches over a bench of about ten minutes were 43.8k and 42.8k with the flag off and 3.9k and 2.8k with
+  `auto`. Prompt reads (24K, 25K, 51K, 104K) do not depend on the flag: off is +0.7% to +1.5% against `auto`, inside the
+  restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
+  stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
+  loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
 
 ---
 
@@ -1503,7 +1833,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | Python or the build tools could not be installed | Install what it names (links are printed), then run it again. Everything already done is kept. |
 | `port 8080 is already in use` | Strata is already running (look for its window), or another program uses the port: `START-HERE.bat --port 8081`. |
 | `cudaHostRegister ... out of memory` in the log | Normal on Windows: the engine pins the experts in per-layer slices instead. Only a problem if the load then fails. |
-| `ExpertCache: cudaMalloc(...) failed: out of memory` although VRAM is free | Windows' page file is off or tiny: every allocation on the graphics card is also charged to Windows' commit (RAM + page file). Set the page file to "System managed" (System > About > Advanced system settings > Performance > Advanced > Virtual memory) and restart. Since 0.1.19 the engine retries with a smaller cache instead of stopping, and setup warns about a page file under 4 GB (issue #60). |
+| `ExpertCache: cudaMalloc(...) failed: out of memory` although VRAM is free | Windows' page file is off or tiny: every allocation on the graphics card is also charged to Windows' commit (RAM + page file). Set a fixed page file size, the same initial and maximum size (e.g. 65536 MB: System > About > Advanced system settings > Performance > Advanced > Virtual memory > Custom size), and restart: a page file Windows grows on demand ("System managed", or an initial size below the maximum) may not grow in time while the card's memory is charged (#60: "System managed" and 4096-32768 MB still failed, a fixed 64 GB worked). Since 0.1.19 the engine retries with a smaller cache instead of stopping, and setup warns about a page file under 4 GB (issue #60). |
 | The first start takes minutes | It is reading 34-55 GB into RAM; the second start is faster while the files are in the OS cache. |
 | The PC freezes for a few minutes at the start | Normal, most of all the first time (the server window says when it happens): the engine loads the experts into RAM, pins part of it for the GPU and sizes the expert cache. Wait; don't close the window. Still frozen after 10 minutes: restart the PC, close other programs, try again, or pick a smaller size. |
 | `the engine stopped unexpectedly (exit code ...)` | The engine process ended mid-answer - usually out of RAM (Linux ends the biggest program: `sudo dmesg \| grep -i -E 'killed process\|out of memory'`). The next request starts it again by itself. If it repeats: close other programs or pick a smaller size. The server also warns at start when the model's experts leave less than ~6 GB of RAM for everything else. |
@@ -1536,7 +1866,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 - **RAM:** all 24,576 experts, pinned. The CPU computes the experts that are not on the GPU **in place**, at the same time
   as the GPU works on the cached ones (AVX-512 / AVX2 kernels, ggml's for the i-quants).
 - **SSD:** the 28.8 GB n-gram table, a few rows per token, read unbuffered past the OS cache (`--ple-io direct`, the
-  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605). The engine reads the table
+  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605). A start-up probe warns when direct reads measure slow (under 15K rows/s) but never switches by itself (since 0.1.43.1; `STRATA_PLE_AUTO_MMAP=1` brings back the 0.1.42 switch to `--ple-io mmap`): the bar is calibrated for NVMe, a SATA SSD tops out at 10-14K rows/s with direct's 16 reads in flight, and on one (Linux, 77.8K-token prompt) mmap read 2.1K rows/s against direct's 14.4K (#2040), while on a Windows box with a slow mapped file mmap stalled prompts (#1984). The engine reads the table
   in the format the GGUF has it: IQ4_NL (the default table), Q4_0, Q5_0, Q5_1, Q8_0, FP8 (E4M3 with a scale) or BF16.
   Measured on 4,000 random rows against the checkpoint's own BF16 table, the mean per-row error is Q8_0 0.53%, FP8 2.64%,
   Q5_1 3.78%, Q5_0 4.25%, IQ4_NL 7.60%, Q4_1 7.80%, Q4_0 8.55% (a Q8_0 table is 54 GB, an IQ4_NL one 28.8 GB). On the Q2_0 model, 700 teacher-forced tokens, the mean KL against the BF16 table is 0.0117 (Q5_0), 0.0121 (Q5_1), 0.0125
@@ -1648,3 +1978,7 @@ The page uses relative URLs and works through the existing host binding or a rev
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
 The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, which is dead after the first hyper-connection broadcast: T x 2560 floats less VRAM per chunk (320 MiB at 32768 rows). The planner still counts those bytes by default, so the auto chunk and the cache slots the prompt path borrows are exactly those of 0.1.40.3 and the output bits are unchanged. `STRATA_EMB_REUSE_ACCOUNT=1` lets the planner use the saved bytes: where VRAM limits the chunk it grows (RTX 3060, IQ3_XXS: 6400 to 6656 tokens, 1652 to 1670 borrowed slots, prompt about +3.9%). A different chunk changes the prompt path's rounding, so prompt residuals are not byte-identical to the default; greedy output matched in our runs. Opt-in until it has a KL measurement.
+
+**Fused int8 prompt experts on gfx12 (RDNA4, R9700): on by default for IQ3_S and IQ3_XXS packs.** `STRATA_PF_FUSED=0` turns them off (back to the MMQ prompt kernels, the previous bits). R9700, 1 card: prompt 4K +15.7%, 16K +13..+17%, 32K +19..+20%, a 96K prompt +16% (answers identical text); first-token KL against the FP16 prompt path over 96 prompts is equal to MMQ within noise (IQ3_XXS 0.00613 against 0.00683, IQ3_S 0.00416 against 0.00372). Other quants and other GPUs are unchanged; `STRATA_PF_FUSED=1` still opts in every covered format.
+
+**gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192.

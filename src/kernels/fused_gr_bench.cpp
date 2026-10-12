@@ -1,11 +1,15 @@
 // src/kernels/fused_gr_bench.cpp - fused_gr_read_multi: the AMD fast kernels (STRATA_GR_FAST) against the old
 // ones, bit for bit on every output (lo, rs, inject, mixed, the in-place R), and each one's time.
 //
-//     build/fused_gr_bench [iters] [T min] [T max]
+//     build/fused_gr_bench [iters] [T min] [T max] [cold sets]
+// With "cold sets" > 1 it also times the read with the weights rotating over that many copies (a layer's weights are
+// cold in the engine) and prints the per-stage split (norm / down / up) from the GPU stamps.
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +30,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const int iters = argc > 1 ? std::atoi(argv[1]) : 500;
     const int t_lo = argc > 2 ? std::atoi(argv[2]) : 1, t_hi = argc > 3 ? std::atoi(argv[3]) : 6;
+    const int cold_sets = argc > 4 ? std::atoi(argv[4]) : 0;
     const int N = 2560, HC = 4, D = N * HC, LR = 320, TM = K::kFusedGrMaxT;
     std::mt19937 rng(7);
     std::normal_distribution<float> nd(0.f, 1.f);
@@ -107,10 +112,64 @@ int main(int argc, char** argv) {
                         cudaEventElapsedTime(&ms, e0, e1);
                         us[f] = std::fmin(us[f], 1e3 * ms / iters);
                     }
-                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s\n", T, apply, inject, us[0], us[1],
-                            same ? "bitwise equal" : "DIFFERS");
+                unsigned long long h = 1469598103934665603ull;   // FNV-1a of the outputs: compare across runs (env switches)
+                for (size_t b = 0; b < out[0].size() * 4; ++b) h = (h ^ ((const unsigned char*) out[0].data())[b]) * 1099511628211ull;
+                std::printf("T %d apply %d inject %d | old %6.1f us  fast %6.1f us | %s | hash %016llx\n", T, apply, inject,
+                            us[0], us[1], same ? "bitwise equal" : "DIFFERS", h);
                 if (!same) ++failures;
             }
+    if (cold_sets > 1) {
+        // the engine reads a different layer's weights every time: rotate over `cold_sets` copies (13 MB each)
+        std::vector<uint16_t*> cwd(cold_sets), cwu(cold_sets), cwi(cold_sets);
+        std::vector<float*> cwn(cold_sets);
+        for (int c = 0; c < cold_sets; ++c) {
+            cudaMalloc((void**) &cwd[c], wd.size() * 2); cudaMemcpy(cwd[c], wd.data(), wd.size() * 2, cudaMemcpyHostToDevice);
+            cudaMalloc((void**) &cwu[c], wu.size() * 2); cudaMemcpy(cwu[c], wu.data(), wu.size() * 2, cudaMemcpyHostToDevice);
+            cudaMalloc((void**) &cwi[c], wi.size() * 2); cudaMemcpy(cwi[c], wi.data(), wi.size() * 2, cudaMemcpyHostToDevice);
+            cudaMalloc((void**) &cwn[c], wn.size() * 4); cudaMemcpy(cwn[c], wn.data(), wn.size() * 4, cudaMemcpyHostToDevice);
+        }
+        unsigned long long* dst;
+        cudaMalloc((void**) &dst, (size_t) iters * 4 * 8);
+        std::vector<unsigned long long> hst((size_t) iters * 4);
+        std::vector<K::FusedGrArgs> as((size_t) cold_sets * 8);
+        for (int T = t_lo; T <= t_hi; ++T) for (int f = 0; f < 2; ++f) {
+            K::fused_gr_set_fast(f);
+            for (int c = 0; c < cold_sets; ++c)
+                for (int t = 0; t < T; ++t) {
+                    K::FusedGrArgs& a = as[(size_t) c * 8 + t];
+                    a = K::FusedGrArgs();
+                    a.R = dR + (size_t) t * D; a.R_out = dR + (size_t) t * D; a.apply = 1;
+                    a.bo_prev = dbo + (size_t) t * N; a.inj_prev = dinj + (size_t) t * HC;
+                    a.w_norm = cwn[c]; a.w_down = cwd[c]; a.w_up = cwu[c]; a.w_inject = cwi[c];
+                    a.lo = dlo + (size_t) t * LR; a.rs = drs + (size_t) t * HC;
+                    a.inject_out = dio + (size_t) t * HC; a.mixed = dmix + (size_t) t * N;
+                }
+            for (int rep = 0; rep < 2; ++rep) {
+                for (int i = 0; i < iters; ++i) {
+                    K::gpu_stamp(dst, i * 4, s);
+                    K::fused_gr_read_multi(&as[(size_t) (i % cold_sets) * 8], T, dxn, s, dst, i * 4 + 1);
+                    K::gpu_stamp(dst, i * 4 + 3, s);
+                }
+                cudaStreamSynchronize(s);
+            }
+            cudaEventRecord(e0, s);
+            for (int i = 0; i < iters; ++i) K::fused_gr_read_multi(&as[(size_t) (i % cold_sets) * 8], T, dxn, s);
+            cudaEventRecord(e1, s);
+            cudaEventSynchronize(e1);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, e0, e1);
+            cudaMemcpy(hst.data(), dst, hst.size() * 8, cudaMemcpyDeviceToHost);
+            // stamps: 0 start, 1 after norm, 2 after down, 3 after up (a ~1-2 us stamp kernel between each)
+            std::vector<double> n_, d_, u_;
+            for (int i = 1; i < iters; ++i) {
+                const unsigned long long* p = &hst[(size_t) i * 4];
+                n_.push_back((double) (p[1] - p[0])); d_.push_back((double) (p[2] - p[1])); u_.push_back((double) (p[3] - p[2]));
+            }
+            auto med = [](std::vector<double>& v) { std::sort(v.begin(), v.end()); return v[v.size() / 2] / 1e3; };
+            std::printf("COLD(%d sets) fast %d T %d | read %6.1f us (events) | stamps median: norm %5.1f down %5.1f up %5.1f us (incl. a stamp kernel each)\n",
+                        cold_sets, f, T, 1e3 * ms / iters, med(n_), med(d_), med(u_));
+        }
+    }
     std::printf("fused_gr_bench: %d differing\n", failures);
     return failures ? 1 : 0;
 }

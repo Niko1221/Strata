@@ -5,7 +5,7 @@
 Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
 upstream merges stay clean); this wrapper adds, at run time:
 
-  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) when no NVIDIA card answers;
+  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) (also on a PC with an NVIDIA card: the engine runs on the Intel one);
   - a model menu in the web app's header, for a host that swaps models on one GPU: the config names the RPC that
     does the swap as "model_switcher" (it takes {"mode": m} and answers {"mode", "up", "starting", "choices",
     "urls"}); the menu offers the models served on this server's port.  Without that key nothing changes;
@@ -35,15 +35,14 @@ from xe_telemetry import _XeGpu  # noqa: E402
 
 
 def install_xe_reader():
-    """telemetry.gpu_reader -> the xe reader when NVML has no card and an Intel Arc is there."""
+    """telemetry.gpu_reader -> the xe reader whenever an Intel Arc is there.  #2001: this server runs the SYCL engine,
+    so the cards it reports are the Intel ones; before, an NVIDIA card in the same PC answered first and the Monitor
+    (and the benchmark report, which takes the card's name from it) showed the GeForce the engine never used."""
     orig = T.gpu_reader
 
     def gpu_reader(index=0, amd=False):
-        g = orig(index, amd)
-        if g.ok():
-            return g
         xe = _XeGpu(index)
-        return xe if xe.ok() else g
+        return xe if xe.ok() else orig(index, amd)
 
     T.gpu_reader = gpu_reader
 
@@ -138,9 +137,26 @@ def install_logprobs():
 
     def _pump(self):   # serve/server.py's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
         proc, lines = self.proc, self.lines
+        slot_q = self.slot_q
         lp = self.__dict__.setdefault("lp_lines", collections.deque())
         last_t = None
+        line = None
         for line in proc.stdout:
+            if line.startswith(S.FATAL_PREFIXES):   # as serve/server.py: never a slot's own line
+                if self.proc is proc:
+                    self.silent_note = "Unrecoverable native verification failure: " + line[4:].strip()
+                    self.ended = True
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                break
+            if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch ("parallel"): a batch slot's own lines
+                try:
+                    slot_q[int(line.split()[1])].put(line)
+                    continue
+                except (IndexError, ValueError):
+                    pass
             if line.startswith("LP "):
                 lp.append((last_t, line))
                 continue
@@ -152,7 +168,11 @@ def install_logprobs():
             lines.put(line)
         if self.proc is proc:
             self.ended = True
+            if line and line.startswith("ERR"):
+                self.last_err = line[4:].strip()
         lines.put(None)
+        for q in slot_q:
+            q.put(None)
     Eng._pump = _pump
 
     keys = Eng.sampling_keys
