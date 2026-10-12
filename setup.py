@@ -3212,6 +3212,14 @@ def sm120_nvcc(nvcc, cuda_v, archs):
     return nvcc, cuda_v
 
 
+def cuda_apt_repo(osr):
+    """The NVIDIA apt repo for this distribution ("ubuntu2404", "debian13") from /etc/os-release, or None when it is
+    not one setup adds the CUDA keyring for.  Both families publish cuda-keyring and CUDA 13.x."""
+    ver = osr.get("VERSION_ID", "").strip('"').replace(".", "")
+    repo = {"ubuntu": "ubuntu", "debian": "debian"}.get(osr.get("ID", ""), "") + ver
+    return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -3270,16 +3278,19 @@ def install_build_tools(gpu, yes):
             run(["sudo", "apt-get", "install", "-y", "build-essential"])
         if nvcc is None or cuda_v < need_cuda:
             osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
-            ver = osr.get("VERSION_ID", "").strip('"').replace(".", "")
-            if osr.get("ID") != "ubuntu" or ver not in ("2204", "2404"):
-                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 only",
+            repo = cuda_apt_repo(osr)
+            if repo is None:
+                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
             deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ver}/x86_64/cuda-keyring_1.1-1_all.deb",
+            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
-            run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has (Ubuntu still gets 13.0).
+            for minor in range(5):
+                if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
+                    break
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")

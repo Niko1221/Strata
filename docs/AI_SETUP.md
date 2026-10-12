@@ -50,7 +50,7 @@ Requirements (details: [INSTALL.md](INSTALL.md#what-you-need)):
   driver. If the driver is missing or too old, tell the user to update it (NVIDIA App / nvidia.com/drivers, or AMD
   Software) and restart; do not install drivers yourself unless they ask.
 - **RAM:** 32 GB or more (see step 3). **Disk:** ~80 GB free, ideally on an NVMe SSD. **CPU:** x86-64 with AVX2. Without AVX2 (Xeon E5 v1/v2 and older) setup still installs, as an experimental and slow build it compiles on the PC (10-20 minutes): tell the user that before starting ([INSTALL.md](INSTALL.md#older-cpus-experimental)).
-- **OS:** Windows 10/11 or Linux (Ubuntu 22.04/24.04 are fully automatic).
+- **OS:** Windows 10/11 or Linux (Ubuntu 22.04/24.04 and Debian 12/13 are fully automatic; Debian 13 gets the oldest CUDA 13 its NVIDIA repo has, currently 13.1).
 
 If the PC does not meet them, say which part is missing and stop.
 
