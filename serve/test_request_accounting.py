@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, serve
+from serve.server import ByteTokenizer, EngineDied, Service, add_carry, carry_leg, request_timings, serve
 from serve.test_server import ThinkingEngine
 
 
@@ -178,6 +178,47 @@ class RequestAccounting(unittest.TestCase):
         self.assertEqual(row["engine_generated"], 20)
         self.assertEqual((row["prompt_ms"], row["decode_ms"]), (40.0, 200.0))
         self.assertEqual((metrics["totals"]["drafts_offered"], metrics["totals"]["drafts_accepted"]), (18, 8))
+
+
+class SlotLegAccounting(unittest.TestCase):
+    """#1869: a request that decoded in a batch slot and finished on the solo path keeps the slot leg's decode time and
+    tokens (the solo DONE alone said 1 token in 18 ms); #1870: prompt_n is what the engine read."""
+
+    def test_solo_leg_adds_to_the_slot_leg(self):
+        carry = {}
+        slot_leg = {"generated": 134, "decode_ms": 2900.0, "prompt_ms": 3794.7, "prompt_read": 2052, "finish": "cancel"}
+        carry_leg(carry, slot_leg)
+        solo_done = {"generated": 1, "decode_ms": 18.4, "prompt_ms": 2.0, "prompt_read": 1, "finish": "stop", "reused": 0}
+        total = add_carry(carry, solo_done)
+        self.assertEqual((total["generated"], total["decode_ms"]), (135, 2918.4))
+        self.assertEqual((total["prompt_ms"], total["prompt_read"], total["finish"]), (3794.7, 2052, "stop"))
+        timings = request_timings(2052, 135, total)
+        self.assertEqual(timings["predicted_ms"], 2918.4)
+        self.assertAlmostEqual(timings["predicted_per_second"], 46.3, places=1)
+
+    def test_two_hand_backs_sum(self):
+        carry = {}
+        carry_leg(carry, {"generated": 10, "decode_ms": 100.0, "prompt_ms": 50.0})
+        carry_leg(carry, {"generated": 20, "decode_ms": 300.0, "prompt_ms": 1.0})
+        total = add_carry(carry, {"generated": 5, "decode_ms": 50.0, "prompt_ms": 1.0})
+        self.assertEqual((total["generated"], total["decode_ms"], total["prompt_ms"]), (35, 450.0, 50.0))
+        self.assertNotIn("prompt_read", total)
+
+    def test_prompt_n_is_what_was_read(self):
+        # the slot already held the whole prompt: 1 token read, the conversation cache off (reused 0)
+        last = {"prompt_ms": 563.5, "decode_ms": 700.0, "generated": 30, "reused": 0, "prompt_read": 1, "finish": "stop"}
+        t = request_timings(43086, 30, last)
+        self.assertEqual((t["prompt_n"], t["cache_n"]), (1, 43085))
+        self.assertEqual(t["prompt_n"] + t["cache_n"], 43086)
+        self.assertLess(t["prompt_per_second"], 10)
+        # a cold read, and an older engine without the field: unchanged
+        cold = request_timings(2052, 10, {**last, "prompt_read": 2052})
+        self.assertEqual((cold["prompt_n"], cold["cache_n"]), (2052, 0))
+        old = request_timings(2052, 10, {k: v for k, v in last.items() if k != "prompt_read"})
+        self.assertEqual((old["prompt_n"], old["cache_n"]), (2052, 0))
+        # the conversation cache's own count still counts when larger
+        both = request_timings(1000, 10, {**last, "reused": 900, "prompt_read": 100})
+        self.assertEqual((both["prompt_n"], both["cache_n"]), (100, 900))
 
 
 if __name__ == "__main__":

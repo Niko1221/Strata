@@ -99,6 +99,17 @@ bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve);
 /// Parses `key` ("MemFree") of a /proc/meminfo text; 0 when absent.
 uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
 
+/// 0.1.42 (NUMA report): the MemFree to judge the page-locked complement by.  `global_free` is the whole host's MemFree;
+/// `node_free` each NUMA node's own (/sys/devices/system/node/node*/meminfo, empty or one entry on a single-node host).
+/// A dual-socket host whose second node is full of another model's file cache has plenty free in total but none where
+/// the driver may allocate: with two or more nodes the figure is the smaller of the total and (node count x the
+/// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
+/// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
+uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
+/// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
+std::string page_cache_hint(const std::string& meminfo_text);
+
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
 bool make_cache_complement_plan(
@@ -602,6 +613,12 @@ public:
     void prepare_overrides() { if (override_.empty()) override_.assign((size_t) blobs_, nullptr); }
     /// After the GPU copies of every staged swap have landed.  Returns how many exchanges were applied.
     int64_t commit_exchanges();
+    /// 0.1.43 (STRATA_ADAPT_OVERLAP): BEFORE the GPU copies of the staged swaps have landed, make each staged `out` look to the
+    /// planner as it will after `commit_exchanges` (pinned, with a device alias into its exchange buffer, so the PCIe share
+    /// treats it exactly as a committed one) without touching `in`'s place, which the copy still reads.  `commit_exchanges`
+    /// (after the copies have landed) ends it.  False: not possible here (rotation, exchange buffers not page-locked): the
+    /// caller waits for the copies instead.
+    bool soft_commit_exchanges();
     /// `commit_exchanges` in two halves, for the asynchronous adaptive tier (--adapt-async): `commit_copies` moves
     /// every staged evicted blob into its `in`'s place in the copy (on another thread: safe once nothing computes `in`
     /// from RAM - it is resident on the GPU - while `out` is still read from its exchange buffer), then `commit_flip`
@@ -754,6 +771,7 @@ private:
     struct Map {
         const uint8_t* base = nullptr;
         uint64_t bytes = 0;
+        bool closed = false;   ///< drop_mapping unmapped the view (base stays for offsets)
 #if defined(_WIN32)
         void* file = nullptr;
         void* mapping = nullptr;
@@ -853,6 +871,8 @@ private:
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };
     std::vector<Exchange> staged_;
+    std::vector<size_t> soft_in_;             ///< soft_commit_exchanges: per `out` index, the `in` whose place it will take (SIZE_MAX: none)
+    const uint8_t* xstage_dev_ = nullptr;     ///< the exchange buffers' device alias (soft_commit_exchanges)
     uint8_t* xstage_ = nullptr;               ///< exchange buffers, `xstage_cap_ x xstage_blob_`
     bool xstage_pinned_ = false;
     int64_t xstage_cap_ = 0;

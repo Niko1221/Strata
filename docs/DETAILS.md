@@ -743,6 +743,32 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **Non-finite logits end the request and drop the cached state (#879, on by default).** Rarely, a window's logits
+  become NaN and the reply degenerates into token 0 (`!`) repeated (#606); the poison sits in the conversation's K/V
+  and recurrent state, so with the prompt cache every later turn of that conversation stays poisoned. The q8_1 clamps
+  of 0.1.39 and later remove the overflows found so far; this guard catches whatever cause is left. Every verify window
+  of `--serve` (the decode windows, the `--pipeline-windows` decode windows of a layer split, the prompt's short
+  tail, batch slots) checks its head logits on the GPU beside the greedy pick (one small kernel into mapped flags, read
+  after the sync the window already does). A flagged window emits none of its tokens, the engine prints one
+  `non-finite logits (#879)` line with the position, ends the request with `DONE ... nonfinite` (a slot:
+  `BDONE <slot> <n> nonfinite`), and the next request first drops the live session, every checkpoint, every parked
+  conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
+  prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
+  started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
+  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
+  answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
+  3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
+  guard on and off gave byte-identical answers in 3 pairs (one of them with `STRATA_ROUTE_TAIL_SKIP=0`, one with
+  `STRATA_SH_STREAM=0`); one more guard-off run differed from all the others from its first answer on, while a second
+  guard-off run matched the guard-on runs, so that was a difference between runs, not the guard. Its cost there: 4.8 us of GPU time a window on average (7.8 us at most), 0.009% of the decode
+  time (Nsight Systems, 424 windows). The one-shot command line (`strata` without `--serve`) and the Intel (SYCL) port
+  in `sycl/` do not check.
+  Debug switch: `STRATA_NAN_INJECT=<n>[,<n>...]` reports the n-th window the guard checks in the engine process
+  (counted from 1 over prompt-tail, decode and batch windows) as non-finite, to exercise the whole path without a real
+  fire. With `=1,60` on that 3080: a new chat's first window was flagged and the server sent the request again from
+  token 0 (the client saw one normal answer); the 60th, mid-reply in the next turn, ended that reply as `"length"`
+  after 58 tokens; the turn after it reused 0 cached tokens and answered normally.
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
@@ -1569,10 +1595,14 @@ such a missed expert is neither copied nor computed, its contribution is zero, a
 tokens identical to 0.1.42 without the change, on the RTX 3060, the RTX A4000 alone and as a 2-GPU split, and the Tesla P100). Another rank
 (`STRATA_ROUTE_TAIL_SKIP=8`, `=9`; 1-9 are accepted) is taken as given. The start-up line
 `STRATA_ROUTE_TAIL_SKIP=7 is ON (default)` names the opt-out.
+Since 0.1.43 the same default holds on HIP for gfx1200 / gfx1201 (RDNA4), under the same rules and with the same `STRATA_ROUTE_TAIL_SKIP=0` opt-out; other AMD parts are unchanged.
 
 Where it applies: serve on a CUDA build with one GPU or a layer split (every stage skips by itself). Not applied, and no line printed: when every expert is
 in VRAM (nothing is missed), with `--batch` / `parallel` slots (a window then mixes requests, and one request's skip would depend on another's
-tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds. The request log gets
+tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds, and (0.1.42.1, #1884) when 90% or more
+of all the experts are in the GPU cache: the few misses are cheap there and the skip costs more draft acceptance than it saves (a Tesla V100 32 GB
+with Coder IQ1_M, 94.8% of the experts cached, 99.9% decode hits: draft acceptance 70.1% to 68.2%, decode 1-2% slower than 0.1.41). A start-up line
+says so; `STRATA_ROUTE_TAIL_SKIP=7` turns it on anyway, and `STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves the line (101 = never). On an AMD layer split the line is 60% (2x R9700 at 16 GB-equivalent: Q2_0 with 73% cached lost 6.1% story decode with the skip, IQ3_S with 45% cached gained 7-10%). The request log gets
 `route tail skip: N missed experts skipped` (cumulative) while it is active.
 
 **Answers differ slightly from 0.1.41** (`STRATA_ROUTE_TAIL_SKIP=0` brings them back). Teacher-forced KL of the decode path (the default's own greedy text and the default sampled at T=0.8, 28 chat prompts of code,
@@ -1620,7 +1650,7 @@ already times: the wall time of the CPU pool per missed expert. With `R` = exper
 `L / (L + 1.85 R)`, rounded to 0.05 and kept between 0.10 and 0.60; it is changed at most three times (after 48, 96 and 96 more windows, about 10 s of
 decoding), and only by a full step. Each change prints one `PCIe share:` line. A request that sets its own `pcie_frac` is left alone.
 **`--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the 0.1.41 rule.** Not used with a layer split, `--batch`, a peer GPU, when every
-expert is in VRAM, or on HIP and SYCL. The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it.
+expert is in VRAM, or on SYCL or on HIP other than gfx1200 / gfx1201 (RDNA4, where the measured share is the default since 0.1.43; `STRATA_PCIE_FRAC_DEFAULT=old` opts out). The canonical Q2_0 pack uses it on CUDA since 0.1.43, on Linux by default and on Windows with `STRATA_PCIE_AUTO_CANON=1` (an RTX 5070 there: code +2.5%, a short answer -3.3%). The constant 1.85 is a fit to three machines, so it lands within a step of each machine's best, not on it. On HIP, `STRATA_PCIE_AUTO_SPLIT=1` (opt-in, 0.1.43) also refines a two-stage layer split: the pool speed is read once and each stage takes the share its own probed link gives (2x R9700 at 16 GB-eq, tail skip on: Q2_0 story +4.5%, code +9.9%, 4K +8.8%; IQ3_S story -2.1%, code +8.0%, 4K +23.3%; with three or more stages the pipelined loop does not run it).
 
 Measured (interleaved pairs of whole engine runs, new default against `STRATA_PCIE_FRAC_DEFAULT=old`, medians, route tail skip on):
 
@@ -1666,6 +1696,14 @@ the pairs in which the switched arm won). They are here so you can try them on y
   -0.1% (5/6). Boxes that hold all experts in RAM never use the stage buffers.
 - **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
   (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
+- **`STRATA_ADAPT_OVERLAP` (CUDA on Linux: on, `=0` turns it off; CUDA on Windows and HIP: `=1` turns it on, since an RTX 5070 on Windows decoded Q2_0 2.6% slower with it and IQ3_XXS no faster): the adaptive tier's copies land while the next
+  window runs, with the same tokens.** The window takes the swaps at the same moment as with #463's wait (so the same experts run
+  on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
+  until that layer's copies have landed, instead of the whole window waiting for the round (about 10 ms every fourth window on
+  an A4000, PCIe 3.0 x16). One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`,
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`; otherwise the log says why it is off. RTX A4000, 6 interleaved pairs each,
+  decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%), IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%),
+  IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time.
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
@@ -1903,3 +1941,7 @@ The page uses relative URLs and works through the existing host binding or a rev
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
 The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, which is dead after the first hyper-connection broadcast: T x 2560 floats less VRAM per chunk (320 MiB at 32768 rows). The planner still counts those bytes by default, so the auto chunk and the cache slots the prompt path borrows are exactly those of 0.1.40.3 and the output bits are unchanged. `STRATA_EMB_REUSE_ACCOUNT=1` lets the planner use the saved bytes: where VRAM limits the chunk it grows (RTX 3060, IQ3_XXS: 6400 to 6656 tokens, 1652 to 1670 borrowed slots, prompt about +3.9%). A different chunk changes the prompt path's rounding, so prompt residuals are not byte-identical to the default; greedy output matched in our runs. Opt-in until it has a KL measurement.
+
+**Fused int8 prompt experts on gfx12 (RDNA4, R9700): on by default for IQ3_S and IQ3_XXS packs.** `STRATA_PF_FUSED=0` turns them off (back to the MMQ prompt kernels, the previous bits). R9700, 1 card: prompt 4K +15.7%, 16K +13..+17%, 32K +19..+20%, a 96K prompt +16% (answers identical text); first-token KL against the FP16 prompt path over 96 prompts is equal to MMQ within noise (IQ3_XXS 0.00613 against 0.00683, IQ3_S 0.00416 against 0.00372). Other quants and other GPUs are unchanged; `STRATA_PF_FUSED=1` still opts in every covered format.
+
+**gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192.
