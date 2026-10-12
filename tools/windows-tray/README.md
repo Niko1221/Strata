@@ -32,12 +32,15 @@ stays noninteractive. Other menu actions retain standard Windows rendering.
 
 <img src="screenshots/favicon.png" width="32" height="32" alt="Official Strata favicon">
 
-![Actual Windows menu connected to the official mock server](screenshots/menu.jpg)
+![Local full-featured Tray — visual reference only](screenshots/local-tray-reference.png)
 
-This capture shows the actual candidate menu opened from a temporary preview
-harness connected to the unmodified official mock server. The harness window is
-not part of the shipped client. The screenshot's ephemeral port is an example;
-normal launch uses 8095. Screenshot scaling is not a physical 4K sharpness test.
+**Visual reference from the author's installed full-featured Tray, not the
+read-only client shipped by this PR.** The original PNG shows the shared favicon
+and native menu styling more clearly. Model/context switching, idle management,
+updates, logs, lifecycle/Web UI status and stopping the server shown here belong
+to that separate local integration and are not included in this PR. This PR's
+menu contains API/model status, Open Web UI, Refresh status, Copy diagnostics,
+and Exit Tray (keep server running). Multi-monitor behavior remains unverified.
 
 1. Start the server with your existing Strata run script, then launch the Tray
    with the same port. Launching the Tray does not start the server.
