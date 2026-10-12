@@ -9,6 +9,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -153,6 +154,8 @@ def random_text(rng, n_pieces=40):
 
 
 def encode_with(tok, text, parse_special, heap_min):
+    # Force the requested algorithm even if another mode has encoded this piece.
+    tok._piece_ids.clear()
     tok.HEAP_MIN = heap_min
     try:
         return tok.encode(text, parse_special=parse_special)
@@ -192,20 +195,43 @@ def synthetic_tokenizer(seed=268, n_merges=1500):
 
 
 class ThreadedEncode(unittest.TestCase):
-    """#1385: 'int' object has no attribute 'ranks' in _bpe, seen once under load.  Could not be reproduced here (it
-    looks like an interpreter fault); this pins that many threads sharing one Tokenizer, as the server does, get
-    exactly the single-threaded ids, and that _bpe works with a tokenizer whose own state is only read."""
+    """#1385: shared-tokenizer encodes must match an independent serial reference.
+    Exercise both warmed cache reads and uncached BPE work in worker threads."""
 
     def test_threads_match_serial(self):
+        self.check_threads_match_serial(cache_enabled=True)
+
+    def test_uncached_threads_match_serial(self):
+        self.check_threads_match_serial(cache_enabled=False)
+
+    def check_threads_match_serial(self, cache_enabled):
         import threading
         tok = synthetic_tokenizer()
+        reference = synthetic_tokenizer()
+        if not cache_enabled:
+            tok.PIECE_CACHE_MAX = 0
         rng = random.Random(1385)
         texts = [random_text(rng, 6) for _ in range(40)]
-        want = [tok.encode(t) for t in texts]
+        want = [reference.encode(t) for t in texts]
+        if cache_enabled:
+            self.assertEqual([tok.encode(t) for t in texts], want)
         errors = []
+        start = threading.Barrier(8)
+        seen = set()
+        seen_lock = threading.Lock()
+        original = tok._bpe
+
+        def observe_bpe(word):
+            with seen_lock:
+                seen.add(threading.get_ident())
+            return original(word)
+
+        if not cache_enabled:
+            tok._bpe = observe_bpe
 
         def work():
             try:
+                start.wait(timeout=10)
                 for _ in range(15):
                     for t, w in zip(texts, want):
                         if tok.encode(t) != w:
@@ -219,6 +245,9 @@ class ThreadedEncode(unittest.TestCase):
         for t in ts:
             t.join()
         self.assertEqual(errors, [])
+        if not cache_enabled:
+            self.assertEqual(seen, {t.ident for t in ts})
+            self.assertEqual(tok._piece_ids, {})
 
 
 class HeapBpe(unittest.TestCase):
@@ -229,7 +258,43 @@ class HeapBpe(unittest.TestCase):
             for ps in (False, True):
                 old = encode_with(tok, text, ps, 10 ** 9)           # the scan for every word
                 self.assertEqual(encode_with(tok, text, ps, 0), old, f"text {k} parse_special={ps}")   # the heap
+                tok._piece_ids.clear()
                 self.assertEqual(tok.encode(text, parse_special=ps), old, f"text {k} parse_special={ps}")
+
+    @staticmethod
+    def tiny_tokenizer():
+        import strata_tokenizer as ST
+        tokens = [ST.BYTE_TO_UNICODE[b] for b in range(256)] + ["ab"]
+        return ST.Tokenizer(tokens, ["a b"], [1] * len(tokens))
+
+    def test_parity_rejects_broken_scan_after_warm_cache(self):
+        tok = self.tiny_tokenizer()
+        self.assertEqual(tok.encode("ab", parse_special=False), [256])
+        original = tok._bpe
+
+        def broken_scan(word):
+            return ["a", "b"] if tok.HEAP_MIN == 10 ** 9 else original(word)
+
+        with patch.object(tok, "_bpe", side_effect=broken_scan):
+            with self.assertRaisesRegex(AssertionError, "text 0 parse_special=False"):
+                self.parity(tok, ["ab"])
+
+    def test_parity_rejects_broken_heap_after_scan_cache(self):
+        tok = self.tiny_tokenizer()
+        with patch.object(tok, "_bpe_heap", return_value=["a", "b"]):
+            with self.assertRaisesRegex(AssertionError, "text 0 parse_special=False"):
+                self.parity(tok, ["ab"])
+
+    def test_parity_rejects_broken_default_after_forced_modes(self):
+        tok = self.tiny_tokenizer()
+        original = tok._bpe
+
+        def broken_default(word):
+            return ["a", "b"] if "HEAP_MIN" not in tok.__dict__ else original(word)
+
+        with patch.object(tok, "_bpe", side_effect=broken_default):
+            with self.assertRaisesRegex(AssertionError, "text 0 parse_special=False"):
+                self.parity(tok, ["ab"])
 
     def test_words_directly(self):
         tok = synthetic_tokenizer()
