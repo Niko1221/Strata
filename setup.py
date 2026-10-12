@@ -1825,6 +1825,7 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
+                "gfx1150": "https://rocm.nightlies.amd.com/v2/gfx1150/",       # Strix Point: only with STRATA_EXPERIMENTAL_GFX1150=1
                 "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
 # The TheRock nightly indexes are pruned and move on, and each GPU family's index holds its own range (#1103: gfx103X-all
 # starts at 7.13.0a20260422 and has no 7.10; #1267: the 7.10 wheel segfaults on a Strix Halo with kernel 7.2.8), so one
@@ -1841,7 +1842,29 @@ ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the whe
 # STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
 # as a unified-memory AMD card like Strix Halo, with the portable kernels (no WMMA) (measured on one machine: Ryzen 7 255).  Unset: unchanged.
 GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ())
+# STRATA_EXPERIMENTAL_GFX1150=1 (opt-in, unvalidated): the Radeon 890M / 880M iGPU (Ryzen AI 300, Strix Point, gfx1150)
+# is taken as a unified-memory AMD card like Strix Halo.  The engine builds and runs for gfx1150 from 0.1.40.2 (#1217;
+# tools/hip/gfx1150-hipblaslt-100401.txt is calibrated on it), but no release ships a ready-made Windows engine for it:
+# build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
+# Unset: unchanged.
+GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
+            + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
+# The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
+# STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and a gfx1150 table picks
+# others.  A gfx1150 install takes them from here (setup writes them into the config's "env"), the same way the table is
+# written: the Radeon 890M report (docs/AMD_HIP.md; bench/results/2026-10-07-community-gfx1150) measured the same greedy
+# answers with all 17 on and with all 17 off, decode +2% and prompts +3-6%.  The engine's arch defaults are not used for
+# gfx1150 (src/core/arch_defaults_test.cpp asserts gfx1150 stays empty), so this keeps the default path byte-identical.
+GFX1150_SWITCHES = {
+    # prompt
+    "STRATA_GDN_HEAD": "1", "STRATA_GDN_PP": "2", "STRATA_GDN_CONVL2": "1", "STRATA_GDN_NOY": "1",
+    "STRATA_CVEC_FUSE": "1", "STRATA_PF_PAD": "1",
+    # decode
+    "STRATA_Q8_PACKED": "1", "STRATA_Q6_PACKED": "1", "STRATA_MMVF_ROWS": "1", "STRATA_ATTN_LANECELL": "1",
+    "STRATA_EXPERT_V2": "1", "STRATA_TSUM": "1", "STRATA_LFUSE": "1", "STRATA_GDN_SPLIT": "1",
+    "STRATA_QFUSE": "1", "STRATA_PLE_BATCH": "1", "STRATA_SH_STREAM": "1",
+}
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1102": "AMD Radeon RX 7600 / 7600 XT (gfx1102)",
@@ -1947,6 +1970,15 @@ def is_strix_halo(g) -> bool:
     return isinstance(g, dict) and gfx_arch_is(g.get("arch"), STRIX_HALO_ARCH)
 
 
+def is_uma_apu(g) -> bool:
+    """A unified-memory AMD APU whose "VRAM" is a BIOS carve-out plus shared system memory: Strix Halo (gfx1151), and
+    the opt-in gfx1150 (Strix Point) / gfx1103 (Phoenix / Hawk Point) iGPUs.  Everything else is a discrete card."""
+    arch = g.get("arch") if isinstance(g, dict) else None
+    return (is_strix_halo(g)
+            or (GFX1150_OPT_IN and gfx_arch_is(arch, "gfx1150"))
+            or (GFX1103_OPT_IN and gfx_arch_is(arch, "gfx1103")))
+
+
 def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dict:
     """Strix Halo is an APU with unified memory.  Its "dedicated VRAM" is a BIOS carve-out (512 MB to 96 GB; 2 GB on the
     maintainers' box) and the GPU also reaches shared system memory (Linux: the GTT pool, `mem_info_gtt_total`, half the
@@ -1954,7 +1986,7 @@ def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dic
     the model's experts live in, so it is not extra room beside the RAM.  g gets: uma, dedicated_gb (the carve-out: the
     only part that adds to the RAM, which the low-RAM mode counts) and vram_gb = the memory the GPU can use in all
     (the carve-out plus the shared pool less what the OS keeps), which sizes the context and the parallel slots."""
-    if g.get("uma") or not (is_strix_halo(g) or (GFX1103_OPT_IN and gfx_arch_is(g.get("arch"), "gfx1103"))):
+    if g.get("uma") or not is_uma_apu(g):
         return g
     ram = ram_gb() if ram is None else ram
     carve = max(0.0, float(g.get("vram_gb") or 0.0))
@@ -2019,10 +2051,29 @@ def gfx1103_notes(gpu, ram) -> list[str]:
     return notes
 
 
+def gfx1150_notes(gpu, ram) -> list[str]:
+    """What setup tells the owner of a Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150, unified memory): never
+    the Strix Halo text, which is about another chip (gfx1151).  Opt-in only (STRATA_EXPERIMENTAL_GFX1150=1)."""
+    notes = [f"  Radeon 890M / 880M class (gfx1150, Strix Point): the CPU and the GPU share one memory pool ({ram:.0f} GB "
+             f"seen by the OS + a {gpu.get('dedicated_gb', 0.0):.1f} GB BIOS carve-out), so the model's experts live in "
+             "that pool and the expert cache is sized from the memory the OS can give back."]
+    notes.append("  " + ("The engine is compiled here for gfx1150" if not WIN else
+                         "Windows has no ready-made engine for gfx1150: build one with STRATA_HIP_ARCHS=gfx1150 "
+                         "tools\\hip\\build_windows.bat and start setup with --prebuilt dist\\")
+                 + " (experimental opt-in, STRATA_EXPERIMENTAL_GFX1150=1, unvalidated: docs/AMD_HIP.md).")
+    if not WIN and gpu.get("shared_gb", 0) < 0.75 * ram - 1:
+        notes.append(f"!the GPU can reach {gpu.get('shared_gb', 0):.0f} GB of shared memory (the GTT pool; the kernel's "
+                     "default is about half of the RAM). The kernel option ttm.pages_limit raises it; setup changes no "
+                     "host setting - a bigger model needs the room, a smaller one runs as it is")
+    return notes
+
+
 def igpu_notes(gpu, ram) -> list[str]:
-    """The unified-memory notes for exactly this chip: Strix Halo (gfx1151) or the gfx1103 opt-in, nothing else."""
+    """The unified-memory notes for exactly this chip: Strix Halo (gfx1151) or the gfx1150 / gfx1103 opt-in, nothing else."""
     if is_strix_halo(gpu):
         return strix_halo_notes(gpu, ram)
+    if GFX1150_OPT_IN and gfx_arch_is(gpu.get("arch"), "gfx1150"):
+        return gfx1150_notes(gpu, ram)
     if gfx_arch_is(gpu.get("arch"), "gfx1103"):
         return gfx1103_notes(gpu, ram)
     return []
@@ -2150,9 +2201,9 @@ def amd_gpus_win() -> list[dict]:
     hip = hip_devices()
     if not hip:
         return amd_gpus_windows()
-    halo = [g for g in hip if is_strix_halo(g)]
+    halo = [g for g in hip if is_uma_apu(g)]
     if halo:                                           # an APU: the HIP runtime's figure is not the BIOS carve-out
-        reg = [r for r in amd_gpus_windows() if is_strix_halo(r)]
+        reg = [r for r in amd_gpus_windows() if is_uma_apu(r)]
         for k, g in enumerate(halo):
             reported = g["vram_gb"]
             g["vram_gb"] = reg[k]["dedicated_gb"] if k < len(reg) else 0.0
@@ -3876,7 +3927,9 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
+# the "env" entries setup writes: a re-run refreshes these instead of carrying a stale value over (the gfx1150 switches
+# are setup's too, so they do not linger after the opt-in is turned off)
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"}) | frozenset(GFX1150_SWITCHES)
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
@@ -5746,6 +5799,11 @@ def main() -> int:
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
+        if GFX1150_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1150"):
+            # the exact gfx1151 speed switches measured on this chip (GFX1150_SWITCHES): the engine has no arch defaults
+            # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
+            # them and turning the opt-in off takes them out again.
+            cfg.setdefault("env", {}).update(GFX1150_SWITCHES)
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
