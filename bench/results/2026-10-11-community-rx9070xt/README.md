@@ -6,7 +6,7 @@ Measured on 2026-10-11 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 
 - GPU and VRAM: AMD Radeon RX 9070 XT (gfx1201), 16 GiB VRAM; desktop driven by the iGPU, so the dGPU is free
 - CPU: AMD Ryzen 7 9700X 8-Core Processor (8 cores, 8 threads); installed RAM: 121.4 GiB; storage: NVMe (PCIe probe at start: 54.9 GB/s host->device)
-- OS: Linux 7.2.8-1-cachyos; GPU driver: ROCm 6.x
+- OS: CachyOS (Linux 7.2.8-1-cachyos); GPU driver: amdgpu (in-kernel), ROCm/HIP 7.2.4
 - Strata: project 0.1.43, commit 7695859a; engine 0.1.43
 - Background workloads and power limits: background app. 10% CPU on 20G RAM beyond the engine; no power-limit changes
 
