@@ -38,6 +38,7 @@
 #include "strata/core/layout.hpp"                 // ModelGeometry
 #include "strata/kernels/f16_bits.hpp"           // f16_from_f32 / f32_from_f16
 #include "strata/kernels/kv_q8.hpp"              // KV_Q8_GROUP
+#include "strata/kernels/kv_q4.hpp"              // block_q4_0, QK4_0 (the q4_0 splice codec)
 #include "strata/program/kv_q8_quant.hpp"         // KvQ8Group + kv_q8_{quant,dequant,read,write}_group
 #include "strata/program/kv_splice.hpp"          // rotate_k_by_delta + build_rope_table_host
 #include "strata/program/kv_splice_apply.hpp"    // SpliceStatus, fp32/fp16 helpers
