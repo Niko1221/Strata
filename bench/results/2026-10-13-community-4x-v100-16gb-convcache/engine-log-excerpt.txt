@@ -1,0 +1,34 @@
+Engine-log excerpt, 4x Tesla V100-SXM2-16GB, Strata 0.1.43.1 (MMQ_KQUANTS build).
+Verbatim lines from the engine's own log. "strata serve:" lines are per-request;
+"strata generate:" is start-up. Line numbers are from the live log file.
+
+--- A. Conversation cache ON (--conversation-cache-mib 16384 --conversation-cache-slots 6) ---
+One line per completed 81K request. The snapshot is ~2.558 GiB; `parked` counts the
+slots held. reused_kv_bytes is 0 on every single one - none of them is ever read back.
+6 x 2.558 GiB = 15.35 GiB, i.e. the parking set fills the 16 GiB budget.
+
+13351: strata serve: conversation cache: parked 81077 tokens in 2841.2 ms; parked=2 bytes=5115104880 evictions=0 snapshot_bytes=2556971192 reused_kv_bytes=0
+13388: strata serve: conversation cache: parked 81276 tokens in 2967.0 ms; parked=3 bytes=7675080312 evictions=0 snapshot_bytes=2559975432 reused_kv_bytes=0
+      strata serve: conversation cache: parked 81440 tokens in 2752.3 ms; parked=4 bytes=10232235136 evictions=0 snapshot_bytes=2562483992 reused_kv_bytes=0
+      strata serve: conversation cache: parked 80912 tokens in 2681.6 ms; parked=5 bytes=12786642840 evictions=0 snapshot_bytes=2554407704 reused_kv_bytes=0
+      strata serve: conversation cache: parked 80965 tokens in 2569.8 ms; parked=6 bytes=15341900880 evictions=0 snapshot_bytes=2555258040 reused_kv_bytes=0
+      strata serve: conversation cache: parked 81153 tokens in 3175.9 ms; parked=1 bytes=2558133688 evictions=0 snapshot_bytes=2558133688 reused_kv_bytes=0
+
+--- B. Same engine, same box, --conversation-cache-mib 0 --conversation-cache-slots 0 ---
+grep -c 'conversation cache' over everything after start-up = 0. No parking happens at all.
+
+--- C. KV streaming, start-up line (identical in both runs) ---
+      strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 0.52 GiB of pinned RAM
+
+--- D. KV streaming hit rate is NOT what changed (exclusion) ---
+A single 81K request prints two "KV streaming" lines: a cumulative one and a per-request
+(prefill) one. Both are essentially the same with the conversation cache on or off -
+the per-request figure sits at ~69-71% either way, so the hit rate is not the cause.
+Shown here are the two lines emitted by one 81K request with the cache OFF:
+
+14099: strata serve: KV streaming: 96.46% of 5176054 block reads hit VRAM, 738.3 MiB read from RAM   <- cumulative
+14136: strata serve: KV streaming: 69.48% of 26704 block reads hit VRAM, 32.8 MiB read from RAM      <- this request's prefill
+
+--- E. Expert cache during decode (also unaffected by this change) ---
+      strata serve: decode expert cache hit rate: 97.9% (192509 hits / 196645 lookups); 228 more read by the GPU over PCIe or from another GPU (0.1% of all 196873 routed)
+      strata serve: decode expert cache hit rate: 98.1% (185724 hits / 189254 lookups); 142 more read by the GPU over PCIe or from another GPU (0.1% of all 189396 routed)

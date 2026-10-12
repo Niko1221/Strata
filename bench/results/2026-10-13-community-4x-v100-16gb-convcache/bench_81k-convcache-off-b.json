@@ -1,0 +1,60 @@
+{
+  "label": "81k-convcache-off-b",
+  "single": [
+    [
+      {
+        "tokens": 81058,
+        "read": 81058,
+        "prefill_ms": 26075,
+        "prefill_tps": 3108.6,
+        "gen": 18,
+        "gen_ms": 215,
+        "decode_tps": 83.9
+      }
+    ],
+    [
+      {
+        "tokens": 80830,
+        "read": 80830,
+        "prefill_ms": 26123,
+        "prefill_tps": 3094.2,
+        "gen": 17,
+        "gen_ms": 227,
+        "decode_tps": 75.0
+      }
+    ],
+    [
+      {
+        "tokens": 80989,
+        "read": 80989,
+        "prefill_ms": 26126,
+        "prefill_tps": 3099.9,
+        "gen": 17,
+        "gen_ms": 186,
+        "decode_tps": 91.6
+      }
+    ],
+    [
+      {
+        "tokens": 81198,
+        "read": 81198,
+        "prefill_ms": 26233,
+        "prefill_tps": 3095.2,
+        "gen": 17,
+        "gen_ms": 206,
+        "decode_tps": 82.6
+      }
+    ]
+  ],
+  "long": [],
+  "meta": {
+    "measured_at": "2026-10-13 07:45:15",
+    "vram": [
+      "0, 15723 MiB, 422 MiB",
+      "1, 15735 MiB, 410 MiB",
+      "2, 15683 MiB, 462 MiB",
+      "3, 15953 MiB, 192 MiB"
+    ],
+    "config": "{\n  \"exe\": \"/data1/zealotq/Strata/engine-cuda12/strata\",\n  \"args\": [\n    \"--pack\",\n    \"/data1/zealotq/Strata-data/packs/unsloth-ud-q4_k_xl\",\n    \"--native\",\n    \"/data1/zealotq/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf\",\n    \"--expert-profile\",\n    \"/data1/zealotq/Strata/data/expert-profile.bin\",\n    \"--expert-cache\",\n    \"auto\",\n    \"--prefill\",\n    \"auto\",\n    \"--spec\",\n    \"4\",\n    \"--spec-min-p\",\n    \"0.8\",\n    \"--suffix-draft\",\n    \"8\",\n    \"--mtp\",\n    \"/data1/zealotq/Strata-data/mtp/rt\",\n    \"--max-context\",\n    \"262144\",\n    \"--kv\",\n    \"int8\",\n    \"--ple-io\",\n    \"ram\",\n    \"--kv-resident\",\n    \"32768\",\n    \"--prompt-cache\",\n    \"24\",\n    \"--prompt-cache-every\",\n    \"8192\",\n    \"--conversation-cache-mib\",\n    \"0\",\n    \"--conversation-cache-slots\",\n    \"0\",\n    \"--trim-stage-weights\",\n    \"--pipeline-windows\",\n    \"2\"\n  ],\n  \"cwd\": \"/data1/zealotq/Strata\",\n  \"tokenizer\": \"/data1/zealotq/Strata-data/packs/unsloth-ud-q4_k_xl/tokenizer\",\n  \"model_name\": \"qwen3.8-flash-next-ud-q4_k_xl\",\n  \"log\": \"/data1/zealotq/Strata/strata-q4kxl-v100.log\",\n  \"lib_dirs\": [\n    \"/data1/zealotq/envs/cuda129/bin\"\n  ],\n  \"port\": 8080,\n  \"cuda\": 12,\n  \"gpu\": [\n    0,\n    1,\n    2,\n    3\n  ],\n  \"gpus_asked\": true,\n  \"layer_split\": \"9,25,34\",\n  \"host\": \"0.0.0.0\",\n  \"api_key\": \"strata-kt-qgg2026\",\n  \"reasoning_budget_tokens\": 4096,\n  \"expert_profile_save\": \"/data1/zealotq/Strata/data/expert-profile-learned.bin\",\n  \"parallel\": 1,\n  \"env\": {\n    \"STRATA_SM70_TABLE\": \"1\",\n    \"STRATA_SELECT_SIMT\": \"1\",\n    \"STRATA_SPEC_DEPTH\": \"1\",\n    \"STRATA_KV_PREFETCH\": \"1\"\n  }\n}"
+  }
+}

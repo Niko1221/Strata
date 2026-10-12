@@ -97,3 +97,6 @@ sweep (6 arms) in `sweep_q4kxl_results.json`; exact config in `launch-config.jso
 - One observed operational quirk: long-context (81K) traffic could leave the host in a
   degraded memory state that survived engine restarts and cleared only on reboot; this did
   not reproduce under the rebalanced `9,25,34` split (not root-caused further).
+  **Root-caused on 2026-10-13**: it is not the host but conversation-cache parking —
+  see `bench/results/2026-10-13-community-4x-v100-16gb-convcache` (+10.5% 81K prefill
+  with `--conversation-cache-mib 0`).
