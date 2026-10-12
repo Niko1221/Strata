@@ -23,7 +23,9 @@ class HotfixTag(unittest.TestCase):
         ver = tuple(int(x) for x in "0.1.40.3".split("."))   # a hotfix version has four numbers; MIN_ENGINE may have three
         self.assertEqual(len(ver), 4)
         self.assertLess(ver, setup.MIN_ENGINE)                 # an installed hotfix of the older release is replaced
-        self.assertGreater((0, 1, 41, 1), setup.MIN_ENGINE)    # and a hotfix of the minimum release is accepted
+        self.assertGreaterEqual((0, 1, 43, 1), setup.MIN_ENGINE)   # the minimum itself (or a later hotfix) is accepted
+        self.assertLess((0, 1, 43), setup.MIN_ENGINE)       # the release before the hotfix is replaced
+        self.assertLess((0, 1, 42, 1), setup.MIN_ENGINE)    # 0.1.42.1 is replaced
         self.assertLess((0, 1, 40), setup.MIN_ENGINE)       # an installed 0.1.40 engine is replaced
 
     def test_the_engine_zips_are_found_for_a_hotfix_tag(self):

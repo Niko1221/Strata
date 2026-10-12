@@ -68,6 +68,13 @@ private:
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
     bool f16_io_ = false;
+    /// cuBLAS 12 answers the default FP16 algorithm of a few (N, K) shapes with CUBLAS_STATUS_INTERNAL_ERROR once
+    /// another CUDA device in the process has initialized its context (issue #1650, Turing + Pascal).  A fixed
+    /// algorithm (ALGO2) survives that state, but is markedly slower for the wide shapes, so only the shapes that
+    /// fail move, and they are remembered here ((K << 32) | N, up to kF16AlgoSlots).  CUDA only.
+    static constexpr int kF16AlgoSlots = 32;
+    int64_t f16_algo_shape_[kF16AlgoSlots] = {};
+    int f16_algo_n_ = 0;
     // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16)
     uint16_t* tc_w_ = nullptr;
     int64_t tc_w_elems_ = 0;

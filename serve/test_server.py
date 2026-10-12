@@ -22,7 +22,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+                          PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_timings, serve, start_failure_hint)
@@ -1522,6 +1523,14 @@ class SamplingKeys(unittest.TestCase):
         bad = self.keys(strata_tune={"pcie_frac": 3, "spec_min_p": True, "pool_workers": 2})
         self.assertFalse([x for x in bad if x.split("=")[0] in ("pcie_frac", "spec_min_p", "pool_workers")])
 
+    def test_tune_aux_cpus(self):
+        for val, want in ((True, "aux_cpus=1"), (1, "aux_cpus=1"), (False, "aux_cpus=0"), (0, "aux_cpus=0"),
+                          (1.0, "aux_cpus=1"), (0.0, "aux_cpus=0")):
+            self.assertIn(want, self.keys(strata_tune={"aux_cpus": val}), val)
+        for bad in (2, -1, 0.5, "1", None, "auto"):
+            self.assertFalse([x for x in self.keys(strata_tune={"aux_cpus": bad}) if x.startswith("aux_cpus=")], bad)
+        self.assertFalse([x for x in self.keys(temperature=0) if x.startswith("aux_cpus=")])
+
     def test_checkpoint_key(self):
         self.assertIn("ckpt=0", self.keys(temperature=0, strata_checkpoint=False))
         for absent in ({}, {"strata_checkpoint": True}, {"strata_checkpoint": 0}, {"cache_prompt": False}):
@@ -1623,6 +1632,8 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(ordered_gpus(base, fast_first), [2, 0])
         self.assertEqual(ordered_gpus({"gpu": [2, 0], "args": []}, fast_first), [2, 0])
         self.assertEqual(ordered_gpus(base, {0: 5.0, 2: 5.0}), [0, 2])                       # identical cards
+        self.assertEqual(ordered_gpus(base, {0: 173740000.0, 2: 171640000.0}), [0, 2])      # #1760: two 5070 Ti, 1.2% apart
+        self.assertEqual(ordered_gpus(base, {0: 106.0, 2: 100.0}), [2, 0])                    # 6% apart: a real difference
         self.assertEqual(ordered_gpus({**base, "gpu_order": "as_given"}, fast_first), [0, 2])
         self.assertEqual(ordered_gpus({**base, "layer_split": "24"}, fast_first), [0, 2])
         self.assertEqual(ordered_gpus({**base, "args": ["--layer-split", "24"]}, fast_first), [0, 2])
@@ -1632,6 +1643,16 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(ordered_gpus({"gpu": 1, "args": []}, {1: 1.0}), [1])
         self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0}), [0, 2, 1])
         self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 3.0, 2: 3.0}), [0, 1, 2])
+        # #1576: the reorder is skipped when it would land the last stage (head + draft + verify + cache) on a card
+        # with less VRAM than the config's own last card - the reporter's fast 12 GB / slow 22 GB pair
+        fast_small = {"gpu": [0, 1], "args": []}
+        speeds = {0: 8448.0 * 2610, 1: 4352.0 * 1665}     # 4070 Ti vs 2080 Ti
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 12288, 1: 22528}), [0, 1])   # keep: tail would shrink
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 24576, 1: 12288}), [1, 0])   # faster AND bigger: reorder
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 16384, 1: 16384}), [1, 0])   # equal VRAM: reorder
+        self.assertEqual(ordered_gpus(fast_small, speeds, {0: 12288}), [1, 0])             # a card unmeasured: reorder
+        self.assertEqual(ordered_gpus({"gpu": [0, 1, 2], "args": []}, {0: 3.0, 1: 9.0, 2: 6.0},
+                                    {0: 8192, 1: 12288, 2: 24576}), [0, 1, 2])  # tail 1 (12G) < given tail 2 (24G)
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 
@@ -1651,7 +1672,7 @@ class GpuChoice(unittest.TestCase):
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
         from serve.server import child_env, vision_env
-        cfg = {"gpu": [0, 1], "vision": {"exe": "v", "cuda_device": 2}}
+        cfg = {"gpu": [0, 1], "gpu_order": "as_given", "vision": {"exe": "v", "cuda_device": 2}}
         env = child_env(cfg)
         venv = vision_env(cfg, env)
         self.assertEqual(venv["CUDA_VISIBLE_DEVICES"], "2")
@@ -1908,6 +1929,42 @@ class DraftCounts(unittest.TestCase):
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
 
 
+class PrometheusMetrics(unittest.TestCase):
+    """GET /metrics/prometheus: the totals in Prometheus' text format, under llama-server's names."""
+
+    def test_totals(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 400.0 200.0 stop 7 12 5",                # 5 of the prompt's tokens reused
+            "DONE 4 20 400.0 200.0 stop 3 5 0"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(2):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics/prometheus", timeout=10) as r:
+                self.assertTrue(r.headers["Content-Type"].startswith("text/plain"))
+                text = r.read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        m = {line.split()[0]: float(line.split()[1]) for line in text.splitlines() if not line.startswith("#")}
+        t = svc.totals
+        self.assertEqual(m["llamacpp:prompt_tokens_total"], t["prompt_tokens"] - 5)
+        self.assertEqual(m["llamacpp:prompt_tokens_cached_total"], 5)
+        self.assertEqual(m["llamacpp:prompt_seconds_total"], 0.8)
+        self.assertEqual(m["llamacpp:tokens_predicted_total"], t["output_tokens"])
+        self.assertEqual(m["llamacpp:tokens_predicted_seconds_total"], 0.4)
+        self.assertEqual((m["llamacpp:requests_processing"], m["llamacpp:requests_deferred"]), (0, 0))
+        self.assertEqual((m["strata:requests_total"], m["strata:drafts_offered_total"],
+                          m["strata:drafts_accepted_total"]), (2, 17, 10))
+
+
 class PcieShare(unittest.TestCase):
     """#588: the hit rate stays the VRAM share of the lookups; the routed experts the GPU read over PCIe (the DONE
     line's 16th field, engine 0.1.39+) are given as their own share of all routed experts."""
@@ -2028,6 +2085,129 @@ class RepeatStop(unittest.TestCase):
         self.assertNotIn("repeated one token", log)
         done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens are not one run
         self.assertEqual(done["finish"], "stop")
+
+
+class NonFiniteEngine(MockEngine):
+    """#879: each pass ends on the engine's `DONE ... nonfinite` after plan[i] tokens (None, or no plan left: the
+    script runs whole), as StrataEngine.generate raises it.  A pass that ends on it had reused all but the last
+    prompt token; the next one reads from token 0, as the engine does."""
+
+    def __init__(self, *a, plan=(), **kw):
+        super().__init__(*a, **kw)
+        self.plan, self.calls = list(plan), []
+        self.last, self.flushed = None, False
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.calls.append(list(ids))
+        cut = self.plan.pop(0) if self.plan else None
+        # (set before the tokens: the service closes a pass at its end-of-turn token, before the code after the loop)
+        self.last = {"prompt_tokens": len(ids), "reused": 0 if self.flushed else len(ids) - 1,
+                     "finish": "nonfinite" if cut is not None else "stop"}
+        self.flushed = False
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+            if cut is not None and i >= cut:
+                break
+            yield t
+        if cut is not None:
+            self.flushed = True
+            raise EngineNonFinite("the engine's logits became non-finite (#879)")
+
+
+class NonFiniteLogits(unittest.TestCase):
+    """#879: non-finite logits before the first token -> the same request once more; after tokens went out -> the
+    reply ends as "length"; again on the retry -> an error, no loop."""
+
+    def run_reply(self, plan):
+        tok = ByteTokenizer()
+        eng = NonFiniteEngine(tok, "hello", max_context=CTX, plan=plan)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        ids = tok.encode("hi")
+        events, done, error = [], None, None
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                for kind, x in svc.run(ids, False, None, 100, {}, threading.Event()):
+                    if kind == "done":
+                        done = x
+                    elif kind == "event":
+                        events.append(x)
+            except EngineNonFinite as e:
+                error = e
+        text = "".join(ev.text or "" for ev in events if ev.kind == "content")
+        return eng, svc, ids, done, error, text, out.getvalue()
+
+    def test_nothing_emitted_is_retried_once(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([0])
+        self.assertIsNone(error)
+        self.assertEqual(eng.calls, [ids, ids])                  # the same request, once more
+        self.assertEqual(done["finish"], "stop")
+        self.assertEqual(text, "hello")
+        self.assertIn("non-finite before the first token", log)
+        self.assertEqual(svc.metrics()["requests"][0]["finish"], "stop")
+        self.assertEqual(svc.metrics()["requests"][0]["reused"], 0)  # the retry's DONE, not the failed pass's
+
+    def test_mid_reply_ends_without_retry(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([3])    # "hel"
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 1)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("length", 3))
+        self.assertEqual(text, "hel")
+        self.assertIn("non-finite after 3 tokens", log)
+
+    def test_twice_is_an_error(self):
+        eng, svc, ids, done, error, text, log = self.run_reply([0, 0, 0])
+        self.assertIsNotNone(error)
+        self.assertIn("twice in a row", str(error))
+        self.assertEqual(eng.calls, [ids, ids])                  # one retry, no loop
+        self.assertEqual(eng.plan, [0])
+        self.assertIsNone(done)
+        self.assertEqual(svc.metrics()["requests"][0]["finish"], "error")
+
+    def test_twice_over_http(self):
+        tok = ByteTokenizer()
+        svc = Service(NonFiniteEngine(tok, "ok", max_context=CTX, plan=[0, 0]), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for path, stream in (("/v1/chat/completions", False), ("/v1/chat/completions", True),
+                                 ("/v1/responses", False)):
+                svc.engine.plan = [0, 0]
+                body = {"model": "m", "max_tokens": 20, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}
+                if path == "/v1/responses":
+                    body = {"model": "m", "max_output_tokens": 20, "input": "hi"}
+                req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with contextlib.redirect_stdout(io.StringIO()):
+                    try:
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            code, text = r.status, r.read().decode()
+                    except urllib.error.HTTPError as e:
+                        with e:
+                            code, text = e.code, e.read().decode()
+                self.assertEqual(code, 200 if stream else 503, text)
+                self.assertIn("twice in a row", text)
+                self.assertIn("server_error", text)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_engine_done_line_raises(self):
+        """StrataEngine.generate: `DONE ... nonfinite` raises EngineNonFinite after the tokens before it."""
+        import queue as queue_
+        eng = object.__new__(StrataEngine)
+        eng.lines = queue_.Queue()
+        for line in ("T 5", "T 6", "DONE 2 3 1.0 2.0 nonfinite 0 0 0"):
+            eng.lines.put(line)
+        eng.proc = SimpleNamespace(stdin=io.StringIO())
+        eng.alive = lambda: True
+        eng.silence_s, eng.can_stop, eng.last = 0, True, None
+        got = []
+        with self.assertRaises(EngineNonFinite):
+            for t in eng.generate([1, 2, 3], 10, {}, threading.Event()):
+                got.append(t)
+        self.assertEqual(got, [5, 6])
+        self.assertEqual(eng.last["finish"], "nonfinite")
+        self.assertNotIn("STOP", eng.proc.stdin.getvalue())   # the DONE was read: nothing to stop or drain
 
 
 class LayerSplit(unittest.TestCase):
@@ -2253,6 +2433,42 @@ class CancelledRead(unittest.TestCase):
         self.assertEqual(m["totals"]["prompt_tokens"], 8 + 2 * total)
 
 
+class HeldBackArgKeepalive(unittest.TestCase):
+    """#1666: with stream_tools a tool call's array or object argument is held until it is whole, so a big one
+    left the stream silent for minutes while tokens were generated - a client's idle timeout (Forge's is 120 s)
+    then ended a healthy request.  The token loop now sends the engine's own keep-alive ping whenever nothing has
+    gone out for KEEPALIVE_S; a quick answer is untouched."""
+
+    TOOLS = [{"name": "f", "parameters": {"properties": {}}}]
+
+    def test_a_held_back_call_still_pings(self):
+        tok = ByteTokenizer()
+        clock = [0.0]
+
+        class HeldEngine(MockEngine):   # ~1 s to generate each token, none of it leaving the stream
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                for t in super().generate(ids, max_new, sampling, cancel):
+                    clock[0] += 1.0
+                    yield t
+
+        # a call inside the thinking is held whole until </tool_call> (the frontend's rcall state): every token
+        # after the opener produces no stream event - the same silence a long array argument makes
+        svc = Service(HeldEngine(tok, "<tool_call><function=f>" + "x" * 30, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with mock.patch("serve.server.time.perf_counter", lambda: clock[0]):
+            kinds = [k for k, _ in svc.run(tok.encode("hi"), True, self.TOOLS, 60, {}, threading.Event())]
+        self.assertIn("ping", kinds)
+        self.assertIn("done", kinds)
+
+    def test_an_ordinary_answer_does_not_ping(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        kinds = [k for k, _ in svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event())]
+        self.assertNotIn("ping", kinds)
+        self.assertIn("done", kinds)
+
+
 class LiveRate(unittest.TestCase):
     """The Monitor's Speed readout: live.tok_s is a rate, and a request that never got a DONE keeps no counters.
 
@@ -2450,6 +2666,49 @@ class PromptProgress(unittest.TestCase):
         self.engine.reused = 0                        # an engine too old to print RESUME never sets it
         self.assertEqual(prompt_progress(self.svc)["cache"], 0,
                          "an engine too old to print RESUME counts the reused prefix as work")
+
+
+class ConfigReasoningEffort(unittest.TestCase):
+    """#1641: the config's "reasoning_effort" is the thinking level of requests that name none; "--reasoning-effort" in
+    its "args" (not an engine option) is lifted into that key."""
+
+    def svc(self, effort=None, shared=None):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        svc.config_effort = effort
+        svc.shared = shared or {}
+        return svc
+
+    def test_default_changes_nothing(self):
+        req = {"messages": []}
+        self.assertIs(self.svc().with_shared(req, "openai"), req)
+
+    def test_config_level_fills_in_what_a_request_leaves_out(self):
+        svc = self.svc("low")
+        self.assertEqual(svc.with_shared({"messages": []}, "openai")["reasoning_effort"], "low")
+        self.assertEqual(svc.with_shared({"reasoning_effort": "high"}, "openai")["reasoning_effort"], "high")
+        self.assertEqual(svc.with_shared({}, "anthropic")["output_config"], {"effort": "low"})
+        self.assertEqual(self.svc("none").with_shared({}, "anthropic")["thinking"], {"type": "disabled"})
+
+    def test_shared_settings_win(self):
+        svc = self.svc("low", {"reasoning_effort": "high"})
+        self.assertEqual(svc.with_shared({}, "openai")["reasoning_effort"], "high")
+
+    def test_the_flag_in_args_becomes_the_key(self):
+        from serve.server import lift_reasoning_effort_arg
+        for args in (["--ctx", "4096", "--reasoning-effort", "low"], ["--reasoning-effort=low", "--ctx", "4096"]):
+            cfg = {"args": args}
+            with mock.patch("builtins.print"):
+                lift_reasoning_effort_arg(cfg)
+            self.assertEqual(cfg["args"], ["--ctx", "4096"])
+            self.assertEqual(cfg["reasoning_effort"], "low")
+        cfg = {"args": ["--reasoning-effort", "low"], "reasoning_effort": "none"}
+        with mock.patch("builtins.print"):
+            lift_reasoning_effort_arg(cfg)
+        self.assertEqual((cfg["args"], cfg["reasoning_effort"]), ([], "none"))      # the key wins
+        cfg = {"args": ["--ctx", "4096"]}
+        lift_reasoning_effort_arg(cfg)
+        self.assertEqual(cfg, {"args": ["--ctx", "4096"]})
 
 
 class SharedSettings(unittest.TestCase):
@@ -3126,6 +3385,97 @@ class SharingTheGpu(unittest.TestCase):
         self.assertEqual(self.chat()[0], 200)
         self.assertTrue(mark.exists())
 
+    def _raw_chat(self):
+        r = urllib.request.Request(self.base + "/v1/chat/completions",
+                                   data=json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                   headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, dict(resp.headers), json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, dict(e.headers), json.loads(e.read())
+
+    def test_failing_before_load_with_free_vram_still_loads(self):
+        """#1997: a peer that is not running makes `curl` exit 7; the card has room, so the model loads."""
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(3)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000
+        self.svc.unload()
+        self.svc.vram_free_wait_s = 0.2                              # (not the 15 s wait for memory)
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertIn("exited with code 3", body["error"]["message"])
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.engine.starts, 0)
+        self.svc.free_vram_mib = lambda: 20000                      # the peer let go: the next try loads
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_strict_refuses_even_with_free_vram(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.before_load_strict = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertEqual(self.engine.starts, 0)
+
+    def test_failing_before_load_without_a_vram_limit_loads(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_timeout_is_configurable_and_a_timeout_refuses(self):
+        self.svc.before_load = [sys.executable, "-c", "import time; time.sleep(30)"]
+        self.svc.before_load_timeout_s = 0.5
+        self.svc.before_load_strict = True
+        self.svc.unload()
+        t0 = time.time()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("before_load_timeout_s", body["error"]["message"])
+        self.assertFalse(self.engine.alive())
+
+    def test_before_load_failure_can_be_ignored_by_config(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        self.svc.before_load_ignore_failure = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000                       # full, but ignore means load
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_unload_wait_waits_for_the_running_turn(self):
+        """#1997: POST /unload answers busy at once (409); with ?wait=1 it waits for the turn and then unloads."""
+        self.svc.fifo.acquire()
+        threading.Timer(1.0, self.svc.fifo.release).start()
+        t0 = time.time()
+        self.assertEqual(self.req("/unload", {}), (409, {"status": "busy"}))
+        self.assertLess(time.time() - t0, 0.9)
+        status, body = self.req("/unload?wait=1", {})
+        self.assertEqual((status, body), (200, {"status": "unloaded"}))
+        self.assertGreaterEqual(time.time() - t0, 0.9)
+        self.assertFalse(self.engine.alive())
+
+    def test_unload_wait_gives_up_after_the_given_seconds(self):
+        with self.svc.fifo:
+            t0 = time.time()
+            self.assertEqual(self.req("/unload?wait=0.6", {}),
+                             (409, {"status": "busy"}))
+            self.assertLess(time.time() - t0, 5)
+        self.assertTrue(self.engine.alive())
+
     def test_vision_encoder_unloads_and_starts_first(self):
         order = []
 
@@ -3233,6 +3583,15 @@ class ReasoningCloseRetry(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 1)
         self.assertEqual(c["message"]["content"], "Fine.")
 
+    def test_a_reply_that_closed_its_thinking_right_after_a_quote_is_not_touched(self):
+        # #537: that </think> waits for the character after it; the end of the turn makes it the end of the thinking
+        self.svc.reasoning_close_retry = True
+        self.engine.THOUGHT = 'two plus two is "4"</think>'
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertFalse(c["message"].get("content"))
+        self.assertEqual(c["message"]["reasoning_content"], 'two plus two is "4"')
+
 
 class ThinkingBudget(unittest.TestCase):
     """#123: reasoning_budget_tokens (opt-in): at the budget the thinking is wrapped up and the model answers,
@@ -3319,6 +3678,56 @@ class ThinkingBudget(unittest.TestCase):
         code, b = self.openai(reasoning_budget_tokens=0)
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
         self.assertEqual(len(self.engine.prompts), 3)
+
+    def test_the_config_budget_reaches_the_anthropic_and_effort_requests(self):
+        """#984: a config budget applies to a request that sets no budget of its own, whatever its max_tokens and
+        reasoning_effort say, on the Anthropic route too."""
+        from serve.server import REASONING_WRAP_UP
+        self.svc.reasoning_budget_tokens = 20
+        code, raw = self.post("/v1/messages", {"model": "m", "max_tokens": 3000, "stream": True,
+                                               "messages": [{"role": "user", "content": "2+2?"}]})
+        self.assertEqual(code, 200)
+        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        thinking = "".join(e["delta"].get("thinking", "") for e in evs if e["type"] == "content_block_delta")
+        self.assertEqual(thinking, ThinkingEngine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
+        code, b = self.openai(max_tokens=3000, reasoning_effort="high")
+        self.assertEqual(code, 200, b)
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
+
+    def test_the_thinking_progress_line_shows_the_budget_not_max_tokens(self):
+        """#984: 'thinking: x of max 6400' read as if the budget was ignored; while a budget applies the line shows it."""
+        st = {"phase": "thinking", "generated": 10, "first_token": time.time() - 1, "started": time.time() - 2,
+              "max_tokens": 6400, "thinking_budget": 2048}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.svc._progress(0, st=st)
+            self.svc._progress(0, st={**st, "phase": "answering"})
+            self.svc._progress(0, st={**st, "thinking_budget": None})
+        lines = out.getvalue().splitlines()
+        self.assertIn("thinking: 10 of budget 2048 (max 6400) tokens", lines[0])
+        self.assertIn("answering: 10 of max 6400 tokens", lines[1])
+        self.assertIn("thinking: 10 of max 6400 tokens", lines[2])
+
+    def test_a_budget_above_max_tokens_is_capped_to_leave_room_for_the_answer(self):
+        """#984: max_tokens 300 and a budget of 5000 never fired: the reply ended while still thinking.  The thinking
+        is closed at max_tokens less the answer's reserve (max 512 or a quarter, at most half), with one log line."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, b = self.openai(max_tokens=300, reasoning_budget_tokens=5000)
+        self.assertEqual(code, 200, b)
+        msg = b["choices"][0]["message"]
+        self.assertTrue(msg["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:150] + "\n"), msg)
+        self.assertEqual((msg["content"], b["choices"][0]["finish_reason"]), (ThinkingEngine.ANSWER, "stop"))
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("thinking capped at 150 of max_tokens 300 to leave room for the answer (budget 5000)", out.getvalue())
+
+    def test_a_budget_well_below_max_tokens_is_not_capped(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, b = self.openai(max_tokens=3000, reasoning_budget_tokens=20)
+        self.assertNotIn("thinking capped", out.getvalue())
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertTrue(b["choices"][0]["message"]["reasoning_content"].startswith(ThinkingEngine.THOUGHT[:20] + "\n"))
 
     def test_a_shared_budget_reaches_a_request_that_sets_none(self):
         """The Chat settings shared with other apps may carry a thinking budget too, like max_tokens and the effort."""
@@ -3467,6 +3876,26 @@ class ForcedToolChoice(unittest.TestCase):
                     # where the thinking ended, after the blank line the template puts before a call
                     self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT + "</think>\n\n" + opening))
 
+    def test_a_thinking_that_ends_right_after_a_quote_opens_the_call(self):
+        # #537: that </think> waits for the character after it; the end of the turn makes it the end of the thinking
+        thought, calling = 'I will search for "2+2"', self.engine.generate
+
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            if self.tok.decode(ids).endswith(("<function=", "<function=search>\n")):
+                yield from calling(ids, max_new, sampling, cancel)
+                return
+            self.engine.prompts.append(list(ids))
+            yield from self.tok.encode(thought + "</think>") + self.tok.encode("<|im_end|>", parse_special=True)
+        self.engine.generate = generate
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                self.engine.prompts = []
+                code, b = self.openai(tool_choice="required", stream=stream)
+                finish, calls, reasoning = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], thought))
+                first, second = self.engine.prompts
+                self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n<function="))
+
     def test_without_thinking_the_prompt_ends_with_the_opening(self):
         for choice in ("required", self.NAMED):
             for stream in (False, True):
@@ -3577,20 +4006,20 @@ class StatusHandover(unittest.TestCase):
             def __init__(self):
                 self.lock, self.armed = threading.Lock(), False
 
-            def acquire(self, blocking=True):
-                return self.lock.acquire(blocking)
+            def acquire(self, blocking=True, timeout=-1):
+                return self.lock.acquire(blocking, timeout)
 
             def __enter__(self):
                 self.lock.acquire()
 
             def __exit__(self, *exc):
+                self.release()
+
+            def release(self):
                 self.lock.release()
                 if self.armed:
                     self.armed = False
                     second_running.wait(5)
-
-            def release(self):
-                self.lock.release()
 
         svc = Service(Engine(tok, "</think>\n\n" + "y" * 40, max_context=CTX), tok,
                       ChatTemplate(ROOT / "serve/chat_template.jinja"))
@@ -3874,6 +4303,33 @@ class AmdTelemetry(unittest.TestCase):
                 (hw / "power1_input").write_text("120000000\n")
             (hw / "power1_cap").write_text("300000000\n")
 
+    def test_pcie_link_is_the_narrowest_slowest_hop(self):
+        """#1733: the link is the slowest/narrowest hop between the root port and the card; the bottleneck is only
+        claimed when every hop could be read (pcie_path says how many were)."""
+        from serve import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            hops = []
+            for i, (speed, width) in enumerate((("8.0 GT/s PCIe", "16"), ("8.0 GT/s PCIe", "8"), ("16.0 GT/s PCIe", "16"))):
+                h = Path(d) / f"hop{i}"
+                h.mkdir()
+                (h / "max_link_speed").write_text(speed + "\n")
+                (h / "max_link_width").write_text(width + "\n")
+                hops.append(str(h))
+            (Path(hops[-1]) / "current_link_speed").write_text("16.0 GT/s PCIe\n")
+            (Path(hops[-1]) / "current_link_width").write_text("16\n")
+            a = telemetry.gpu_reader(0, amd=True)
+            a.dev = hops[-1]
+            with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops):
+                self.assertEqual(a.link(), {"pcie_gen": 3, "pcie_gen_max": 3, "pcie_own_gen": 4, "pcie_width": 8,
+                                            "pcie_path": "3/3"})
+            with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops[:2] + [str(Path(d) / "hidden")]):
+                got = a.link()             # an unreadable hop: fall back to the card's own negotiated link
+                self.assertEqual((got["pcie_gen"], got["pcie_width"], got["pcie_path"]), (4, 16, "2/3"))
+            self.assertEqual(telemetry._Amd._gen("32.0 GT/s PCIe"), 5)
+            self.assertIsNone(telemetry._Amd._gen("unknown"))
+            self.assertTrue(telemetry._Amd._bdf("0000:03:00.0"))
+            self.assertFalse(telemetry._Amd._bdf("pci0000:00"))
+
     def test_readings(self):
         from serve import telemetry
         with tempfile.TemporaryDirectory() as d:
@@ -3886,7 +4342,9 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertTrue(g.ok())
                 self.assertEqual(g.name(), "AMD Radeon AI PRO R9700")
                 self.assertEqual(g.read(), {"util": 37, "mem_used": 2 << 30, "mem_total": 32 << 30, "temp": 51.0,
-                                            "power": 85.0, "power_limit": 300.0})
+                                            "power": 85.0, "power_limit": 300.0, "pcie_gen": None,
+                                            "pcie_gen_max": None, "pcie_own_gen": None, "pcie_width": None,
+                                            "pcie_path": "0/0"})    # #1733: no PCIe files in this fake tree
                 r = telemetry.gpu_reader(1, amd=True).read()
                 self.assertEqual((r["util"], r["temp"], r["power"]), (99, 64.0, 120.0))     # power1_input
                 self.assertEqual(telemetry.free_vram_mib(0, amd=True), 30 << 10)
@@ -3910,6 +4368,31 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class TelemetryNoDisks(unittest.TestCase):
+    """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
+    off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left
+    /metrics' hardware empty and the frozen-engine check's GPU reading at 0."""
+
+    def test_sampler_runs_without_disk_counters(self):
+        from serve import telemetry
+        vm = SimpleNamespace(total=64 * 2**30, available=40 * 2**30)
+        fake = SimpleNamespace(cpu_count=lambda logical=True: 8, cpu_percent=lambda interval=None: 12.5,
+                               virtual_memory=lambda: vm, disk_io_counters=lambda: None)
+        with mock.patch.dict(sys.modules, {"psutil": fake}):
+            t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.5})
+            try:
+                deadline = time.monotonic() + 5.0
+                while not t.snapshot()["now"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                now = t.snapshot()["now"]
+                self.assertEqual(now.get("tok_s"), 1.5)
+                self.assertEqual(now.get("ram_used"), 24 * 2**30)
+                self.assertIsNone(now.get("disk_read_mb"))
+                self.assertIsNone(t.sample()["disk_write_mb"])
+            finally:
+                t.close()
 
 
 class SilentEngine(unittest.TestCase):
@@ -3949,6 +4432,18 @@ class SilentEngine(unittest.TestCase):
         self.assertFalse(engine.alive())                          # the next request restarts it
         self.assertIn("#481", engine.death_note())
         self.assertNotIn("STOP", engine.proc.stdin.getvalue())    # nothing is listening: no STOP, no drain
+
+    def test_death_note_finds_the_watchdog_line_under_a_long_trace(self):
+        # #1705: STRATA_VERIFY_TRACE dumps (~30 KB) after the watchdog's line must not hide it
+        import tempfile
+        engine = self.bare(0.3)
+        with tempfile.TemporaryDirectory() as d:
+            engine.log_path = os.path.join(d, "e.log")
+            with open(engine.log_path, "w", encoding="utf-8") as f:
+                f.write("strata serve: no progress for 60 s during a request (issue #29)\n")
+                f.write("strata verify trace: dump\n" * 1500)
+            engine.proc.poll.return_value = -6
+            self.assertIn("a hang it caught", engine.death_note())
 
     def test_prompt_chunks_set_the_wait(self):
         # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
@@ -4828,6 +5323,36 @@ class ClaudeCodeBillingStamp(unittest.TestCase):
         self.assertEqual(ids[1][:len(first) - 8], first[:len(first) - 8])   # all but the generation header
 
 
+class ToolOrder(unittest.TestCase):
+    """A tool set that comes back in another order is put back in the order it was first seen (RealScaniX, #1624): the
+    template renders the tool list before the system prompt, so a client whose MCP tools register in a varying order
+    would move the shared prefix back thousands of tokens on every turn and have the conversation read again.  The
+    first request of a set is left exactly as sent."""
+
+    def names(self, tools, wrapper="function"):
+        from serve.frontend import _tool_list
+        return [t.get(wrapper, t)["name"] for t in _tool_list(tools, wrapper)]
+
+    def test_openai_shape_keeps_the_first_order(self):
+        a = [{"type": "function", "function": {"name": n}} for n in ("t1624_read", "t1624_rbash", "t1624_ctx7")]
+        self.assertEqual(self.names(a), ["t1624_read", "t1624_rbash", "t1624_ctx7"])      # the first sight: as sent
+        self.assertEqual(self.names(list(reversed(a))), ["t1624_read", "t1624_rbash", "t1624_ctx7"])
+        self.assertEqual(self.names(a[1:] + a[:1]), ["t1624_read", "t1624_rbash", "t1624_ctx7"])
+
+    def test_anthropic_shape_and_a_different_set(self):
+        a = [{"name": "t1624_read", "input_schema": {}}, {"name": "t1624_edit", "input_schema": {}}]
+        self.assertEqual(self.names(a, None), ["t1624_read", "t1624_edit"])
+        self.assertEqual(self.names(a[::-1], None), ["t1624_read", "t1624_edit"])
+        more = a[::-1] + [{"name": "t1624_new", "input_schema": {}}]       # another set: as sent, then remembered
+        self.assertEqual(self.names(more, None), ["t1624_edit", "t1624_read", "t1624_new"])
+
+    def test_duplicate_names_and_one_tool_are_left_alone(self):
+        d = [{"name": "t1624_x", "input_schema": {}}, {"name": "t1624_x", "input_schema": {"a": 1}}]
+        self.assertEqual(self.names(d, None), ["t1624_x", "t1624_x"])
+        one = [{"name": "t1624_only", "input_schema": {}}]
+        self.assertEqual(self.names(one, None), ["t1624_only"])
+
+
 class UntimedReads(unittest.TestCase):
     """#1317: a read of the engine's READY line or of the image encoder's pipe that never returns held the request
     turn for good.  Each now has a timeout; a process that stays silent is ended and the read raises."""
@@ -4914,3 +5439,72 @@ class UntimedReads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrepareCancelled(unittest.TestCase):
+    """#1999: a client that leaves while its pictures are prepared gives the turn up and encodes nothing more."""
+
+    def make(self, d, vision):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                       vision=vision(d))
+
+    @staticmethod
+    def msgs(n=2):
+        return [{"role": "user", "content": [{"type": "text", "text": "look"}] +
+                 [{"type": "image", "source": f"{i}.png"} for i in range(n)]}]
+
+    def test_cancel_before_the_encode_runs_none(self):
+        import tempfile
+        calls = []
+
+        class V(ImageMarkers.FakeVision):
+            def encode(self, source):
+                calls.append(source)
+                return self.rows, 3
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, V)
+            cancel = threading.Event()
+            cancel.set()
+            from serve.server import ClientGone
+            with self.assertRaises(ClientGone):
+                svc.prepare(self.msgs(), None, {}, cancel=cancel)
+            self.assertEqual(calls, [])
+            self.assertTrue(svc.fifo.acquire(blocking=False))        # the turn was not left held
+            svc.fifo.release()
+
+    def test_cancel_while_waiting_for_the_turn(self):
+        import tempfile
+        from serve.server import ClientGone
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            cancel = threading.Event()
+            threading.Timer(0.3, cancel.set).start()
+            with svc.fifo:                                          # another request holds the engine
+                t0 = time.perf_counter()
+                with self.assertRaises(ClientGone):
+                    svc.prepare(self.msgs(1), None, {}, cancel=cancel)
+                self.assertLess(time.perf_counter() - t0, 3)
+
+    def test_cancel_between_pictures_stops_the_next_encode(self):
+        import tempfile
+        from serve.server import ClientGone, Vision
+        cancel, seen = threading.Event(), []
+        v = Vision.__new__(Vision)
+
+        def encode(src, keep=()):
+            seen.append(src)
+            cancel.set()                                            # the client leaves during the first encode
+            return Path("x"), 3
+        v.encode = encode
+        with self.assertRaises(ClientGone):
+            v.encode_all([b"a", b"b", b"c"], cancel)
+        self.assertEqual(seen, [b"a"])
+
+    def test_without_cancel_nothing_changes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
+            self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
+            svc.embeddings.path.unlink(missing_ok=True)

@@ -291,6 +291,51 @@ void test_resident_lend_region() {
     require(choose_resident_keep_from({}, 0, 0, 0) == 0, "an empty cache");
 }
 
+void test_split_lend_regions() {
+    using namespace strata::core::detail;
+    // two layers, three experts; a layer-0 blob is 5 bytes and a layer-1 blob 3.  The plan under
+    // construction already holds the (0,1) expert (an expert no cache holds); stage 0's region lends
+    // (0,2) and (0,1) from its highest slots, stage 1's lends (1,2), (1,0), (1,1) in that order.
+    const std::vector<uint64_t> blobs{5, 3};
+    const std::vector<std::vector<std::pair<int32_t, int32_t>>> regions = {{{0, 2}, {0, 1}}, {{1, 2}, {1, 0}, {1, 1}}};
+    std::string err;
+    std::vector<uint64_t> offsets;
+    uint64_t bytes = 0;
+
+    // room for everything: (0,1) is already in the copy and is passed over, not counted twice
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 100, regions, err) == 4,
+            "both stage lend regions must be kept");
+    require(bytes == 19 &&
+                offsets == std::vector<uint64_t>{kNoCacheComplement, 0, 5, 13, 16, 10},
+            "the stage lend regions got wrong compact offsets");
+
+    // the cap is the whole copy's: the stage-0 walk fits (0,2) and stage 1 stops at the first pair that
+    // does not fit; that stage's rest stays on the file
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 10, regions, err) == 1, "cap 10 keeps only (0,2)");
+    require(bytes == 10 && offsets[2] == 5 && offsets[3] == kNoCacheComplement && offsets[5] == kNoCacheComplement,
+            "the walk placed experts past the cap");
+
+    // (0,2)'s 5 bytes do not fit in the 4 left: stage 0 keeps nothing, and stage 1's own walk still runs -
+    // its (1,2) fits, its (1,0) stops that stage
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 9, regions, err) == 1,
+            "a stage refused at the cap must not stop the next stage's walk");
+    require(bytes == 8 && offsets[2] == kNoCacheComplement && offsets[5] == 5 && offsets[3] == kNoCacheComplement,
+            "the refused stage's experts entered the copy, or the next stage's did not");
+
+    // a pair outside the geometry is an error, and the plan is left untouched: validate before appending
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 100, {{{0, 2}, {2, 0}}}, err) == -1 &&
+                !err.empty() && bytes == 5 && offsets[2] == kNoCacheComplement,
+            "an out-of-range lend-region pair was accepted, or a rejected walk touched the plan");
+}
+
 void test_resident_exchange() {
     using namespace strata::core;
     using namespace strata::core::detail;
@@ -338,6 +383,18 @@ void test_pin_pacing() {
     require(meminfo_bytes(info, "MemFree") == 1284096ull * 1024, "MemFree was misread");
     require(meminfo_bytes(info, "MemAvailable") == 33463296ull * 1024, "MemAvailable was misread");
     require(meminfo_bytes(info, "Mem") == 0 && meminfo_bytes(info, "Shmem") == 0, "an absent key was not 0");
+    // 0.1.42 (dual-socket report): node 1 full of another model's cache, node 0 empty of it
+    require(numa_pin_free(100 * GiB, {}) == 100 * GiB && numa_pin_free(100 * GiB, {100 * GiB}) == 100 * GiB,
+            "a single-node host's figure changed");
+    require(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}) == 4 * GiB, "an emptied node did not lower the figure");
+    require(numa_pin_free(40 * GiB, {20 * GiB, 20 * GiB}) == 40 * GiB, "balanced nodes changed the figure");
+    require(numa_pin_free(10 * GiB, {50 * GiB, 50 * GiB}) == 10 * GiB, "the total must still bound it");
+    require(pin_depends_on_reclaim(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}), 26 * GiB, 4 * GiB),
+            "an unbalanced two-node host was not paced");
+    require(page_cache_hint(info).find("drop_caches") != std::string::npos &&
+            page_cache_hint(info).find("STRATA_DROP_CACHE_ON_EXIT") != std::string::npos &&
+            page_cache_hint(info).find("52.0 GiB") != std::string::npos, "the cache hint is incomplete");
+    require(page_cache_hint("MemFree: 100 kB\nCached: 1000 kB\n").empty(), "a small cache was reported");
 }
 
 void test_resident_memory_budget() {
@@ -686,6 +743,7 @@ int main(int argc, char** argv) {
     try {
         test_complement_plan();
         test_resident_lend_region();
+        test_split_lend_regions();
         test_resident_exchange();
         test_resident_memory_budget();
         test_pin_pacing();

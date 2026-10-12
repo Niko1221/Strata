@@ -170,6 +170,7 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
             close();
             return false;
         }
+        src.note_async_read(b, refill_);   // #1237
         res_[(size_t) (pr.first * n_expert + pr.second)] = slot;
     }
     if (!ck(cudaStreamSynchronize(refill_), "fill", err)) { close(); return false; }
