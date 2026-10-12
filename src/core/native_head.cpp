@@ -14,6 +14,7 @@ namespace strata::core {
 
 NativeHead::~NativeHead() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
+    if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
     if (weights_) cudaFree(weights_);
 }
@@ -66,6 +67,8 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         type_ = (int) tensor->type;
         if (type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
             strata::kernels::native_q6_k_pack(weights_, n_in_, n_out_, "output head");
+        if (type_ == 8)   // STRATA_Q8_SM60=1 (a no-op otherwise); the MTP draft head reads the same matrix
+            strata::kernels::native_q8_0_sm60_pack(weights_, n_in_, n_out_, "output head");
         return true;
     } catch (const std::exception& error) {
         err = std::string("native head: ") + error.what();

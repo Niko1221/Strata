@@ -102,6 +102,11 @@ bool native_q8_0_packed_eligible(int n_in, int n_out);
 void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out);
 void native_q8_0_packed_register(const void* gguf_weights, const void* packed, int n_in, int n_out);
 void native_q8_0_packed_unregister(const void* gguf_weights);
+/// STRATA_Q8_SM60=1 (opt-in, Pascal GP100): every Q8_0 dense matrix is packed as above whatever its shape, and the
+/// Q8_0 decode GEMVs run a kernel written for compute capability 6.0 (q8_sm60.cuh; not bitwise the exact kernels).
+/// native_q8_0_sm60_pack packs a device matrix here (the head) and owns the copy until native_q8_0_sm60_release.
+bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char* what);
+void native_q8_0_sm60_release(const void* weights);
 
 /// STRATA_Q6_PACKED=1 (opt-in): a packed copy of a Q6_K matrix (the output heads) - the same bytes as ql / qh /
 /// scales / d planes - that native_q6_k_mmvq calls on `weights` read instead (bitwise equal outputs). The copy is
