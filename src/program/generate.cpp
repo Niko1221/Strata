@@ -2963,6 +2963,11 @@ int main(int argc, char** argv) {
         }
         if (native_pack) skip.insert("token_embd.weight");
     }
+    // STRATA_HC_HOST=1: the hc down/up BF16 projections leave the arena (loaded into pinned host memory below)
+    if (strata::core::hc_host_requested())
+        for (int l = 0; l < 128; ++l)
+            for (const char* s : {"hc_attn_down", "hc_attn_up", "hc_ffn_down", "hc_ffn_up"})
+                skip.insert("blk." + std::to_string(l) + "." + s + ".weight");
     // Layer split: every GPU holds only the dense weights of ITS layers (the PLE tensors stay everywhere).
     // Without this each card keeps a full copy (~3.4 GB for the Coder) that its stage never reads - VRAM the
     // expert cache wants.  Opt-in, STRATA_STAGE_TRIM=1, on HIP and CUDA alike: measured on 2x MI50 (PR #639),
@@ -3061,6 +3066,37 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s in %.1f s (%zu canonical tensors "
                          "skipped: served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
+    // STRATA_HC_HOST=1: the skipped hc down/up rows through the same loader into a temporary device arena (so
+    // they take the engine form), copied once into pinned mapped host memory, the temporary arena freed.  The
+    // verify windows read the Q8_0 copy (STRATA_HC_Q8=1); the prompt path stages a layer's pair (layer.cpp).
+    if (strata::core::hc_host_requested()) {
+        std::set<std::string> others;
+        for (const auto& kv : wt.all())
+            if (!strata::core::hc_host_name(kv.first)) others.insert(kv.first);
+        uint64_t hb = 0;
+        void* tmp = nullptr;
+        void* host = nullptr;
+        void* alias = nullptr;
+        strata::core::WeightTable hwt;
+        if (!strata::core::WeightTable::pool_bytes(o.pack, hb, err, &others) || cudaMalloc(&tmp, hb) != cudaSuccess ||
+            !hwt.load(o.pack, tmp, hb, err, &others) ||
+            cudaHostAlloc(&host, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+            cudaMemcpy(host, tmp, hb, cudaMemcpyDeviceToHost) != cudaSuccess ||
+            cudaHostGetDevicePointer(&alias, host, 0) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_HC_HOST=1 failed: %s %s\n", err.c_str(),
+                         cudaGetErrorString(cudaGetLastError()));
+            return 1;
+        }
+        int moved = 0;
+        for (const auto& kv : hwt.all())
+            if (strata::core::hc_host_name(kv.first) && kv.second.data != nullptr) {
+                wt.rebind(kv.first, (const uint8_t*) alias + ((const uint8_t*) kv.second.data - (const uint8_t*) tmp));
+                ++moved;
+            }
+        cudaFree(tmp);
+        std::fprintf(stderr, "strata generate: STRATA_HC_HOST=1: %d hc down/up projections (%.2f GiB BF16) in pinned "
+                             "host memory instead of VRAM\n", moved, (double) hb / 1073741824.0);
+    }
     mem_mark("the pack weights");
 
     strata::core::NativeDense native_dense;

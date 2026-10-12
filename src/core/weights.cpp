@@ -88,6 +88,18 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err, 
 
 }  // namespace
 
+bool hc_host_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_HC_HOST"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+
+bool hc_host_name(const std::string& name) {
+    if (name.rfind("blk.", 0) != 0) return false;   // the final mixer (output_hc_*) stays in the arena
+    for (const char* s : {".hc_attn_down.weight", ".hc_attn_up.weight", ".hc_ffn_down.weight", ".hc_ffn_up.weight"})
+        if (name.ends_with(s)) return true;
+    return false;
+}
+
 bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
                              const std::set<std::string>* skip) {
     const std::string path = pack_dir + "/index.txt";
