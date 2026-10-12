@@ -446,6 +446,7 @@ struct Options {
     /// true is that the ADMISSION POLICY gave every slot to the first position, which is why the earlier
     /// measurement found nothing - see `expert_cache_per_layer`.
     int expert_cache = 0;
+    bool expert_cache_given = false;           ///< the flag was on the command line (the EXL3 path's auto default)
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::array<bool, 3> expert_cache_remote_auto{};
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
@@ -821,6 +822,10 @@ void usage() {
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
                  "                       ms/token, -2.7 ms/token end to end.\n"
+                 "                       With --exl3 it is N slots PER LAYER (that stream's experts are per-expert\n"
+                 "                       trellis tensors, read per token otherwise); `auto` and unset size it from\n"
+                 "                       the free VRAM, 0 turns it off.  Measured on the 3.05bpw model, see\n"
+                 "                       docs/EXL3.md.\n"
                  "  --expert-cache-device1 N|auto  fill CUDA1 with N experts or as many as fit\n"
                  "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
                  "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
@@ -1775,6 +1780,7 @@ int main(int argc, char** argv) {
         if (a == "--expert-cache") {
             const std::string v = next("--expert-cache");
             o.expert_cache = (v == "auto") ? -1 : std::atoi(v.c_str());
+            o.expert_cache_given = true;
         }
         else if (a == "--expert-cache-device1" || a == "--expert-cache-device2" || a == "--expert-cache-device3") {
             const size_t r = (size_t) (a.back() - '1');
@@ -4336,7 +4342,9 @@ int main(int argc, char** argv) {
                      (long long) o.prefill_chunk, (long long) mib, (long long) (160 + (o.prefill_chunk * 680) / 1024));
         return mib + 64;   // a margin for the allocator
     };
-    if (o.expert_cache < 0) {
+    // The EXL3 path sizes its own per-layer cache in the stream (its blobs are per-expert trellis tensors, not
+    // the GGUF layout below), so the GGUF auto-sizing and its `--expert-cache auto` are skipped for it.
+    if (o.expert_cache < 0 && o.exl3_dir.empty()) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
         // Plan v0.3 P5: the batched prompt path's chunk buffers are allocated later, so they are reserved here -
@@ -4971,9 +4979,15 @@ int main(int argc, char** argv) {
     Exl3Drive exl3_drive;
     std::unique_ptr<strata::kernels::Exl3ExpertStream> exl3_stream;
     if (!o.exl3_dir.empty()) {
-        exl3_stream = std::make_unique<strata::kernels::Exl3ExpertStream>(o.exl3_dir, (int) g.n_embd, nullptr);
+        // The EXL3 stream keeps its own per-layer cache: `--expert-cache N` counts slots per layer there (the
+        // GGUF count is global because its blobs are one pool), `auto`/unset sizes it from the free VRAM after
+        // this instance's buffers, and 0 turns it off.
+        const int exl3_slots = o.expert_cache_given ? o.expert_cache : -1;
+        exl3_stream = std::make_unique<strata::kernels::Exl3ExpertStream>(o.exl3_dir, (int) g.n_embd, (int) g.n_layers,
+                                                                         exl3_slots, nullptr);
         exl3_drive.stream = exl3_stream.get();
-        std::fprintf(stderr, "strata generate: EXL3 expert stream ready (%.1f MiB device)\n", (double) exl3_stream->bytes() / (1 << 20));
+        std::fprintf(stderr, "strata generate: EXL3 expert stream ready (%d slots/layer, %.2f GiB device)\n",
+                     exl3_stream->slots_per_layer(), (double) exl3_stream->bytes() / (double) (1ull << 30));
     }
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
     // promotion candidates (it would sit in both caches).  Asked live, from the helper's own cache (RemoteExperts::holds,

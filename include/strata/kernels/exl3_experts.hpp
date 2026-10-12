@@ -42,7 +42,11 @@ private:
 // engine's `moe_combine` applies the router weights).  One instance serves all layers.
 class Exl3ExpertStream {
 public:
-    Exl3ExpertStream(const std::string& model_dir, int n_embd, void* stream);
+    /// `slots_per_layer`: routed experts kept resident per layer (the same idea as the GGUF path's
+    /// `--expert-cache`, counted per layer because the stream is).  0 keeps none: every use reads and
+    /// uploads the expert again.  -1 sizes the slots from the free VRAM after this instance's own buffers.
+    /// `n_layers` is the model's layer count (the cache spans all of them).
+    Exl3ExpertStream(const std::string& model_dir, int n_embd, int n_layers, int slots_per_layer, void* stream);
     ~Exl3ExpertStream();
     Exl3ExpertStream(const Exl3ExpertStream&) = delete;
     Exl3ExpertStream& operator=(const Exl3ExpertStream&) = delete;
@@ -50,6 +54,7 @@ public:
     // out[i*n_embd] = ffn(layer, expert ids[i], x) for i in [0,k).  `x_f32` and `out` are HOST fp32.
     bool run(int layer, const float* x_f32, const int* ids, int k, float* out, void* stream);
     size_t bytes() const;
+    int slots_per_layer() const;
 
 private:
     struct Impl;
