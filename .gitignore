@@ -40,6 +40,7 @@ td.log
 /build-strata-cuda12.bat
 /build-cuda12/
 /.strata-mcp/
+/conversations/
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/
