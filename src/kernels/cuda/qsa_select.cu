@@ -694,9 +694,13 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
 // neighbours at a time.  The cells are emitted ascending in the order (warp, row, lane): warp w holds the `per` rows
 // of 32 consecutive blocks from block w * 32 * per.  block_topk_kernel's selection rule (radix threshold, ties to the
 // lowest index): identical ids.
+constexpr int TS_MAXQ = 4096;
+__device__ int g_tk_fail[TS_MAXQ];   // block_topk_sample_kernel: 1 = the query is block_topk_wide_kernel<true>'s
+template <bool ONLY_FAILED = false>
 __global__ void __launch_bounds__(TK_T) block_topk_wide_kernel(const float* __restrict__ scores,
                                                                const int32_t* __restrict__ steps, int64_t max_blocks,
                                                                int64_t cap, int32_t* __restrict__ ids) {
+    if (ONLY_FAILED && !g_tk_fail[blockIdx.x]) return;
     __shared__ int hist[TK_T / 32][256];
     __shared__ int s_gt[TK_T / 32], s_eq[TK_T / 32];
     __shared__ int s_digit, s_above;
@@ -1678,6 +1682,203 @@ bool qsa_block_topk_split(const float* scores, const int32_t* steps, int64_t nq,
 }
 #endif
 
+#if !defined(__HIPCC__)
+// ---- the prompt path's top-k with one full read of the scores (Turing).  block_topk_wide_kernel reads a query's scores
+// six times (four radix passes, a count, the emit); past ~90K cells that is DRAM traffic (256 queries at 400K: 0.6 GB a
+// layer, ~1.5 ms on an RTX 2080 Ti).  Here a CTA first reads every 32nd block and takes the KS-th largest of those keys
+// as a bound LB, then reads all blocks once and keeps the ones with key >= LB in shared memory.  When those hold at
+// least `width` cells, the width-th largest cell key (block_topk_kernel's threshold) is >= LB, so every block at or
+// above the threshold is a candidate: the threshold, `above` and the tie budget computed over the candidates with
+// block_topk_kernel's rule are the reference's, and the candidates sorted by block emit the reference's cells in its
+// order.  Otherwise (too few cells above LB, or more than SM_CAP candidates) the query is flagged and
+// block_topk_wide_kernel<true> runs it.  STRATA_TOPK_SAMPLE=0 keeps the wide kernel alone.
+constexpr int TS_STRIDE = 32, TS_CAP = 4096;
+
+__device__ __forceinline__ int ts_block_scan(int v, int* s_w) {   // exclusive scan over the CTA's TK_T threads
+    const int t = threadIdx.x, lane = t & 31, w = t >> 5;
+    int x = v;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) { const int y = __shfl_up_sync(0xffffffffu, x, o); if (lane >= o) x += y; }
+    if (lane == 31) s_w[w] = x;
+    __syncthreads();
+    if (w == 0) {
+        int y = lane < TK_T / 32 ? s_w[lane] : 0;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) { const int z = __shfl_up_sync(0xffffffffu, y, o); if (lane >= o) y += z; }
+        if (lane < TK_T / 32) s_w[lane] = y;   // inclusive warp totals
+    }
+    __syncthreads();
+    const int base = w > 0 ? s_w[w - 1] : 0;
+    const int r = base + x - v;
+    __syncthreads();
+    return r;
+}
+
+__global__ void __launch_bounds__(TK_T) block_topk_sample_kernel(const float* __restrict__ scores,
+                                                                 const int32_t* __restrict__ steps, int64_t max_blocks,
+                                                                 int64_t cap, int32_t* __restrict__ ids) {
+    __shared__ uint32_t s_key[TS_CAP];
+    __shared__ int32_t s_idx[TS_CAP];
+    __shared__ int hist[256];
+    __shared__ int s_w[TK_T / 32];
+    __shared__ int s_cnt, s_cells, s_digit, s_above;
+    const int64_t qi = blockIdx.x;
+    const int32_t* st = steps + qi * kStepCount;
+    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    int32_t* out = ids + qi * cap;
+    const int t = threadIdx.x;
+    if (n_kv <= width) {
+        if (t == 0) g_tk_fail[qi] = 0;
+        for (int64_t j = t; j < n_kv; j += TK_T) out[j] = (int32_t) j;
+        return;
+    }
+    const float* sc = scores + qi * max_blocks;
+    const int64_t nb = n_bid + 1;
+    auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
+    const int ns = (int) ((nb + TS_STRIDE - 1) / TS_STRIDE);
+    if (ns > TS_CAP) { if (t == 0) g_tk_fail[qi] = 1; return; }
+    // 1. the bound: the KS-th largest of every 32nd block's key (a block without cells counts as the smallest key)
+    for (int i = t; i < ns; i += TK_T) {
+        const int64_t b = (int64_t) i * TS_STRIDE;
+        s_key[i] = weight(b) ? order_key(sc[b]) : 0u;
+    }
+    const int ks_want = (int) (2 * ((width + R * TS_STRIDE - 1) / (R * TS_STRIDE)) + 16);
+    int need = ks_want < ns ? ks_want : ns;
+    uint32_t prefix = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        for (int i = t; i < 256; i += TK_T) hist[i] = 0;
+        __syncthreads();
+        const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+        for (int i = t; i < ns; i += TK_T) {
+            const uint32_t k = s_key[i];
+            if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[(k >> shift) & 255], 1);
+        }
+        __syncthreads();
+        if (t == 0) {
+            int cum = 0, d = 255;
+            for (; d > 0; --d) {
+                if (cum + hist[d] >= need) break;
+                cum += hist[d];
+            }
+            s_digit = d;
+            s_above = need - cum;
+        }
+        __syncthreads();
+        prefix |= (uint32_t) s_digit << shift;
+        need = s_above;
+        __syncthreads();
+    }
+    const uint32_t lb = prefix;
+    // 2. one read of every block: the candidates (key >= LB) and their cells
+    if (t == 0) { s_cnt = 0; s_cells = 0; }
+    __syncthreads();
+    for (int64_t b = t; b < nb; b += TK_T) {
+        const int w = weight(b);
+        if (w == 0) continue;
+        const uint32_t k = order_key(sc[b]);
+        if (k >= lb) {
+            const int pos = atomicAdd(&s_cnt, 1);
+            if (pos < TS_CAP) { s_key[pos] = k; s_idx[pos] = (int32_t) b; }
+            atomicAdd(&s_cells, w);
+        }
+    }
+    __syncthreads();
+    const int n = s_cnt;
+    if (n > TS_CAP || s_cells < width) {   // the bound was too low or too high: the wide kernel takes this query
+        if (t == 0) g_tk_fail[qi] = 1;
+        return;
+    }
+    if (t == 0) g_tk_fail[qi] = 0;
+    // 3. block_topk_kernel's threshold over the candidates (weighted)
+    prefix = 0;
+    int above = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        for (int i = t; i < 256; i += TK_T) hist[i] = 0;
+        __syncthreads();
+        const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+        for (int i = t; i < n; i += TK_T) {
+            const uint32_t k = s_key[i];
+            if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[(k >> shift) & 255], weight(s_idx[i]));
+        }
+        __syncthreads();
+        if (t == 0) {
+            int cum = above, d = 255;
+            for (; d > 0; --d) {
+                if (cum + hist[d] >= width) break;
+                cum += hist[d];
+            }
+            s_digit = d;
+            s_above = cum;
+        }
+        __syncthreads();
+        prefix |= (uint32_t) s_digit << shift;
+        above = s_above;
+        __syncthreads();
+    }
+    const uint32_t thr = prefix;
+    const int eq_budget = (int) (width - above);
+    // 4. the candidates in block order (bitonic sort; padding sorts last)
+    int n2 = 1;
+    while (n2 < n) n2 <<= 1;
+    for (int i = n + t; i < n2; i += TK_T) { s_idx[i] = 0x7fffffff; s_key[i] = 0u; }
+    __syncthreads();
+    for (int kk = 2; kk <= n2; kk <<= 1) {
+        for (int j = kk >> 1; j > 0; j >>= 1) {
+            for (int i = t; i < n2; i += TK_T) {
+                const int p = i ^ j;
+                if (p > i) {
+                    const bool up = (i & kk) == 0;
+                    const int a = s_idx[i], b = s_idx[p];
+                    if ((a > b) == up) {
+                        s_idx[i] = b; s_idx[p] = a;
+                        const uint32_t ka = s_key[i]; s_key[i] = s_key[p]; s_key[p] = ka;
+                    }
+                }
+            }
+            __syncthreads();
+        }
+    }
+    // 5. the emit: cells above thr, and the first eq_budget cells at thr, in block order
+    constexpr int PER = TS_CAP / TK_T;              // candidates per thread, consecutive
+    int eqc[PER], gtc[PER];
+    int my_eq = 0;
+#pragma unroll
+    for (int r = 0; r < PER; ++r) {
+        const int i = t * PER + r;
+        const int w = i < n ? weight(s_idx[i]) : 0;
+        const uint32_t k = s_key[i < n ? i : 0];
+        gtc[r] = (i < n && k > thr) ? w : 0;
+        eqc[r] = (i < n && k == thr) ? w : 0;
+        my_eq += eqc[r];
+    }
+    int eq_before = ts_block_scan(my_eq, s_w);
+    int sel[PER], my_sel = 0;
+#pragma unroll
+    for (int r = 0; r < PER; ++r) {
+        const int left = eq_budget - eq_before;
+        const int take = left < 0 ? 0 : (left > eqc[r] ? eqc[r] : left);
+        sel[r] = gtc[r] + take;
+        my_sel += sel[r];
+        eq_before += eqc[r];
+    }
+    int pos = ts_block_scan(my_sel, s_w);
+#pragma unroll
+    for (int r = 0; r < PER; ++r) {
+        const int i = t * PER + r;
+        if (sel[r] > 0) {
+            const int64_t b = s_idx[i];
+            for (int c = 0; c < sel[r]; ++c) out[pos + c] = (int32_t) (b * R + c);
+        }
+        pos += sel[r];
+    }
+}
+
+bool topk_sample_on() {
+    static const int env = [] { const char* v = std::getenv("STRATA_TOPK_SAMPLE"); return v ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
+    return env != 0;
+}
+#endif
+
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
     // keys in registers when every query's blocks fit (contexts up to ~135K cells), else (CUDA) the same threads
@@ -1746,9 +1947,14 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         const char* v = std::getenv("STRATA_TOPK_STREAM");
         return v == nullptr || v[0] != '0';
     }();
-    if (reach > fit || (turing_wide && counted && reach > 22528))   // past the register kernel's reach, or Turing's band
-        block_topk_wide_kernel<<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
-    else
+    if (reach > fit || (turing_wide && counted && reach > 22528)) {   // past the register kernel's reach, or Turing's band
+        if (counted && nq <= TS_MAXQ && reach > 28672 && topk_sample_on()) {   // one read of the scores (below ~115K cells the wide kernel is as fast)
+            block_topk_sample_kernel<<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+            block_topk_wide_kernel<true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        } else {
+            block_topk_wide_kernel<false><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        }
+    } else
 #endif
     if (reach <= (int64_t) TK_T * TK_PER)
         block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
