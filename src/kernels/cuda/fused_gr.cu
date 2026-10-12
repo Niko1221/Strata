@@ -2,6 +2,7 @@
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/fused_gr_policy.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -953,6 +954,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti 
         if (active) {
 #pragma unroll
             for (int q = 0; q < HQ; ++q) {
+                // Fetch the next register half at q==2 so its global loads overlap the remaining dot products.
                 if (q == 2 && h + 2 < N_HTILES)
                     hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
                 const int j = lane + 32 * q;
@@ -966,7 +968,8 @@ __global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti 
                 }
             }
         }
-        if (h + 2 < N_HTILES) hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
+        // Inactive lanes skip the mid-dot prefetch but still take part in the shared-buffer scatter.
+        if (h + 2 < N_HTILES && !active) hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
         __syncthreads();
         if (h + 2 < N_HTILES) {
             hc_scatter_all<0, H0 - 1>(t0, hbuf + (h & 1) * buf_f4, t, total);
@@ -2149,9 +2152,13 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     ok_variant[kP4SelfTest] = allow_p4;
 
     const size_t n_set = (size_t) TM * (D + D + LR + HC + HC + N);   // R_out, xn, lo, rs, inject, mixed (floats)
+    const size_t q8_per_token = (size_t) (N / 32) * sizeof(GrQ81);
+    const size_t q8_set_bytes = (size_t) TM * q8_per_token;
+    const size_t q8_cnt_bytes = (size_t) (N / 32) * sizeof(unsigned);
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
-                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 40 * 256;
-    // `take()` rounds each allocation up to 256 bytes; reserve the worst-case padding for all source and result buffers.
+                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 +
+                         NV * (q8_set_bytes + q8_cnt_bytes) + 50 * 256;
+    // `take()` rounds each allocation up to 256 bytes; reserve the worst-case padding for all source, result and q8 buffers.
     uint8_t* base = nullptr;
     if (cudaMalloc((void**) &base, bytes) != cudaSuccess) {
         cudaGetLastError();
@@ -2167,11 +2174,12 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     float* d_R = (float*) take(h_R.size() * 4);
     float* d_bo = (float*) take(h_bo.size() * 4);
     float* d_ip = (float*) take(h_ip.size() * 4);
-    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; } set[NV];
+    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; uint8_t* q8_mixed; unsigned* q8_cnt; } set[NV];
     for (Set& x : set) {
         x.R_out = (float*) take((size_t) TM * D * 4); x.xn = (float*) take((size_t) TM * D * 4);
         x.lo = (float*) take((size_t) TM * LR * 4); x.rs = (float*) take((size_t) TM * HC * 4);
         x.inj = (float*) take((size_t) TM * HC * 4); x.mixed = (float*) take((size_t) TM * N * 4);
+        x.q8_mixed = (uint8_t*) take(q8_set_bytes); x.q8_cnt = (unsigned*) take(q8_cnt_bytes);
     }
     cudaStream_t st = nullptr, p4_st = nullptr;
     bool ok = off <= bytes && cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess;
@@ -2216,69 +2224,107 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
         }
         return true;
     };
-    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, bool inject, cudaStream_t cmp_st,
-                        bool& check_ok, std::string& w) {
+    std::vector<uint8_t> b1, b2;
+    auto same_bytes = [&](const uint8_t* d1, const uint8_t* d2, size_t n, const char* what, int T, int apply,
+                          cudaStream_t cmp_st, bool& check_ok, std::string& w) {
+        b1.resize(n);
+        b2.resize(n);
+        if (cudaMemcpyAsync(b1.data(), d1, n, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
+            cudaMemcpyAsync(b2.data(), d2, n, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
+            cudaStreamSynchronize(cmp_st) != cudaSuccess) {
+            check_ok = false;
+            w = "reading back the " + std::string(what) + " check failed";
+            return false;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (b1[i] != b2[i]) {
+                char buf[192];
+                std::snprintf(buf, sizeof buf, "%s differs for %d token(s)%s at byte %zu (%02x, not %02x)", what,
+                              T, apply ? " with the pending write" : "", i, (unsigned) b2[i], (unsigned) b1[i]);
+                w = buf;
+                return false;
+            }
+        }
+        return true;
+    };
+    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, bool inject, bool q8,
+                        cudaStream_t cmp_st, bool& check_ok, std::string& w) {
         return same(s1.lo, s2.lo, (size_t) T * LR, "lo", T, apply, cmp_st, check_ok, w) &&
                same(s1.rs, s2.rs, (size_t) T * HC, "rs", T, apply, cmp_st, check_ok, w) &&
                (!inject || same(s1.inj, s2.inj, (size_t) T * HC, "inject", T, apply, cmp_st, check_ok, w)) &&
                same(s1.mixed, s2.mixed, (size_t) T * N, "mixed", T, apply, cmp_st, check_ok, w) &&
+               (!q8 || same_bytes(s1.q8_mixed, s2.q8_mixed, (size_t) T * q8_per_token, "q8_1", T, apply, cmp_st,
+                                  check_ok, w)) &&
                same(s1.R_out, s2.R_out, (size_t) T * D, "R", T, apply, cmp_st, check_ok, w);
     };
     ok_variant[2] = ok_variant[3] = ok;
     // A rejected P4 candidate must not invalidate the established split/staged fallback.
     ok_variant[4] = allow_p4 && p4_ok && ok;
     bool single_ok = ok;
-    for (int inject = 0; inject < 2 && ok; ++inject) {
-        for (int apply = 0; apply < 2 && ok; ++apply) {
-            for (int T = 1; T <= TM && ok; ++T) {
-                FusedGrArgs a[NV][TM];
-                for (int v = 0; v < NV; ++v) {
-                    const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
-                    ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;
-                    for (int k = 0; k < T; ++k) {
-                        FusedGrArgs& x = a[v][k];
-                        x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
-                        x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
-                        x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = inject ? d_inj : nullptr; x.eps = 1e-6f;
-                        x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
-                        x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
+    for (int q8 = 0; q8 < 2 && ok; ++q8) {
+        for (int inject = 0; inject < 2 && ok; ++inject) {
+            for (int apply = 0; apply < 2 && ok; ++apply) {
+                for (int T = 1; T <= TM && ok; ++T) {
+                    FusedGrArgs a[NV][TM];
+                    for (int v = 0; v < NV; ++v) {
+                        const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
+                        ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;
+                        if (q8) {
+                            ok = ok && cudaMemsetAsync(set[v].q8_mixed, 0xFF, q8_set_bytes, st) == cudaSuccess;
+                            ok = ok && cudaMemsetAsync(set[v].q8_cnt, 0, q8_cnt_bytes, st) == cudaSuccess;
+                        }
+                        for (int k = 0; k < T; ++k) {
+                            FusedGrArgs& x = a[v][k];
+                            x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
+                            x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
+                            x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = inject ? d_inj : nullptr; x.eps = 1e-6f;
+                            x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
+                            x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
+                            x.q8_mixed = q8 ? set[v].q8_mixed + (size_t) k * q8_per_token : nullptr;
+                            x.q8_cnt = q8 ? set[v].q8_cnt : nullptr;
+                        }
                     }
-                }
-                for (int v = 0; v < 3; ++v) {
-                    GrMulti m;
-                    for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
-                    m.xn = set[v].xn;
-                    m.T = T;
-                    launch_multi(m, v + 1, st, nullptr, 0);
-                }
-                if (T == 1 && inject) fused_gr_read(a[3][0], st);
-                if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
-                    why[0] = "a kernel of the check failed";
-                    ok = false;
-                    break;
-                }
-                if (ok_variant[2] && !all_same(set[0], set[1], T, apply, inject != 0, st, ok, why[2])) ok_variant[2] = false;
-                if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, inject != 0, st, ok, why[3])) ok_variant[3] = false;
-                if (ok && T == 1 && inject && single_ok && !all_same(set[3], set[0], T, apply, inject != 0, st, ok, why[1]))
-                    single_ok = false;
+                    if (!ok) break;
+                    for (int v = 0; v < 3; ++v) {
+                        GrMulti m;
+                        for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
+                        m.xn = set[v].xn;
+                        m.T = T;
+                        launch_multi(m, v + 1, st, nullptr, 0);
+                    }
+                    if (T == 1 && inject && !q8) fused_gr_read(a[3][0], st);
+                    if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
+                        why[0] = q8 ? "a QFUSE_HC check kernel failed" : "a kernel of the check failed";
+                        ok = false;
+                        break;
+                    }
+                    if (ok_variant[2] && !all_same(set[0], set[1], T, apply, inject != 0, q8 != 0, st, ok, why[2]))
+                        ok_variant[2] = false;
+                    if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, inject != 0, q8 != 0, st, ok, why[3]))
+                        ok_variant[3] = false;
+                    if (ok && T == 1 && inject && !q8 && single_ok &&
+                        !all_same(set[3], set[0], T, apply, inject != 0, false, st, ok, why[1]))
+                        single_ok = false;
 
-                // The candidate runs on its own stream so an unsupported instruction or launch error cannot poison
-                // the fallback self-test's stream or mark staged/split unusable.
-                if (allow_p4 && ok_variant[kP4SelfTest]) {
-                    GrMulti half_m;
-                    for (int k = 0; k < T; ++k) half_m.a[k] = a[kP4SelfTest][k];
-                    half_m.xn = set[kP4SelfTest].xn;
-                    half_m.T = T;
-                    launch_multi(half_m, kHcRegisterHalf, p4_st, nullptr, 0);
-                    const cudaError_t p4_launch = cudaGetLastError();
-                    const cudaError_t p4_sync = p4_launch == cudaSuccess ? cudaStreamSynchronize(p4_st) : p4_launch;
-                    if (p4_launch != cudaSuccess || p4_sync != cudaSuccess) {
-                        why[kP4SelfTest] = std::string("P4 candidate launch/sync failed: ") + cudaGetErrorString(
-                            p4_launch != cudaSuccess ? p4_launch : p4_sync);
-                        ok_variant[kP4SelfTest] = false;
-                        cudaGetLastError(); // clear any thread-local launch error before continuing fallback validation
-                    } else if (!all_same(set[2], set[kP4SelfTest], T, apply, inject != 0, p4_st, ok_variant[kP4SelfTest], why[kP4SelfTest])) {
-                        ok_variant[kP4SelfTest] = false;
+                    // The candidate runs on its own stream so an unsupported instruction or launch error cannot poison
+                    // the fallback self-test's stream or mark staged/split unusable. q8=1 also covers QFUSE_HC's q32 up path.
+                    if (allow_p4 && ok_variant[kP4SelfTest]) {
+                        GrMulti half_m;
+                        for (int k = 0; k < T; ++k) half_m.a[k] = a[kP4SelfTest][k];
+                        half_m.xn = set[kP4SelfTest].xn;
+                        half_m.T = T;
+                        launch_multi(half_m, kHcRegisterHalf, p4_st, nullptr, 0);
+                        const cudaError_t p4_launch = cudaGetLastError();
+                        const cudaError_t p4_sync = p4_launch == cudaSuccess ? cudaStreamSynchronize(p4_st) : p4_launch;
+                        if (p4_launch != cudaSuccess || p4_sync != cudaSuccess) {
+                            why[kP4SelfTest] = std::string("P4 candidate launch/sync failed: ") + cudaGetErrorString(
+                                p4_launch != cudaSuccess ? p4_launch : p4_sync);
+                            ok_variant[kP4SelfTest] = false;
+                            cudaGetLastError(); // clear any thread-local launch error before continuing fallback validation
+                        } else if (!all_same(set[2], set[kP4SelfTest], T, apply, inject != 0, q8 != 0, p4_st,
+                                             ok_variant[kP4SelfTest], why[kP4SelfTest])) {
+                            ok_variant[kP4SelfTest] = false;
+                        }
                     }
                 }
             }
@@ -2289,6 +2335,11 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
         ok_variant[2] = ok_variant[3] = false;
         ok_variant[4] = false;
     }
+#if !STRATA_GR_FAST_BUILD
+    if (detail::fused_gr_p4_q32_parity_marker_ok(
+            ok, qfuse_hc_local(), ok_variant[kHcStaged], ok_variant[kP4SelfTest]))
+        std::fprintf(stderr, "strata hc: P4 + QFUSE_HC q32 outputs passed bitwise parity for T=1..8/apply/inject\n");
+#endif
     if (p4_st != nullptr) {
         cudaStreamSynchronize(p4_st);
         cudaStreamDestroy(p4_st);
@@ -2338,7 +2389,8 @@ void fused_gr_check() {
     bool okv[5];
     std::string why[5];
     const bool ran = fused_gr_selftest(okv, why, test_p4);
-    const bool p4_ok = ran && test_p4 && okv[kP4SelfTest];
+    const bool p4_ok = ran && test_p4 &&
+                       detail::fused_gr_p4_parity_gate(gfx12, okv[kHcStaged], okv[kP4SelfTest]);
     int use = kHcPlain;
     if (want == kHcSplit && okv[kHcSplit]) use = kHcSplit;
     else if (want == kHcRegisterHalf && p4_ok) use = kHcRegisterHalf;
