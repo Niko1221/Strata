@@ -22,10 +22,13 @@ window goes through the stages one after the other.
 
 ## When it helps (measured)
 
-Three PCs, 2026-10-09 and 2026-10-10. Every PC ran a build of this feature (CUDA 13.0) on engine 0.1.41. 0.1.42
-turned `STRATA_ROUTE_TAIL_SKIP` on by default for CUDA serve, which upstream measured at 1.13-1.16x decode on single
-cards that miss experts; the tables were not run again. The checks after the rebase onto 0.1.42 are in
-[ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0142-2026-10-11).
+Three PCs, 2026-10-09 and 2026-10-10. Every PC ran a build of this feature (CUDA 13.0) on engine 0.1.41, and the
+tables were not run again on later engines. 0.1.42 turned `STRATA_ROUTE_TAIL_SKIP` on by default for CUDA serve
+(upstream measured 1.13-1.16x decode on single cards that miss experts); 0.1.43 lets the adaptive tier's copies land
+while the next window runs (`STRATA_ADAPT_OVERLAP`, on for Linux CUDA): the main process does, and a worker only with
+`STRATA_ADAPT_OVERLAP=1` (not measured faster there). The checks after
+each rebase are in ENGINEERING.md: [0.1.42](remote-stage/ENGINEERING.md#after-the-rebase-onto-0142-2026-10-11),
+[0.1.43](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12).
 
 | | PC A (main) | PC B | PC C |
 |---|---|---|---|
@@ -205,9 +208,12 @@ K (`--layer-split K` on the main PC, `--stage-begin K` on the worker). The worke
 `--spec` must be at least the main process's. Everything else is each PC's own choice: `--expert-cache`,
 `--kv-resident`, `--vram-reserve-mib`, the CPU threads.
 
-`STRATA_ROUTE_TAIL_SKIP` changes answers and its default differs by build (7 on CUDA serve since 0.1.42, off on
-HIP), so the main process's rank goes in the hello and every worker uses it, as the stages of a split in one process
-share one rank (a worker says so in one line when its own differed). The other routing variables that change answers
+`STRATA_ROUTE_TAIL_SKIP` changes answers and its default differs by build and by card: 7 on CUDA serve since 0.1.42,
+and since 0.1.43 also on RDNA 4 (HIP), but off when 90% or more of the experts are in the GPU cache (60% on a HIP
+layer split, which a remote main counts as; `STRATA_TAIL_SKIP_MAX_CACHED` moves the line; on a remote stage
+the main process counts its own layers' experts, the nearest it can see to the whole split's). So the main process's
+rank goes in the hello and every worker uses it, as the stages of a split in one process share one rank (a worker says
+so in one line when its own differed). The other routing variables that change answers
 (`STRATA_ROUTE_PRIOR`, `STRATA_ROUTE_RESIDENT` and their kin) are not sent: set them alike on every PC.
 
 ## More than two PCs (relay workers)
@@ -227,6 +233,22 @@ strata --serve --stage-worker 7841 --stage-begin 24 --stage-end 40 --stage-next 
 Measured with three PCs (the tables above). A relay carries every prompt chunk and every window twice, so give it the
 fastest link: on 1 GbE the relay's link was the limit.
 
+## Images (`--vision`)
+
+Pictures work on a split as on one card ([DETAILS.md](DETAILS.md#images-vision)): the main PC's server config has its
+usual `"vision"` section, and the encoder (`strata-vision` and the mmproj file) runs on the main PC only. **Start
+every worker with `--vision` too.** A worker needs no encoder; the flag gives it a position table. With the node
+agent, put `"--vision"` in the worker's `"extra"` (for the tuner, in the node's `"extra"`).
+
+Why the worker needs it: a picture's tokens enter at layer 0, on the main PC, but every attention layer rotates each
+cell by its position, and this model places a picture's cells on a (t, h, w) grid and every token after the picture
+by the picture's extent, not by its token count. So before each request with a picture, the main process sends the
+worker its position table (12 bytes a cell, for the cells the request can reach); a relay worker passes it on. The
+first text request after a picture sends "plain positions again" (no table); other text requests send nothing.
+
+The hello checks it: a worker without `--vision` refuses a main process with it. A worker with `--vision` serves a
+main process without it.
+
 ## Options
 
 | flag or variable | where | what it does |
@@ -239,6 +261,7 @@ fastest link: on 1 GbE the relay's link was the limit.
 | `--stage-bind ADDR` | worker | the address to listen on (default: every interface, IPv4 and IPv6) |
 | `STRATA_STAGE_TOKEN` | every PC | the shared secret in the hello (up to 63 characters). A worker without one warns and accepts anyone |
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
+| `STRATA_ADAPT_OVERLAP=1` | worker | let the adaptive tier's copies land while the next window runs, as 0.1.43's main process does by default on Linux CUDA. Off on a worker unless set: it was not measured faster there ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
 | `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit |
 
 Fixed: a peer that connects but sends no hello within 10 s is dropped; TCP keepalive notices a peer that vanished
@@ -403,7 +426,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 
 ## What is turned off or refused
 
-- **Refused at start** with a remote stage: `--batch`, `--pipeline-windows`, `--vision`, `--peer-device`,
+- **Refused at start** with a remote stage: `--batch`, `--pipeline-windows`, `--peer-device`,
   `--control-vector` (and the speed projection, which is one), `--expert-cache-remote`.
 - **Turned off without an error:** the prompt cache, the conversation cache and mid-prompt checkpoints (each PC
   holds only its layers' state, so every prompt is read from token 0), and `--kv-grow`.
@@ -433,6 +456,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | RVN IQ3_S, native pack read from its GGUF | **measured** (two and three PCs) |
 | Huihui UD-Q4_K_XL (Unsloth UD layout), native pack read from its GGUF | **measured** (one, two and three PCs) |
 | Other quantizations and models of the family (the official IQ3_S, IQ3_XXS, IQ2_XS, Coder, Swift 1.5, UD-IQ4_XS) | not tested. The hand-off is fp32 rows whatever the quantization, the arena range is cut by layer from the pack's expert table and the shipper works by tensor name |
+| Images (`--vision` on the main PC and every worker) | **measured** on two PCs (RVN IQ3_S, the encoder on the main PC's CPU); through a relay worker not run |
 | A pack with `experts.bin`, or `--shared-expert-arena` | refused at start (the layer range needs the GGUF loader) |
 | Linux, NVIDIA (CUDA 13.0) | measured: Ubuntu 24.04 in an LXC container (main), a Linux host with kernel 6.14 (worker) |
 | Windows 11 native, NVIDIA (MSVC 2022, CUDA 13.0) | measured as a worker (and its node agent); as the main PC not tested |
@@ -453,6 +477,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | `cannot connect ...: No route to host` over a second NIC that shows its link up | check that it receives at all (`ip -s link`); a 10 GbE card here received nothing after its host rebooted until the link was taken down and up |
 | a worker restarted right after a stop fails (little VRAM free) | the previous worker is still unpinning (more than 30 s with ~30 GB of experts); wait until its process is gone |
 | `remote stage: the worker refused: wrong token (STRATA_STAGE_TOKEN)` | the same `STRATA_STAGE_TOKEN` on every PC |
+| `the main process reads images (--vision): start this worker with --vision too` | add `--vision` to every worker's command, a relay's next worker's too ([Images](#images---vision)) |
 | `remote stage: the two sides differ (protocol ..., first remote layer ..., K/V type ..., model pack ...)` | the same build of the engine on every PC, the same pack, the same `--kv`, and `--stage-begin` = the previous stage's K |
 | `the main process reads prompts in chunks of N tokens, this worker's chunk is M` | the worker's `--prefill` must be at least the main process's chunk |
 | `the main process's context (N) or window (T) is larger than this worker's` | the worker's `--max-context` and `--spec` must be at least the main process's |

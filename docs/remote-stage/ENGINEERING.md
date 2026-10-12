@@ -7,7 +7,8 @@ is still open. Using it: [../REMOTE_STAGE.md](../REMOTE_STAGE.md). Raw numbers:
 `remote_main` / `stage_worker` / `stage_relay` parts of `src/program/generate.cpp`, `Verifier::set_remote` /
 `set_no_head` (`src/core/verify.cpp`), `Prefill::remote_send` / `remote_recv` (`src/prefill/prefill.cpp`),
 `ArenaExpertSource::set_layer_range` (`src/core/expert_source.cpp`), and `tools/stage_node.py`,
-`tools/stage_tune.py`, `tools/stage_ship.py` (tests: `tools/test_stage_node.py`).
+`tools/stage_tune.py`, `tools/stage_ship.py` (tests: `tools/test_stage_node.py`, and `src/net/stage_link_test.cpp`
+for the link over loopback).
 
 ## Design
 
@@ -29,7 +30,8 @@ the head and the drafter on the worker would have saved that return trip and mov
 ### The protocol
 
 One TCP connection per main process. Every message is a 40-byte header (`magic` "STRM", `type`, three int64 fields
-`a b c`, payload `bytes`) and a payload. Protocol version 4 (3 before the hello carried the tail-skip rank).
+`a b c`, payload `bytes`) and a payload. Protocol version 5 (4 before images: the Positions message and the hello's
+`vision`; 3 before the hello carried the tail-skip rank).
 
 | message | header fields | payload | reply |
 |---|---|---|---|
@@ -38,6 +40,7 @@ One TCP connection per main process. Every message is a 40-byte header (`magic` 
 | Commit | a = accepted count | none | none (an error comes back on the next reply) |
 | Prefill (a prompt chunk) | a = T, b = first position, c = flags (bit 0: the prompt is one chunk) and `skip` << 8 | int64 tokens[T], fp32 rows[T x 10,240] | PrefillOk: a = the worker's time (us), rows[(T - skip) x 10,240] |
 | Reset (a fresh prompt) | | none | ResetOk |
+| Positions (`--vision`: the next request's) | a = cells; b = 1: plain positions (no table) | int32 (t, h, w)[cells] | none (an error comes back on the next reply, a Reset's included) |
 | Error | | the message | |
 
 **The hello** carries what both sides must agree on, and each side checks the other's: the protocol, `n_embd`, `hc`,
@@ -45,7 +48,9 @@ One TCP connection per main process. Every message is a 40-byte header (`magic` 
 fingerprint of the pack (FNV-1a over the pack's `index.txt` and `native_experts.txt`). The worker also refuses a main
 process whose prompt chunk, context or window is larger than its own, and a wrong `STRATA_STAGE_TOKEN` (the token is
 the hello's last field; the worker's own hello carries none). The main process's `STRATA_ROUTE_TAIL_SKIP` rank rides
-along and the worker takes it (a relay passes it on), so every layer skips as in one process. The hello is 192 bytes in
+along and the worker takes it (a relay passes it on), so every layer skips as in one process. So does whether the
+main process reads images (`vision`): a worker started without `--vision` refuses such a main process, and the main
+process checks the worker's hello for it too. The hello is 192 bytes in
 every protocol, so an older peer is refused for its protocol number. A peer that sends no hello within 10 s is dropped; after
 the hello the worker waits for messages without a time limit (the next prompt may be hours away), while sends and the
 main process's receives time out after `STRATA_REMOTE_TIMEOUT_S` (300 s). Sockets: `TCP_NODELAY`, 8 MiB buffers,
@@ -62,6 +67,8 @@ keepalive after 30 s idle, 3 probes 10 s apart.
   token prompt that is 3.72 GB out and 1.35 GB back; for a prompt shorter than the window, every row comes back.
   Without a drafter no prompt rows come back.
 - a commit is the header alone.
+- a position table is 12 B a cell, for the cells a request can reach (its prompt, its answer and 64 more): about 0.36 MB
+  for a 30,000-token request, sent once before it, and only when the request has a picture (or follows one).
 
 ### Pipelining the prompt
 
@@ -100,6 +107,33 @@ worker. A relay connects to the next worker when it starts (30 tries, 2 s apart;
 a context mismatch - is not retried) and again at the first reset after each main process's hello (so the next worker
 hears that main process's values, such as its tail-skip rank) or after that link broke; when its main process goes
 away it drops the link to the next worker, so replies still owed on it cannot reach the next main process.
+
+### Images
+
+With `--vision`, a picture becomes image tokens whose input rows the encoder's embeddings replace at layer 0, on the
+main PC; nothing about that crosses the link (the hand-off is the residual, whatever the input was). What every layer
+needs is the position table: each rope kernel reads a cell's (t, h, w) from a device table
+(`strata/kernels/mrope.hpp`). Text is the identity; a picture's cells sit on a grid at one t, and every cell after
+the picture moves on by the picture's extent (the larger of its patch rows and columns), not by its token count. A
+worker that kept the identity would rotate its layers' queries and keys differently from the main process's layers
+for every cell from the picture on. The main process therefore sends its table before each request that has a
+picture (`StageMsg::Positions`: the cells the request can reach, its prompt and answer plus 64), and "plain positions"
+(no table) before the first text request after one; text after text sends nothing.
+
+The worker keeps the table in the same device buffer for the whole process, because the rope kernels in its captured
+CUDA graphs hold that pointer: it waits for the last request's commit and the device, then writes the buffer in place
+(`stage_positions_fill`: the cells past the table sent continue from its last one, as the main process's own table
+does past its prompt). The table outlives a connection while the next main process starts from the identity and
+sends nothing for text, so a worker puts a picture's table back to the identity when its main process goes away. A
+relay forwards the table to the next worker first, making its link to the next worker if a new main process's hello
+dropped it, and a relay started with `--vision` checks at its start that the next worker has it too. Positions is one
+way, like a commit, and its failure (or a malformed table) comes back as the next reply's error. A Reset drops a
+pending commit error (it belongs to the request before), but not a Positions error, because the positions belong to
+the request the Reset begins, which must not run on the old table. A later table replaces an earlier one's failure:
+the main process sent no Reset for a request it then refused (a prompt longer than the context, say).
+`STRATA_STAGE_POSITIONS=0` on the main process (a test switch) sends no table, to show what the positions change.
+`src/net/stage_link_test.cpp` checks the table's fill, the hello, the table arriving whole, and the errors' order
+over loopback.
 
 ### Windows
 
@@ -435,6 +469,71 @@ The measurements above this section were taken on the 0.1.41 base. 0.1.42 turned
 default for CUDA serve. Upstream measured 1.13-1.16x decode with it on single cards that miss experts, and nothing on a
 split that holds nearly every expert (docs/DETAILS.md). The tables were not run again.
 
+### After the rebase onto 0.1.43 (2026-10-12)
+
+The branch was rebased onto upstream main 7695859a (engine 0.1.43, 72 commits after 61b3fb5) without a textual
+conflict. Three follow-ups to 0.1.43's decode changes:
+- A worker can let the adaptive tier's copies land while its next window runs (`STRATA_ADAPT_OVERLAP`), as the main
+  process's decode loop does since 0.1.43. On a worker it is opt-in (`STRATA_ADAPT_OVERLAP=1`), because it was not
+  measured faster there (below).
+- The tail-skip default's "90% of the experts cached" counts only the process's own layers.
+- A remote main keeps the probed PCIe share under `STRATA_PCIE_AUTO_SPLIT=1`.
+
+Then images ([Images](#images)). Checked on PC A and PC B (RVN IQ3_S, 10 GbE, K=26):
+
+- **The default path.** The 0.1.42 check ran again: fixed expert sets, the 16,000-token chat replay, 8 turns. This
+  branch's build and upstream 0.1.43's ran in the order: branch, 0.1.43, 0.1.43, branch. All four pairs were
+  byte-identical, 8 of 8 turns: each build's two runs, and the two builds in each half. No run was an outlier this
+  time.
+- **Images: the position table.** Six picture prompts and one text prompt after them, at the fixed expert sets and
+  `STRATA_ROUTE_TAIL_SKIP=0` on every process. The split's first-token distribution was compared with the same model
+  on one card (KL divergence):
+  - Text: 1.6e-4, with or without the table.
+  - The pictures: the geometric mean is 43% lower with the table than with `STRATA_STAGE_POSITIONS=0`.
+    - It is better on 3 of the 6, the table picture the most (7.4e-4 against 1.7e-2).
+    - It is slightly worse on the other 3. Why was not measured; a guess is that layers 26-47 react little to the
+      positions, so other differences between the split and one card show through.
+  - With the tail skip on (the default), the skip's own choices outweigh the table: an arithmetic mean of 0.146 with
+    it, 0.149 without.
+- **Images: the answers.** With the served flags they were right: the shapes, a table's largest count and its CSV, a
+  chart, a screenshot, and the text after the pictures.
+- **Images: a main restart.** A main process restarted after a picture got the same text reply from the worker as
+  before the picture. Before the worker put its table back to the identity at a disconnect, it did not.
+- **The overlap on the worker.** It was on in the runs above and in the speed runs below (the build then followed
+  upstream's default on the worker too):
+  - The 16,000-token replay: 133-137 windows took swaps still landing, and the worker's layers waited 0.03 ms in all.
+    The main process's layers waited 1.4-1.8 s over about 150 windows.
+  - A 40-prompt run: 583-600 windows, 23-30 ms of waiting.
+
+  Whether it changes answers could not be told byte for byte: with the adaptive tier on, two runs of the same
+  setting agreed on only 3 and 4 of 8 turns.
+- **Speed** (the served flags, 40 prompts x 200 tokens, speculative decoding with the draft layer, two runs each):
+  | Build | Decode tok/s |
+  |---|---|
+  | This branch on 0.1.43 | 62.7, 63.2 |
+  | The same, with `STRATA_ADAPT_OVERLAP=0` on both PCs | 63.2, 63.8 |
+  | This branch on 0.1.42 | 63.5, 64.0 |
+
+  The overlap's runs were the slowest: about 0.9% below the runs without it and 1.3% below 0.1.42. Two runs of one
+  setting differed by 0.8-0.95%, so two runs each cannot tell whether that difference is real.
+- **The worker's overlap alone.** The same flags and prompts; the main process's overlap on in every run, the
+  worker's on and off in 6 interleaved pairs (PC B's 10 GbE card had been replaced since the runs above):
+  | | The worker's overlap on | Off |
+  |---|---|---|
+  | Decode, median of 6 runs | 64.19 tok/s | 64.33 tok/s |
+  | The worker's own time per window, median | 15.85 ms | 15.85 ms |
+
+  With it on, decode was faster in 2 of 6 pairs and the worker's time per window shorter in 3 of 6; two runs of one
+  setting differed by 0.39% (median), up to 1.24%. Its layers waited 26-42 ms per run in all: the worker's copies
+  land while the main process runs its own layers, so there is little left to hide. Not faster, so a worker turns it
+  on only with `STRATA_ADAPT_OVERLAP=1`. The main process keeps upstream's default (on for Linux CUDA), as on one
+  card: upstream's overlap needs a process whose layers are on one GPU (a layer split across GPUs in one process
+  leaves it off), and each PC of a remote stage is one such process.
+- **The link test.** `stage_link_test` (the images change's 22 checks) passes on Linux (GCC 13) and on Windows
+  (MSVC 2022).
+- **Builds.** CUDA 13.0 on Linux (sm_75 + sm_86) and on Windows (MSVC 2022, sm_86); HIP (ROCm 7.0, gfx1100) and
+  the SYCL port (oneAPI 2026.1.1), both in containers.
+
 ## Lessons
 
 - **The prompt chunk decides the split's prompt speed.** At 2048 no split beat one card; at 5888-8192 every split did
@@ -476,13 +575,15 @@ split that holds nearly every expert (docs/DETAILS.md). The tables were not run 
 ## Open work
 
 - **The default path beyond one configuration:** checked byte-identical for one single-GPU configuration on 0.1.41
-  ([The default path](#the-default-path)) and at fixed expert sets on 0.1.42
-  ([After the rebase](#after-the-rebase-onto-0142-2026-10-11)); an in-process multi-GPU split, other models and a
-  Windows build against upstream's Windows build were not compared.
+  ([The default path](#the-default-path)) and at fixed expert sets on 0.1.42 and 0.1.43
+  ([0.1.42](#after-the-rebase-onto-0142-2026-10-11), [0.1.43](#after-the-rebase-onto-0143-2026-10-12)); an in-process
+  multi-GPU split, other models and a Windows build against upstream's Windows build were not compared.
+- **Images beyond two PCs:** a relay worker forwards the position table (covered by `stage_link_test` over loopback),
+  but no picture went through three PCs; the image checks used RVN IQ3_S only.
 - **Running on AMD and Intel:** the branch builds with CUDA 13.0 on Linux (GCC, sm_75 + sm_86) and Windows (MSVC
   2022, sm_86), with HIP (ROCm 7.0, gfx1100) and the SYCL port (oneAPI 2026.1.1, which also compiles the shared
-  `include/strata/prefill/prefill.hpp` this feature changed); the last two in containers, on 2026-10-10. The remote
-  stage ran on NVIDIA cards only. The SYCL port keeps its own copies of `generate.cpp`, `verify.cpp`,
+  `include/strata/prefill/prefill.hpp` this feature changed); the last two in containers, on 2026-10-10 and again
+  after the rebase onto 0.1.43. The remote stage ran on NVIDIA cards only. The SYCL port keeps its own copies of `generate.cpp`, `verify.cpp`,
   `expert_source.cpp` and `prefill.cpp`, so the Intel engine has no remote stage.
 - **Correctness check** against the in-process split (`--layer-split K --split-device 0`) with the caches fixed: not
   done. So far the start of every benchmark answer (the 100-160 characters the benchmark keeps) was read: coherent and
