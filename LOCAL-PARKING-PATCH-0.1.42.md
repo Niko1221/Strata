@@ -236,19 +236,26 @@ stage. Now:
 ### 4. Refusals did not say which resource was short — `generate.cpp`, `ram_note()`
 
 On Windows the guard takes the smaller of free RAM and free commit. The line printed only the minimum. It now
-prints both, plus this process' own commit and working set. The line below is that shape written out by hand, not
-a log excerpt - the new engine has not been run end-to-end (see Limitations):
+prints both, plus this process' own commit and working set. The line below is verbatim from the end-to-end run
+recorded further down ("End-to-end run on the built binary") - the single refusal in 164 parks:
 
 ```
-skip parking (memory admission; need 1536 MiB plus 4096 MiB floor, 2210 MiB available, source meminfo;
-physical RAM has 19120 MiB free, the system commit (RAM plus page file) has 2210 MiB free;
-this process commits 71512 MiB (72040 peak), working set 58210 MiB; evicted 0, 2 still parked;
-freeing every parked byte that could be freed (4510 MiB) could not have fitted it)
+conversation cache: skip parking (memory admission; need 3966 MiB plus 4096 MiB floor, 6900 MiB available,
+source meminfo; physical RAM has 6900 MiB free, the system commit (RAM plus page file) has 36771 MiB free;
+this process commits 90556 MiB (95414 peak), working set 11672 MiB; evicted 0, 1 still parked;
+freeing every parked byte that could be freed (2152 MiB) could not have fitted it)
 ```
 
-That shape — tens of GiB free RAM, a few GiB of commit — is the whole story on two RTX 5060 Ti cards under
-WDDM with a 40 GiB locked expert arena: the arena and the driver's device allocations are charged against
-the commit limit, not against RAM.
+That is the `hopeless` arm, and it is the case the fix exists for: 3966 MiB was requested and everything the
+cache could free was 2152 MiB, so no amount of evicting could have made the park fit. Upstream's loop would have
+dropped that conversation anyway and still refused, and the line would have carried no number at all. Note what
+this line does *not* blame: here the short resource is free RAM (6900 MiB) while commit is plentiful
+(36771 MiB) - the opposite of the 0.1.40 mechanism described above. The reporting is the same path either way;
+it names whichever one actually refused.
+
+The 0.1.40 refusals printed no numbers at all: counting the archived log this patch was written against
+(`strata-iq3_s.log`, 33374 lines, `engine 0.1.40`) finds 293 `skip parking` lines - 203 of the bare textless
+`allocation failed; skip parking`, and 90 of the budget refusal ending in a static `or telemetry unavailable`.
 
 ## Not ported, on purpose
 
@@ -492,20 +499,55 @@ so it solves a strictly broader problem and would lose behaviour), and adding an
 `EvictionRound` so the CUDA and SYCL refusals agree on that wording - that is a caller-visible change to the
 refusal text, out of scope for this patch; the SYCL wording is recorded above instead.
 
+## End-to-end run on the built binary (this PC, 2026-10-11 23:42 to 2026-10-12 02:46)
+
+The user's production server ran a build of this tree:
+`D:\AI_envs\_olympapp_local\server_strata\strata-0.1.42-sm120.exe`, configured from
+`project_strata\build_cuda_120` (`CMAKE_HOME_DIRECTORY` = this tree; `generate.cpp.obj` postdates the last edit
+to `src/program/generate.cpp`), logging to `server_strata\strata-sm120.log`. It reports
+`session is up (engine 0.1.42)` on the arguments the failures were reproduced on
+(`--max-context 262144 --kv int8 --kv-resident 32768 --conversation-cache-mib 16384
+--conversation-cache-slots 4 --conversation-cache-min-free-mib 4096 --remote-expert-opt --layer-split auto`,
+two RTX 5060 Ti, split auto). A string audit of that exe: the textless `allocation failed; skip parking`
+absent; `allocation failed at the capture`, `skip parking after the checkpoint split`, `memory admission`,
+`could not have fitted it`, `freeing every parked byte`, `reserves but will not commit` all present.
+
+Counted over that log (1685 lines, of which the first 1595 are one session; the second session had just started
+and parked nothing) with:
+
+```
+python - <<'PY'   # over the log, per session boundary at 'engine started'
+pat = r"parked (\d+) tokens.*?parked=(\d+) bytes=(\d+).*?reused_kv_bytes=(\d+)"
+PY
+```
+
+```
+park attempts: 216, of which 176 at >= 50k tokens and 232826 tokens at the largest
+refusals:      1 of 216 (0.46%)         <- the 0.1.40 build refused 291 of 2772, 10.5%
+"allocation failed; skip parking": 0    <- 203 in the 0.1.40 log
+restores: 130, largest 232494 tokens; 129 of the 216 parks reused K/V, up to 3.29 GiB in one park
+evict-to-admit rounds: 12 (11 evicted one conversation, one evicted two; largest request admitted 4006 MiB)
+park wall time: 62.9 ms to 1620.1 ms
+peak cache bytes: 8.65 GiB against the 16 GiB budget; parked entries never exceeded 4
+budget refusals (make_room): 0; refusal arms seen: 'hopeless' 1, 'stalled' 0, 'short_by' 0
+```
+
+The one refusal, at log line 737, is quoted in item 4 above; it is the `hopeless` arm saying the request
+(3966 MiB) exceeded everything freeable (2152 MiB) - a refusal upstream would also have made, after first
+throwing away a conversation that could not have paid for it. Parking continued normally after it; no later park
+was affected by it.
+
+What this run does and does not show. It shows the admission path deciding correctly at token counts far beyond
+the 52k-97k that produced the original failures, the new stop-early bound keeping evictions to one or two
+conversations across 12 admit-after-eviction rounds, the retained-K/V hand-back working (129 parks reused K/V),
+and a refusal that names its own cause with numbers. It does not exercise the `stalled` arm (0 occurrences:
+evicting did return memory on this machine on this run), the probe in a `bad_alloc` handler (no allocation
+failed), or the budget-refusal hand-back in item 2 (no budget refusals; the 16 GiB budget was never reached).
+Those three remain covered by the native tests only. This is one Windows/WDDM multi-GPU data point; HIP and SYCL
+remain unvalidated at runtime.
+
 ## Limitations
 
-* **No end-to-end run yet.** Measured on this PC at the time of writing: the user's live server is
-  `serve\server.py --port 8080` (PID 22296) with its engine child (PID 19508) running
-  `project_strata\engine\strata.exe` - a string audit of that binary finds the textless
-  `allocation failed; skip parking` and no `memory admission` line, i.e. the pre-fix engine - on the
-  same arguments the fix must be validated against
-  (`--max-context 262144 --kv int8 --kv-resident 32768 --conversation-cache-mib 16384
-  --conversation-cache-slots 4 --conversation-cache-min-free-mib 4096 --remote-expert-opt --layer-split auto`).
-  Both RTX 5060 Ti are at ~15.0 GiB of 16.3 GiB each and 5.5 GiB of 79.8 GiB RAM is free, so a second engine
-  cannot be started alongside it. The 50k-97k-token park/restore
-  demonstration needs that process stopped (the user's call) and this build started with the same arguments;
-  until it is run, no e2e result is claimed here. Installing the new engine means copying
-  `build_cuda_new\strata.exe` over `engine\strata.exe` while the server is down - not done in this session.
 * **SYCL is not compiled.** Both park copies were edited (`src/program/generate.cpp` and
   `sycl/src/program/generate.cpp` - `git grep park_current_body v0.1.42` finds exactly these two), but no Intel
   oneAPI toolchain is installed on this machine, so `sycl/src/program/generate.cpp` was reviewed by hand and not
