@@ -11,7 +11,8 @@
 // Resident: prints "READY <n_embd>", then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
 //   ENCV <fps> <max_frames> <max_side> <pair_tokens> <total_tokens> <min_pair_tokens> <video path> <output path>
-//                                    ->  "OK <n_tokens> <n_groups> <n_frames> <ms>" then "LAYOUT <layout>"
+//                                    ->  zero or more "VPROG <frames_done> <frames_total>", then
+//                                        "OK <n_tokens> <n_groups> <n_frames> <ms>" and "LAYOUT <layout>"
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
@@ -396,6 +397,9 @@ int main(int argc, char** argv) {
                 }
                 mtmd_input_chunks_free(chunks);
                 for (mtmd_bitmap* bm : frames) mtmd_bitmap_free(bm);
+                // Keep preparation observable without an unbounded stream: one line per bounded frame batch.
+                std::printf("VPROG %d %d\n", n_frames, frames_plan);
+                std::fflush(stdout);
             }
             if (f) std::fclose(f);
             if (err.empty() && groups == 0) err = "the video has no frames";
