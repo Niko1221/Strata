@@ -26,14 +26,21 @@ struct Kv {
     std::vector<uint64_t> arr;
     std::vector<std::string> sarr;
 };
-inline Kv str(const std::string& k, const std::string& v) { return Kv{k, 8, v, 0}; }
-inline Kv u16(const std::string& k, uint64_t v) { return Kv{k, 2, {}, v}; }
-inline Kv i32(const std::string& k, uint64_t v) { return Kv{k, 5, {}, v}; }
-inline Kv u32(const std::string& k, uint64_t v) { return Kv{k, 4, {}, v}; }
-inline Kv f32(const std::string& k, float v) { Kv r{k, 6}; r.f = v; return r; }
-inline Kv u32s(const std::string& k, std::vector<uint64_t> v) { Kv r{k, 9}; r.arr = std::move(v); return r; }
+// fields set by name: a braced Kv{...} that stops short warns under -Wmissing-field-initializers (clang -Wextra)
+inline Kv make_kv(const std::string& k, uint32_t type) {
+    Kv r;
+    r.key = k;
+    r.type = type;
+    return r;
+}
+inline Kv str(const std::string& k, const std::string& v) { Kv r = make_kv(k, 8); r.s = v; return r; }
+inline Kv u16(const std::string& k, uint64_t v) { Kv r = make_kv(k, 2); r.u = v; return r; }
+inline Kv i32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 5); r.u = v; return r; }
+inline Kv u32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 4); r.u = v; return r; }
+inline Kv f32(const std::string& k, float v) { Kv r = make_kv(k, 6); r.f = v; return r; }
+inline Kv u32s(const std::string& k, std::vector<uint64_t> v) { Kv r = make_kv(k, 9); r.arr = std::move(v); return r; }
 inline Kv strs(const std::string& k, std::vector<std::string> v) {
-    Kv r{k, 9};
+    Kv r = make_kv(k, 9);
     r.elem = 8;
     r.sarr = std::move(v);
     return r;
