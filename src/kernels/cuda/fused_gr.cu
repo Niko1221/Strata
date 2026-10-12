@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gr.cu - see include/strata/kernels/fused_gr.hpp.
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
+#include "strata/core/geometry.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -31,6 +32,7 @@ constexpr int LR = 320;         // hc_lr
 #else
 #define STRATA_GR_FAST_BUILD 0
 #endif
+static_assert(N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr, "fused_gr is compiled for core/geometry.hpp");
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 constexpr int DOWN_BLOCKS = LR / WARPS;          // 40 blocks of 8 rows; one more for the inject rows

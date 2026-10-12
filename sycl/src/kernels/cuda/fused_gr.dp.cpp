@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gr.cu - see include/strata/kernels/fused_gr.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <mutex>
+#include "strata/core/geometry.hpp"
 #include <unordered_map>
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
@@ -25,6 +26,7 @@ constexpr int N = 2560;         // n_embd
 constexpr int HC = 4;           // streams
 constexpr int D = N * HC;       // 10240
 constexpr int LR = 320;         // hc_lr
+static_assert(N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr, "fused_gr is compiled for core/geometry.hpp");
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 #if defined(__HIPCC__)

@@ -2605,8 +2605,10 @@ int main(int argc, char **argv) try {
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok() ? "ggml-cpu vec_dot (no AVX2: the older-CPU build)"
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
+    // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
+    // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
+    strata::core::ModelGeometry g;
+    int64_t K = g.n_expert_used;
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
     // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats
@@ -2619,19 +2621,24 @@ int main(int argc, char **argv) try {
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
         if (!o.native_preset.empty()) {
-            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-            // is the authority on its own MoE shape - everything else in the geometry is unchanged
+            // the model file is the authority on its own geometry; the kernels' compiled shape is checked against
+            // it before any weight moves, naming the key that differs
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
+                std::string gerr = strata::read_geometry(model_gguf, g);
+                if (gerr.empty()) gerr = strata::geometry_unsupported(g);
+                if (!gerr.empty()) {
+                    std::fprintf(stderr, "strata generate: %s: %s\n", o.native_shards.front().c_str(), gerr.c_str());
+                    return 1;
+                }
+                K = g.n_expert_used;
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
                 if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
+                std::fprintf(stderr, "strata generate: reading the model's geometry from %s: %s\n",
                              o.native_preset.c_str(), e.what());
                 return 1;
             }
@@ -2716,10 +2723,9 @@ int main(int argc, char **argv) try {
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
         }
-        const strata::core::ModelGeometry g0;
         const auto embed_t0 = std::chrono::steady_clock::now();
-        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g0.n_embd,
-                               248320, err)) {
+        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g.n_embd,
+                               g.n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

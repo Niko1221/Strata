@@ -246,15 +246,7 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    return s;
-}
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);

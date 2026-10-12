@@ -257,6 +257,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_read_test tests/program/batch_read_test.cpp)
   target_include_directories(batch_read_test PRIVATE include)
   add_test(NAME batch_read_test COMMAND batch_read_test)
+  # the model's geometry from its metadata, and the check against the kernels' compiled shape (synthetic)
+  add_executable(gguf_geometry_test tests/core/gguf_geometry_test.cpp)
+  target_link_libraries(gguf_geometry_test PRIVATE strata_artifact)
+  add_test(NAME gguf_geometry_test COMMAND gguf_geometry_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)

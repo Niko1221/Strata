@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/dp4a.hpp"
@@ -24,6 +25,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 

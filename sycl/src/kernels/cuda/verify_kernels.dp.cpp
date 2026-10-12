@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
@@ -30,6 +31,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 

@@ -19,6 +19,7 @@
 // SOFTWARE.
 
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/kernels/mrope.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -33,6 +34,8 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int D = 128, R = 4, ROT = 64, THREADS = 256;
+static_assert(D == strata::core::kCompiledGeometry.idx_key_dim && R == strata::core::kCompiledGeometry.idx_block && ROT == strata::core::kCompiledGeometry.n_rot,
+              "native_qsa_indexer is compiled for core/geometry.hpp");
 __device__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)
