@@ -200,24 +200,95 @@ The engine only reads GGUF today (`src/artifact/gguf_reader.cpp`), so EXL3 suppo
    held 152 VGPRs (1 block/CU); 128/256-thread blocks plus `__launch_bounds__(256,6)` brought it to
    ~40 VGPRs / 75%; (d) **word-wise window read** (funnel shift, no integer `%`); (e) **hoist the
    `pinv` permutation** to registers. The per-call `cudaMalloc` was also removed (process-wide workspace).
-4. **MoE experts** — *core done.* The expert FFN kernel `exl3_moe_ffn` (`src/kernels/cuda/exl3.cu`) runs
+4. **MoE experts** — *done.* The expert FFN kernel `exl3_moe_ffn` (`src/kernels/cuda/exl3.cu`) runs
    `gate`/`up` (2560→640), `silu(gate)·up → h`, `down` (640→2560) for `n_experts` and accumulates
    `Σ wₑ·downₑ`, reusing one scratch set across all `3·E` GEMV launches. `Exl3ExpertStore`
    (`include/strata/kernels/exl3_experts.hpp`, `src/kernels/cuda/exl3_experts.cu`) uploads a layer's
    routed experts (`Exl3Model` → device `trellis`/`suh`/`svh`) and `run(x, ids, weights, k, out)` calls
    the kernel. Validated on **real** weights: a full layer MoE (10 of 16 experts, layers 0 and 47)
    matches the CPU reference at `rel ≈ 1e-3` (`strata-exl3-moe`). Unlike the GGUF path, EXL3 stores each
-   expert as its own tensors (no grouped blob). What remains is the **session/layer-loop wiring**:
-   routing (`ffn_gate_inp` + top-k), the shared expert, and the dense linears (attention/GDN/router) via
-   `exl3_gemv`, so a full forward runs end to end.
+   expert as its own tensors (no grouped blob). The engine's expert pool hook is `Exl3ExpertStream`
+   (`src/kernels/cuda/exl3_experts.cu`): per token it maps the routed experts' `trellis`/`suh`/`svh` out
+   of the safetensors and uploads them, then calls the same kernel, so no layer is resident ahead of time.
 5. **Prefill** — reconstruct-to-`half` plus `hgemm`, matching the engine's existing MMQ choice.
 6. **n-gram table** — *done.* `PleTable::open_exl3` reads the shipped `ngram_embedding.safetensors` through
    the existing SSD-streaming `PleReader` (see "The n-gram table" above).
-7. **Dense linears** — *seam in place.* `WeightRef::exl3` (`include/strata/core/weights.hpp`) carries a
+7. **Dense linears** — *done.* `WeightRef::exl3` (`include/strata/core/weights.hpp`) carries a
    device `Exl3Mat`, and `gemv_quantized` (`src/core/layer.cpp`) runs `exl3_gemv_f32` for it;
-   `sform_of`/`plane_ptrs` early-out for EXL3 tensors. Inert until the loader fills it (the `exl3` field
-   defaults null, so pack/native paths are unchanged; the full `strata` executable still builds).
-   Remaining: the EXL3 model-open path in `generate.cpp` (populate the descriptors + the expert arm).
+   `sform_of`/`plane_ptrs` early-out for EXL3 tensors. `src/artifact/exl3_pack.cpp` builds the engine
+   `WeightTable` from the model directory (1079 roles on the 3.05bpw model: the EXL3 linears attached as
+   `Exl3Mat`, the norms/router/hyper-connection/GDN parameters/embedding staged in the engine's own form),
+   and `generate.cpp` runs it with `--exl3 <dir>` (plus `--ple-exl3 <ngram_embedding.safetensors>`).
+
+## The engine's form of the weights
+
+An EXL3 model is a straight quantization of the HF checkpoint, so `src/artifact/exl3_pack.cpp` has to
+reproduce `llama.cpp`'s converter (`conversion/qwen4exp.py` and the mixins it inherits from
+`conversion/qwen.py`) before the engine's kernels see the weights.  The engine's own GGUF packs are built
+by that converter, so its rules are the contract.  Four of them are easy to miss, and all four were
+wrong in the first working loader — it ran, and produced fluent garbage:
+
+| what | HF stores | the engine reads | why |
+| --- | --- | --- | --- |
+| the v heads | grouped by k head, `[G0_v0 G0_v1 G0_v2 G1_v0 ...]` | tiled, `v` head `h` paired with `k` head `h % 16` | `gdn_step_kernel`'s `src = h % h_k`; 16 k heads, 48 v heads |
+| `A_log` | `log(A)` | `ssm_a = -exp(A_log)` | the GDN gate is `softplus(alpha + dt) · ssm_a` and decays with `exp(gate)` |
+| the zero-centred gammas | `w` | `1 + w` | `hc_norm`, `q`/`k` norm, the indexer layernorms, the PLE norms; `linear_attn.norm.weight` is NOT one |
+| the indexer q/k projections | `[in, out]` after reconstruction | `[out][in]`, a row of `n_in` per output | `bf16_gemv`'s `row = w + o * n_in` |
+
+The v-head reorder applies to `in_proj_qkv`'s v rows, `in_proj_z`, `in_proj_a`/`in_proj_b`, `A_log`,
+`dt_bias`, the conv's v channels and `out_proj`'s columns.  On an EXL3 linear the reorder is done on the
+**trellis**, not on a materialized weight: a v head is 128 = 8 whole 16-row tiles, so it is a permutation
+of `j` tiles (and `svh`) or `i` tiles (and `suh`).
+
+Each rule is checked on the real model: `strata-exl3-pack <dir> --dump <out>` writes the staged bytes of
+22 roles, and `tools/exl3/check_engine_form.py <dir> <out>` recomputes them from the safetensors with an
+independent numpy implementation of the converter's rules — **22/22 roles match** on
+`Qwen3.8-Flash-Next-exl3` 3.05bpw, byte-exact for the trellis permutations.
+
+## Running the model
+
+Measured on one **Radeon Pro W7800** (gfx1100, 32 GB), 8-thread CPU pool, the model on a SATA SSD,
+`--expert-cache 0` (every routed expert is streamed from disk):
+
+| step | measured |
+| --- | --- |
+| `strata-exl3-pack --run` | 1079 roles, 2117.4 MiB EXL3 linears, 2679.3 MiB staged, 301 dense projections, 0 faults |
+| load (`--exl3`) | 15.4 s |
+| prefill | 3.95 tok/s (14 tokens) |
+| decode | 2.30 tok/s (42 tokens, capital-of-France prompt); 2.51 tok/s (80 tokens, Hello-World prompt, PLE) |
+| expert FFN | 0.37–0.46 ms/layer (measured earlier, 48 layers) |
+
+The prompts answer correctly, with and without PLE:
+
+    <|im_start|>user
+    What is the capital of France?<|im_end|>
+    <|im_start|>assistant
+     thinking
+    The user is asking a simple factual question: the capital of France. The answer is Paris.
+    This is straightforward and requires no complex reasoning.
+    </think>
+
+    The capital of France is **Paris**.<|im_end|>
+
+    <|im_start|>user
+    Write a hello world program in Python.<|im_end|>
+    <|im_start|>assistant
+     thinking
+    The user wants a simple "Hello, World!" program in Python. This is the most basic programming
+    task. I'll provide the standard one-liner.
+    </think>
+
+    ```python
+    print("Hello, World!")
+    ```
+
+    This prints the text `Hello, World!` to the console. Run it with:
+
+    ```bash
+    python hello.py
+    ```
+
+`--stop-eos` stops at `<|im_end|>`; without it the sampler keeps going past the end of the turn.
 
 ## Tokenizer
 
