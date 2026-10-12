@@ -10191,14 +10191,22 @@ int main(int argc, char** argv) {
         // remote-stage main: the positions this request sent the worker (-1: none, 0: the identity, else the cells of
         // mrope_host) - a link made again gets them again, as a worker's table starts from the identity
         int64_t remote_pos_cells = -1;
+        // remote-stage main: the link was made again since a request's start last looked (a new connection, maybe a
+        // new worker process): the worker holds no session and no checkpoint part, so this side's live session and
+        // checkpoints are dropped (before the resume decision, or after a read from token 0 that made it again).
+        // Never cleared before that: a request refused in between leaves it to the next one.
+        bool remote_fresh = false;
         // A request's first messages (its positions, its reset) found the link lost: connect again (remote_connect)
         // and send this request's positions again; the caller then sends its message again.  Nothing of the old
-        // connection carries over: the worker zeroes its session at the reset, and the hello carries the rest (the
-        // tail-skip rank, --vision, the chunk).  A link lost in the middle of a request still ends the engine.
+        // connection carries over: the worker zeroes its session at the reset, its checkpoint parts went with the old
+        // connection (remote_fresh), and the hello carries the rest (the tail-skip rank, --vision, the chunk).  A link
+        // lost in the middle of a request still ends the engine.
         auto remote_relink = [&](std::string& e) -> bool {
             if (!strata::net::stage_link_lost(e)) return false;
             const std::string lost = e;
-            if (!remote_connect(e, true) ||
+            const bool made = remote_connect(e, true);
+            if (made) remote_fresh = true;
+            if (!made ||
                 (remote_pos_cells >= 0 &&
                  !remote_link.positions(remote_pos_cells > 0 ? mrope_host.data() : nullptr, remote_pos_cells, e))) {
                 e = lost + "; connecting again: " + (e.rfind("remote stage: ", 0) == 0 ? e.substr(14) : e);
@@ -11249,6 +11257,17 @@ int main(int argc, char** argv) {
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             remote_pos_cells = -1;
             remote_cancelled = false;
+            // remote-stage: a link the worker's end closed while this process was idle (the worker restarted, or
+            // another main process took it over) is made again here, before anything is sent or decided: a request
+            // that continues the live session sends nothing before its first window, which would find it lost in
+            // the middle of the request.  A check with nothing sent; a peer that vanished without a word is not seen.
+            // (A STOP while connecting again ends this request; the link stays closed, so the next one looks again.)
+            if (remote_main && !remote_link.alive(err) && !remote_relink(err)) {
+                std::printf("ERR %s\n", err.c_str());
+                std::fflush(stdout);
+                if (remote_cancelled) continue;
+                return 1;
+            }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
                 std::string ve;
@@ -11442,6 +11461,19 @@ int main(int argc, char** argv) {
                                      "not kept after their reply); reading this prompt from token 0\n", n_checks,
                              n_checks == 1 ? "" : "s", n_parked, n_parked == 1 ? "" : "s", n_slots,
                              n_slots == 1 ? "" : "s", n_running, n_running == 1 ? "" : "s");
+            }
+            // remote-stage: the link was made again (above, at an earlier request's start, or at its positions): the
+            // worker holds neither the live session nor any checkpoint part, so neither is continued from (every
+            // checkpoint of a remote main has a part there) and this prompt is read from token 0, its reset keeping
+            // nothing
+            if (remote_fresh) {
+                remote_fresh = false;
+                if (live_ok || !checks.empty())
+                    std::fprintf(stderr, "strata serve: remote stage: the worker holds no session or checkpoint after "
+                                         "connecting again: dropped the live session and %zu checkpoint%s, reading "
+                                         "the prompt from token 0\n", checks.size(), checks.size() == 1 ? "" : "s");
+                live_ok = false;
+                checks.clear();
             }
             int64_t resume = 0;
             bool from_live = false;
@@ -11675,6 +11707,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 checks.clear();
+                remote_fresh = false;   // (a link made again in it: nothing more to drop)
             } else if (!from_live) {
                 ConvCheckpoint* c = nullptr;
                 for (ConvCheckpoint& k : checks) if ((int64_t) k.ids.size() == resume) c = &k;
@@ -11693,6 +11726,10 @@ int main(int argc, char** argv) {
                         if (remote_cancelled) continue;
                         return 1;
                     }
+                    if (remote_fresh) {   // the link was made again there: the worker's parts are gone (`c` with them)
+                        remote_fresh = false;
+                        checks.clear();
+                    }
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
@@ -11709,15 +11746,35 @@ int main(int argc, char** argv) {
                 } else if (remote_main) {   // the worker's part of the same checkpoint
                     bool missing = false;
                     if (!remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err)) {
+                        // the link lost (the worker's end closed after the request's start looked): made again, as a
+                        // reset's is; the new connection holds no checkpoint part, so this is the missing case
+                        if (!missing && strata::net::stage_link_lost(err)) {
+                            if (!remote_relink(err)) {   // (its text starts with the link's: a 503 in the server)
+                                std::printf("ERR %s (restoring the conversation checkpoint at %lld tokens)\n",
+                                            err.c_str(), (long long) resume);
+                                std::fflush(stdout);
+                                if (remote_cancelled) continue;   // (a STOP: the link stays closed, the engine stays)
+                                return 1;
+                            }
+                            missing = true;
+                        }
                         if (!missing) {   // the worker's session is lost: the engine stops (the server starts it again)
-                            std::printf("ERR restoring a conversation checkpoint failed: %s\n", err.c_str());
+                            if (err.rfind("remote stage", 0) == 0)   // (the worker's or a relay's: a 503 in the server)
+                                std::printf("ERR %s (restoring the conversation checkpoint at %lld tokens)\n",
+                                            err.c_str(), (long long) resume);
+                            else
+                                std::printf("ERR restoring a conversation checkpoint failed: %s\n", err.c_str());
                             return 1;
                         }
-                        // it does not hold that part (it should): this request reads its prompt from token 0, and
-                        // everything below follows `resume`
-                        std::fprintf(stderr, "strata serve: the remote stage does not hold the checkpoint at %lld "
-                                             "tokens (%s): reading the prompt from token 0\n", (long long) resume,
-                                     err.c_str());
+                        // it does not hold that part (it should, unless the link was made again): this request reads
+                        // its prompt from token 0, and everything below follows `resume`
+                        if (remote_fresh)
+                            std::fprintf(stderr, "strata serve: remote stage: the worker holds no checkpoint after "
+                                                 "connecting again: reading the prompt from token 0\n");
+                        else
+                            std::fprintf(stderr, "strata serve: the remote stage does not hold the checkpoint at %lld "
+                                                 "tokens (%s): reading the prompt from token 0\n", (long long) resume,
+                                         err.c_str());
                         err.clear();
                         if (!session_from0({})) {
                             std::printf("ERR %s\n", err.c_str());
@@ -11729,6 +11786,7 @@ int main(int argc, char** argv) {
                         from_live = false;
                         reread_to = -1;
                         checks.clear();
+                        remote_fresh = false;
                     } else {
                         std::fprintf(stderr, "strata serve: remote stage: checkpoint %lld at %lld tokens restored on "
                                              "both sides\n", (long long) c->remote_id, (long long) resume);
@@ -12216,7 +12274,14 @@ int main(int argc, char** argv) {
                 at = to;
                 if ((to == turn_at || to == root_at || to == message_at || to == pin_at) &&
                     !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at)) {   // the tail kind leaves first
-                    std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
+                    // a remote stage's link lost in the middle of the request, or the worker's own error: the engine
+                    // ends as on a lost window, with the link's or the worker's text first (the server answers it
+                    // with a 503)
+                    if (ckpt_why.size() > 2 && ckpt_why.compare(2, 12, "remote stage") == 0)
+                        std::printf("ERR %s (saving a conversation checkpoint at %lld tokens)\n", ckpt_why.c_str() + 2,
+                                    (long long) to);
+                    else
+                        std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
                     return 1;
                 }
                 if (to == pin_at && !pin_checkpoint(pin_at))

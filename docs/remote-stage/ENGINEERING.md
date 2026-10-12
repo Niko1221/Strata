@@ -82,9 +82,14 @@ polled (50 ms) within 10 s in all: with a blocking read, closing a silent one he
 message for more than 1 s in `stage_link_test` on Windows (by the code, until the hello's 10 s read timeout, and a
 peer sending a byte at a time could hold it longer). The main process
 connects at its start, and again when a
-request's positions or reset finds the link lost (closed, reset, timed out, a send or receive failed, the name did
-not resolve: `stage_link_lost`), with the same hello; nothing else is per connection on either side (the reset zeroes the worker's
-session, the hello carries the tail-skip rank, `--vision` and the chunk), and the request's positions are sent again.
+request's start finds the link lost (closed, reset, timed out, a send or receive failed, the name did
+not resolve: `stage_link_lost`), with the same hello: its check with nothing sent (`StageClient::alive`, a 0 ms poll
+and a 1-byte peek: the worker sends nothing unasked, so anything to read means its end closed, failed or is out of
+step), its positions, its reset or its checkpoint restore. Nothing else is per connection on either side (the reset
+zeroes the worker's session, the hello carries the tail-skip rank, `--vision` and the chunk) but the worker's
+conversation checkpoint parts, which go with the old connection: the main process then drops its live session and
+checkpoints and reads the prompt from token 0 ([CHECKPOINTS.md](CHECKPOINTS.md#after-a-reconnect)). The request's
+positions are sent again.
 While the name does not resolve, nothing listens or the network does not reach the worker, it tries every 2 s for
 `STRATA_REMOTE_CONNECT_S` (180 s), each try with its own watchdog allowance; a refusal is not tried again. That is
 the whole wait: each try's connect and its hello's reply are polled against what is left of it (a hello waiting in a
@@ -105,9 +110,11 @@ another model refused while the old one stays; a peer accepted while the first w
 sent, closed as soon as the first sends again, the first answered at once, and the rest of that hello sent then not
 taking over at the first's next idle second; a chunk's reply held 1.5 s by a relay's handler, then
 0.4 s until the first's next message: not taken over), with `STRATA_REMOTE_TAKEOVER_S=0` (a second main not served
-while the first is silent for 2.5 s), and which errors count as a lost link. The main process's reconnect, its
-`INFO remote_stage_wait` lines and the agent's restarts were run on GPUs later, by injecting faults
-([The recovery's open points](#the-recoverys-open-points-2026-10-13)). The node agent (`tools/stage_node.py`) starts a
+while the first is silent for 2.5 s), which errors count as a lost link, and `alive` (true on an idle link; false,
+as lost, after a take-over, after the worker stopped and after bytes no message asked for; no check over 100 ms).
+The main process's reconnect, its `INFO remote_stage_wait` lines and the agent's restarts were run on GPUs later, by
+injecting faults ([The recovery's open points](#the-recoverys-open-points-2026-10-13)). The node agent
+(`tools/stage_node.py`) starts a
 worker that ended by itself again (5 s, doubling to 300 s; node.json `"restart": false` turns it off), keeping the
 log of its last run that listened as `stage-worker-PORT.prev.log` (a restart that fails before it listens
 overwrites only the current log); a refused `/start` leaves its port's worker and supervision as they were.

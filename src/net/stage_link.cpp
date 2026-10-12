@@ -356,6 +356,13 @@ bool hello_matches(const StageHello& a, const StageHello& b, std::string& err) {
     return true;
 }
 
+// a main process's hello asks this worker to keep at most kStageCkptMax checkpoint parts: empty, else the refusal
+std::string ckpt_max_refusal(const StageHello& h) {
+    if (h.ckpt_max >= 0 && h.ckpt_max <= kStageCkptMax) return {};
+    return "the main process keeps " + std::to_string(h.ckpt_max) + " conversation checkpoints, a worker at most " +
+           std::to_string(kStageCkptMax) + " (--prompt-cache " + std::to_string(kStageCkptMax - 1) + " or less)";
+}
+
 }  // namespace
 
 bool stage_link_lost(const std::string& err) {
@@ -1073,7 +1080,10 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 if (!token.empty() && theirs_token != token) {
                     why = "a wrong token";
                     send_error(cand, "wrong token (STRATA_STAGE_TOKEN)");
-                } else if (!hello_matches(ci.hello, greeted_mine, why) || !h.hello(ci.hello, mine, why)) {
+                } else if (!hello_matches(ci.hello, greeted_mine, why)) {
+                    send_error(cand, why);
+                } else if (!(why = ckpt_max_refusal(ci.hello)).empty() || !h.hello(ci.hello, mine, why)) {
+                    // (the checkpoint limit before the handler: it records the new main process's values)
                     send_error(cand, why);
                 } else {
                     return true;
@@ -1223,10 +1233,8 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                     break;
                 }
                 // (after the protocol check: an older peer's hello has its build text here)
-                if (in.hello.ckpt_max < 0 || in.hello.ckpt_max > kStageCkptMax) {
-                    (void) reply_error("the main process keeps " + std::to_string(in.hello.ckpt_max) +
-                                       " conversation checkpoints, a worker at most " + std::to_string(kStageCkptMax) +
-                                       " (--prompt-cache " + std::to_string(kStageCkptMax - 1) + " or less)");
+                if (const std::string r = ckpt_max_refusal(in.hello); !r.empty()) {
+                    (void) reply_error(r);
                     keep = false;
                     break;
                 }
