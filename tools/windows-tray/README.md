@@ -1,105 +1,153 @@
-# Windows Tray (opt-in)
+# Optional Windows Tray
 
-A small notification-area client for an **already running** Strata server.
-It shows API reachability and model load state, opens the local Web UI, and
-copies a short diagnostics report. It does not start, stop, install or update
-the server. Closing the Tray leaves the server running.
+Windows 10/11 x64 and .NET Framework 4.8 are required. The Tray uses the official
+favicon, PerMonitorV2 scaling and system menu colors. It is not installed or
+started by the default Strata installer.
 
-## Build and run
+## Build
 
-Requires Windows 10/11 x64 with .NET Framework 4.8. No NuGet packages or .NET SDK
-are needed. From the repository root in PowerShell:
+From the repository root in PowerShell:
 
 ```powershell
 .\tools\windows-tray\Build.ps1
-.\dist\windows-tray\StrataTray.exe
-# If the existing server uses another port:
-.\dist\windows-tray\StrataTray.exe --port 8080
 ```
 
-Keep `StrataTray.exe.config` next to the executable; it enables PerMonitorV2
-rendering. The default port is 8095, matching `serve/server.py`. Start Strata
-with the existing run script as usual. Nothing adds the Tray to startup or to
-the installer. One instance is allowed per port in the current Windows session.
+Keep the entire `dist/windows-tray` directory together, including
+`StrataTray.exe.config` and `managed/`. No .NET SDK or NuGet restore is needed.
+Right-click the notification-area icon to open the menu; double-click opens the
+Web UI. Windows may place the icon in the taskbar overflow.
 
-Right-click the notification-area icon for the menu; double-click opens the
-Web UI. Windows may place new icons in the taskbar overflow. The Tray and executable use the official green layer-stack favicon.
-`Strata.ico` is a raster conversion of `serve/web/favicon.svg`, with 16, 20,
-24, 32, 40, 48, 64, 128 and 256 px frames; the artwork is unchanged. Status text uses system menu colors and
-stays noninteractive. Other menu actions retain standard Windows rendering.
+## Use an existing server
 
-## Menu and daily use
+```powershell
+.\dist\windows-tray\StrataTray.exe --port 8095
+```
+
+This anonymous read-only mode keeps its previous behavior: API/model status,
+Open Web UI, Refresh status, Copy diagnostics, and Exit Tray (keep server
+running). It never manages that server. A protected API reports `auth required`.
+Only one read-only instance per port is allowed in a Windows session.
+
+## Let the Tray manage Strata
+
+1. Finish the normal Strata setup first. Keep its original model JSON files.
+2. Install the optional sidecar dependency in that Python environment:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -r tools/windows-tray/managed/requirements.txt
+   ```
+
+3. Copy `tools/windows-tray/tray.example.json` to
+   `tools/windows-tray/tray.json`. Set `python`, `repository`, and each entry in
+   `profiles` to your Python executable, official checkout and existing model
+   JSON respectively. Relative paths are resolved from the Tray JSON directory.
+   The example model filename is a placeholder; use the JSON made by your setup.
+4. Stop any separate launcher on the chosen ports. `port` is the stable public
+   **loopback-only** endpoint (default 8095); `upstream_port` is the distinct
+   private loopback port (default 8096). Occupied ports are refused, never adopted.
+5. Launch:
+
+   ```powershell
+   .\dist\windows-tray\StrataTray.exe --config tools/windows-tray/tray.json
+   ```
+
+Managed mode requires Python 3.10+ and the official server's Python dependencies.
+It starts and preloads the chosen model. A Windows Job contains only the owned
+sidecar/server descendants; closing the owning Tray forcibly during inference
+can interrupt that inference. Use the menu's graceful Exit for normal shutdown.
+Do not launch a second Tray against the same config/state directory.
+
+Every profile needs `model_name`, string `args` containing exactly one
+`--max-context` plus its value, and an existing `exe` for the Strata engine.
+Other official settings and model paths are preserved. Profiles must share the
+same authentication and origin policy. A policy edit requires restarting the
+Tray. Credentials stay in the original profile/environment; the proxy forwards
+client authentication unchanged and never supplies its control credential to
+an anonymous inference request.
+
+## Menu guide
+
+- **Model profile**, **Context** (64k/128k/256k), and **Unload after idle**
+  (never/5/10/30 minutes) persist the selection. The current profile's other
+  context/idle values are preserved until a choice is made. Selected and
+  effective values are shown separately; an error is not reported as applied.
+- **Start server**, **Apply configuration / Restart**, **Stop server**,
+  **Preload model**, and **Unload model now** control the owned server. Changes
+  close admission, wait for admitted requests/streams and official activity to
+  drain, then act. New requests receive HTTP 503 during this boundary. A drain
+  timeout fails the action without killing an active request.
+- **Open configuration** opens the selected profile's original JSON using its
+  default Windows application. Save the file, then choose **Apply configuration
+  / Restart**. Saving alone does not restart inference. Missing files disable
+  the action. **Open Tray configuration** opens the profile-list/port settings;
+  those settings take effect on the next Tray launch.
+- **Open Web UI** opens the stable loopback endpoint in your browser. Its
+  anonymous reachability status does not verify a signed-in session or generation.
+- **Open logs** opens the adjacent `<tray-config-stem>.state/logs` directory.
+  Logs are local and can contain private server information; inspect before sharing.
+- **Copy diagnostics** copies an allowlisted snapshot: timestamps, lifecycle,
+  API/model state, active requests, context/idle selections and update state.
+  Paths, profile labels, model IDs, credentials, prompts and raw errors are omitted.
+- **Exit Tray and stop server** drains requests, then closes the owned processes.
+  It does not stop a separately launched server.
+
+Selections, generated runtime config and update records live in
+`<tray-config-stem>.state` beside the Tray JSON. Keep it private: the generated
+profile retains the original API key. Original profile files are never rewritten.
+Do not place this directory in a public repository or a shared writable folder.
+
+## Updates
+
+Managed mode checks the official stable GitHub release on startup and daily,
+with a manual **Check now** action. Checking does not install anything.
+Automatic installation is opt-in (`automatic_upgrade: false` by default).
+To enable installation, add the asset matching your installed official engine:
+
+| Backend | `update_asset` |
+| --- | --- |
+| CUDA 13 | `strata-windows-x64.zip` |
+| CUDA 12 | `strata-windows-x64-cuda12.zip` |
+| Windows HIP | `strata-windows-x64-hip.zip` |
+
+Choose **Install available update**, or enable **Automatically upgrade when
+idle**. Automatic activation waits for at least 60 seconds of idle time, then
+uses the same admission/drain boundary. The updater stages a new runtime without
+changing your Git checkout or overwriting the previous runtime. It requires the
+published asset size and SHA-256, rejects unsafe ZIP entries, checks backend
+metadata and unchanged Python requirements, and verifies the loaded model,
+context and engine version before recording the new active runtime. Source
+comes from the fixed official GitHub tag URL over HTTPS; its hash is recorded.
+These checks trust the official release publisher; they are not code signing.
+
+Changed Python requirements, unknown backend metadata, custom vision/library
+profiles, unavailable assets and incompatible runtime families require a manual
+update using official setup. Locally compiled/SYCL engines are not rebuilt by
+the Tray. Failures disable automatic installation and show an error; there is
+no silent rollback or repeated activation loop. Previous files are retained.
+Use local logs to resolve the cause, then explicitly restart or install again.
+Tray UI code itself is updated by rebuilding this directory, not by replacing a
+running executable. No login gateway, remote host or machine-specific model
+configuration is included.
+
+## Screenshots and verification
 
 <img src="screenshots/favicon.png" width="32" height="32" alt="Official Strata favicon">
 
-![Local full-featured Tray — visual reference only](screenshots/local-tray-reference.png)
+![Earlier installed Tray, visual reference](screenshots/local-tray-reference.png)
 
-**Visual reference from the author's installed full-featured Tray, not the
-read-only client shipped by this PR.** The original PNG shows the shared favicon
-and native menu styling more clearly. Model/context switching, idle management,
-updates, logs, lifecycle/Web UI status and stopping the server shown here belong
-to that separate local integration and are not included in this PR. This PR's
-menu contains API/model status, Open Web UI, Refresh status, Copy diagnostics,
-and Exit Tray (keep server running). Multi-monitor behavior remains unverified.
-
-1. Start the server with your existing Strata run script, then launch the Tray
-   with the same port. Launching the Tray does not start the server.
-2. Expand the taskbar notification overflow if needed. Right-click the green
-   Strata icon to see status; updates arrive automatically every five seconds.
-3. Choose **Refresh status** to check immediately. A running check is not duplicated.
-4. Choose **Open Web UI**, or double-click the icon, to open the configured local
-   port in your default browser. Sign in there normally if the server requires it.
-5. Choose **Copy diagnostics**, then paste into a text editor or issue draft.
-   Review the report before sharing. It records the last check and its timestamp.
-   If another app holds the clipboard, retry after the notification.
-6. Choose **Exit Tray (keep server running)** to remove the icon. Stop the server
-   separately with its original launcher when you want to free the model resources.
-
-If the API is unavailable, check that the server is running and the port matches.
-`auth required` is expected for a protected API: the Tray deliberately does not
-store an API key. A duplicate launch for the same port exits without another icon.
-
-## What the status means
-
-The client sends an anonymous `GET /v1/models` every five seconds, with a
-three-second timeout and a 64 KiB response limit. It only connects to
-`127.0.0.1`; redirects, proxy use, cookies and default credentials are disabled.
-
-- `available` means a recognized models response was received; it does not
-  prove that generation or the Web UI works.
-- `loaded` / `unloaded` comes from the model's nested status. An unloaded model
-  can load on the next inference request. Alias entries refer to the same model.
-- `not listed` means a valid empty model list, without guessing why it is empty.
-- `auth required` means HTTP 401/403. This version deliberately does not read or
-  send an API key. Use the browser's normal authentication for the Web UI.
-- `unavailable`, `timeout`, `invalid response` and `redirect (not followed)` are
-  separate failures. They clear any previously displayed model state.
-
-Copy diagnostics includes capture/check timestamps, the loopback port, API/model
-state and HTTP status. It omits model names, response bodies, raw exceptions,
-credentials, config files, paths and prompts. The clipboard is changed only by
-that menu action. The check timestamp identifies the age of the polled snapshot.
-
-## Checks
+This original PNG is a visual reference from the author's earlier local Tray;
+its model names and layout are not a screenshot of this generic candidate.
+The candidate uses the same favicon and native styling. Multi-monitor transitions
+and a real GPU upgrade need hardware acceptance; mock tests do not establish them.
 
 ```powershell
 .\tools\windows-tray\Build.ps1 -Test
 .\dist\windows-tray\TrayTests.exe
+.\.venv\Scripts\python.exe -B tools/windows-tray/managed/test_managed.py
 ```
 
-The checks use local HTTP fixtures without a GPU or downloads. They cover
-loaded/unloaded and alias responses, empty/invalid lists, HTTP failures,
-authentication, redirects, response size, cancellation, diagnostics omissions,
-noninteractive status rows and actual PerMonitorV2 activation.
-
-For official mock-server compatibility, start this in a separate terminal using
-Strata's existing Python environment:
-
-```powershell
-python -B -m serve.server --engine mock --host 127.0.0.1 --port 18095
-.\dist\windows-tray\TrayTests.exe 18095
-```
-
-Before release, manually inspect the menu at the target display scaling, open
-the Web UI, copy diagnostics and exit while confirming the server stays running.
-The GPU backends, server, web assets and setup defaults are untouched.
+The managed suite uses disposable loopback ports, the unmodified official mock
+server and a streaming fixture. No model download or GPU load is required.
+MockEngine always reports loaded and a fixed 32768 context; tests do not claim
+real GPU unload or allocation coverage. Existing engine, server, frontend and
+setup source files are unchanged by this feature.

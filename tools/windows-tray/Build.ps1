@@ -10,10 +10,12 @@ $arguments = @('/nologo','/platform:x64',('/out:' + (Join-Path $out $name)),
     ('/win32icon:' + (Join-Path $PSScriptRoot 'Strata.ico')),
     ('/resource:' + (Join-Path $PSScriptRoot 'Strata.ico') + ',Strata.ico'),
     '/reference:System.dll,System.Core.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Web.Extensions.dll,System.Net.Http.dll',
-    (Join-Path $PSScriptRoot 'Program.cs'),(Join-Path $PSScriptRoot 'AssemblyInfo.cs'))
+    (Join-Path $PSScriptRoot 'Program.cs'),(Join-Path $PSScriptRoot 'ManagedTray.cs'),(Join-Path $PSScriptRoot 'ProcessJob.cs'),(Join-Path $PSScriptRoot 'AssemblyInfo.cs'))
 if ($Test) { $arguments = @('/target:exe','/main:TrayTests') + $arguments + @((Join-Path $PSScriptRoot 'TrayTests.cs')) }
 else { $arguments = @('/target:winexe') + $arguments }
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Tray compilation failed.' }
 Copy-Item (Join-Path $PSScriptRoot 'App.config') (Join-Path $out ($name + '.config'))
 Write-Output (Join-Path $out $name)
+
+Copy-Item -Recurse -Force (Join-Path $PSScriptRoot 'managed') $out

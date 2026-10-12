@@ -95,6 +95,15 @@ internal static class TrayTests
                 Check(live.Api == "available" && live.Model == "loaded", "official mock server compatibility");
             }
         }
+        var managed = new System.Collections.Generic.Dictionary<string, object> {
+            { "phase", "ready" }, { "api", "available" }, { "secret", "SECRET_SENTINEL" },
+            { "error", "PRIVATE_PATH_SENTINEL" }, { "selected", new System.Collections.Generic.Dictionary<string, object> {
+                { "profile", "PRIVATE_MODEL_SENTINEL" }, { "context", 131072 }, { "idle", 600 }, { "auto", false } } }
+        };
+        string report = ManagedTray.Diagnostics(managed);
+        Check(report.Contains("131072"), "managed selected context");
+        Check(!report.Contains("SENTINEL"), "managed diagnostic privacy");
+        Check(ManagedTray.Quote("a b") == "\"a b\"", "managed argument spaces");
         Console.WriteLine(checks + " Tray checks passed.");
         return 0;
     }

@@ -20,6 +20,19 @@ internal static class Program
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        if (args.Length == 2 && args[0] == "--config")
+        {
+            try
+            {
+                using (var context = new ManagedTray(args[1])) Application.Run(context);
+                return 0;
+            }
+            catch (Exception)
+            {
+                MessageBox.Show("Managed Tray could not start. Check the Tray config, Python dependencies and file paths.", "Strata Tray");
+                return 1;
+            }
+        }
         int port;
         if (!TryPort(args, out port))
         {
