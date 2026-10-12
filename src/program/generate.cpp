@@ -9840,6 +9840,7 @@ int main(int argc, char** argv) {
         double bt_wait0 = 0, bt_pool0 = 0;
         int64_t bt_miss0 = 0, bt_hits0 = 0, bt_pcie0 = 0;
         int64_t bt_windows = 0, bt_rows = 0, bt_tokens = 0, bt_accepted = 0;   // bt_accepted: --batch-mtp proposals taken
+        int64_t pipe_rows = 0;   // the pipelined groups' rows, never reset (bt_rows restarts when the slots go idle)
         // per stage (0 = CUDA0's verifier): the GPU-reach wait and pool time when the timed windows began; and the routed
         // (token, expert) entries the CPU and the PCIe share had served by then (bt_hits0 holds the VRAM entries)
         std::vector<double> bt_stage_wait0, bt_stage_pool0;
@@ -10231,6 +10232,7 @@ int main(int argc, char** argv) {
                     std::printf("BT %d %d\n", gi * GS + t, (int) y);
                     ++sl.produced;
                     ++bt_rows;
+                    ++pipe_rows;
                     const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
                     const char* fin = eos ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
                                     : sl.p + 2 > o.max_context ? "length" : nullptr;
@@ -11577,6 +11579,173 @@ int main(int argc, char** argv) {
                     return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 8;
                 }();
                 const int64_t C = std::max<int64_t>(sp.chunk(), 1);
+                // BYIELD <ys> with the read stopped at q (nothing in flight): the part read waits in slot ys and the
+                // read ends with e = "yield" (true); false when it cannot give way there (the read goes on).  Only
+                // where the rest is read the same way after it (more than a chunk and more than a short read left),
+                // text only, and into a slot that is not decoding.
+                auto give_way = [&](int ys, int64_t q, std::string& err) -> bool {
+                    const bool can = ys < (int) bs.size() && !bs[(size_t) ys].active &&
+                                     (admit_slot < 0 || ys == admit_slot) && req_imgs.empty() && o.prompt_cache > 0 &&
+                                     b0 - q > std::max<int64_t>(C, o.short_read);
+                    std::string ye;
+                    const auto ty = Clock::now();
+                    std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
+                    if (can && copy_to_slot(ys, pre, ye)) {
+                        BSlot& sl = bs[(size_t) ys];
+                        sl = BSlot{};
+                        sl.ids = std::move(pre);
+                        sl.cached = true;
+                        sl.partial = true;
+                        sl.partial_from0 = read_from == 0 || resumed_from0;
+                        sl.cvec = cvec_cached;
+                        for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
+                            if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
+                                    [](int32_t x, int64_t y) { return (int64_t) x == y; }))
+                                sl.checks.push_back(c);
+                        yielded_at = q;
+                        yielded_slot = ys;
+                        std::fprintf(stderr, "strata batch: the prompt read gives way at %lld of %lld tokens; slot %d "
+                                             "holds it (copied in %.1f ms)\n", (long long) q, (long long) n, ys,
+                                     std::chrono::duration<double, std::milli>(Clock::now() - ty).count());
+                        err = "yield";
+                        return true;
+                    }
+                    if (can) bs[(size_t) ys].cached = false;   // half written
+                    std::fprintf(stderr, "strata batch: BYIELD %d not taken at %lld of %lld%s%s\n", ys, (long long) q,
+                                 (long long) n, ye.empty() ? "" : ": ", ye.c_str());
+                    return false;
+                };
+                // Opt-in, experimental: STRATA_PIPED_CONCURRENT=1 reads the prompt on a thread of its own while
+                // this thread keeps the slot groups decoding through the pipeline (pump), so they never stop for it
+                // and the read has no drain inside it.  The prompt and the windows use their own streams and memory
+                // (the prompt's K/V goes to the main sessions, the slots' to theirs; the PLE table is locked), and
+                // the adaptive tier stands still (its round landed before the read).  The slots the prompt borrowed
+                // were lent before this read with nothing in flight and are refilled after it, so the windows see
+                // them missing and compute those experts on the CPU, as between pieces.  A BYIELD ends the run at
+                // its next chunk (Prefill::stop_at_chunk): the pipeline is drained there and the part read gives
+                // way as below, or the read goes on from there.
+                // Not beside the opt-in paths that allocate or free during a read (the idle stage's help,
+                // STRATA_PREFILL_HELP; the batched draft K/V, STRATA_SPLIT_MTP_BATCH): a free waits for the device.
+                static const bool pr_conc = [] {
+                    const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
+                    if (v == nullptr || std::atoi(v) == 0) return false;
+                    for (const char* k : {"STRATA_PREFILL_HELP", "STRATA_SPLIT_MTP_BATCH"})
+                        if (const char* x = std::getenv(k); x != nullptr && std::atoi(x) != 0) {
+                            std::fprintf(stderr, "strata batch: STRATA_PIPED_CONCURRENT is off beside %s=1\n", k);
+                            return false;
+                        }
+                    return true;
+                }();
+                if (piped && pr_conc) {   // (with no slot decoding it only watches for a BYIELD meanwhile)
+                    // the drafter's prompt pass captures its graphs and grows its records at first use: done here,
+                    // with nothing in flight (on the reader's thread a capture or a free would wait for the windows,
+                    // which wait for this thread to serve their doorbells, #31)
+                    if (use_mtp && !mtp.reserve_prefill(C, e)) return false;
+                    // the slots' doorbells are served on a thread of their own for the read, which makes no CUDA
+                    // call: a call here or on the read's threads can wait for the driver's lock while its holder
+                    // waits for the GPU (a free; a module the first kernel of a shape loads), and a window on that
+                    // GPU waits for its doorbell (#31).  Ends (and hands the service back to pump) on every exit.
+                    struct Doorbells {
+                        std::atomic<bool> on{true};
+                        std::thread th;
+                        std::function<void()> off;
+                        ~Doorbells() {
+                            on.store(false, std::memory_order_release);
+                            if (th.joinable()) th.join();
+                            if (off) off();
+                        }
+                    } bells;
+                    for (int k = 0; k < n_pipe; ++k) stage_verifier(k).set_external_serve(true);
+                    bells.off = [&] { for (int k = 0; k < n_pipe; ++k) stage_verifier(k).set_external_serve(false); };
+                    bells.th = std::thread([&] {
+                        strata::aux_cpus::pin_current_thread();
+                        while (bells.on.load(std::memory_order_acquire)) {
+                            bool busy = false;
+                            for (int k = 0; k < n_pipe; ++k) {
+                                auto& vk = stage_verifier(k);
+                                if (vk.batch_busy()) {
+                                    busy = true;
+                                    vk.batch_serve(win_pool_fn, win_pool_user);
+                                }
+                            }
+                            if (!busy) std::this_thread::sleep_for(std::chrono::microseconds(50));
+                        }
+                    });
+                    for (int64_t q0 = a0; q0 < b0;) {
+                        const auto tc = Clock::now();
+                        const int64_t rows0 = pipe_rows;
+                        std::atomic<bool> done{false};
+                        std::atomic<int> want_yield{-1};
+                        bool read_ok = true;
+                        std::string read_err;
+                        in_prompt_read = true;
+                        sp.stop_at_chunk = [&] { return want_yield.load(std::memory_order_acquire) >= 0; };
+                        std::thread reader([&] {
+                            strata::aux_cpus::pin_current_thread();
+                            try {   // (an exception leaving a std::thread ends the process: a failed read instead)
+                                read_ok = sp.run(ids.data() + q0, b0 - q0, q0, read_err);
+                            } catch (const std::exception& x) {
+                                read_ok = false;
+                                read_err = std::string("the prompt read failed: ") + x.what();
+                            } catch (...) {
+                                read_ok = false;
+                                read_err = "the prompt read failed";
+                            }
+                            done.store(true, std::memory_order_release);
+                        });
+                        struct ReadEnd {   // on every way out of this round (an exception too): the reader joined first
+                            std::thread& t;
+                            std::function<bool()>& hook;
+                            bool& reading;
+                            ~ReadEnd() {
+                                if (t.joinable()) t.join();
+                                hook = nullptr;
+                                reading = false;
+                            }
+                        } read_end{reader, sp.stop_at_chunk, in_prompt_read};
+                        bool pump_ok = true;
+                        while (!done.load(std::memory_order_acquire)) {
+                            if (pump_ok && (batch_on() || pipe_inflight())) pump_ok = pump(true);
+                            else std::this_thread::sleep_for(std::chrono::microseconds(200));
+                            // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD ends the read at
+                            // its next chunk
+                            std::lock_guard<std::mutex> lk(in_mu);
+                            for (auto it = in_lines.begin(); it != in_lines.end();) {
+                                if (it->rfind("BSTOP ", 0) == 0) {
+                                    const int b = std::atoi(it->c_str() + 6);
+                                    if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+                                    it = in_lines.erase(it);
+                                } else if (it->rfind("BYIELD ", 0) == 0 && want_yield.load() < 0) {
+                                    want_yield.store(std::atoi(it->c_str() + 7), std::memory_order_release);
+                                    it = in_lines.erase(it);
+                                } else {
+                                    ++it;
+                                }
+                            }
+                        }
+                        reader.join();   // (a failed window leaves the read to finish: it is not stopped mid-run)
+                        sp.stop_at_chunk = nullptr;
+                        in_prompt_read = false;
+                        if (!pump_ok || !pipe_drain()) {
+                            batch_fatal = true;
+                            e = "a pipelined batch window failed";
+                            return false;
+                        }
+                        const int64_t q = read_ok && sp.stopped_at() >= 0 ? q0 + sp.stopped_at() : b0;
+                        std::fprintf(stderr, "strata batch: read %lld tokens on a thread of its own in %.0f ms "
+                                             "(concurrent, to %lld of %lld); the slots decoded %lld rows meanwhile\n",
+                                     (long long) (q - q0),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - tc).count(),
+                                     (long long) q, (long long) n, (long long) (pipe_rows - rows0));
+                        if (!read_ok) {
+                            e = read_err;
+                            return false;
+                        }
+                        if (q < b0 && give_way(want_yield.load(), q, e)) return false;
+                        q0 = q;   // done, or the give-way was not taken there: the rest goes on the same way
+                    }
+                    return true;
+                }
                 const int64_t piece = strata::program::batch_read_piece(o.batch > 0, piped, !stages.empty(), batch_on(), C, yield_chunks);
                 if (piece <= 0) return sp.run(ids.data() + a0, b0 - a0, a0, e);
                 for (int64_t q = a0; q < b0;) {
@@ -11601,39 +11770,7 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    if (ys >= 0) {
-                        // only where the rest is read the same way after it (more than a chunk and more than a short
-                        // read left), text only, and into a slot that is not decoding
-                        const bool can = ys < (int) bs.size() && !bs[(size_t) ys].active &&
-                                         (admit_slot < 0 || ys == admit_slot) && req_imgs.empty() && o.prompt_cache > 0 &&
-                                         b0 - q > std::max<int64_t>(C, o.short_read);
-                        std::string ye;
-                        const auto ty = Clock::now();
-                        std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
-                        if (can && copy_to_slot(ys, pre, ye)) {
-                            BSlot& sl = bs[(size_t) ys];
-                            sl = BSlot{};
-                            sl.ids = std::move(pre);
-                            sl.cached = true;
-                            sl.partial = true;
-                            sl.partial_from0 = read_from == 0 || resumed_from0;
-                            sl.cvec = cvec_cached;
-                            for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
-                                if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
-                                        [](int32_t x, int64_t y) { return (int64_t) x == y; }))
-                                    sl.checks.push_back(c);
-                            yielded_at = q;
-                            yielded_slot = ys;
-                            std::fprintf(stderr, "strata batch: the prompt read gives way at %lld of %lld tokens; slot %d "
-                                                 "holds it (copied in %.1f ms)\n", (long long) q, (long long) n, ys,
-                                         std::chrono::duration<double, std::milli>(Clock::now() - ty).count());
-                            e = "yield";
-                            return false;
-                        }
-                        if (can) bs[(size_t) ys].cached = false;   // half written
-                        std::fprintf(stderr, "strata batch: BYIELD %d not taken at %lld of %lld%s%s\n", ys, (long long) q,
-                                     (long long) n, ye.empty() ? "" : ": ", ye.c_str());
-                    }
+                    if (ys >= 0 && give_way(ys, q, e)) return false;
                     if (decode_share <= 0.0 || !batch_on()) continue;
                     const double budget = decode_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     const auto td = Clock::now();

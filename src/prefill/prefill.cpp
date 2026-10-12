@@ -2175,8 +2175,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    if (hand_in_ == nullptr) stopped_at_ = -1;
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
+        // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
+        // waits for the later stages to read them)
+        if (c0 > 0 && hand_in_ == nullptr && stop_at_chunk && stop_at_chunk()) {
+            stopped_at_ = c0;
+            break;
+        }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251

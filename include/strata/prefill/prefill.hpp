@@ -148,6 +148,12 @@ public:
 
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
+    /// The first stage only, checked before every chunk but the first: true ends the run there as if the prompt
+    /// ended there.  `run` returns true once every stage has read the tokens before that chunk, and `stopped_at()`
+    /// says how many of the run's tokens that is (-1 when the run read them all).  A read beside the batch slots
+    /// (STRATA_PIPED_CONCURRENT) gives way to a waiting shorter request there.
+    std::function<bool()> stop_at_chunk;
+    int64_t stopped_at() const { return stopped_at_; }
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
@@ -200,6 +206,7 @@ private:
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
+    int64_t stopped_at_ = -1;           ///< stop_at_chunk ended the last run after this many tokens (-1: it read all)
     bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
 
