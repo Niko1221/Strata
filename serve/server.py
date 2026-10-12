@@ -4092,7 +4092,7 @@ class Service:
         try:
             while not acquired:
                 if cancel is not None and cancel.is_set():
-                    raise ValueError("video request cancelled")
+                    raise VideoCancelled("video request cancelled")
                 acquired = slots.acquire(timeout=0.05)
             with self.status_lock:
                 self.status["queued"] -= 1
