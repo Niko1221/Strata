@@ -10330,12 +10330,6 @@ int main(int argc, char** argv) {
                               : pin_blobs_on() ? "not with page-locked swap sources"
                               : strata::core::dma_batch_mode() != 0 ? "not with STRATA_DMA_BATCH"
                               : adapt_lag() != 1 || adapt_nowait() ? "not with STRATA_ADAPT_LAG / STRATA_ADAPT_NOWAIT"
-                              // a remote stage's worker: opt-in.  Its copies land while the main process runs its own layers,
-                              // so on a 3080 + 2080 Ti pair over 10 GbE nearly all had landed by the next window (26-42 ms
-                              // of waiting per run; 6 interleaved pairs, the main's overlap on: decode -0.22%, 2/6 faster;
-                              // the worker's time per window equal)
-                              : stage_worker && !(std::getenv("STRATA_ADAPT_OVERLAP") && std::getenv("STRATA_ADAPT_OVERLAP")[0] == '1')
-                                    ? "not on a remote-stage worker unless STRATA_ADAPT_OVERLAP=1"
                               // the resident RAM mode is exact too (soft_commit_exchanges) but not a win everywhere: RTX A4000 +7.0%
                               // (5/5 pairs), RTX 3060 on a 46 GB box -2.6% (0/5; the CPU experts and the copies share the RAM bandwidth)
                               : src.complement_ready() && !(std::getenv("STRATA_ADAPT_OVERLAP_RESIDENT") &&
@@ -11857,6 +11851,14 @@ int main(int argc, char** argv) {
                     // the prompt path's buffers out of this worker's cache, for the main process's chunk size (a
                     // loan that covers it stays for the rest of the prompt)
                     if (!lend(std::max<int64_t>(T, main_chunk), e, 0)) return false;
+                    // #2090 halves a chunk whose loan does not fit; this worker reads the main process's chunk whole
+                    // (on_chunk writes one T-row reply, a relay forwards one chunk), so a smaller one is an error
+                    if (sp.chunk() < T) {
+                        e = "this worker lends the prompt path buffers for " + std::to_string(sp.chunk()) +
+                            " tokens, the main process sends chunks of " + std::to_string(T) +
+                            " (start the main process with --prefill " + std::to_string(sp.chunk()) + ")";
+                        return false;
+                    }
                     sp.set_hand_in(rows_in);
                     sp.set_single_chunk((flags & 1) != 0);
                     return sp.run(tokens, T, p0, e);

@@ -597,6 +597,22 @@ Then images ([Images](#images)). Checked on PC A and PC B (RVN IQ3_S, 10 GbE, K=
 - **Builds.** CUDA 13.0 on Linux (sm_75 + sm_86) and on Windows (MSVC 2022, sm_86); HIP (ROCm 7.0, gfx1100) and
   the SYCL port (oneAPI 2026.1.1), both in containers.
 
+### After the rebase onto 0.1.43.1 (2026-10-13)
+
+The branch was rebased onto upstream main a0116b27 (engine 0.1.43.1, 33 commits after 7695859a). One textual
+conflict: #2090 changed the prompt path's loan (`lend`) at its old place in `main()`, which this branch had moved up
+so a worker can use it; the moved copy took the change, and it is the same as upstream's. Three follow-ups:
+- #2090 halves a prompt chunk whose loan does not fit the cache, instead of ending the engine. A worker reads the main
+  process's chunk whole (its rows go back as one reply, and a relay forwards it as one chunk), so a worker whose loan
+  comes out smaller than the chunk it was sent answers an error that names the `--prefill` that fits. Before
+  0.1.43.1 that worker failed the loan's relayout with an error too; halved without the check, it would have answered
+  wrong rows, and a relay would have lost step with its next worker.
+- 0.1.43.1 made `STRATA_ADAPT_OVERLAP` opt-in on every backend (#2010). The worker's own opt-in clause is gone: the
+  same switch now holds on both PCs, and neither overlaps by default. In the runs above the main process's overlap
+  was on.
+- The server's 503 for a remote stage's error sends its Retry-After through `_json`'s headers, which upstream added
+  too; the merge had sent the field twice, and the server's test now checks it is sent once.
+
 ## Lessons
 
 - **The prompt chunk decides the split's prompt speed.** At 2048 no split beat one card; at 5888-8192 every split did

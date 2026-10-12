@@ -24,11 +24,12 @@ window goes through the stages one after the other.
 
 Three PCs, 2026-10-09 and 2026-10-10. Every PC ran a build of this feature (CUDA 13.0) on engine 0.1.41, and the
 tables were not run again on later engines. 0.1.42 turned `STRATA_ROUTE_TAIL_SKIP` on by default for CUDA serve
-(upstream measured 1.13-1.16x decode on single cards that miss experts); 0.1.43 lets the adaptive tier's copies land
-while the next window runs (`STRATA_ADAPT_OVERLAP`, on for Linux CUDA): the main process does, and a worker only with
-`STRATA_ADAPT_OVERLAP=1` (not measured faster there). The checks after
-each rebase are in ENGINEERING.md: [0.1.42](remote-stage/ENGINEERING.md#after-the-rebase-onto-0142-2026-10-11),
-[0.1.43](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12).
+(upstream measured 1.13-1.16x decode on single cards that miss experts); 0.1.43 let the adaptive tier's copies land
+while the next window runs (`STRATA_ADAPT_OVERLAP`, then on for Linux CUDA), and 0.1.43.1 made that opt-in on every
+backend: neither PC of a remote stage runs it unless `STRATA_ADAPT_OVERLAP=1` is set there. The checks after each
+rebase are in ENGINEERING.md: [0.1.42](remote-stage/ENGINEERING.md#after-the-rebase-onto-0142-2026-10-11),
+[0.1.43](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12),
+[0.1.43.1](remote-stage/ENGINEERING.md#after-the-rebase-onto-01431-2026-10-13).
 
 | | PC A (main) | PC B | PC C |
 |---|---|---|---|
@@ -262,7 +263,7 @@ main process without it.
 | `--stage-bind ADDR` | worker | the address to listen on (default: every interface, IPv4 and IPv6) |
 | `STRATA_STAGE_TOKEN` | every PC | the shared secret in the hello (up to 63 characters). A worker without one warns and accepts anyone |
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
-| `STRATA_ADAPT_OVERLAP=1` | worker | let the adaptive tier's copies land while the next window runs, as 0.1.43's main process does by default on Linux CUDA. Off on a worker unless set: it was not measured faster there ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
+| `STRATA_ADAPT_OVERLAP=1` | any | let the adaptive tier's copies land while the next window runs (opt-in on every PC since 0.1.43.1). On a worker it was not measured faster ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
 | `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit |
 | `STRATA_REMOTE_CONNECT_S` | main | seconds the main process keeps trying to connect, every 2 s, while the worker's name does not resolve, nothing listens at its address or the network does not reach it: at its start, and when a request finds the link lost (default 180; 0: one try). The wait can last that long plus the last try's own wait (a connect's SYN tries; a hello waiting for the worker's reply, up to `STRATA_REMOTE_TIMEOUT_S`). During a request the main process prints `INFO remote_stage_wait=S` every 10 s meanwhile, so the server does not take the wait for a frozen engine. A refusal (token, model, layers, chunk) is not tried again. A worker down for longer is still found: the server's next request starts the main engine again, which tries anew |
 | `STRATA_REMOTE_TAKEOVER_S` | worker | seconds the connection served must have had no message read, being read, or a reply going out before a new main process may take the worker over (default 30; 0: never, a new one waits until the old one closes) |
@@ -514,6 +515,7 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 | `the main process reads images (--vision): start this worker with --vision too` | add `--vision` to every worker's command, a relay's next worker's too ([Images](#images---vision)) |
 | `remote stage: the two sides differ (protocol ..., first remote layer ..., K/V type ..., model pack ...)` | the same build of the engine on every PC, the same pack, the same `--kv`, and `--stage-begin` = the previous stage's K |
 | `the main process reads prompts in chunks of N tokens, this worker's chunk is M` | the worker's `--prefill` must be at least the main process's chunk |
+| `this worker lends the prompt path buffers for M tokens, the main process sends chunks of N` at a long prompt | the worker's cache cannot lend the buffers for the main process's chunk (0.1.43.1 halves such a loan); start the main process with `--prefill M` |
 | `the main process's context (N) or window (T) is larger than this worker's` | the worker's `--max-context` and `--spec` must be at least the main process's |
 | `ArenaExpertSource: a layer range needs a native pack read from its GGUF` | a pack directory with `experts.bin`: use a copy without it; drop `--shared-expert-arena` |
 | `strata generate: remote stage: it does not support ...` | remove that flag (see above) |
