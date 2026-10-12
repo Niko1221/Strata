@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "ticket": "P03",
+  "status": "CPU_PREWORK_PASS_GC_PENDING",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p03.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "9eb37da8b6d678f1f90bd220f07d9b1542cb461d8a6b3f99d9dd1360ef141e57"
+    },
+    "interrupted": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p0*.py",
+        "-v"
+      ],
+      "exit_code": -2,
+      "test_sha256": "9eb37da8b6d678f1f90bd220f07d9b1542cb461d8a6b3f99d9dd1360ef141e57"
+    },
+    "red-corrected": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p03.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p0*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+    },
+    "evaluation-regression": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+    }
+  },
+  "green_tests": 3,
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "source_sha256": {
+    "src/context_time_travel/store.py": "c608d600b7ae3b0494c8fe1cee4213f01a0dcc8ce70a4acc255bb6e3e63a2a45",
+    "src/context_time_travel/real.py": "0a755d8987fe5f589437f0e72d374db345291250ae658d9f6826cf78771b7383",
+    "src/context_time_travel/evaluation.py": "50eb565b92de2e5a52e8367d2f142b11d71b15d836cd6fca757c2bd0a7c0f1d8",
+    "tests/implementation/test_p03.py": "311b9273f4f629ae901627905e2223d316d0daa8effde29e35da6b6227c28dfd"
+  },
+  "raw_sha256": {
+    "evaluation-regression.json": "823ab4e4d4283db87d59266adb032dab6da1be593839b549dc1a28706a9109bc",
+    "evaluation-regression.stderr": "8cd7f7c1245facdf9aa8836e63bbe1dda99b054f0cc7257d1fee513de3b5aa3c",
+    "evaluation-regression.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.json": "3b8f92d3488979c89a52b3399aabd6ccce3e943a0d1e7de026f9d503cc5ef6ed",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "bb27b50ea0fd0601b1c5597dec355b9a24e6acda9e036d004946c17d94eb7449",
+    "green.json": "ffa735d4ced8ca8dc440f2f188c3768565419bdf44fc7fea2eee145f45718341",
+    "green.stderr": "5ba39fda8b6b6bebdbae5b399999dabd749c2afe57794c42011fff2bbf063aa6",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "interrupted.json": "f7241b36ad153d52f9ca2675745b45c44e3bb7a652ddc3133cc955d5d5a9e519",
+    "interrupted.stderr": "81d71e97d8c6e484b5dda4d5650e87076c42d5c8c3ceb8cf6ae1c027613215a0",
+    "interrupted.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "a3bdaa69d76e87c2b2852b832dad599259039804a4d70b9df1b95a579b21519b",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red-corrected.json": "914570b287c8dd8ab5d63cb1ede52071b556f5962ede2b7916c869181e02d5a5",
+    "red-corrected.stderr": "3425c75bea67758250179ee28f4eb83ae39fd842110255e43c18a722758cdb15",
+    "red-corrected.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "red.json": "54bd9c047913f81c61e38516cfd4c8497ec1193e3cebe8f96f6eb37c90070c2b",
+    "red.stderr": "3425c75bea67758250179ee28f4eb83ae39fd842110255e43c18a722758cdb15",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "store-before.py": "272c06035c04fb056ff1a72e52dd5564891ae1863fd1d8c7510ca96266a0f6d9"
+  },
+  "test_harness_correction": "Removed release.set() after terminating its waiter: multiprocessing.Event.notify hung waiting for the dead process. Assertions preserved; corrected test rerun red against 214cc3e8 store then green.",
+  "limitations": [
+    "History GC and synchronization with mutations remain P04; no deletion implementation yet.",
+    "Materialization lease integration is not yet tested against the GPU backend.",
+    "Current model inputs are inline token IDs; external input-artifact retention remains unsupported."
+  ]
+}

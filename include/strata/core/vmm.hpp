@@ -16,9 +16,43 @@ using VmmChunk = unsigned long long;
 bool vmm_available();
 /// The chunk size (0 when not available).
 uint64_t vmm_granularity();
-/// A new physical chunk on the current device (0: out of memory), and its release.
+/// A new physical chunk on the current device (0 on failure), and its release.
 VmmChunk vmm_chunk_new();
 void vmm_chunk_free(VmmChunk h);
+bool vmm_chunk_release(VmmChunk h);
+
+// Direct results from VMM driver operations, separate from rejected local
+// arguments or host allocation failures. Successful calls do not erase the
+// last failure. Operation names are static strings owned by the implementation.
+struct VmmFailureCounters {
+    uint64_t driver_failures = 0, out_of_memory_failures = 0;
+    int last_error = 0;
+    const char* last_operation = "";
+};
+VmmFailureCounters vmm_failure_counters();
+
+// A borrowed mapping: allocation ownership belongs to the caller. Unlike
+// VmmRange this never releases a physical allocation handle.
+struct VmmMappingCounters { uint64_t mappings = 0, unmappings = 0, reservations = 0, address_releases = 0; };
+VmmMappingCounters vmm_mapping_counters();
+class VmmMapping {
+public:
+    VmmMapping() = default;
+    ~VmmMapping();
+    VmmMapping(const VmmMapping&) = delete;
+    VmmMapping& operator=(const VmmMapping&) = delete;
+    bool reserve(uint64_t bytes);
+    bool release();
+    bool clear(); // unmap only; keep the graph-visible virtual addresses
+    uint64_t capacity() const { return handles_.size()*vmm_granularity(); }
+    bool map(int64_t index, VmmChunk handle, bool writable);
+    bool unmap(int64_t index);
+    bool protect(int64_t index, bool writable);
+    uint8_t* base() const { return (uint8_t*)(uintptr_t)base_; }
+private:
+    uint64_t base_ = 0;
+    std::vector<VmmChunk> handles_;
+};
 
 class VmmRange {
 public:

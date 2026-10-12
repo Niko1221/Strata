@@ -1,5 +1,8 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/batch_rows.hpp"
+#ifdef STRATA_STEP_DRIVER
+#include "strata/core/step_projection.hpp"
+#endif
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -1125,6 +1128,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_;
                 mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);
+#ifdef STRATA_STEP_DRIVER
+                if (l == 0 && grp == 0 && step_projection &&
+                    !step_projection->capture(xm, qkv + (size_t) tb * C, cs)) {
+                    err = "step projection: verifier copy failed"; return false;
+                }
+#endif
                 stamp(l, 2, grp);
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
@@ -2286,6 +2295,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+    completed_forward_tokens += (uint64_t)T;
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";

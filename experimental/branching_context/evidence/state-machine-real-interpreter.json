@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "status": "REAL_INTERPRETER_WRITTEN_NOT_EXECUTED",
+  "red": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q02_real.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "5a7041201faf5182949f2a1210c837dd3deeaf713740e794801f3628be85ec1b"
+  },
+  "source_sha256": {
+    "scripts/state_machine.py": "94d04ca716b0353077761820ae7d21f8531f916b8549ed1e5d6a55902d9f8e6e",
+    "tests/implementation/test_q02_real.py": "5a7041201faf5182949f2a1210c837dd3deeaf713740e794801f3628be85ec1b"
+  },
+  "real_sequences_executed": 0,
+  "raw_sha256": {
+    "logical-regression.stderr": "1d49832ece82d98efb4128d84a3a7362eae379a1af5da138ba9009286f502bec",
+    "logical-regression.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "red.json": "852b64594af439bf627a42b14df50871b30fba0ea793d4da71d17cc1c35d981b",
+    "red.stderr": "d5e7eb48ad587ac4ba9c24a06a8f4a90f00692a1c92cd43956daa319e7e7ba44",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Real operation interpreter has only been syntax checked; bounded real test awaits frozen profile.",
+    "Campaign orchestration, failure replay/reduction wiring and registered 1000-sequence method remain incomplete.",
+    "Generation uses singleton token support for independently known token and one-draw expectations; broader sampler coverage belongs to existing controller cases."
+  ]
+}

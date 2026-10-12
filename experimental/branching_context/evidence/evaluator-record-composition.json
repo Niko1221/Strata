@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "ticket": "E02",
+  "status": "CPU_COMPOSITION_PASS_REGISTERED_ACCEPTANCE_PENDING",
+  "host": "llm-49",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02_records.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8"
+    }
+  },
+  "green_tests": 2,
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "registered_tests_written": [
+    "test_g4_003_evaluator_read_only",
+    "test_g4_004_evaluator_reproducibility",
+    "test_g4_005_evaluator_side_effects_sandbox",
+    "test_g4_010_evaluation_does_not_consume_rng"
+  ],
+  "registered_tests_executed": false,
+  "source_sha256": {
+    "src/context_time_travel/evaluation.py": "c135d908d88f1ff8dfec4c3befa2e26dc134f442f18f0d77cda1b78e7f51f9f5",
+    "src/context_time_travel/evaluation_worker.py": "068fc01ef740e23e5bf8610f79ed6626323ead4a50b5f741ae43c4e7608f0688",
+    "tests/implementation/test_e02_records.py": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8",
+    "tests/gates/G4/test_evaluator_isolation.py": "4c5d0caab820c36acb9aee61e12cbc83e3562fab3f89ca83ef03ec6aac699a00"
+  },
+  "raw_sha256": {
+    "G0.json": "dae6169a99231d8aea36956ba85a8c4c490103680dd18a0e6ce5c4e7f426ec8a",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "2adc3c9388cbc3d55a1b5ce63049ae07b1024729808a69a7cd7ab254b0e50515",
+    "green.json": "1c65dcc05c03ea78e32882fa26468b0086cc1443fbdd61181c7a403b987b90fe",
+    "green.stderr": "69b0d2e49d21205ec992f7c6565b56ffeb8f58d310db5dee8ff55d86f838b0ce",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "4a27db2bd12c798cfa0ced4280dd8bbb67ae5dee83617c48dd207bfe30575df4",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "79c7542ceb21243884a4b0064e5a96f757f4e4cd982215028017d7cca6f91998",
+    "red.stderr": "ed951d78949afc4c6f1c3f1b9b9b65ba4b50a7219302b8a20c4b7383d912454d",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "No GPU acceptance in this measurement.",
+    "N03 baseline remains in progress; E02 queue validation not claimed.",
+    "Linux bubblewrap only; timeout descendant cleanup and resource scope require additional hardening."
+  ]
+}

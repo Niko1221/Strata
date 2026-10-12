@@ -1,0 +1,5609 @@
+{
+  "schema": 1,
+  "scope": "All remaining implementation and bounded draft validation; full certification disabled",
+  "base_commit": "6dd5f9df7e1aa7f00045cf72e997fd8595175847",
+  "branch": "feat/branching-completion",
+  "defaults": {
+    "command_timeout_seconds": 1800,
+    "ticket_validation_seconds": 7200,
+    "profile": "Q8_0 weights / FP16 KV / Linux CUDA",
+    "single_active_ticket": true
+  },
+  "protected_files": {
+    "spec/branching-context-api.md": "c847876f4efbec69760ffdf8793389afbcfacbace6187661606e97aabe95fabe",
+    "docs/acceptance.json": "a6f59153a78fbcc8e4e0fcee1d47f5dfded645f6f7f474010883421ac6695f3b",
+    "docs/test-matrix.md": "22204dd65729b71aa35d2896304b2c4b2fd5d202a30f4f7e1e81f39a2dab57b1",
+    "docs/locked-references.json": "c7c734a01471e9e39471259283e1e7a406801357178c6b2b49ade1ab38eb64a5",
+    "tests/test_logical_store.py": "7108d9ba90b48a09418a3eaa0a8d280506a41bfb9531f4fc7f35da9b7d53e798",
+    "tests/test_numerics.py": "f38ac8b7f63974b8938a76ed11702eb6be8318f9b5871c09654bde146ae694fd",
+    "tests/native/build_cow_mutant.py": "154c259827564838c0869d18aea4aa2b4278fa2915158c33ce35f2272f716dd3",
+    "tests/native/build_integrity.py": "7f724f5d292dbb633b71f09675cbe0aee220720bcd8790cab6058510febb827a",
+    "tests/native/build_page_fault.py": "c51e2c82322dfc7ef44c37296111e1650fa60ebc71e33d60b007b20a5e0a0f17",
+    "tests/native/test_allocation_probe.py": "17759b26ef3bf43fe9b8193605f88d0cb0a8b1148653d1da05d089bfd2d1eda3",
+    "tests/native/test_cache_interleaving.py": "2c697c7afe3098b7afbf5a2a9c572d434d64b08144efbbbdb595319edce91b2f",
+    "tests/native/test_calibration_inputs.py": "8bd0a7d8f256669d033da3e48ccc600f58657d54447c11c435b02732e2723044",
+    "tests/native/test_fork_work.py": "567f8558276d243ab5e2907b02c7264a7d19f80413fd39bfc9d4a180e512de80",
+    "tests/native/test_reference_crashes.py": "8594b82384dcde9ee4eb1088558cea3590c68dbb5305f682650ea0d5df88db61",
+    "tests/native/test_strata_accounting.py": "abce5894c63ab5ecb1e13909dc9ace74d378cbbf6491ba83aa048d6810c2c752",
+    "tests/native/test_strata_api.py": "3329bdb4a1d6c0d412bc6c07ea37afd95eb3342a8b439eb738bfd8b4bf919889",
+    "tests/native/test_strata_audit.py": "ee49f1202f1d838a315767fe3ce70e6d9cdec607acfd0b100c162c4977cf319c",
+    "tests/gates/G1/test_adapter.py": "e736979cab9e4eb1b0186638520f5cfafa520d72740a067c6349f4bbc08f435f",
+    "tests/gates/G1/test_continuation.py": "cd984f78e6f455927f2a25260796c42daeced9783c2ee4a0a00190b483b410ae",
+    "tests/gates/G1/test_controller.py": "f9e4c1a56a94f7694d2d3b0e3ab8a22a3d26f4e82a25f3906f0d528e7f475283",
+    "tests/gates/G1/test_profiles.py": "5b6142dcb435c00c7c6887fa269a561870ce6c0a1b6e3865303feb04743c775d",
+    "tests/gates/G2/test_crashes.py": "a618f21862de0fe5177ae66d6d736e0368f8f9e89a1b47e98dbd6c2b7217b29d",
+    "tests/gates/G2/test_leases.py": "14e7a913c9dcc9748c9fddc377b5be6ccf7825006b7365973a811095c3bada20",
+    "tests/gates/G2/test_recovery.py": "f7fa45da02ee009bb4eff0bd34b5d01af9aae0696743793c69d1c9e24099a49b",
+    "tests/gates/G2/test_resume.py": "5b2a5f8f2413c1126904788d9bd4d0467331a834a2384a815961e4aa4dd3f909",
+    "tests/gates/G3/test_eviction.py": "226de4b59bb7dce194cd0d91c124a5bc785e4dfe680ca751b55aa27962ede74d",
+    "tests/gates/G3/test_fork.py": "b49994ab732800827c6fb829c5167cb6c66b3d12c24ecd76a9dc8353ddc27738",
+    "tests/gates/G3/test_immutability.py": "ed86bd3e2a05b48108fe8c228c816b09e63a6113a197491959e55f12ac12742a",
+    "tests/gates/G3/test_integrity.py": "f517c3f461bdcbb287a6aec5b71fee92a39005b9721e7e62ae9923cf632ccad1",
+    "tests/gates/G3/test_interleaving.py": "6610dbf896aeede8a98f1cd2096c7e98200bac4f5bf78e053b433c26f262e3b8",
+    "tests/gates/G3/test_lifecycle.py": "5dc80246ee89a0f30a119111c8197981aa26ab7aa9f8c6d4b7056b888d5db567",
+    "tests/gates/G3/test_offload.py": "dca5dffd75beb98be2f15f1e5d6f8f1dd828342366dd6741803919a6643e291a",
+    "tests/gates/G3/test_ownership.py": "79bb2415a8538fffb5977bbb1d225b6113975494d71d440c3671d46337f6b1ac",
+    "tests/gates/G3/test_partial_cow.py": "19d8f75459f10d0e7e7d511e4ea23bf697fc079fa6c612137c59764e4477dfc4",
+    "tests/gates/G3/test_pressure.py": "a2d3e883894ea4066eab9da75295ca4a38fc241bb1db02c40f2fa1e69761814c",
+    "tests/gates/G3/test_quantization.py": "cab386be2f27d2244f9a3ed846b61f4c421cb78c100e0f193d8a9be28511fcf7",
+    "tests/gates/G3/test_recurrent.py": "a0d2c3dde8eda6beba2af61f15b8bd7099c3031cf60f66caac0ba8ddd0dd34b0",
+    "tests/gates/G3/test_resources.py": "0b4e6fb712648e4965cbb667d440a2c28cc43f6707fb6ea4cf530a0904e22a5d",
+    "tests/gates/G3/test_sharing.py": "371327699bead20c17896072551adb2aeac01a9357aeeec2ae16e9dd07fb11cb",
+    "reference/test_context_time_travel_toy.py": "44c9ee81e8f9b2da0cb829e27fe14b11ba3db9b94266e1e52f8f0961c29efd23"
+  },
+  "tickets": [
+    {
+      "id": "H00",
+      "title": "Validate the development harness",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [],
+      "files": [
+        "experimental/branching_context/plans/luna/drive.py",
+        "experimental/branching_context/plans/luna/test_drive.py"
+      ],
+      "invariant": "Actual interruption, live PID identity, stale artifacts, skips, command failures, timeouts and duplicate execution are detected.",
+      "commands": [
+        {
+          "id": "harness",
+          "phase": "observe",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "plans/luna",
+            "pattern": "test_drive.py"
+          }
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "B00",
+      "title": "Inventory the unchanged acceptance contract",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "H00"
+      ],
+      "files": [
+        "experimental/branching_context/docs/acceptance.json"
+      ],
+      "invariant": "All 85 case IDs inventoried by AST without importing the POSIX store. Presence never implies execution. Protected files retain original bytes.",
+      "commands": [
+        {
+          "id": "inventory",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "plans/luna/drive.py",
+            "inventory",
+            "--output",
+            "{result}"
+          ],
+          "artifacts": [
+            "{result}"
+          ]
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "B01",
+      "title": "Run reference checks on Linux",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "B00"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/verify.py"
+      ],
+      "invariant": "Run 51 G0 tests with zero skips and the four reference mutants; preserve Windows fcntl import failure separately.",
+      "commands": [
+        {
+          "id": "G0",
+          "phase": "observe",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "demo",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "examples/branching_demo.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "B02",
+      "title": "Revalidate pinned native source and short CUDA case",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "B01"
+      ],
+      "files": [
+        "src/core/branch_session.cpp",
+        "src/core/branch_pages.cpp",
+        "experimental/branching_context/evidence/upstream-validation.json"
+      ],
+      "invariant": "Before execution check host, model file receipts, source and binary hashes, and absence of branch-state symbols in oracle. Capture eight exact comparisons, direct byte/work audits and cleanup. No numerical-profile admission from this case.",
+      "commands": [
+        {
+          "id": "G3-004",
+          "phase": "observe",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G3",
+            "--pattern",
+            "test_immutability.py"
+          ],
+          "expected_ids": [
+            "test_g3_004_shared_page_never_written"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest",
+            "native_source"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "C01",
+      "title": "Bridge canonical snapshots to native conversation caching",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B02"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "include/strata/core/conversation_cache.hpp",
+        "src/core/branch_driver.cpp",
+        "experimental/branching_context/src/context_time_travel/strata_backend.py",
+        "experimental/branching_context/tests/implementation/test_c01.py"
+      ],
+      "invariant": "Map cache entries to exact canonical consumed histories and checked checkpoints. Cache miss replays canonical inputs. Same suffix after different prefix must miss. No second authoritative history representation.",
+      "registered_cases": [
+        "G1-007",
+        "G1-008",
+        "G1-023",
+        "G1-024"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-007",
+          "gate": "G1",
+          "test": "test_g1_007_repeated_token_history",
+          "assertion": "Same repeated token or last token in different histories cannot collide in prefix-cache identity."
+        },
+        {
+          "id": "G1-008",
+          "gate": "G1",
+          "test": "test_g1_008_same_last_block_different_prefix",
+          "assertion": "Two histories sharing the same final KV block contents but different earlier tokens never incorrectly share states."
+        },
+        {
+          "id": "G1-023",
+          "gate": "G1",
+          "test": "test_g1_023_incompatible_model_rejected",
+          "assertion": "Different weights/adapters/architecture cannot import old numerical checkpoints."
+        },
+        {
+          "id": "G1-024",
+          "gate": "G1",
+          "test": "test_g1_024_execution_profile_mismatch",
+          "assertion": "A numerically incompatible checkpoint representation is rejected or safely recomputed."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01.py"
+          },
+          "expected_ids": [
+            "test_c01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_c01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C02",
+      "title": "Preserve publication and controller boundaries",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "experimental/branching_context/src/context_time_travel/real.py",
+        "experimental/branching_context/src/context_time_travel/controller.py",
+        "experimental/branching_context/tests/implementation/test_c02.py"
+      ],
+      "invariant": "Sample, consume, durable snapshot publication, then resumable output; cancellation between steps cannot publish partial state. RNG draw cursor, grammar, penalties and UTF-8 stop progress round-trip independently of native KV.",
+      "registered_cases": [
+        "G1-004",
+        "G1-014",
+        "G1-015",
+        "G1-016",
+        "G1-017",
+        "G1-018",
+        "G1-027"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c02.py"
+          },
+          "expected_ids": [
+            "test_c02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_c02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C02-REPAIR",
+      "title": "Restore idle Feed and validate real consumed publication",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C02"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/controller.py",
+        "experimental/branching_context/tests/implementation/test_c02_idle.py"
+      ],
+      "invariant": "Canonical idle snapshots accept forced inputs without generation state. Versioned generation remains checked. Actual real-model A/B frontiers, durable publication, cancellation and cold RNG/grammar/stop resume agree with independent fresh histories.",
+      "registered_cases": [
+        "G1-004",
+        "G1-014",
+        "G1-015",
+        "G1-016",
+        "G1-017",
+        "G1-018",
+        "G1-027"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "names": [
+              "test_c02_idle.IdleControllerTests.test_c02_idle_invariant"
+            ]
+          },
+          "expected_ids": [
+            "test_c02_idle_invariant"
+          ],
+          "assertion_text": "Forced input at an idle canonical snapshot"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c02_idle.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "controller-negative",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c02.py"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C03",
+      "title": "Retain shared roots under background forks and eviction",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C02"
+      ],
+      "files": [
+        "include/strata/core/conversation_cache.hpp",
+        "src/program/generate.cpp",
+        "experimental/branching_context/tests/implementation/test_c03.py"
+      ],
+      "invariant": "Advancing a background fork never replaces a retained main prefix. Apply per-slot admission/retention without making cache eviction history deletion. Test root retained, root evicted/cold replay and cancelled child.",
+      "registered_cases": [
+        "G2-002",
+        "G2-014",
+        "G3-007"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-002",
+          "gate": "G2",
+          "test": "test_g2_002_remove_all_kv_checkpoints",
+          "assertion": "Delete every cached numeric state and reconstruct logits/tokens from retained inputs."
+        },
+        {
+          "id": "G2-014",
+          "gate": "G2",
+          "test": "test_g2_014_eviction_vs_deletion",
+          "assertion": "Cache eviction can never delete retained history; historical deletion requires distinct authorization."
+        },
+        {
+          "id": "G3-007",
+          "gate": "G3",
+          "test": "test_g3_007_evict_one_branch_keep_other",
+          "assertion": "Eviction of one numerical state leaves siblings and root reconstructible."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c03.py"
+          },
+          "expected_ids": [
+            "test_c03_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_c03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "R01",
+      "title": "Share immutable host prefix pages",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01"
+      ],
+      "files": [
+        "include/strata/core/conversation_buffer.hpp",
+        "include/strata/core/conversation_cache.hpp",
+        "src/core/conversation_snapshot.cpp",
+        "experimental/branching_context/tests/implementation/test_r01.py"
+      ],
+      "invariant": "Introduce shared immutable host page ownership only for derived checkpoints. Canonical prefix+model/profile/input identity controls reuse. k siblings share allocated prefix bytes; same last block with a different prefix does not share.",
+      "registered_cases": [
+        "G3-002",
+        "G3-015"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G3-002",
+          "gate": "G3",
+          "test": "test_g3_002_unique_kv_page_accounting",
+          "assertion": "Unique prefix pages do not grow k-fold as k branches fork the same root."
+        },
+        {
+          "id": "G3-015",
+          "gate": "G3",
+          "test": "test_g3_015_counters_are_direct",
+          "assertion": "Instrumented counters reflect actual backend work, not guessed from response time."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r01.py"
+          },
+          "expected_ids": [
+            "test_r01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_r01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "R02",
+      "title": "Copy private host tails and isolate hybrid state",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "R01"
+      ],
+      "files": [
+        "include/strata/core/conversation_buffer.hpp",
+        "src/core/conversation_state.cpp",
+        "src/core/conversation_snapshot.cpp",
+        "experimental/branching_context/tests/implementation/test_r02.py"
+      ],
+      "invariant": "Published pages stay immutable even at refcount one. Partial tails COW before writes; scales, indexer, GDN/PLE and frontier cannot leak. Direct copy bytes grow with tail/page size, not full prefix. Test layout boundaries; do not reduce G3-003 exhaustive assertions.",
+      "registered_cases": [
+        "G3-003",
+        "G3-004",
+        "G3-005",
+        "G3-006",
+        "G3-010"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G3-003",
+          "gate": "G3",
+          "test": "test_g3_003_partial_tail_cow",
+          "assertion": "Fork at each partial-page position: sibling append copies/makes private tail only."
+        },
+        {
+          "id": "G3-004",
+          "gate": "G3",
+          "test": "test_g3_004_shared_page_never_written",
+          "assertion": "Byte/checksum audit proves shared pages remain immutable across child generation."
+        },
+        {
+          "id": "G3-005",
+          "gate": "G3",
+          "test": "test_g3_005_quantization_scale_isolation",
+          "assertion": "Shared quantizer metadata/outlier state cannot be mutated by sibling."
+        },
+        {
+          "id": "G3-006",
+          "gate": "G3",
+          "test": "test_g3_006_recurrent_buffer_isolation",
+          "assertion": "When applicable, recurrent state is isolated or capability blocked."
+        },
+        {
+          "id": "G3-010",
+          "gate": "G3",
+          "test": "test_g3_010_tail_copy_bounded",
+          "assertion": "Measured tail-copy work is bounded by page size, not the whole prefix."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r02.py"
+          },
+          "expected_ids": [
+            "test_r02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_r02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "R03",
+      "title": "Account and release shared host storage under pressure",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "R02",
+        "C03"
+      ],
+      "files": [
+        "src/core/conversation_memory.cpp",
+        "include/strata/core/conversation_cache.hpp",
+        "experimental/branching_context/tests/implementation/test_r03.py"
+      ],
+      "invariant": "Count unique allocated bytes, owners and copied bytes at allocation/release/copy sites. RAM budget is deduplicated. Eviction, failed allocation and RAM/disk restoration preserve retained siblings; teardown returns to measured baseline.",
+      "registered_cases": [
+        "G2-013",
+        "G3-008",
+        "G3-009",
+        "G3-012",
+        "G3-014",
+        "G3-015"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-013",
+          "gate": "G2",
+          "test": "test_g2_013_out_of_memory_transaction",
+          "assertion": "Backend allocation failure does not corrupt published history or other branches."
+        },
+        {
+          "id": "G3-008",
+          "gate": "G3",
+          "test": "test_g3_008_cpu_ram_ssd_roundtrip",
+          "assertion": "If supported, exact persisted state offload and restore agree with fresh oracle."
+        },
+        {
+          "id": "G3-009",
+          "gate": "G3",
+          "test": "test_g3_009_memory_pressure_recovery",
+          "assertion": "Forced allocation pressure uses fallback or error without branch corruption."
+        },
+        {
+          "id": "G3-012",
+          "gate": "G3",
+          "test": "test_g3_012_allocation_leak_cycles",
+          "assertion": "Many fork/release/rewind cycles return allocations to stable baseline."
+        },
+        {
+          "id": "G3-014",
+          "gate": "G3",
+          "test": "test_g3_014_corrupt_page_refusal",
+          "assertion": "Corrupt/offline cache page is never fed to attention; replay or explicit error."
+        },
+        {
+          "id": "G3-015",
+          "gate": "G3",
+          "test": "test_g3_015_counters_are_direct",
+          "assertion": "Instrumented counters reflect actual backend work, not guessed from response time."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r03.py"
+          },
+          "expected_ids": [
+            "test_r03_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "red-asan",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "names": [
+              "test_r03_asan.HostViewSafetyTests.test_r03_published_write_after_directory_growth"
+            ]
+          },
+          "expected_ids": [
+            "test_r03_published_write_after_directory_growth"
+          ],
+          "assertion_text": "heap-use-after-free",
+          "platform": "posix"
+        },
+        {
+          "id": "green-asan",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r03_asan.py"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "red-workspace",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "names": [
+              "test_r01.HostPrefixSharingTests.test_r01_invariant"
+            ]
+          },
+          "expected_ids": [
+            "test_r01_invariant"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "prior-host",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r0[12].py"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_r03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "R03-ADMISSION",
+      "title": "Repair COW admission and const-read behavior",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "R03"
+      ],
+      "files": [
+        "include/strata/core/conversation_buffer.hpp",
+        "include/strata/core/conversation_cache.hpp",
+        "experimental/branching_context/tests/implementation/test_r03_admission.py"
+      ],
+      "invariant": "Conservative standalone capture charges retain the original estimator contract; actual cache payload accounting deduplicates allocation identities. Const reads do not copy or move immutable bytes. Capture admission includes COW payloads and directory replacement.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r03_admission.py"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_published_rewrite_fits_admission",
+            "test_readonly_visit_keeps_published_payload",
+            "test_standalone_admission_and_cache_unique_storage"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r03_admission.py"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "prior-host",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r0[123].py"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C01-EXACT",
+      "title": "Exact native lookup at consumed frontier",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01",
+        "R03-ADMISSION"
+      ],
+      "files": [
+        "include/strata/core/conversation_cache.hpp",
+        "experimental/branching_context/tests/implementation/test_c01_exact.py"
+      ],
+      "invariant": "Exact native cache lookup checks the full consumed history, all image identity and steering semantics. Read-only lookup does not copy payloads. Legacy request prefill matching stays unchanged. This primitive alone does not complete native inference integration.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_exact.py"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_consumed_frontier_exact_cache_identity"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_exact.py"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "prior-host",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r0[123].py"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C01-COLD",
+      "title": "Preserve input identity across cold-to-resident restoration",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01-EXACT"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/real.py",
+        "experimental/branching_context/tests/implementation/test_c01_cold_identity.py"
+      ],
+      "invariant": "Native replacement of a checked disk checkpoint preserves exact input history identity. Two consecutive restored materializations compute zero prefix tokens; disk bytes/hashes and fresh-process logits match.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_cold_identity.py"
+          },
+          "expected_ids": [
+            "test_cold_resident_identity_and_no_replay"
+          ],
+          "assertion_text": "Disk-to-native replacement must retain full canonical input identity",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          }
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_cold_identity.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C01-RAM",
+      "title": "Native RAM-cache capture and checked consumed restoration",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01-COLD"
+      ],
+      "files": [
+        "include/strata/core/branch_session.hpp",
+        "src/core/branch_session.cpp",
+        "src/core/branch_driver.cpp",
+        "include/strata/core/conversation_cache.hpp",
+        "experimental/branching_context/src/context_time_travel/strata_backend.py",
+        "experimental/branching_context/tests/implementation/test_c01_ram.py"
+      ],
+      "invariant": "A real native ConversationCache parks numerical state and frontier under a canonical history lease. Exact restoration computes no prefix tokens; two forced suffixes independently match fresh forward at every boundary. Full-history mismatch is a read-only miss. Clear releases all host payload allocations. This remains one active native lease, not concurrent serving integration.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_ram.py"
+          },
+          "expected_ids": [
+            "test_native_ram_forced_siblings_and_exact_miss"
+          ],
+          "assertion_text": "Native RAM cache capture must be implemented and measured",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "artifacts": [
+            "{result}",
+            "{run_dir}/native.jsonl"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          }
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_ram.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C01-AUTO",
+      "title": "Route canonical numerical-cache misses through native RAM",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01-RAM"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/real.py",
+        "experimental/branching_context/tests/implementation/test_c01_auto.py"
+      ],
+      "invariant": "Canonical snapshot materialization uses a checked exact native RAM history on hot-cache miss. Real RAM misses replay canonical inputs; deleting all numerical checkpoints retains history and costs actual full-prefix work. Forced A/B futures match fresh forwards at every consumed boundary.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_auto.py"
+          },
+          "expected_ids": [
+            "test_canonical_ram_hit_miss_and_complete_eviction"
+          ],
+          "assertion_text": "Canonical cache miss must restore exact parked history without prefix replay",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          }
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_auto.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "C01-DUPLICATE",
+      "title": "Replace duplicate unpinned consumed cache entry",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01-AUTO"
+      ],
+      "files": [
+        "include/strata/core/conversation_cache.hpp",
+        "experimental/branching_context/tests/implementation/test_c01_duplicate.py"
+      ],
+      "invariant": "Repeated parking of an identical consumed history replaces an unpinned checkpoint with no intermediate checkpoint history. Pinned roots and differing image/steering identities remain retained. Actual allocation owners and native regression are measured.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_duplicate.py"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_duplicate_consumed_history_replaces_unpinned_entry"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_duplicate.py"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "prior-host",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_r0[123].py"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "S01-OWNER",
+      "title": "Enforce execution-lease thread ownership",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "C01-DUPLICATE"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/strata_backend.py",
+        "experimental/branching_context/tests/implementation/test_s01_owner.py"
+      ],
+      "invariant": "A foreign thread cannot inspect, mutate or release the active private execution lease. Rejection occurs before active-state or lock ownership changes. Original owner remains usable; stale lease is rejected and actual acquire/release counters balance.",
+      "registered_cases": [],
+      "registered_assertions": [
+        {
+          "id": "G1-004",
+          "gate": "G1",
+          "test": "test_g1_004_every_accepted_boundary",
+          "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+        },
+        {
+          "id": "G1-014",
+          "gate": "G1",
+          "test": "test_g1_014_pending_sampled_token",
+          "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+        },
+        {
+          "id": "G1-015",
+          "gate": "G1",
+          "test": "test_g1_015_mid_generation_rng_replay",
+          "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+        },
+        {
+          "id": "G1-016",
+          "gate": "G1",
+          "test": "test_g1_016_sampler_multiple_draws",
+          "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+        },
+        {
+          "id": "G1-017",
+          "gate": "G1",
+          "test": "test_g1_017_grammar_mid_production",
+          "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+        },
+        {
+          "id": "G1-018",
+          "gate": "G1",
+          "test": "test_g1_018_stop_progress_and_eos",
+          "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+        },
+        {
+          "id": "G1-027",
+          "gate": "G1",
+          "test": "test_g1_027_stream_publication_boundary",
+          "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s01_owner.py"
+          },
+          "expected_ids": [
+            "test_foreign_owner_cannot_use_or_release_execution_lease"
+          ],
+          "assertion_text": "Foreign thread must not use an active execution lease",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          }
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s01_owner.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Run the newly added idle-controller regression against the preserved Luna source; do not change any existing assertion.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "S01",
+      "title": "Bind branch snapshots to batch-slot leases",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "R03",
+        "R03-ADMISSION",
+        "C01-AUTO",
+        "C01-DUPLICATE",
+        "S01-OWNER"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "include/strata/core/branch_session.hpp",
+        "src/core/branch_session.cpp",
+        "experimental/branching_context/tests/implementation/test_s01.py",
+        "experimental/branching_context/src/context_time_travel/slots.py",
+        "experimental/branching_context/src/context_time_travel/real.py"
+      ],
+      "invariant": "Each slot has branch-local private mutable state and canonical controller identity. Busy leases cannot be reused/released by another slot. No per-slot hidden RNG or pending token. Initially measure serialized scheduling separately from concurrent kernels.",
+      "registered_cases": [
+        "G1-013",
+        "G1-020",
+        "G3-013"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-013",
+          "gate": "G1",
+          "test": "test_g1_013_different_interleave_order",
+          "assertion": "Processing branches A and B in reverse/interleaved order cannot contaminate histories/logits."
+        },
+        {
+          "id": "G1-020",
+          "gate": "G1",
+          "test": "test_g1_020_sibling_rng_independence",
+          "assertion": "One branch consuming 100 extra RNG draws cannot affect sibling stream."
+        },
+        {
+          "id": "G3-013",
+          "gate": "G3",
+          "test": "test_g3_013_stress_interleaving_and_eviction",
+          "assertion": "Randomized concurrent branch updates, COW and cache eviction preserve the oracle."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s01.py"
+          },
+          "expected_ids": [
+            "test_s01_invariant"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ],
+          "assertion_text": "Canonical branch-slot FIFO execution must be available"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "artifacts": [
+            "{result}",
+            "{run_dir}/measurements.jsonl",
+            "{run_dir}/native.jsonl",
+            "{run_dir}/oracle.jsonl"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_s01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "S02",
+      "title": "Cancel and evict slots without invalidating siblings",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "S01"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "src/core/branch_session.cpp",
+        "experimental/branching_context/tests/implementation/test_s02.py",
+        "experimental/branching_context/src/context_time_travel/slots.py",
+        "experimental/branching_context/tests/implementation/test_s02_pressure.py"
+      ],
+      "invariant": "Cancellation at each consumed frontier, stale CAS, slot reassignment and pressure must preserve parent/sibling bytes and receipts; only owned resources release. All-checkpoints-evicted cold replay works.",
+      "registered_cases": [
+        "G2-006",
+        "G2-012",
+        "G3-007",
+        "G3-009",
+        "G3-013"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-006",
+          "gate": "G2",
+          "test": "test_g2_006_crash_before_snapshot_publish",
+          "assertion": "Kill before snapshot publish; branch pointer remains on prior fully durable history."
+        },
+        {
+          "id": "G2-012",
+          "gate": "G2",
+          "test": "test_g2_012_kill_during_decode",
+          "assertion": "Fault after partial backend token ingest discards lease; no partially consumed public snapshot."
+        },
+        {
+          "id": "G3-007",
+          "gate": "G3",
+          "test": "test_g3_007_evict_one_branch_keep_other",
+          "assertion": "Eviction of one numerical state leaves siblings and root reconstructible."
+        },
+        {
+          "id": "G3-009",
+          "gate": "G3",
+          "test": "test_g3_009_memory_pressure_recovery",
+          "assertion": "Forced allocation pressure uses fallback or error without branch corruption."
+        },
+        {
+          "id": "G3-013",
+          "gate": "G3",
+          "test": "test_g3_013_stress_interleaving_and_eviction",
+          "assertion": "Randomized concurrent branch updates, COW and cache eviction preserve the oracle."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s02.py"
+          },
+          "expected_ids": [
+            "test_s02_invariant"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "pressure",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s02_pressure.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_s02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N01",
+      "title": "Reproduce normal batched-prefill mismatch",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B02"
+      ],
+      "files": [
+        "src/prefill/prefill.cpp",
+        "src/core/verify.cpp",
+        "experimental/branching_context/scripts/calibrate_strata_operator.py",
+        "experimental/branching_context/tests/implementation/test_n01.py",
+        "experimental/branching_context/scripts/measure_prefill_paths.py"
+      ],
+      "invariant": "Keep the prior 1.5612177848815918 discrepancy as a fixture. Compare fixed history and positions through fresh normal-batch vs fresh token-level operators before branch tests. Preserve full vectors and profiles; no tolerance fitted to failing branches.",
+      "registered_cases": [
+        "G1-005",
+        "G1-009",
+        "G1-025",
+        "G1-026"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-005",
+          "gate": "G1",
+          "test": "test_g1_005_split_prefill_associativity",
+          "assertion": "Prefill P in one batch or chunks, with identical fixed tokens, yields equivalent state."
+        },
+        {
+          "id": "G1-009",
+          "gate": "G1",
+          "test": "test_g1_009_absolute_positions",
+          "assertion": "Positions and attention visibility match a fresh reference at long and offset prefixes."
+        },
+        {
+          "id": "G1-025",
+          "gate": "G1",
+          "test": "test_g1_025_true_uncached_oracle",
+          "assertion": "Independent oracle performs full-history forward with no SUT cache hits."
+        },
+        {
+          "id": "G1-026",
+          "gate": "G1",
+          "test": "test_g1_026_near_tie_numerics",
+          "assertion": "Logit comparison uses frozen tolerances and does not equate text similarity with correctness."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n01.py"
+          },
+          "expected_ids": [
+            "test_n01_invariant"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_NORMAL_EXECUTABLE": "{normal}",
+            "CTT_REJECTED_BASELINE": "{rejected_baseline}"
+          },
+          "platform": "posix",
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest",
+            "normal",
+            "rejected_baseline"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest",
+            "normal",
+            "rejected_baseline"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_NORMAL_EXECUTABLE": "{normal}",
+            "CTT_REJECTED_BASELINE": "{rejected_baseline}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N02-DISPATCH",
+      "title": "Bind actual GPU expert dispatch in private drivers",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "N01"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "src/core/branch_driver.cpp",
+        "src/core/fresh_driver.cpp",
+        "include/strata/core/branch_driver.hpp",
+        "include/strata/core/fresh_driver.hpp",
+        "experimental/branching_context/tests/implementation/test_n02_dispatch.py"
+      ],
+      "invariant": "For a single consumed token and explicit identical expert placement, normal, fresh and branch drivers execute all resident experts and match full logits exactly. Preserve separate uncached oracle.",
+      "registered_cases": [],
+      "registered_assertions": [],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_dispatch.py"
+          },
+          "expected_ids": [
+            "test_normal_and_private_drivers_include_resident_experts"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_NORMAL_EXECUTABLE": "{normal}",
+            "CTT_ORACLE_EXECUTABLE": "{oracle}",
+            "CTT_SUT_EXECUTABLE": "{sut}"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "normal",
+            "model_manifest"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_dispatch.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "normal",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_NORMAL_EXECUTABLE": "{normal}",
+            "CTT_ORACLE_EXECUTABLE": "{oracle}",
+            "CTT_SUT_EXECUTABLE": "{sut}"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_normal_and_private_drivers_include_resident_experts"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "controllers",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c02_idle.py"
+          },
+          "requires_artifacts": [
+            "corrected_profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{corrected_profile}",
+            "CTT_SHARING_MEASUREMENTS": "{run_dir}/measurements.jsonl",
+            "CTT_NATIVE_TRACE": "{run_dir}/native.jsonl",
+            "CTT_ORACLE_TRACE": "{run_dir}/oracle.jsonl"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "ram_replay",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_c01_auto.py"
+          },
+          "requires_artifacts": [
+            "corrected_profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{corrected_profile}",
+            "CTT_SHARING_MEASUREMENTS": "{run_dir}/measurements.jsonl",
+            "CTT_NATIVE_TRACE": "{run_dir}/native.jsonl",
+            "CTT_ORACLE_TRACE": "{run_dir}/oracle.jsonl"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "slots",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s01*.py"
+          },
+          "requires_artifacts": [
+            "corrected_profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{corrected_profile}",
+            "CTT_SHARING_MEASUREMENTS": "{run_dir}/measurements.jsonl",
+            "CTT_NATIVE_TRACE": "{run_dir}/native.jsonl",
+            "CTT_ORACLE_TRACE": "{run_dir}/oracle.jsonl"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "recovery",
+          "phase": "regression",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_s02.py"
+          },
+          "requires_artifacts": [
+            "corrected_profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{corrected_profile}",
+            "CTT_SHARING_MEASUREMENTS": "{run_dir}/measurements.jsonl",
+            "CTT_NATIVE_TRACE": "{run_dir}/native.jsonl",
+            "CTT_ORACLE_TRACE": "{run_dir}/oracle.jsonl"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Execute the real one-token normal/private-driver counterexample before changing dispatch initialization; preserve assertions.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N02-BASELINE",
+      "title": "Measure corrected full-history prefill paths before further diagnosis",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "N01",
+        "N02-DISPATCH"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/measure_prefill_paths.py"
+      ],
+      "invariant": "Record corrected oracle versus unchanged normal prefill with identical exact history and fixed placement; measurement is not equivalence or numerical admission.",
+      "commands": [
+        {
+          "id": "diagnose",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/measure_prefill_paths.py",
+            "--profile",
+            "{profile}",
+            "--normal",
+            "{normal}",
+            "--historical",
+            "{rejected_baseline}",
+            "--destination",
+            "{run_dir}/corrected-prefill-paths"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "normal",
+            "rejected_baseline"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 1800,
+      "completion": "Eight executed full-history forwards, six full-vocabulary comparisons, complete vectors and measured work; preserve nonzero errors."
+    },
+    {
+      "id": "N02-SHORT",
+      "title": "Locate prefill divergence in the first short prefixes",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "N02-BASELINE"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/measure_prefill_paths.py"
+      ],
+      "invariant": "Record corrected oracle versus unchanged normal prefill with identical exact history and fixed placement; measurement is not equivalence or numerical admission.",
+      "commands": [
+        {
+          "id": "diagnose",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/measure_prefill_paths.py",
+            "--profile",
+            "{profile}",
+            "--normal",
+            "{normal}",
+            "--historical",
+            "{rejected_baseline}",
+            "--destination",
+            "{run_dir}/short-prefill-paths",
+            "--lengths",
+            "1",
+            "2",
+            "3",
+            "4"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "normal",
+            "rejected_baseline"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 1800,
+      "completion": "Executed short-prefix full-history forwards and retained full vectors; no equivalence or tolerance admission."
+    },
+    {
+      "id": "N02-CONTROL",
+      "title": "Compare ordinary multi-token execution with prefill disabled",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "N02-SHORT"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/measure_prefill_paths.py"
+      ],
+      "invariant": "Record corrected oracle versus unchanged normal prefill with identical exact history and fixed placement; measurement is not equivalence or numerical admission.",
+      "commands": [
+        {
+          "id": "diagnose",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/measure_prefill_paths.py",
+            "--profile",
+            "{profile}",
+            "--normal",
+            "{normal}",
+            "--historical",
+            "{rejected_baseline}",
+            "--destination",
+            "{run_dir}/no-prefill-paths",
+            "--lengths",
+            "1",
+            "2",
+            "3",
+            "4",
+            "--chunks",
+            "0"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "normal",
+            "rejected_baseline"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 1800,
+      "completion": "Execute ordinary no-prefill and fresh controls for short histories; retain all logits and direct work counts."
+    },
+    {
+      "id": "N02-STEP",
+      "title": "Add ordinary-initialized forced-token diagnostic control",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "N02-SHORT"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "CMakeLists.txt",
+        "experimental/branching_context/tests/implementation/test_n02_step.py"
+      ],
+      "invariant": "Ordinary verifier initialization consumes fixed tokens one at a time and agrees with separate fresh driver; no prefill-parity claim.",
+      "registered_cases": [],
+      "registered_assertions": [],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_step.py"
+          },
+          "expected_ids": [
+            "test_n02_step_consumes_forced_history"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_step.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_n02_step_consumes_forced_history"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N02-STATE",
+      "title": "Observe one-token prefill and verifier state without mutation",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "N02-STEP"
+      ],
+      "files": [
+        "src/program/generate.cpp",
+        "CMakeLists.txt",
+        "experimental/branching_context/tests/implementation/test_n02_state.py",
+        "include/strata/core/step_dump.hpp"
+      ],
+      "invariant": "Capture only populated FP16 KV rows and real recurrent/convolution/PLE/indexer state after token 100; report differences, do not accept them as equivalence.",
+      "registered_cases": [],
+      "registered_assertions": [],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_state.py"
+          },
+          "expected_ids": [
+            "test_n02_state_observes_consumed_buffers"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_state.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_n02_state_observes_consumed_buffers"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N02-PROJECTION",
+      "title": "Observe the first recurrent projection input and output",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "N02-STATE"
+      ],
+      "files": [
+        "src/core/verify.cpp",
+        "src/prefill/prefill.cpp",
+        "include/strata/core/step_dump.hpp",
+        "src/program/generate.cpp",
+        "CMakeLists.txt",
+        "experimental/branching_context/tests/implementation/test_n02_projection.py"
+      ],
+      "invariant": "Capture only populated FP16 KV rows and real recurrent/convolution/PLE/indexer state after token 100; report differences, do not accept them as equivalence.",
+      "registered_cases": [],
+      "registered_assertions": [],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_projection.py"
+          },
+          "expected_ids": [
+            "test_n02_projection_is_observed"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02_projection.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "model_manifest",
+            "sut",
+            "oracle",
+            "step"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}",
+            "CTT_STEP_EXECUTABLE": "{step}"
+          },
+          "platform": "posix",
+          "expected_ids": [
+            "test_n02_projection_is_observed"
+          ]
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N02",
+      "title": "Correct or explicitly block batched-prefill semantics",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "N01"
+      ],
+      "files": [
+        "src/prefill/prefill.cpp",
+        "src/core/verify.cpp",
+        "src/program/generate.cpp",
+        "experimental/branching_context/tests/implementation/test_n02.py"
+      ],
+      "invariant": "Localize mismatch across recurrent updates, masks, positions and frontier. Correct verified cause; otherwise BLOCKED with smallest reproducible fixture and missing primitive. Do not call the token-level fallback batched equivalence.",
+      "registered_cases": [
+        "G1-005",
+        "G1-006",
+        "G1-009",
+        "G1-010",
+        "G1-012",
+        "G1-022"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-005",
+          "gate": "G1",
+          "test": "test_g1_005_split_prefill_associativity",
+          "assertion": "Prefill P in one batch or chunks, with identical fixed tokens, yields equivalent state."
+        },
+        {
+          "id": "G1-006",
+          "gate": "G1",
+          "test": "test_g1_006_partial_page_boundary",
+          "assertion": "Fork at page_len-1, page_len, page_len+1; both children match fresh oracle."
+        },
+        {
+          "id": "G1-009",
+          "gate": "G1",
+          "test": "test_g1_009_absolute_positions",
+          "assertion": "Positions and attention visibility match a fresh reference at long and offset prefixes."
+        },
+        {
+          "id": "G1-010",
+          "gate": "G1",
+          "test": "test_g1_010_rope_and_yarn_contract",
+          "assertion": "RoPE/YaRN config changes are incompatible unless an explicitly proven converter exists."
+        },
+        {
+          "id": "G1-012",
+          "gate": "G1",
+          "test": "test_g1_012_attention_mask_visibility",
+          "assertion": "Causal/window/multimodal visibility metadata is included and validated."
+        },
+        {
+          "id": "G1-022",
+          "gate": "G1",
+          "test": "test_g1_022_unsupported_hybrid_state",
+          "assertion": "Backend refuses incomplete recurrent/convolution state save rather than claiming support."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02.py"
+          },
+          "expected_ids": [
+            "test_n02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "N03",
+      "title": "Freeze current-build independent numerical profile",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B02"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/calibrate_strata_operator.py",
+        "experimental/branching_context/scripts/admit_strata_profile.py",
+        "experimental/branching_context/tests/implementation/test_n03.py"
+      ],
+      "invariant": "Freeze the current token-level profile from independent baseline before branch judgements. Batched-profile admission additionally requires N02; never label token-level admission as batched equivalence. Pin separate uncached oracle and exact model semantics. Preserve old baselines as historical.",
+      "registered_cases": [
+        "G1-025",
+        "G1-026"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-025",
+          "gate": "G1",
+          "test": "test_g1_025_true_uncached_oracle",
+          "assertion": "Independent oracle performs full-history forward with no SUT cache hits."
+        },
+        {
+          "id": "G1-026",
+          "gate": "G1",
+          "test": "test_g1_026_near_tie_numerics",
+          "assertion": "Logit comparison uses frozen tolerances and does not equate text similarity with correctness."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n03.py"
+          },
+          "expected_ids": [
+            "test_n03_invariant"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          }
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_n03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_n03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "E01",
+      "title": "Persist immutable evaluation provenance",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/evaluation.py",
+        "experimental/branching_context/tests/implementation/test_e01.py"
+      ],
+      "invariant": "Content-address evaluator identity/code, snapshot/task root, fixture hashes, declared metric/order, evaluator seed, environment/effect policy, outcomes and measured resources. Evaluation records never enter model input or controller snapshots.",
+      "registered_cases": [
+        "G4-008"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G4-008",
+          "gate": "G4",
+          "test": "test_g4_008_evaluation_records_are_immutable",
+          "assertion": "Scores and evaluator source identity are immutable provenance records."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e01.py"
+          },
+          "expected_ids": [
+            "test_e01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G4",
+            "--pattern",
+            "test_evaluation_records.py"
+          ],
+          "expected_ids": [
+            "test_g4_008_evaluation_records_are_immutable"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_e01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "E02",
+      "title": "Execute isolated reproducible read-only evaluation",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/evaluation.py",
+        "experimental/branching_context/tests/implementation/test_e02.py"
+      ],
+      "invariant": "Evaluator receives immutable inputs and independent RNG, no mutable store/backend handles. External effects are declared mocked or demonstrably isolated. Check candidate/controller bytes and continuation before/after. Error/timeout/unknown never becomes mandatory PASS.",
+      "registered_cases": [
+        "G4-003",
+        "G4-004",
+        "G4-005",
+        "G4-010"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G4-003",
+          "gate": "G4",
+          "test": "test_g4_003_evaluator_read_only",
+          "assertion": "Evaluation cannot modify model history, controller, other candidates or refs."
+        },
+        {
+          "id": "G4-004",
+          "gate": "G4",
+          "test": "test_g4_004_evaluator_reproducibility",
+          "assertion": "Same evaluator code, fixture, seed and snapshot produce same declared score."
+        },
+        {
+          "id": "G4-005",
+          "gate": "G4",
+          "test": "test_g4_005_evaluator_side_effects_sandbox",
+          "assertion": "Evaluator uses sandboxed or mocked external effects and never reruns irreversible tools."
+        },
+        {
+          "id": "G4-010",
+          "gate": "G4",
+          "test": "test_g4_010_evaluation_does_not_consume_rng",
+          "assertion": "Scoring a candidate does not perturb branch-local generation draws."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e02.py"
+          },
+          "expected_ids": [
+            "test_e02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G4",
+            "--pattern",
+            "test_evaluator_isolation.py"
+          ],
+          "expected_ids": [
+            "test_g4_003_evaluator_read_only",
+            "test_g4_004_evaluator_reproducibility",
+            "test_g4_005_evaluator_side_effects_sandbox",
+            "test_g4_010_evaluation_does_not_consume_rng"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_e02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "E03",
+      "title": "Choose validated candidates and adopt through CAS",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E02"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/evaluation.py",
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/tests/implementation/test_e03.py"
+      ],
+      "invariant": "Choose C over failing high-score B in spec fixture. All-failed/unknown produces no winner. Stable declared tie-break. Adopt via existing move with revision and operation receipt; stale races and payload reuse lose cleanly.",
+      "registered_cases": [
+        "G4-006",
+        "G4-007"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G4-006",
+          "gate": "G4",
+          "test": "test_g4_006_winner_adoption_cas",
+          "assertion": "Validated winner adoption moves one branch pointer exactly once."
+        },
+        {
+          "id": "G4-007",
+          "gate": "G4",
+          "test": "test_g4_007_adoption_race_loses_cleanly",
+          "assertion": "Racing stale winner adoption fails without rewriting any candidate."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e03.py"
+          },
+          "expected_ids": [
+            "test_e03_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G4",
+            "--pattern",
+            "test_adoption.py"
+          ],
+          "expected_ids": [
+            "test_g4_006_winner_adoption_cas",
+            "test_g4_007_adoption_race_loses_cleanly"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_e03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "E04",
+      "title": "Demonstrate four futures and cold winner replay",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E03"
+      ],
+      "files": [
+        "experimental/branching_context/examples/branching_demo.py",
+        "experimental/branching_context/src/context_time_travel/evaluation.py",
+        "experimental/branching_context/tests/implementation/test_e04.py"
+      ],
+      "invariant": "P -> A/B/C, rewind A -> D, preserve old A, evaluate in multiple orders, adopt winner, evict every checkpoint, cold-replay winner and losers. Fresh oracle at empty suffix and every consumed token; scoring does not consume candidate RNG.",
+      "registered_cases": [
+        "G4-001",
+        "G4-002",
+        "G4-009",
+        "G4-011"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G4-001",
+          "gate": "G4",
+          "test": "test_g4_001_three_future_demonstration",
+          "assertion": "P forks into three recorded alternative suffixes that each match fresh oracle."
+        },
+        {
+          "id": "G4-002",
+          "gate": "G4",
+          "test": "test_g4_002_rewind_and_new_fourth_future",
+          "assertion": "Rewind one branch to P and take another suffix; old future stays reachable."
+        },
+        {
+          "id": "G4-009",
+          "gate": "G4",
+          "test": "test_g4_009_winning_branch_cold_replay",
+          "assertion": "Selected branch survives all numerical eviction and matches fresh oracle."
+        },
+        {
+          "id": "G4-011",
+          "gate": "G4",
+          "test": "test_g4_011_retained_loser_accessible",
+          "assertion": "Nonwinning futures remain reproducibly accessible until explicit history GC."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e04.py"
+          },
+          "expected_ids": [
+            "test_e04_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_e04.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G4",
+            "--pattern",
+            "test_evaluated_futures.py"
+          ],
+          "expected_ids": [
+            "test_g4_001_three_future_demonstration",
+            "test_g4_002_rewind_and_new_fourth_future",
+            "test_g4_009_winning_branch_cold_replay",
+            "test_g4_011_retained_loser_accessible"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_e04_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "P01",
+      "title": "Enforce authorization before snapshot operations",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/real.py",
+        "experimental/branching_context/src/context_time_travel/evaluation.py",
+        "experimental/branching_context/tests/implementation/test_p01.py"
+      ],
+      "invariant": "Define explicit local principals/root grants and enforce read/fork/materialize/evaluate/move/deletion before data or cached state access. Knowing an ID grants nothing. Same underlying objects; no alternate per-user history representation.",
+      "registered_cases": [
+        "G5-006"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-006",
+          "gate": "G5",
+          "test": "test_g5_006_access_control_snapshot_ids",
+          "assertion": "Knowing a content hash does not bypass authorization to read/fork/evaluate."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p01.py"
+          },
+          "expected_ids": [
+            "test_p01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_access_control.py"
+          ],
+          "expected_ids": [
+            "test_g5_006_access_control_snapshot_ids"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_p01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "P02",
+      "title": "Implement measurable sensitive-persistence policy",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "P01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/checkpoint_cache.py",
+        "experimental/branching_context/tests/implementation/test_p02.py"
+      ],
+      "invariant": "Declare supported at-rest policy explicitly; enforce private directories/files including staging/checkpoints/evaluation artifacts. Test actual access under separate principal. Encryption claims require verified primitive, key handling and plaintext exclusion; otherwise block encryption capability.",
+      "registered_cases": [
+        "G5-007"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-007",
+          "gate": "G5",
+          "test": "test_g5_007_encrypted_sensitive_persistence",
+          "assertion": "Access permissions/at-rest policy for potentially sensitive cache and history checked."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p02.py"
+          },
+          "expected_ids": [
+            "test_p02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_sensitive_storage.py"
+          ],
+          "expected_ids": [
+            "test_g5_007_encrypted_sensitive_persistence"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_p02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "P03",
+      "title": "Track retained roots and active read leases",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "P01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/real.py",
+        "experimental/branching_context/tests/implementation/test_p03.py"
+      ],
+      "invariant": "Retain branch roots/heads, explicit historical pins, required input artifacts and evaluation roots. Active materialization/evaluation leases pin reachability. Cache eviction does not change retain/pin policy; explicit deletion requires authorization.",
+      "registered_cases": [
+        "G2-014",
+        "G5-008"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-014",
+          "gate": "G2",
+          "test": "test_g2_014_eviction_vs_deletion",
+          "assertion": "Cache eviction can never delete retained history; historical deletion requires distinct authorization."
+        },
+        {
+          "id": "G5-008",
+          "gate": "G5",
+          "test": "test_g5_008_retention_and_gc",
+          "assertion": "Reachability-aware GC never deletes live heads or actively leased snapshots."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p03.py"
+          },
+          "expected_ids": [
+            "test_p03_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_p03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "P04",
+      "title": "Collect unreachable history under concurrent operations",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "P03"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/checkpoint_cache.py",
+        "experimental/branching_context/tests/implementation/test_p04.py"
+      ],
+      "invariant": "Mark/sweep with atomic retention/lease synchronization. Concurrent materialize/fork/rewind/eval/GC cannot lose a live ancestor or expose dangling state. Crash recovery preserves committed roots and receipts; no physical deletion from numerical eviction.",
+      "registered_cases": [
+        "G5-008",
+        "G5-009"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-008",
+          "gate": "G5",
+          "test": "test_g5_008_retention_and_gc",
+          "assertion": "Reachability-aware GC never deletes live heads or actively leased snapshots."
+        },
+        {
+          "id": "G5-009",
+          "gate": "G5",
+          "test": "test_g5_009_concurrent_gc_and_load",
+          "assertion": "GC under concurrent materialize, fork, rewind and eval cannot create dangling state."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p04.py"
+          },
+          "expected_ids": [
+            "test_p04_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_p04.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_retention_gc.py"
+          ],
+          "expected_ids": [
+            "test_g5_008_retention_and_gc",
+            "test_g5_009_concurrent_gc_and_load"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_p04_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "U01",
+      "title": "Version checkpoint compatibility and cold replay",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/checkpoint_cache.py",
+        "experimental/branching_context/src/context_time_travel/strata_backend.py",
+        "experimental/branching_context/tests/implementation/test_u01.py"
+      ],
+      "invariant": "Refuse incompatible execution layout; replay canonical retained inputs under identical compatible semantic contract. Preserve snapshot IDs, controllers and branch revisions across upgrade. A model/RoPE change cannot silently migrate cached numeric state.",
+      "registered_cases": [
+        "G1-010",
+        "G1-023",
+        "G1-024",
+        "G2-015",
+        "G5-003"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G1-010",
+          "gate": "G1",
+          "test": "test_g1_010_rope_and_yarn_contract",
+          "assertion": "RoPE/YaRN config changes are incompatible unless an explicitly proven converter exists."
+        },
+        {
+          "id": "G1-023",
+          "gate": "G1",
+          "test": "test_g1_023_incompatible_model_rejected",
+          "assertion": "Different weights/adapters/architecture cannot import old numerical checkpoints."
+        },
+        {
+          "id": "G1-024",
+          "gate": "G1",
+          "test": "test_g1_024_execution_profile_mismatch",
+          "assertion": "A numerically incompatible checkpoint representation is rejected or safely recomputed."
+        },
+        {
+          "id": "G2-015",
+          "gate": "G2",
+          "test": "test_g2_015_checkpoint_from_wrong_model",
+          "assertion": "Checkpoint from another model/positional profile cannot be silently loaded."
+        },
+        {
+          "id": "G5-003",
+          "gate": "G5",
+          "test": "test_g5_003_replay_after_upgrade",
+          "assertion": "Checkpoint migration refuses incompatible old layouts; retained inputs cold-replay under compatible model."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_u01.py"
+          },
+          "expected_ids": [
+            "test_u01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_u01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_upgrade.py"
+          ],
+          "expected_ids": [
+            "test_g1_010_rope_and_yarn_contract",
+            "test_g1_023_incompatible_model_rejected",
+            "test_g1_024_execution_profile_mismatch",
+            "test_g2_015_checkpoint_from_wrong_model",
+            "test_g5_003_replay_after_upgrade"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_u01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "U02",
+      "title": "Recover ambiguous receipts and rollback",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "U01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/checkpoint_cache.py",
+        "experimental/branching_context/tests/implementation/test_u02.py"
+      ],
+      "invariant": "Real process termination around commit recovers one receipt and monotonic revision. Retry with same operation ID is identical; different payload conflicts. Rollback refuses unreadable new formats without changing authoritative records; compatible cold replay preserves IDs/revisions.",
+      "registered_cases": [
+        "G2-007",
+        "G2-008",
+        "G2-009",
+        "G2-010",
+        "G5-010",
+        "G5-012"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-007",
+          "gate": "G2",
+          "test": "test_g2_007_crash_before_branch_rename",
+          "assertion": "Kill after staging refs+receipt before rename; old head remains intact."
+        },
+        {
+          "id": "G2-008",
+          "gate": "G2",
+          "test": "test_g2_008_crash_after_branch_rename",
+          "assertion": "Kill after refs rename before ack; retry same operation ID returns a single committed result."
+        },
+        {
+          "id": "G2-009",
+          "gate": "G2",
+          "test": "test_g2_009_idempotency_payload_mismatch",
+          "assertion": "Reusing operation ID with different parameters returns conflict, not silent success."
+        },
+        {
+          "id": "G2-010",
+          "gate": "G2",
+          "test": "test_g2_010_aba_pointer_revision",
+          "assertion": "CAS with stale revision fails after P\u2192A\u2192P movement."
+        },
+        {
+          "id": "G5-010",
+          "gate": "G5",
+          "test": "test_g5_010_restart_with_journal_ambiguity",
+          "assertion": "Ambiguous acknowledgements after process termination recovered by operation receipts."
+        },
+        {
+          "id": "G5-012",
+          "gate": "G5",
+          "test": "test_g5_012_release_rollback",
+          "assertion": "Rollback leaves authoritative history and branch revision identities valid."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_u02.py"
+          },
+          "expected_ids": [
+            "test_u02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_u02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_rollback_receipts.py"
+          ],
+          "expected_ids": [
+            "test_g2_007_crash_before_branch_rename",
+            "test_g2_008_crash_after_branch_rename",
+            "test_g2_009_idempotency_payload_mismatch",
+            "test_g2_010_aba_pointer_revision",
+            "test_g5_010_restart_with_journal_ambiguity",
+            "test_g5_012_release_rollback"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_u02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "Q01",
+      "title": "Publish and test explicit supported profile matrix",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B02"
+      ],
+      "files": [
+        "experimental/branching_context/docs/backend-adapter.md",
+        "experimental/branching_context/tests/implementation/test_q01.py"
+      ],
+      "invariant": "List current support by model/weights, KV, operator, OS/filesystem, GPU/backend, inputs and concurrency. Execute every advertised combination; unsupported/unmeasured entries are explicit and never skipped PASS. Initial advertised model path remains Q8_0/FP16 on Linux CUDA.",
+      "registered_cases": [
+        "G5-001"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-001",
+          "gate": "G5",
+          "test": "test_g5_001_supported_matrix",
+          "assertion": "Run every advertised supported model/backend/precision/profile combination; report unsupported."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q01.py"
+          },
+          "expected_ids": [
+            "test_q01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q01.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_supported_matrix.py"
+          ],
+          "expected_ids": [
+            "test_g5_001_supported_matrix"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_q01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "Q02",
+      "title": "Build randomized state-machine runner and shrinker",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E04",
+        "P04",
+        "U02"
+      ],
+      "files": [
+        "experimental/branching_context/tests/gates/G5/test_state_machine.py",
+        "experimental/branching_context/scripts/state_machine.py",
+        "experimental/branching_context/tests/implementation/test_q02.py"
+      ],
+      "invariant": "Generate reproducible append/fork/reseed/generate/rewind/checkpoint/evict/evaluate/retry/release/GC programs. Compare independent logical outcomes and real fresh forwards; save seed, operations and minimal failing sequence. Registered G5-002 retains >=1000 requirement; bounded development runs do not count as its PASS.",
+      "registered_cases": [
+        "G5-002"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-002",
+          "gate": "G5",
+          "test": "test_g5_002_randomized_state_machine",
+          "assertion": "At least 1000 reproducible action sequences compare SUT to independent model-free and real oracles."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q02.py"
+          },
+          "expected_ids": [
+            "test_q02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q02.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_q02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "Q03",
+      "title": "Implement lifecycle soak and sanitizer evidence collectors",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "S02"
+      ],
+      "files": [
+        "experimental/branching_context/tests/gates/G5/test_soak_sanitizers.py",
+        "CMakeLists.txt",
+        "experimental/branching_context/tests/implementation/test_q03.py"
+      ],
+      "invariant": "Write real long-soak acceptance method and applicable native sanitizer runners. Collect allocation baselines, ownership/UAF/races, memory/latency histograms and tool diagnostics. Bounded development cycles are distinct from unexecuted registered long soak. HIP/SYCL/tool absence blocks relevant support.",
+      "registered_cases": [
+        "G5-004",
+        "G5-005"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-004",
+          "gate": "G5",
+          "test": "test_g5_004_long_soak",
+          "assertion": "Long-duration release soak with memory/throughput/corruption stats and recorded hardware."
+        },
+        {
+          "id": "G5-005",
+          "gate": "G5",
+          "test": "test_g5_005_sanitizer_diagnostics",
+          "assertion": "Run applicable ASan/UBSan/TSan or memory-safety tools and record unsupported tools."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q03.py"
+          },
+          "expected_ids": [
+            "test_q03_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q03.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_q03_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "Q04",
+      "title": "Detect all twelve required negative mutants",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "E04",
+        "P04",
+        "U02"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/real_mutation_smoke.py",
+        "experimental/branching_context/tests/gates/G5/test_mutants.py",
+        "experimental/branching_context/tests/implementation/test_q04.py"
+      ],
+      "invariant": "Map the twelve certification mutants to independent detecting assertions. Keep original failing fixtures and mutation kills; do not add production flags for broken behavior or count unexecuted mutants.",
+      "registered_cases": [
+        "G5-011"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G5-011",
+          "gate": "G5",
+          "test": "test_g5_011_negative_mutant_campaign",
+          "assertion": "All 12 specified failure mutants are detected by at least one independent test."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q04.py"
+          },
+          "expected_ids": [
+            "test_q04_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_q04.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "registered",
+          "phase": "green",
+          "kind": "ticket",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/run_ticket.py",
+            "{run_id}",
+            "--gate",
+            "G5",
+            "--pattern",
+            "test_mutants.py"
+          ],
+          "expected_ids": [
+            "test_g5_011_negative_mutant_campaign"
+          ],
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_q04_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "W01",
+      "title": "Add Windows lock and durable-file primitives",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "B00"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/store.py",
+        "experimental/branching_context/src/context_time_travel/checkpoint_cache.py",
+        "experimental/branching_context/src/context_time_travel/platform_files.py",
+        "experimental/branching_context/tests/implementation/test_w01.py"
+      ],
+      "invariant": "One store/interface/serialization. Replace unconditional POSIX imports with checked platform primitives. Real Windows multi-process CAS, contention, close/reopen, directory publication and interrupted staging tests; scope actual NTFS guarantees honestly.",
+      "registered_cases": [
+        "G2-005",
+        "G2-007",
+        "G2-008",
+        "G2-011",
+        "G2-019"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-005",
+          "gate": "G2",
+          "test": "test_g2_005_partial_checkpoint_write",
+          "assertion": "Interrupt staged checkpoint write before rename; incomplete object is never discoverable."
+        },
+        {
+          "id": "G2-007",
+          "gate": "G2",
+          "test": "test_g2_007_crash_before_branch_rename",
+          "assertion": "Kill after staging refs+receipt before rename; old head remains intact."
+        },
+        {
+          "id": "G2-008",
+          "gate": "G2",
+          "test": "test_g2_008_crash_after_branch_rename",
+          "assertion": "Kill after refs rename before ack; retry same operation ID returns a single committed result."
+        },
+        {
+          "id": "G2-011",
+          "gate": "G2",
+          "test": "test_g2_011_racing_cas_processes",
+          "assertion": "Independent workers contending on stale revision yield exactly one winner."
+        },
+        {
+          "id": "G2-019",
+          "gate": "G2",
+          "test": "test_g2_019_power_loss_scope_honest",
+          "assertion": "Fault evidence explicitly distinguishes process kill from power-loss durability."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_w01.py"
+          },
+          "expected_ids": [
+            "test_w01_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_w01.py"
+          }
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_w01_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "W02",
+      "title": "Validate Windows native and POSIX storage parity",
+      "kind": "implementation",
+      "enabled": true,
+      "depends_on": [
+        "W01"
+      ],
+      "files": [
+        "experimental/branching_context/src/context_time_travel/platform_files.py",
+        "experimental/branching_context/tests/implementation/test_w02.py"
+      ],
+      "invariant": "Run unchanged G0/demo/mutants on native Windows and Linux; compare canonical IDs/receipts/controller records. Real Windows crash fixtures, no mocked fcntl substitute and no assumed power-loss durability.",
+      "registered_cases": [
+        "G2-001",
+        "G2-006",
+        "G2-010",
+        "G2-011",
+        "G2-019"
+      ],
+      "registered_assertions": [
+        {
+          "id": "G2-001",
+          "gate": "G2",
+          "test": "test_g2_001_cold_process_reopen",
+          "assertion": "Persist prefix/branch, close process and reopen, then continue same exact history."
+        },
+        {
+          "id": "G2-006",
+          "gate": "G2",
+          "test": "test_g2_006_crash_before_snapshot_publish",
+          "assertion": "Kill before snapshot publish; branch pointer remains on prior fully durable history."
+        },
+        {
+          "id": "G2-010",
+          "gate": "G2",
+          "test": "test_g2_010_aba_pointer_revision",
+          "assertion": "CAS with stale revision fails after P\u2192A\u2192P movement."
+        },
+        {
+          "id": "G2-011",
+          "gate": "G2",
+          "test": "test_g2_011_racing_cas_processes",
+          "assertion": "Independent workers contending on stale revision yield exactly one winner."
+        },
+        {
+          "id": "G2-019",
+          "gate": "G2",
+          "test": "test_g2_019_power_loss_scope_honest",
+          "assertion": "Fault evidence explicitly distinguishes process kill from power-loss durability."
+        }
+      ],
+      "commands": [
+        {
+          "id": "red",
+          "phase": "red",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_w02.py"
+          },
+          "expected_ids": [
+            "test_w02_invariant"
+          ]
+        },
+        {
+          "id": "green",
+          "phase": "green",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_w02.py"
+          }
+        },
+        {
+          "id": "G0",
+          "phase": "regression",
+          "kind": "gate",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/verify.py",
+            "--gate",
+            "G0"
+          ],
+          "platform": "posix"
+        },
+        {
+          "id": "mutants",
+          "phase": "regression",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/mutation_smoke.py"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "red_instruction": "Write a deterministic adversarial test named test_w02_invariant. It must fail by AssertionError on the current implementation; missing imports do not qualify. Preserve this test through green.",
+      "completion": "Executed red assertion; unchanged assertions pass after the smallest fix; required checks pass on this source/binary/model/profile; measured artifacts attached. Ticket only, never gate PASS."
+    },
+    {
+      "id": "X01",
+      "title": "Build each backend touched by native edits",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "C03",
+        "R03",
+        "S02",
+        "N03"
+      ],
+      "files": [
+        "CMakeLists.txt",
+        "sycl/src/core/conversation_state.cpp",
+        "sycl/src/core/verify.cpp"
+      ],
+      "invariant": "Provide real CUDA/HIP/SYCL builds against identical changed sources and artifact/compiler hashes. Add this measurement script before running. Missing toolchain/hardware is BLOCKED, not source inspection PASS.",
+      "commands": [
+        {
+          "id": "backend-builds",
+          "phase": "observe",
+          "kind": "command",
+          "required": true,
+          "timeout_seconds": 1800,
+          "argv": [
+            "{python}",
+            "scripts/validate_backend_builds.py",
+            "--output",
+            "{result}"
+          ],
+          "artifacts": [
+            "{result}"
+          ],
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "F01",
+      "title": "Review bounded end-to-end and default serving parity",
+      "kind": "observation",
+      "enabled": true,
+      "depends_on": [
+        "E04",
+        "P02",
+        "P04",
+        "U02",
+        "Q01",
+        "Q02",
+        "Q03",
+        "Q04",
+        "W02",
+        "X01",
+        "N02"
+      ],
+      "files": [
+        "experimental/branching_context/evidence/STATUS.md",
+        "experimental/branching_context/evidence/DECISIONS.md"
+      ],
+      "invariant": "Real native/local request drivers, no web service. Same-day upstream/default feature-disabled vs feature-enabled checks; original default path token/logit parity. Report actual RAM/latency/activation/copy overhead, negative controls and unexecuted qualification.",
+      "commands": [
+        {
+          "id": "review",
+          "phase": "observe",
+          "kind": "unittest",
+          "required": true,
+          "timeout_seconds": 1800,
+          "tests": {
+            "directory": "tests/implementation",
+            "pattern": "test_final_review.py"
+          },
+          "requires_artifacts": [
+            "profile",
+            "sut",
+            "oracle",
+            "model_manifest"
+          ],
+          "env": {
+            "CTT_PROFILE": "{profile}"
+          },
+          "platform": "posix"
+        }
+      ],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only."
+    },
+    {
+      "id": "CERT-LONG",
+      "title": "Deferred exhaustive certification and release soak",
+      "kind": "observation",
+      "enabled": false,
+      "depends_on": [
+        "F01"
+      ],
+      "files": [
+        "experimental/branching_context/scripts/verify.py"
+      ],
+      "invariant": "Disabled until separately authorized. Run all unchanged G0-G5 cases on qualified current profiles, >=1000 real programs, exhaustive offsets/long contexts and long soak; no substitute subsets.",
+      "commands": [],
+      "validation_seconds": 7200,
+      "completion": "All required commands have current executed evidence; record VALIDATED for this ticket only.",
+      "registered_cases": [
+        "G1-001",
+        "G1-002",
+        "G1-003",
+        "G1-004",
+        "G1-005",
+        "G1-006",
+        "G1-007",
+        "G1-008",
+        "G1-009",
+        "G1-010",
+        "G1-011",
+        "G1-012",
+        "G1-013",
+        "G1-014",
+        "G1-015",
+        "G1-016",
+        "G1-017",
+        "G1-018",
+        "G1-019",
+        "G1-020",
+        "G1-021",
+        "G1-022",
+        "G1-023",
+        "G1-024",
+        "G1-025",
+        "G1-026",
+        "G1-027",
+        "G2-001",
+        "G2-002",
+        "G2-003",
+        "G2-004",
+        "G2-005",
+        "G2-006",
+        "G2-007",
+        "G2-008",
+        "G2-009",
+        "G2-010",
+        "G2-011",
+        "G2-012",
+        "G2-013",
+        "G2-014",
+        "G2-015",
+        "G2-016",
+        "G2-017",
+        "G2-018",
+        "G2-019",
+        "G3-001",
+        "G3-002",
+        "G3-003",
+        "G3-004",
+        "G3-005",
+        "G3-006",
+        "G3-007",
+        "G3-008",
+        "G3-009",
+        "G3-010",
+        "G3-011",
+        "G3-012",
+        "G3-013",
+        "G3-014",
+        "G3-015",
+        "G3-016",
+        "G4-001",
+        "G4-002",
+        "G4-003",
+        "G4-004",
+        "G4-005",
+        "G4-006",
+        "G4-007",
+        "G4-008",
+        "G4-009",
+        "G4-010",
+        "G4-011",
+        "G5-001",
+        "G5-002",
+        "G5-003",
+        "G5-004",
+        "G5-005",
+        "G5-006",
+        "G5-007",
+        "G5-008",
+        "G5-009",
+        "G5-010",
+        "G5-011",
+        "G5-012"
+      ],
+      "deferred_commands": [
+        [
+          "{python}",
+          "scripts/verify.py",
+          "--gate",
+          "ALL"
+        ]
+      ]
+    }
+  ]
+}

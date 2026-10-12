@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "status": "HOST_PREREQUISITE_PASS",
+  "host": "llm-60",
+  "change": {
+    "time": 1791795372.7879858,
+    "command": [
+      "sudo",
+      "-n",
+      "sysctl",
+      "-w",
+      "kernel.apparmor_restrict_unprivileged_userns=0"
+    ],
+    "before": "1",
+    "after": "0",
+    "stdout": "kernel.apparmor_restrict_unprivileged_userns = 0\n",
+    "persistent": false,
+    "authorization": "User explicitly allowed changing global protections on this test host",
+    "rollback": [
+      "sudo",
+      "sysctl",
+      "-w",
+      "kernel.apparmor_restrict_unprivileged_userns=1"
+    ]
+  },
+  "run": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_e02*.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "seconds": 0.786779404967092,
+    "sources": {
+      "tests/implementation/test_e02.py": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+      "tests/implementation/test_e02_records.py": "f0aefc0ef57010ca858a54c3b7900ddf6ccdf19124c9a915a24bd91367c969d8",
+      "src/context_time_travel/evaluation.py": "9b6ce80602f11908eccb2febac186c4ec52f16227d8e841ba4bafa44cf8f3373",
+      "src/context_time_travel/evaluation_worker.py": "068fc01ef740e23e5bf8610f79ed6626323ead4a50b5f741ae43c4e7608f0688"
+    }
+  },
+  "tests": 2,
+  "failures": 0,
+  "skips": 0,
+  "apparmor_enabled": true,
+  "reboot_required": false,
+  "supersedes_blocker": "llm60-evaluator-prerequisite.json",
+  "raw_sha256": {
+    "host-change.json": "b69c8149a50e609683fed2bb296d45a939643f72a1196e51ca24c4fbc8d0824a",
+    "run.json": "7eaf5f66cae0e5265e763b59424d153880a5bb271b3b1709d8a31db0ab750595",
+    "run.stderr": "88ac4d751b19a4b809e36d4a7b950793200016ae73e1a2b23a62b0ab1b496f73",
+    "run.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Runtime sysctl only; not configured to survive reboot.",
+    "This qualifies the evaluator host prerequisite, not real-backend G4 acceptance.",
+    "Original failed test evidence is retained."
+  ]
+}

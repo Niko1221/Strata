@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "status": "CPU_PREWORK_PASS_GPU_PENDING",
+  "host": "llm-49",
+  "red": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_u01.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "d450fb2370732699b00f330b40079d77bfcaa185176794594cf23b2daa3c32e8"
+  },
+  "green": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_u01.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "source_sha256": {
+      "src/context_time_travel/real.py": "62646755deef5f86c1a2af3da1d17cd7b7f4a89993747378faf15450a667ea14",
+      "src/context_time_travel/checkpoint_cache.py": "c6b88dca33288766297f4d4f7e8891daaf2fa3ce0f72199bc03890b2b11b6e54",
+      "tests/implementation/test_u01.py": "d450fb2370732699b00f330b40079d77bfcaa185176794594cf23b2daa3c32e8"
+    }
+  },
+  "mutant": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_u01.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "mutation": "Accept Boolean schema as integer version in isolated source copy",
+    "canonical_source_changed": false
+  },
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "registered_test": "test_g5_003_replay_after_upgrade",
+  "registered_executed": false,
+  "registered_sha256": "f33103d3a3a70fbf03e70b0e17e7a19a83929c58ce75e044a19933625b1d97f2",
+  "numerical_max_error": null,
+  "raw_sha256": {
+    "g0.json": "1b5d8afe25de9d539969757c17f00404991ed12f7364bce97ba67af1ef4efe9a",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "2ac580e5524a52662d5f7c71e4e6385129654dbee86938fd895d16802a940372",
+    "green.json": "acb5dd99e19e6c94055448e0a6b7eb06e9252e58277d5fa2fe4662a756686717",
+    "green.stderr": "2698886d5d40bf02b8023cc1d7b60413a77ef31a2d4aacffe29e2575a2449076",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutant.json": "bfec7811224c24ec0a8fde42c0f8cabeb5fabcda5ab4b2f1e0a42719e59091e7",
+    "mutant.stderr": "0e85aa38174f69df15f8e315b6d9abf1460dab1552c63c188d1cd2a97d65fca1",
+    "mutant.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.json": "884841b9257f4f5b058849ed2f95be2d127a32d7008e9d3a4c1b3243667798d9",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "a95647f915fcb971e88845df0ee7e3f4f02d33ae5ff5578669677573ff00fb05",
+    "red.stderr": "83bfb26334b05a56643a4b2a185203786f9b0319e2b9f3329301c93429d1cd04",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "CPU manifest validation only; no numerical upgrade qualification.",
+    "Reject incompatible numerical formats; no converter implemented. Cold replay uses explicit numerical cache eviction.",
+    "Registered GPU case awaits frozen numerical baseline.",
+    "Prework outside active N03 ledger; U01 not formally validated."
+  ]
+}

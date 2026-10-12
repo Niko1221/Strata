@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "ticket": "E02",
+  "status": "CPU_PREWORK_PASS_REGISTERED_ACCEPTANCE_PENDING",
+  "scope": "Test-first preparatory work while N03 calibration remains active",
+  "host": "llm-49",
+  "isolation": {
+    "kernel": "7.0.0-38-generic",
+    "bubblewrap_sha256": "523da3e7399044be5163aee6f57a77a6bef7454376e28f0a0627920bae1b76b6",
+    "bubblewrap_version": "bubblewrap 0.11.1"
+  },
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "seconds": 0.4190915049985051,
+      "test_sha256": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+      "evaluation_sha256": "b005c7162a478028f8ed1798d063003974adaeea20088088925652832fba94c5",
+      "scope": "Preparatory CPU red, not queue validation"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "seconds": 1.0354245140042622,
+      "test_sha256": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+      "scope": "Preparatory CPU checks, not queue validation"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "seconds": 0.8439427340053953,
+      "test_sha256": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+      "scope": "Preparatory CPU checks, not queue validation"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.050975499994819984,
+      "test_sha256": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+      "scope": "Preparatory CPU checks, not queue validation"
+    }
+  },
+  "test_count": 1,
+  "G0_count": 51,
+  "mutants_detected": 4,
+  "source_sha256": {
+    "tests/implementation/test_e02.py": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+    "src/context_time_travel/evaluation.py": "5bfb860d1f4213a2991788d7de5a16627b9e61bbd04491c84c5413be606163e4",
+    "src/context_time_travel/evaluation_worker.py": "068fc01ef740e23e5bf8610f79ed6626323ead4a50b5f741ae43c4e7608f0688"
+  },
+  "raw_sha256": {
+    "G0.json": "8faf1cb1ea2913185eafee1529ca9338570fedf404f68cadbc5ae2fdb34648ae",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "04987a4eee87651c619bc88dbd8f4e284b249582520cfff9c053068414826f8d",
+    "green.json": "18539e1319de1924620e23dda9cc477359d524febd09575344900cb26f0835f2",
+    "green.stderr": "08bb9c38a910e8c8a4d35413a21e8a44eec738b9a0e4f8979455de97aa6d7a71",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "8c395e5010918f1fd3f5837beb0eb6eb44f01579c26997457192ab9e0cfbf8ef",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "791af26be16411ab0ac8c776c31cc26aa386fcebd3120f35f308cb569b743c75",
+    "red.stderr": "8645dce0e89fe25f4018a4b67b1ed326732d461db4e3a2a63f31fc982d675ff2",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "No registered G4 test executed; no gate PASS.",
+    "Evaluator execution currently returns measurements; composition into immutable evaluation records remains to be integrated.",
+    "Requires working Linux bubblewrap; Windows and absent/denied namespace support fail closed.",
+    "No arbitrary model judge process supplied yet.",
+    "No GPU inference in this CPU test.",
+    "Resource measurements use wait4; descendant resource accounting and hostile process-tree cases need additional validation."
+  ]
+}

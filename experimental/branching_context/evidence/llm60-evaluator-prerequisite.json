@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "status": "BLOCKED_ON_LLM60",
+  "scope": "Evaluator-dependent G4 on llm-60 only; inference calibration unaffected",
+  "test": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_e02.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "a4252417e5fbe97e0e35544a7f6566fc444400690dc74a76f4f84d1c0a08314f",
+    "scope": "Real host evaluator prerequisite; GPU calibration separate"
+  },
+  "failures": 1,
+  "skips": 0,
+  "diagnosis": "AppArmor unprivileged_userns profile denies bwrap setpcap/net_admin; network namespace setup fails with Operation not permitted",
+  "bubblewrap_version": "0.9.0",
+  "host_policy_changed": false,
+  "working_host": "llm-49",
+  "working_evidence": "evaluator-isolation-prework.json",
+  "raw_sha256": {
+    "kernel-denials.txt": "e7d9514be0a1566a5c961bc38c42410973b9d994a55299e63d810ef789b8460a",
+    "run.json": "696f4fe54cc576b35909e9c116a389ceb7895333d597e90e2aad7a6168f66681",
+    "run.stderr": "fd171ad633c08633cc4e57f219c5e98da150ef3d07f3ed7c291575b17ebfc4c7",
+    "run.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

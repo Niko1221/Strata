@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "status": "LOGICAL_ORACLE_CPU_PASS_REAL_INTERPRETER_PENDING",
+  "tests": 2,
+  "red": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q02_model.py",
+      "-v"
+    ],
+    "exit_code": 1
+  },
+  "green": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q02*.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "source_sha256": "d3ef6dda60e75149e28e34cbcb35545a6b5f79899039fb2dd2a2e490831450fb",
+    "test_sha256": "8d512f6b6afc9db9f8102059b01b9c24bb267992b11e0707642f3165887ebace"
+  },
+  "mutant": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "C:\\Users\\dflanag3\\AppData\\Local\\Temp\\tmpofxiue6_\\tests\\implementation",
+      "-p",
+      "test_q02_model.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "mutation": "Omit committed receipt roots from independent collector model",
+    "canonical_source_changed": false
+  },
+  "real_backend_sequences_executed": 0,
+  "registered_requirement": 1000,
+  "raw_sha256": {
+    "green.json": "349463ac966ae10827f8bb62d96420c9129642cce74606d6562045238fc358cb",
+    "green.stderr": "7bbd81425de41e78d79dbfc2ad97d829d4674d319fe2dcb7a691b75389b5dec9",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-green.json": "45bfab0e3b4cc9fa1bc50198bbedecbef609fc2d240ed0757bbd786f8e46fac0",
+    "host-green.stderr": "a7f31bb24393df7c111b75a8f950c2f58c06c4c1bb740bb7e3f6bb365b320435",
+    "host-green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutant.json": "50af5dc52e2193c6e5929524bb3d114418705cab9b7ffe72459cd317392da1ea",
+    "mutant.stderr": "b073e9fa32fd9e563cc4f98ca83a2ef6be7b8682edba849c7717b2bdc3b165f3",
+    "mutant.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "red.json": "b03a0fd6654b4f42135b970eb10d818d73d40efb8810307ddf3326be5914a4f8",
+    "red.stderr": "d45b71ad8994efa799fe29fce7411c8a38d8a0559a56d90e8991ee1aebfe3154",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Independent graph oracle uses opaque identities supplied by future interpreter; canonical serialization checks must be supplied there.",
+    "No independent numerical or full controller oracle executed by this substep.",
+    "Reference-model defect injection is not a registered production mutant campaign."
+  ]
+}

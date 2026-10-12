@@ -170,8 +170,8 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
     return true;
 }
 
-bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
-                                     const ModelGeometry& g, std::string& error) {
+bool conversation_checkpoint_restore_running(const ConversationCheckpoint& c, SessionState& ss,
+                                              const ModelGeometry& g, std::string& error) {
     if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -183,14 +183,24 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
         if (!copy(st.idx_tail, c.tails.data() + j * z.tail, z.tail, error) ||
             !copy(st.idx_dead, c.dead.data() + j * z.dead, z.dead, error) ||
             !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
-        if (!c.ids.empty()) {
-            const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
-            if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
-        }
     }
     const size_t tokens = c.ids.size();
     ss.ple_prev[0] = tokens >= 2 ? c.ids[tokens - 2] : -1;
     ss.ple_prev[1] = tokens >= 1 ? c.ids[tokens - 1] : -1;
+    return sync(error);
+}
+
+bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
+                                     const ModelGeometry& g, std::string& error) {
+    if (!conversation_checkpoint_restore_running(c, ss, g, error)) return false;
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    if (!c.ids.empty()) {
+        const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+        for (size_t j = 0; j < owned_qsa(ss); ++j)
+            if (!copy(owned(ss, j).idx_pooled + row * g.idx_key_dim,
+                      c.dead.data() + j * z.dead, z.dead, error)) return false;
+    }
     return sync(error);
 }
 
@@ -271,13 +281,20 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     // reached. Refresh that page even when the main prefix continued unchanged.
     if (draft && !conversation_kv_save(captured.kv.back(), *draft, g, upto, false, error,
                                        std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
+    // Published snapshots keep every captured physical segment immutable,
+    // including a segment that currently has only this one owner. A later
+    // reuse capture can detach just its rewritten byte range.
+    for (auto& layer : captured.kv) {
+        layer.k.freeze(); layer.v.freeze(); layer.k_scale.freeze();
+        layer.v_scale.freeze(); layer.pooled.freeze();
+    }
     image = std::move(captured);
     return true;
 }
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -287,17 +304,17 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
-                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -311,20 +328,34 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
-    l.max_kv_layers = layers + 1;
+    l.max_kv_layers = layers + (draft ? 1 : 0);
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
     l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
-    l.max_kv_bytes.assign(layers + 1, {});
+    l.max_kv_bytes.assign(layers + (draft ? 1 : 0), {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
         const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
         if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
     }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    if (draft) {
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft->max_cells, 0));
+        if (!conversation_kv_part_sizes(*draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    }
     limits = std::move(l);
     return true;
+}
+
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
+}
+
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
+                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error) {
+    return conversation_session_read_limits(limits, ss, g, &draft, max_tokens, max_checkpoints, error);
 }
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,

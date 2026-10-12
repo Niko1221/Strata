@@ -1,0 +1,442 @@
+{
+  "schema": 1,
+  "scope": "Real cold-to-resident identity repair; no cumulative gate qualification",
+  "host": "llm-49 / r4090",
+  "raw_archive_sha256": "94a55bdb528ce357db21bd150afc7b3edf6996b97ac3580d852a9fe4dfe2ba32",
+  "reports": [
+    {
+      "run": "C01-COLD-38e884a0f11843a1a89646a61dc0e483",
+      "command_id": "red",
+      "outcome": "MISSING_ARTIFACT",
+      "elapsed_seconds": 0.2011009020206984,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [
+          {
+            "id": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_cold_identity.py\", line 14, in test_cold_resident_identity_and_no_replay\n    profile = json.loads(Path(os.environ['CTT_PROFILE']).read_text())\n                              ~~~~~~~~~~^^^^^^^^^^^^^^^\n  File \"<frozen os>\", line 709, in __getitem__\nKeyError: 'CTT_PROFILE'\n"
+          }
+        ],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-38e884a0f11843a1a89646a61dc0e483/tests.json",
+          "sha256": "604891d5b1e4f6b096f5c174006df6841d21ffae25db2ba529ecce813539ab6a"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-38e884a0f11843a1a89646a61dc0e483/tests.json",
+          "sha256": "604891d5b1e4f6b096f5c174006df6841d21ffae25db2ba529ecce813539ab6a"
+        }
+      ],
+      "fingerprint": "07557243d47a27107c3874766bb85933a99d7876d5bf4e1800163c968dcc8cd6",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    },
+    {
+      "run": "C01-COLD-e941dd57608c4a82b6edd2d5ee008e54",
+      "command_id": "red",
+      "outcome": "FAIL",
+      "elapsed_seconds": 13.424837243015645,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [
+          {
+            "id": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/src/context_time_travel/real.py\", line 413, in evict_all\n    for path in self.checkpoint_directory.iterdir():\n                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/pathlib/__init__.py\", line 837, in iterdir\n    with os.scandir(root_dir) as scandir_it:\n         ~~~~~~~~~~^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/tmp/tmpzxe35iig/checkpoints'\n"
+          }
+        ],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_cold_identity.py\", line 46, in test_cold_resident_identity_and_no_replay\n    self.assertEqual(model.cache[root].input_identity, model._input_identity(prefix),\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                     'Disk-to-native replacement must retain full canonical input identity')\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '' != '3a1f0e63639c939839fc6165deaeb33afa3d0d2b8d5f63f48f099ba0a41c3818'\n+ 3a1f0e63639c939839fc6165deaeb33afa3d0d2b8d5f63f48f099ba0a41c3818\n : Disk-to-native replacement must retain full canonical input identity\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e941dd57608c4a82b6edd2d5ee008e54/tests.json",
+          "sha256": "f1abfa59f366be540ea31be15ef8435cddbc688e602b7429d7def51712d5ea55"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e941dd57608c4a82b6edd2d5ee008e54/tests.json",
+          "sha256": "f1abfa59f366be540ea31be15ef8435cddbc688e602b7429d7def51712d5ea55"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e941dd57608c4a82b6edd2d5ee008e54/measurements.jsonl",
+          "sha256": "942cce1416f6fef45288a0a27889876fff288e443b4810586a9fbc1831386a0b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e941dd57608c4a82b6edd2d5ee008e54/native.jsonl",
+          "sha256": "47afeea0dcd29e9849c9213575e95306f4008a517ff28e65be1cb84ad4ad0dd4"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e941dd57608c4a82b6edd2d5ee008e54/oracle.jsonl",
+          "sha256": "7092d3f07a803de65cbbd874726acecc53931e8c54e5727767e46091288665a0"
+        }
+      ],
+      "fingerprint": "dbdade98239565c33fd0413694d4a7b5f223a7a70fdf84a65858639677317093",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    },
+    {
+      "run": "C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 13.326475768000819,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_cold_identity.py\", line 45, in test_cold_resident_identity_and_no_replay\n    self.assertEqual(model.cache[root].input_identity, model._input_identity(prefix),\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                     'Disk-to-native replacement must retain full canonical input identity')\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '' != '3a1f0e63639c939839fc6165deaeb33afa3d0d2b8d5f63f48f099ba0a41c3818'\n+ 3a1f0e63639c939839fc6165deaeb33afa3d0d2b8d5f63f48f099ba0a41c3818\n : Disk-to-native replacement must retain full canonical input identity\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae/tests.json",
+          "sha256": "b92f537c0fec8f5271889c4f8ce80e2aff24fa9f5a9566b5d065fab51af6db01"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae/tests.json",
+          "sha256": "b92f537c0fec8f5271889c4f8ce80e2aff24fa9f5a9566b5d065fab51af6db01"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae/measurements.jsonl",
+          "sha256": "942cce1416f6fef45288a0a27889876fff288e443b4810586a9fbc1831386a0b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae/native.jsonl",
+          "sha256": "b99e6a2b8b7a4d104a461116b2f8cd9f47e91aaf26987d70038735eca5ba2d44"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-e32e182a7cbf41f0ba566ba747c8f3ae/oracle.jsonl",
+          "sha256": "7483b6c56344a9c7335a23a116eeb74432523ec7a48a2987b0160811f3017055"
+        }
+      ],
+      "fingerprint": "6a47752812e74f91099ca43cce7d989f70c3290a3c50d835712efc20f25b34c5",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    },
+    {
+      "run": "C01-COLD-13340196844c4258bbc3272b23775001",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 13.323796854005195,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-13340196844c4258bbc3272b23775001/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-13340196844c4258bbc3272b23775001/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-13340196844c4258bbc3272b23775001/measurements.jsonl",
+          "sha256": "942cce1416f6fef45288a0a27889876fff288e443b4810586a9fbc1831386a0b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-13340196844c4258bbc3272b23775001/native.jsonl",
+          "sha256": "19ce0927885730ad7e2c9ec8787b6316b9bd61fa33e7056b46372437753112aa"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-13340196844c4258bbc3272b23775001/oracle.jsonl",
+          "sha256": "667a89fe920cbe3e789af817ca2e533eb57848634f7ad8b50488c536b945465f"
+        }
+      ],
+      "fingerprint": "7bb0939488e79d360deb4233a31edcd1244f91c490168575fb99fa79a6c35ede",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    },
+    {
+      "run": "C01-COLD-20c1b66cdd924b1e96709dad5812c578",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.3049812440003734,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "7c83e4584027381bd5b695e3be0302eed2033462af0d06d7dfb649c63a2a43be",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T04:30:53.973997+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T043054085760Z-G0.json",
+          "sha256": "7153b278b8864b5ad07ac6b5532dc5a5ba3dd431d167566bed7570282f49a0b5"
+        }
+      ],
+      "fingerprint": "7bb0939488e79d360deb4233a31edcd1244f91c490168575fb99fa79a6c35ede",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    },
+    {
+      "run": "C01-COLD-23fa2100b61b4944b0ddfe5d68c059f7",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.16998958800104447,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": [],
+      "fingerprint": "7bb0939488e79d360deb4233a31edcd1244f91c490168575fb99fa79a6c35ede",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+          "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+          "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+          "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+          "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+        }
+      }
+    }
+  ],
+  "measurements": [
+    {
+      "test": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+      "kind": "cold-resident",
+      "saved_payload_bytes": 119371292,
+      "native_state_bytes": 118378012,
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9,
+      "restoration_computed_tokens": 0
+    }
+  ],
+  "limitations": [
+    "Existing pinned Q8_0/FP16 CUDA binaries; profile unqualified",
+    "One fresh nine-token comparison, not the full G1/G2 suite",
+    "Initial missing-environment and fixture-cleanup errors retained; clean red is separate"
+  ]
+}

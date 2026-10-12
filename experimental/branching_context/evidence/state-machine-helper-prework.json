@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "status": "GENERATOR_REDUCER_CPU_PASS_INTERPRETER_INCOMPLETE",
+  "programs_checked": 10,
+  "steps_per_program": 40,
+  "operation_types": 11,
+  "red": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q02.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "e10c8b1ada2aefdf8194ae8505b327eba8e92380920d560b3660f16f84cd6a4b"
+  },
+  "green": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q02.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "test_sha256": "e10c8b1ada2aefdf8194ae8505b327eba8e92380920d560b3660f16f84cd6a4b"
+  },
+  "mutant": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "C:\\Users\\dflanag3\\AppData\\Local\\Temp\\tmpbqhm8334\\tests\\implementation",
+      "-p",
+      "test_q02.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "mutation": "Accept any failure while reducing, including invalid programs",
+    "canonical_source_changed": false
+  },
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "real_backend_sequences_executed": 0,
+  "registered_requirement": 1000,
+  "source_sha256": {
+    "scripts/state_machine.py": "d6ae7128ebcb7fe3961f87e0ac3abb1b7f172e443915be2eaf7c977e500897c1",
+    "tests/implementation/test_q02.py": "e10c8b1ada2aefdf8194ae8505b327eba8e92380920d560b3660f16f84cd6a4b"
+  },
+  "raw_sha256": {
+    "g0.json": "8b3e6f9f68377eb8ec9715e04d1f0b63c997e3418b9b0972068683d62921f8ba",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "4bedf8987e3e1212c52a5506c9a35ecbf09a50934a21308dfe25d1785089d220",
+    "green.json": "2cda83f452a27950d902795997d9d600760adefddb7c4db2a1f4ae5b5ba445d9",
+    "green.stderr": "2e53a91788f726eb13c6e8202ecf961b4ccdb58a6d23df26e715722647bf27c7",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-green.json": "4666d0c88b515ac768bfee7180578358e8141aa3877592dae429e69f98ba34a4",
+    "host-green.stderr": "da81448bef133f75af0c8df3fc289fb0feaa21be25d0d49c6fe2bf232b308928",
+    "host-green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutant.json": "fe390a75349743498eba24021d7bd9c78ca8b08f3e28a81a918564e8d3ab5786",
+    "mutant.stderr": "b3a03960f79c79f8a7833e53dd72f9f73025a943fad390fb88d195a6da7f4e73",
+    "mutant.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.json": "c43a4a928343cfefe633ebde7232e6dfea472b71bf70150a674373e649719f10",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "a95a7c14960ce3dc67a7e559f995636b9dcf1c5c6185a5f0d1d935425c4ffc0a",
+    "red.stderr": "bac3139b588eee31bc210df747da2b4d33c929cc51bd587d788a1ebfc685650b",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Operation interpreter, independent logical reference, real oracle and executed failure artifacts still pending.",
+    "Reduction is deletion-minimal, not guaranteed globally shortest.",
+    "No registered G5-002 PASS and no Q02 completion claim."
+  ]
+}

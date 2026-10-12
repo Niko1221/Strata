@@ -1,0 +1,393 @@
+{
+  "schema": 1,
+  "scope": "Takeover repairs and component validation; no cumulative gate certification",
+  "host": "llm-49 / r4090",
+  "source_fingerprint": "4a185834aace854c8def1ff4dc877c404d18487c4f42df372029aa233fffa4f7",
+  "archive_sha256": "38173e40e26e661ccc6ec66a2f2528590a6c61e661302e2206fb7b3524c0a2ed",
+  "reports": [
+    {
+      "ticket": "C02-REPAIR",
+      "command_id": "green",
+      "run": "C02-REPAIR-9a34ed400fca4c588c0c83d36a4c32af",
+      "elapsed_seconds": 74.87795250897761,
+      "executed_ids": [
+        "test_c02_idle.IdleControllerTests.test_c02_idle_invariant",
+        "test_c02_idle.RealIdleBoundaryTests.test_real_idle_forced_futures",
+        "test_c02_idle.RealIdleBoundaryTests.test_stream_publication_cancel_and_cold_controller_resume"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c02_idle.IdleControllerTests.test_c02_idle_invariant",
+          "test_c02_idle.RealIdleBoundaryTests.test_real_idle_forced_futures",
+          "test_c02_idle.RealIdleBoundaryTests.test_stream_publication_cancel_and_cold_controller_resume"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 3,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/C02-REPAIR-9a34ed400fca4c588c0c83d36a4c32af/tests.json",
+          "sha256": "c4b7a8ae4cbe567477b65bc06cba3ab281c0b26aee99530f99024a319686a225"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/C02-REPAIR-9a34ed400fca4c588c0c83d36a4c32af/measurements.jsonl",
+          "sha256": "1033f5eb5a94ef4a23d9115d51f1c18c71efb460a1bd4d7c527b7de3647219b7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/C02-REPAIR-9a34ed400fca4c588c0c83d36a4c32af/native.jsonl",
+          "sha256": "711bdabace5571a5af5de910bb79dc4faadb31276e337b0f08d0b8b294f4736c"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/C02-REPAIR-9a34ed400fca4c588c0c83d36a4c32af/oracle.jsonl",
+          "sha256": "807dc23b8964d4ce192222ecafb3087ff3bebadb49f1c29accdf073f42aa1ae4"
+        }
+      ]
+    },
+    {
+      "ticket": "C02-REPAIR",
+      "command_id": "controller-negative",
+      "run": "C02-REPAIR-28afed28eccd4ff685d35e4e1c17143f",
+      "elapsed_seconds": 0.18911969699547626,
+      "executed_ids": [
+        "test_c02.ControllerVersionTests.test_c02_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c02.ControllerVersionTests.test_c02_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/C02-REPAIR-28afed28eccd4ff685d35e4e1c17143f/tests.json",
+          "sha256": "afaf481deb8ae6138f6ea2e39f1a07ba045bd662d96d64c7995410a52b4b5ca7"
+        }
+      ]
+    },
+    {
+      "ticket": "C02-REPAIR",
+      "command_id": "G0",
+      "run": "C02-REPAIR-4cb69b79114f450cbecd65456eb244d6",
+      "elapsed_seconds": 0.2886450049991254,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "677fcd5c07dbf712630d1bb71ea7d8f0be3ecea6126f1832ccdfa8c5c3674577",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T03:22:59.799574+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/20261012T032259907548Z-G0.json",
+          "sha256": "1f900735c605836a98b6c7eac06ad1257048931c27e022adaf32ebfe174e7d9b"
+        }
+      ]
+    },
+    {
+      "ticket": "C02-REPAIR",
+      "command_id": "mutants",
+      "run": "C02-REPAIR-de21fa4a4aa34408bd0c363cf06e3c45",
+      "elapsed_seconds": 0.15607733800425194,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": []
+    },
+    {
+      "ticket": "R03",
+      "command_id": "green-asan",
+      "run": "R03-723d69f9da464bb8b6f888fe48870e4a",
+      "elapsed_seconds": 1.3458190730016213,
+      "executed_ids": [
+        "test_r03_asan.HostViewSafetyTests.test_r03_failed_cow_keeps_payload_and_copy_counter",
+        "test_r03_asan.HostViewSafetyTests.test_r03_published_write_after_directory_growth"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_r03_asan.HostViewSafetyTests.test_r03_failed_cow_keeps_payload_and_copy_counter",
+          "test_r03_asan.HostViewSafetyTests.test_r03_published_write_after_directory_growth"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 2,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/R03-723d69f9da464bb8b6f888fe48870e4a/tests.json",
+          "sha256": "2e1e12456e78f497db9937a2610c677a85e159b91008866b341d8e8071c8bd94"
+        }
+      ]
+    },
+    {
+      "ticket": "R03",
+      "command_id": "green",
+      "run": "R03-3d702e7620924aab8caadb17beadd9de",
+      "elapsed_seconds": 0.8792721889913082,
+      "executed_ids": [
+        "test_r03.SharedStorageAccountingTests.test_r03_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_r03.SharedStorageAccountingTests.test_r03_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/R03-3d702e7620924aab8caadb17beadd9de/tests.json",
+          "sha256": "87619804875edb1f3dc9c3cc51ecdd5cc06b6d205f9fb2604eed0da66dfed0ff"
+        }
+      ]
+    },
+    {
+      "ticket": "R03",
+      "command_id": "G0",
+      "run": "R03-7f7e72146b0c4964a31787287d264ed0",
+      "elapsed_seconds": 0.3260521040065214,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "f5104e44664bf4c35581509655ee67e0289c96c028e7907a9725199229bc9441",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T04:03:38.300544+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/20261012T040338403785Z-G0.json",
+          "sha256": "27946ef36afc6b40ef21acf9e3c54f2ce6cf66d6c90755f6b65e4ee3c02c66f6"
+        }
+      ]
+    },
+    {
+      "ticket": "R03",
+      "command_id": "mutants",
+      "run": "R03-77a755c60444427bb387e770c8483780",
+      "elapsed_seconds": 0.17221018800046295,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": []
+    },
+    {
+      "ticket": "R03",
+      "command_id": "prior-host",
+      "run": "R03-ee583a503408443c9a833cbf88889f16",
+      "elapsed_seconds": 1.324234923988115,
+      "executed_ids": [
+        "test_r01.HostPrefixSharingTests.test_r01_invariant",
+        "test_r02.PublishedTailIsolationTests.test_r02_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_r01.HostPrefixSharingTests.test_r01_invariant",
+          "test_r02.PublishedTailIsolationTests.test_r02_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 2,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/experimental/branching_context/evidence/runs/luna/R03-ee583a503408443c9a833cbf88889f16/tests.json",
+          "sha256": "3d7db3afd8ea032850dbd02f1f7b1f2cd35193cf490d286dedd16eb33877ad90"
+        }
+      ]
+    }
+  ],
+  "backend_artifacts": {
+    "model_manifest": {
+      "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+      "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+    },
+    "native_source": {
+      "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/native-source.json",
+      "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2"
+    },
+    "oracle": {
+      "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-fresh",
+      "sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca"
+    },
+    "profile": {
+      "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/results-v2/execution-profile.json",
+      "sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9"
+    },
+    "sut": {
+      "path": "/home/dflanag3/branching-g3/upstream-draft-20261012/build/strata-branch",
+      "sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c"
+    }
+  },
+  "limitations": [
+    "Old pinned CUDA binaries for controller tests; changed host headers tested in actual CPU probes only",
+    "Numerical profile remains unqualified",
+    "C01 checkpoint identity coverage does not establish normal native cache integration",
+    "No cumulative G1-G5 PASS",
+    "All 40 protected reference and registered files retained"
+  ]
+}

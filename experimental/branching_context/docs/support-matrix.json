@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "qualification": "DRAFT_VALIDATION_PENDING",
+  "targets": [
+    {
+      "id": "qwen-q8-fp16-t1-linux-cuda",
+      "weight_format": "Q8_0",
+      "kv_format": "FP16",
+      "architecture": "qwen4exp",
+      "weights_sha256": "846b74d30a22552ad8cc2fabe5b17103049fe68ffdacf56daa457db8ecaa356f",
+      "operator": "token-at-a-time",
+      "os": "Linux",
+      "filesystem": "ext4",
+      "backend": "CUDA",
+      "inputs": "token_ids",
+      "active_execution_leases": 1,
+      "maximum_context": 4096,
+      "primary_host": "llm-60",
+      "secondary_host": "llm-49",
+      "profile_binding": "Exact model files, binaries, hardware and frozen tolerances supplied by executed per-host profile; profiles are not interchangeable"
+    }
+  ],
+  "certified_guarantees": [],
+  "outside_matrix": [
+    {
+      "id": "batched-prefill",
+      "status": "FAIL",
+      "reason": "Corrected normal batched-prefill comparisons diverged from fresh T=1; no equivalence claim."
+    },
+    {
+      "id": "Q4",
+      "status": "UNMEASURED",
+      "reason": "No frozen branching numerical profile for Q4 weights."
+    },
+    {
+      "id": "quantized-KV",
+      "status": "UNMEASURED",
+      "reason": "Native layout checks do not qualify immutable branching numerical agreement."
+    },
+    {
+      "id": "Windows",
+      "status": "UNSUPPORTED",
+      "reason": "Store currently uses POSIX fcntl; native portability work outstanding."
+    },
+    {
+      "id": "HIP",
+      "status": "UNMEASURED",
+      "reason": "Changed source has not been built and tested on HIP."
+    },
+    {
+      "id": "SYCL",
+      "status": "UNMEASURED",
+      "reason": "Changed source has not been built and tested on SYCL."
+    },
+    {
+      "id": "multimodal",
+      "status": "UNSUPPORTED",
+      "reason": "Canonical input path currently accepts token IDs only."
+    },
+    {
+      "id": "concurrent-GPU-leases",
+      "status": "UNSUPPORTED",
+      "reason": "One active backend execution lease; FIFO request serialization."
+    },
+    {
+      "id": "power-loss",
+      "status": "UNMEASURED",
+      "reason": "Process-kill recovery evidence does not establish hardware power-loss durability."
+    },
+    {
+      "id": "other-models",
+      "status": "UNMEASURED",
+      "reason": "Only the pinned Qwen Q8 model files have been exercised."
+    }
+  ]
+}

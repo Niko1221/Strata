@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "status": "CPU_PASS_GPU_PENDING",
+  "host": "llm-60",
+  "destination": "/home/dflanag3/branching-g3/private-queue-20261012T0818/python-validation-d3d67a24",
+  "base_source_commit": "d3d67a24729cd8a3fb15f5b4c66128d6d73f2031",
+  "verified_base_files": 138,
+  "overlay_sha256": {
+    "tests/implementation/test_e01.py": "e97928051c5cab6d1743b451b75231b1db82a4b24fce647ba7405b737ee4d21e"
+  },
+  "initial_run": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "-v",
+      "test_e01",
+      "test_e02",
+      "test_e02_records",
+      "test_e03",
+      "test_p01",
+      "test_p02",
+      "test_p03",
+      "test_p04",
+      "test_p04_processes",
+      "test_u01",
+      "test_u02"
+    ],
+    "exit_code": 1,
+    "seconds": 2.3503175609512255,
+    "source_commit": "d3d67a24729cd8a3fb15f5b4c66128d6d73f2031",
+    "verified_files": 138,
+    "destination": "/home/dflanag3/branching-g3/private-queue-20261012T0818/python-validation-d3d67a24"
+  },
+  "corrected_run": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "-v",
+      "test_e01",
+      "test_e02",
+      "test_e02_records",
+      "test_e03",
+      "test_p01",
+      "test_p02",
+      "test_p03",
+      "test_p04",
+      "test_p04_processes",
+      "test_u01",
+      "test_u02"
+    ],
+    "exit_code": 0,
+    "seconds": 2.481682391022332,
+    "test_e01_sha256": "e97928051c5cab6d1743b451b75231b1db82a4b24fce647ba7405b737ee4d21e"
+  },
+  "tests": 14,
+  "failures": 0,
+  "skips": 0,
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "numerical_max_error": null,
+  "test_correction": "E01 recursive basename count included P01 derived authorization index. Now require exactly one canonical report and one index containing only the correct candidate snapshot; hash and corruption assertions retained.",
+  "raw_sha256": {
+    "cpu-corrected.json": "5d32a19611ec1975453ca4b38885a4e9b7cf8f95a1dceca71101da370ae7ffde",
+    "cpu-corrected.stderr": "209941b0d7df2e162dbb901e69d41055d098a9a73de758bde69bda0198bb4d1a",
+    "cpu-corrected.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "cpu.json": "c6be3e98adfb542f374629fab22fc0114e10e94db7c64bf205de751601945879",
+    "cpu.stderr": "dd8882791482d9113c024405365b5c886d9f72a8c1df15233744a3193259bfd9",
+    "cpu.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.json": "11dbeef161bb305a184e531d61074cf9bbef76e5e799242fa4d129b0b599990c",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "93f398af67f68a95c5ffe58e6883e452c1ecbc29dd3391d5e34b88e5492020c4",
+    "mutations.json": "ff5d934b7b36a4584c67fb8d4dcafd80dd2b42b9a82a193060101b4e49fda692",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "source.json": "513a4ec5e1c35453f364fd319a35830d178e806692e1146eb9b399b724461517"
+  },
+  "limitations": [
+    "CPU controls only, no registered GPU qualification.",
+    "Live numerical calibration binaries and files untouched."
+  ]
+}

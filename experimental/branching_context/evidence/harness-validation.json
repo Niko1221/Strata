@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "status": "HARNESS_READY",
+  "scope": "Implementation handoff and bounded baseline; no cumulative G1-G5 certification",
+  "created_utc": "2026-10-12T02:05:53.288386+00:00",
+  "branch": "feat/branching-completion",
+  "base_commit": "6dd5f9df7e1aa7f00045cf72e997fd8595175847",
+  "harness": {
+    "windows": {
+      "test_count": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "executed_ids": [
+        "test_drive.DriverTests.test_ambiguous_launch_does_not_restart",
+        "test_drive.DriverTests.test_changed_test_cannot_satisfy_original_red",
+        "test_drive.DriverTests.test_command_failure_and_timeout_preserved",
+        "test_drive.DriverTests.test_disabled_campaign_cannot_be_enabled_by_record",
+        "test_drive.DriverTests.test_duplicate_current_execution_is_refused",
+        "test_drive.DriverTests.test_executed_ids_and_gate_scope",
+        "test_drive.DriverTests.test_live_process_is_not_restarted",
+        "test_drive.DriverTests.test_lock_excludes_second_runner_and_ledger_detects_corruption",
+        "test_drive.DriverTests.test_missing_or_modified_evidence_is_rejected",
+        "test_drive.DriverTests.test_one_active_ticket_and_blocked_dependencies",
+        "test_drive.DriverTests.test_real_red_before_green_and_unchanged_assertions",
+        "test_drive.DriverTests.test_required_output_artifact_cannot_be_omitted",
+        "test_drive.DriverTests.test_skipped_test_never_validates",
+        "test_drive.DriverTests.test_stale_native_and_binary_fingerprints",
+        "test_drive.DriverTests.test_stale_observation_can_be_revalidated",
+        "test_drive.DriverTests.test_timeout_terminates_owned_descendants",
+        "test_drive.EvidenceTests.test_import_error_is_not_red_evidence",
+        "test_drive.EvidenceTests.test_skip_xfail_and_wrong_assertion_do_not_qualify"
+      ],
+      "run": "H00-75849f9cbfe54984b3080b66712c5666"
+    },
+    "linux": {
+      "test_count": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "expected_failures": 0,
+      "executed_ids": [
+        "test_drive.DriverTests.test_ambiguous_launch_does_not_restart",
+        "test_drive.DriverTests.test_changed_test_cannot_satisfy_original_red",
+        "test_drive.DriverTests.test_command_failure_and_timeout_preserved",
+        "test_drive.DriverTests.test_disabled_campaign_cannot_be_enabled_by_record",
+        "test_drive.DriverTests.test_duplicate_current_execution_is_refused",
+        "test_drive.DriverTests.test_executed_ids_and_gate_scope",
+        "test_drive.DriverTests.test_live_process_is_not_restarted",
+        "test_drive.DriverTests.test_lock_excludes_second_runner_and_ledger_detects_corruption",
+        "test_drive.DriverTests.test_missing_or_modified_evidence_is_rejected",
+        "test_drive.DriverTests.test_one_active_ticket_and_blocked_dependencies",
+        "test_drive.DriverTests.test_real_red_before_green_and_unchanged_assertions",
+        "test_drive.DriverTests.test_required_output_artifact_cannot_be_omitted",
+        "test_drive.DriverTests.test_skipped_test_never_validates",
+        "test_drive.DriverTests.test_stale_native_and_binary_fingerprints",
+        "test_drive.DriverTests.test_stale_observation_can_be_revalidated",
+        "test_drive.DriverTests.test_timeout_terminates_owned_descendants",
+        "test_drive.EvidenceTests.test_import_error_is_not_red_evidence",
+        "test_drive.EvidenceTests.test_skip_xfail_and_wrong_assertion_do_not_qualify"
+      ],
+      "run": "H00-bdd48ef3c84e448cbe2a4454a6988151"
+    },
+    "queue_tickets": 34,
+    "long_campaign_enabled": false,
+    "protected_original_files": 40
+  },
+  "inventory": {
+    "registered": 85,
+    "methods_present": 62,
+    "methods_missing": 23,
+    "G4_missing": 11,
+    "G5_missing": 12
+  },
+  "reference": {
+    "linux_G0_tests": 51,
+    "linux_G0_failures": 0,
+    "linux_G0_skips": 0,
+    "demo": "PASS",
+    "reference_mutants_killed": 4,
+    "windows_G0": {
+      "status": "FAIL",
+      "tests_run": 11,
+      "errors": 2,
+      "reason": "POSIX fcntl import unavailable"
+    },
+    "windows_demo": "FAIL: fcntl import",
+    "windows_mutation_smoke": "FAIL: fcntl import"
+  },
+  "model_case": {
+    "registered_ids": [
+      "G3-004"
+    ],
+    "executed_ids": [
+      "test_immutability.SharedPageTests.test_g3_004_shared_page_never_written"
+    ],
+    "test_count": 1,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "xfails": 0,
+    "numerical_comparisons": 8,
+    "max_absolute_logit_error": 0.0,
+    "retained_images": 7,
+    "byte_audits": 28,
+    "elapsed_seconds": 75.9313952170196,
+    "sut_tokens": 24,
+    "oracle_tokens": 84,
+    "hot_append_forward_token_deltas": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "hot_append_prefix_recomputation_tokens": 0,
+    "shared_root_allocations_initial_children": [
+      24,
+      24
+    ],
+    "cow_pages": 216,
+    "cow_bytes": 452984832,
+    "sampled_tracked_vmm_peak_bytes": 704643072,
+    "handle_allocations": 8,
+    "handle_releases": 8,
+    "live_handles_before_exit": 0,
+    "live_snapshot_images_before_exit": 0,
+    "context_allocations": 1,
+    "context_releases": 1,
+    "lease_acquires": 27,
+    "lease_releases": 27,
+    "native_process_exit_observed": true,
+    "written_file_bytes": 0,
+    "memory_scope": "VMM sample excludes model arenas and other memory; final counters precede native teardown; no total-RAM savings claim",
+    "shared_root_allocations_with_reported_filled_prefix_bytes_initial_children": [
+      0,
+      0
+    ],
+    "sharing_scope": "Short partial-page fixture: shared allocations count includes pages whose filled_prefix_bytes is zero. No populated complete-prefix sharing or whole-RAM savings is certified by this case."
+  },
+  "backend": {
+    "native_revision": "ed5c45574877ccb17f791ccf394bc3103717ee6f",
+    "verified_native_source_files": 422,
+    "source_tree": "61e6d4fed182b288f6c4eb6c775987504df262da",
+    "sut_sha256": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c",
+    "oracle_sha256": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca",
+    "model_manifest_sha256": "b1266609ec32d232b982200c35fed90d283f72fb057781d02aa061e5172584d9",
+    "model_contract_id": "e6dd3015773336aa239030ac93b3b4208dbfef231b7ef6972385818b2e474cad",
+    "execution_profile_sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9",
+    "execution_profile_id": "6cad3e05a2b9bb476e89890f82b2d82a510ba985f7f5d531332083fd6e171db5",
+    "numerical_gate_qualified": false,
+    "model_hash_receipts_verified": 11,
+    "model_bytes_rehashed": 0,
+    "oracle_branch_symbols_absent": true,
+    "weights": "Q8_0",
+    "kv": "FP16",
+    "operator": "Verifier.run(T=1)",
+    "hardware": {
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "driver": "595.99.02",
+      "vram_mib": 24564,
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+      "python": "3.14.4",
+      "device_identity_scope": "Raw GPU UUID retained only in the private execution profile archive"
+    }
+  },
+  "evidence": {
+    "remote_archive_sha256": "7a7a3b235f33e01d0ac281d022f0165c378125d7c4abda276b8c50b7e65bc535",
+    "archive_bytes": 1468477,
+    "private_local_archive": "evidence/runs/luna/remote/evidence-final.zip",
+    "remote_location_receipt": "evidence/runs/luna/remote/location.json"
+  },
+  "next_ticket": "C01",
+  "outstanding": [
+    "All implementation tickets C01 through F01; no product implementation changed by this handoff",
+    "Full numerical-profile qualification",
+    "Batched-prefill mismatch",
+    "Host-RAM sharing and concurrent native cache integration",
+    "G4/G5 methods absent",
+    "Native Windows store support",
+    "HIP/SYCL builds and default-path parity",
+    "Exhaustive certification and long soak disabled"
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "ticket": "E01",
+  "status": "CPU_PREWORK_PASS_REAL_ACCEPTANCE_PENDING",
+  "scope": "Preparatory test-first implementation while N03 calibration runs; queue validation pending",
+  "red": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_e01.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "41524d15b43f492634642380a1fd78af0d23a4f85bd7fde9e0f7f68bcf9b10b8",
+    "store_sha256": "200d6e5c15213f729606b62224c9065f1a0749f07152499131b59e88a46291aa",
+    "scope": "CPU-only preparatory red; not queue validation or real-backend admission"
+  },
+  "checks": {
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e01.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "scope": "CPU-only preparatory checks; registered real-backend acceptance pending"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "scope": "CPU-only preparatory checks; registered real-backend acceptance pending"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "scope": "CPU-only preparatory checks; registered real-backend acceptance pending"
+    }
+  },
+  "test_count": 1,
+  "G0_count": 51,
+  "mutants_detected": 4,
+  "registered_test": "test_g4_008_evaluation_records_are_immutable",
+  "registered_test_executed": false,
+  "source_sha256": {
+    "experimental/branching_context/src/context_time_travel/store.py": "929e7cff7d6ac90722dd6a73c43af1c87a82f11b48ad06c1ced703a4d1d191df",
+    "experimental/branching_context/src/context_time_travel/evaluation.py": "b005c7162a478028f8ed1798d063003974adaeea20088088925652832fba94c5",
+    "experimental/branching_context/tests/implementation/test_e01.py": "41524d15b43f492634642380a1fd78af0d23a4f85bd7fde9e0f7f68bcf9b10b8",
+    "experimental/branching_context/tests/gates/G4/test_evaluation_records.py": "b89cdf3a27e38fdcd7a7d51e729223d57a27dc82c8c621315b551cbb2e4402ef"
+  },
+  "raw_sha256": {
+    "G0.json": "55406633587f30ae55202c79634a90238fada642094c414c692904617d26d956",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "ab4bdde85bb89069f2e83449dbde340d9f7c7bf86832d24c332329ca344b8a40",
+    "green.json": "0acdfd2bdd69ea566fee58a2077b2a15293c52263c515da68c7e4fc05a3c4f2c",
+    "green.stderr": "8eca26c5f7457611eaebc7a5414a4b92378dae396be319a9e5b4ccce9a2ac05c",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "630985193d78f3849778d33ecd3c9c0ca4878228b68d05a973c82580cf34c430",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "627048995d1779773577279520572cd6108968f05cee87dd8a07d925ce065854",
+    "red.stderr": "77d9943cf87defb21654709549ec4c9d1fde9734bce34d3a48f9251db1dfd456",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "store-before.py": "200d6e5c15213f729606b62224c9065f1a0749f07152499131b59e88a46291aa"
+  },
+  "limitations": [
+    "No GPU inference in these checks",
+    "No evaluator execution or isolation implemented yet",
+    "No real-backend G4 acceptance or gate PASS",
+    "POSIX file durability only; no power-loss qualification"
+  ]
+}

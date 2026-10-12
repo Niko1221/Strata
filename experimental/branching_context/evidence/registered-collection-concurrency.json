@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "status": "WRITTEN_NOT_EXECUTED",
+  "test": "test_g5_009_concurrent_gc_and_load",
+  "source_sha256": "2ff087492912457cc50ff9b7a64fd61b844b5a8db70f2436f17c2ba253e1be8e",
+  "operations": [
+    "materialize",
+    "collect",
+    "fork",
+    "rewind",
+    "evaluate"
+  ],
+  "assertions": [
+    "Collector deletes only released garbage",
+    "Fork retains exact candidate",
+    "Rewind preserves revision and retry receipt",
+    "Real isolated evaluator publishes PASS report for candidate",
+    "Candidate bytes unchanged",
+    "Fresh oracle comparison after concurrency for candidate and root"
+  ],
+  "numerical_max_error": null,
+  "blocker": "Frozen real-backend numerical profile pending; syntax check only for this registered test revision"
+}

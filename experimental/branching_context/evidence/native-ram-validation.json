@@ -1,0 +1,396 @@
+{
+  "schema": 1,
+  "scope": "Actual CUDA RAM-cache adapter under canonical leases; not automatic miss integration or gate certification",
+  "host": "llm-49 / r4090",
+  "raw_archive_sha256": "f1401dd2392e86a6ef3abcd539c4337883b4e8f7f91a2c91ee5bcd686ed96df9",
+  "profile_sha256": "2f8199cab96cf4d7dddb8a560ed2c84cdc495574e56e082a9ee87ca1e0e7be80",
+  "execution_profile_id": "4fc1fd6258390ab2d5dc61242dab64010ba4ebed0b072bac33d07aa3d4da29e7",
+  "model_contract_id": "e6dd3015773336aa239030ac93b3b4208dbfef231b7ef6972385818b2e474cad",
+  "model_weights_sha256": "b1266609ec32d232b982200c35fed90d283f72fb057781d02aa061e5172584d9",
+  "hardware": "NVIDIA GeForce RTX 4090, GPU-118fc99e-3bb2-7644-f0e6-30211b561a65, 595.99.02, 24564 MiB",
+  "binary_sha256": {
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/build-primary/strata-branch": "b27d1b15981a4c72fdf48193661e478af742811da6eb6b5fca3e26a04315ac16",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/build-primary/strata-fresh": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/tools/gguf_reader.py": "5ecf739bb3c2f07bc7f889f7f3a455e3dfdb40068409e10781a1a9b2be289b5e"
+  },
+  "native_source_manifest_sha256": "cbe93ec18c439c1eec81278b68b4d798f9246bc0325e8889f48bbf440b674b3d",
+  "reports": [
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-e303523f4cdc442182c23eb2ab81d7f7",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 6.61519193201093,
+      "executed_ids": [
+        "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_ram.py\", line 25, in test_native_ram_forced_siblings_and_exact_miss\n    self.assertTrue(callable(getattr(backend,'park',None)),\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                    'Native RAM cache capture must be implemented and measured')\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: False is not true : Native RAM cache capture must be implemented and measured\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e303523f4cdc442182c23eb2ab81d7f7/tests.json",
+          "sha256": "3632e4dc2cefd8d7ac006d9725cad7d6996e4c46286b84a7ab7d26b46a312221"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e303523f4cdc442182c23eb2ab81d7f7/tests.json",
+          "sha256": "3632e4dc2cefd8d7ac006d9725cad7d6996e4c46286b84a7ab7d26b46a312221"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e303523f4cdc442182c23eb2ab81d7f7/native.jsonl",
+          "sha256": "078b511628cc721809ec989d3a3cd96a6de9220b7666f1f9189bd5b98c249113"
+        }
+      ]
+    },
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-e962636b65da495f9bdf99ff7ac26d0a",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 43.7223965949961,
+      "executed_ids": [
+        "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e962636b65da495f9bdf99ff7ac26d0a/tests.json",
+          "sha256": "38d378232edea4bd2fc7e0984c59c06e72e29e923fc2cd31404e52a7f6bb3a5f"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e962636b65da495f9bdf99ff7ac26d0a/tests.json",
+          "sha256": "38d378232edea4bd2fc7e0984c59c06e72e29e923fc2cd31404e52a7f6bb3a5f"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e962636b65da495f9bdf99ff7ac26d0a/measurements.jsonl",
+          "sha256": "8b0d17a51791927c51db1979e698e57a1739f6a182d967f6e350034eb21accd4"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e962636b65da495f9bdf99ff7ac26d0a/native.jsonl",
+          "sha256": "59a1c46cf9a168581c45735b0ed3efa171ef4e0320cc503c06fc23068fff1cfd"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-e962636b65da495f9bdf99ff7ac26d0a/oracle.jsonl",
+          "sha256": "feac7e122025ef68bd4e0c8489b7fdd3a8c41f9da33d7051e0f54efaa94a56ba"
+        }
+      ]
+    },
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-574a23901cfe49f99c8d2f6d81884277",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.30132915699505247,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "6064d7a551a1cd8f6ffd1509912978ef2462286d6ecbf7c0c386a7eb0daf24ad",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T04:43:41.040641+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T044341149951Z-G0.json",
+          "sha256": "b013096b41f6840491678e873166546e643b705cdc6f92907e3d1e97c17158b2"
+        }
+      ]
+    },
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-a2b165c104e44a008129676ffd2609cb",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.1680973129987251,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": []
+    },
+    {
+      "ticket": "C01-COLD",
+      "run": "C01-COLD-f09b17f0642b42998a66dea08cd64657",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 13.326747026003432,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-f09b17f0642b42998a66dea08cd64657/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-f09b17f0642b42998a66dea08cd64657/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-f09b17f0642b42998a66dea08cd64657/measurements.jsonl",
+          "sha256": "942cce1416f6fef45288a0a27889876fff288e443b4810586a9fbc1831386a0b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-f09b17f0642b42998a66dea08cd64657/native.jsonl",
+          "sha256": "c46f7aecef1f1776c428b04001d56c14e473c6cb38940a06c060ff2f286d1caa"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-f09b17f0642b42998a66dea08cd64657/oracle.jsonl",
+          "sha256": "7ec756763cb8df1efa3b3c91fbefc04cd242b1442e93b837cff176b61de5b491"
+        }
+      ]
+    }
+  ],
+  "measurements": [
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71,
+        71
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+      "kind": "native-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81,
+        81
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11,
+      "ram_cache_bytes": 119373844,
+      "ram_payload_bytes": 313344
+    },
+    {
+      "test": "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay",
+      "kind": "cold-resident",
+      "saved_payload_bytes": 119371292,
+      "native_state_bytes": 118378012,
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9,
+      "restoration_computed_tokens": 0
+    }
+  ],
+  "native_checks": {
+    "branch_session_test": 434,
+    "conversation_validation_test": 972,
+    "conversation_transfer_test": 1548,
+    "conversation_cache_test": 4219
+  },
+  "limitations": [
+    "Profile unqualified; no tolerance admission",
+    "One active native lease; no concurrent serving slots",
+    "RAM cache path not yet automatic on canonical API cache miss",
+    "Host allocation metrics exclude allocator rounding and control-block overhead; payload_bytes covers K/V allocations, bytes includes capacity charges for independent running/frontier/metadata storage",
+    "No long populated-prefix physical sharing proof",
+    "Unchanged snapshot pointer-retention test still fails for rewritten shared prefixes",
+    "HIP/SYCL builds unverified"
+  ]
+}

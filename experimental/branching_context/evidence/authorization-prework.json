@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "ticket": "P01",
+  "status": "CPU_PREWORK_PASS_REAL_ACCEPTANCE_PENDING",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p01.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18",
+      "store_sha256": "929e7cff7d6ac90722dd6a73c43af1c87a82f11b48ad06c1ced703a4d1d191df"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p01.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18"
+    },
+    "evaluation-regression": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18"
+    }
+  },
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "registered_test": "test_g5_006_access_control_snapshot_ids",
+  "registered_test_executed": false,
+  "source_sha256": {
+    "src/context_time_travel/store.py": "1d24e2a981caaf5a771735a5dafbe49a68de2da640d61fe5516d3a615dd83256",
+    "src/context_time_travel/real.py": "4d1b17fed6b7ae8f9954c1eeb589a29dce2c60ff4fc97c986bbe33bfdb59b204",
+    "src/context_time_travel/evaluation.py": "d3fce79702759b6d411a9b91642d1af596d8d933cf15465202fc70db151a76f8",
+    "tests/implementation/test_p01.py": "220b1d86b34bb385ac765675b148044d34993c8e333de8abf509b98ab4705e18",
+    "tests/gates/G5/test_access_control.py": "62ef712714c5eb761f6fb05e97c0fc1c7b8d5ca6c9eaf0ebe4250b4daf9bdfb8"
+  },
+  "raw_sha256": {
+    "evaluation-regression.json": "d0f09ef935279e24719ce6e2063647b9d8fefcb19a2c79b5b60065a97672b09d",
+    "evaluation-regression.stderr": "8cef9aec13584d812fa9401692f54b975c8a02e5be4d2cc0c4f62f694ebdc459",
+    "evaluation-regression.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.json": "ef160f7dc98479af622c45fdd7bae1cfbf5c364fac814a03eb92cdff52effe63",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "5900b2ff4a87fabe37b7c83e4cbb1481898cb06c43314a37fc183974fda077eb",
+    "green.json": "85ebe0b03c08e468639df7ee6ed894a351d51d4e656304ea2cf78ea7d0fdae77",
+    "green.stderr": "8236eba12bc4dda07f07012b33d31edfbf764d9083c6a15c4100aa7e4fa4a589",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "c98f60516bc93323bef72b16e075c3b99eb5a55bd46dc179e08fc18ab6ebc2ef",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "2ff656a734ee838dc64ac506ad7aff6c87c3fb8e1ffc324f114ebf35cd71d1cf",
+    "red.stderr": "15883c4c61aeee956071f40e3410be14eb8b85b05e0a45a82934a54603e405c7",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Trusted caller authenticates principals and owns unrestricted Store; not a sandbox for arbitrary Python in the owner process.",
+    "OS-user filesystem isolation remains P02.",
+    "Deletion authorization integration remains with the upcoming explicit history-GC API.",
+    "Registered hot-GPU-cache authorization test not yet executed."
+  ]
+}

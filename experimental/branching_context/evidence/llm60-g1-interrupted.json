@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "status": "INCOMPLETE_INTENTIONALLY_INTERRUPTED",
+  "gate": "G1",
+  "reason": "Return to authorized bounded draft validation; long boundary campaign not prerequisite to prototype trial",
+  "result": {
+    "exit_code": -2,
+    "seconds": 627.0565807590028,
+    "command": [
+      "/usr/bin/python3",
+      "scripts/verify.py",
+      "--gate",
+      "G1"
+    ],
+    "profile_sha256": "1cdb35a53a4a527a9d6640fe9c06e4c8099ea88eaf22dc19bb36aebff48489ef"
+  },
+  "executed_test_ids": [
+    "test_g1_006_partial_page_boundary"
+  ],
+  "completed_registered_tests": 0,
+  "completed_numerical_comparisons": 28,
+  "max_absolute_error": 0.0,
+  "measured_history_lengths": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    255,
+    256
+  ],
+  "max_owned_checkpoint_bytes": 472252608,
+  "g0_tests": 51,
+  "raw_sha256": {
+    "interruption.json": "3399266d7fcfa8367e74abe1d2d2b3ffbec92b0ffc7e382cf03246dc5801deea",
+    "measurements.jsonl": "3c9575c3188edf1eab0b647c63cbc72e84a2b2553d33d42e0869ab4e7f881e54",
+    "native.jsonl": "36631f1e8265fa452c0d78aeaa408f5e1fa37af75ebf2ae76becf5dd0d465999",
+    "oracle.jsonl": "f424147b098590fde2d9c158a7d767c3b5c488eb3eb776fcc0eb0727d20ecac6",
+    "oracle.jsonl.0.stderr": "ad464de2d25d14c90a74fa34599694b1c7d93658b0a08f8eb674c75861c27a59",
+    "oracle.jsonl.1.stderr": "3a17c2745be1fb1a57c30fdb6251aea6b921cfca5f50aec969f9ea7aa44494c4",
+    "oracle.jsonl.10.stderr": "bcb431fe26f00fdc41bed41bea8e201b9f2bc05d968365b57709389b5af8cc53",
+    "oracle.jsonl.11.stderr": "cf3e824c19ce7dbf49288ae9e94e17a7372a9e3f9d96280496177220375b4731",
+    "oracle.jsonl.12.stderr": "0cb66e8d77175d4be5e67a2b4a9de9d47cae441934866637fed5270a1e87e8eb",
+    "oracle.jsonl.13.stderr": "ca95eb65ff33a150d9f6003dd6594d8f47ce31ba8b6e1176aa3e998f69143007",
+    "oracle.jsonl.14.stderr": "7c57f75eb7a59b2fd0c2aeebc8a722834e6679f015a56cc17c4a83765af0814d",
+    "oracle.jsonl.15.stderr": "bd46e7522d1c984f40980566af6481b10bfe9dafe0570b7f6023097b2cd1ed43",
+    "oracle.jsonl.16.stderr": "a84343f12d45a7e9569c1dc1529030fca6a29edbc00bf7a173643e2496181b5c",
+    "oracle.jsonl.17.stderr": "6fd3d1678fc43b28db2e00ecb56b3150a3118efb575c6c8ec87165bc7178c977",
+    "oracle.jsonl.18.stderr": "28dc29267601c7158ce8156f74c11332ada18a41fe678efcdeecfc5c644e3db5",
+    "oracle.jsonl.19.stderr": "5bdeed7deac5195cb9e0dc6e00fea1efa87b144b186130d0205dd7f4a1864c2d",
+    "oracle.jsonl.2.stderr": "7c7f72c2f813092bc6809d4f093bfb54ea2600253f9f3d62c4c3f8e825a6f053",
+    "oracle.jsonl.20.stderr": "24d779566e731305d302cc693fd4b75a2abb62875fa6a3eb8c017fc3827915ed",
+    "oracle.jsonl.21.stderr": "d49c8d6e6dde953e6791236ecde631e8d57f739ab19e546f5920661d3695d7ce",
+    "oracle.jsonl.22.stderr": "8e830870196e700d6bec2cf7c1ff6432133d79f3862ad399b7c8f5649caebee8",
+    "oracle.jsonl.23.stderr": "78866c85fa2c087a9d6e3e7c02cc30dbd65fc5d5f723e2f487f0116c3d34c9e8",
+    "oracle.jsonl.24.stderr": "c276021c07eb8fd0ed80425853e49743e78a942e844053e3de897d3113409836",
+    "oracle.jsonl.25.stderr": "fa65f13a855d79c525e2ce2d15a6f2dd88b23b65bc68ca8afca8ff410d562cf6",
+    "oracle.jsonl.26.stderr": "737511aab9b9de442ac3b8edc5834ecfc7e6f34b78541cb36eb9b6eb6bebac7b",
+    "oracle.jsonl.27.stderr": "ff19a230eccbf4dc9bd2f1a20aad96db8f1ba506909ac3bc2470b6fefa01226f",
+    "oracle.jsonl.3.stderr": "00d94c35b542fe7067133531b2555329ae844335f05ffe05d5deb865eb3b0862",
+    "oracle.jsonl.4.stderr": "ffa4c0a7547476f73d3d22cb0f8ee708eb04f5837bb6a323a3788522fbe57359",
+    "oracle.jsonl.5.stderr": "28e2dbc4112d1384e482a21df871347b39cda9f3cb65438b2c091485a7bafdff",
+    "oracle.jsonl.6.stderr": "26ff3c2574e9cdd346e0230a0cf89c639d2e5b51f1b0d41bc2adb02a72677763",
+    "oracle.jsonl.7.stderr": "730afef94268f2e990df91c02ff364cc3b6b6a780a37b1a03ba24d6a8058688b",
+    "oracle.jsonl.8.stderr": "237d94e3d1a6bf934d47fd0e4a2b1b56ec49bbe6a3e62d4797c309bdd49a51ba",
+    "oracle.jsonl.9.stderr": "bf15a1ab5e4bd49e06d24a0a0ecbbabfa6315e8d8cd8305196036955fd09a738",
+    "result.json": "144d09199bdb76166d0a8224f928ea19a0cee6f3c60a6dcb04eb5f31ec377820",
+    "running.json": "244b6b4b2fb12efe68af152e44245846c4282470e6cc593de8a4a6d39d94b04f",
+    "source.json": "d9c4f2066887dcd08003fb532e19180820469596eb45b61f8f57481b3df438f4",
+    "stderr": "7a584bbca9c9ee5b78b5b31a16b8a556a9bd1e75f0861121ae56d16a06ba13a7",
+    "stdout": "ccfb0027769f4d3fd1a30088848e9ed56ffdd9a55d0f22fa7b2e5c0e4fc00fad"
+  },
+  "limitations": [
+    "No G1 PASS: first registered test was interrupted before completion.",
+    "Concurrent short state-machine run overlapped; elapsed time is not an isolated performance benchmark.",
+    "Unexecuted lengths/cases remain outstanding."
+  ]
+}

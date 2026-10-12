@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "status": "CPU_PREWORK_PASS_GPU_PENDING",
+  "host": "llm-49",
+  "red": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_u02.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "87b02b095bc1b93d4a1fc939d05956c5086e852480cfcbba0fa98a814e6cee0d"
+  },
+  "red_failures": 4,
+  "green": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_u02.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "source_sha256": {
+      "src/context_time_travel/store.py": "c3973f08dbb1f32f89899a7457413b02395a246fea4be4fe8a9a4c45f9b3fbb7",
+      "tests/implementation/test_u02.py": "87b02b095bc1b93d4a1fc939d05956c5086e852480cfcbba0fa98a814e6cee0d"
+    }
+  },
+  "process_kills": 2,
+  "process_exit_code": 73,
+  "collection_regressions": 5,
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "registered_tests": [
+    "test_g5_010_restart_with_journal_ambiguity",
+    "test_g5_012_release_rollback"
+  ],
+  "registered_executed": false,
+  "registered_sha256": "2232d1184e11c1ddf346a2905cb1148a52b2005e275eeee8cd95d577d7ea7da7",
+  "numerical_max_error": null,
+  "raw_sha256": {
+    "collection.json": "f242cab9f1f18f858de6a0e0c57caba4954981b0428d0044ab2237545f703aeb",
+    "collection.stderr": "f1d34495cafdab908950a63096962915acd631d6e2d481aeb6b72b26bac64f12",
+    "collection.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.json": "925f81872531a8dffe832ae6582857e5d2b547cd674a35abf1739c3680fc3ec3",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "6b988258f6cc6a2a625339f088e7ff0b6d3099fda9b92723fe84dc6abbb5bf3b",
+    "green.json": "3d8267f5e1020063746236af013b380df1e387d197b489d25dc6f9cc86d1506e",
+    "green.stderr": "5c6de29b50ef7dcccc3cad1a0557c7f6e37c758a6555ffe7793506ddd246fc4c",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.json": "99ac149a2bd2e00a614df50c81e238215e237281c76f0e83faf624ac24ebd93e",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "a5ff5d6e61d2fc2a36a4c8cc1ed9490222220a67a534a1b9790824d67c5c021b",
+    "red.stderr": "79567a3794e76a1307628c51cc7bab38b5d8d81e4ec2cd8153a41536d8c53ce1",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Process termination only, not power loss.",
+    "Format refusal and compatible reopen exercised; actual two-release executable rollback matrix remains outstanding.",
+    "Registered GPU tests unexecuted pending numerical profile.",
+    "Prework outside active N03 ledger; U02 not formally validated."
+  ]
+}

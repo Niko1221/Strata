@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "status": "MATRIX_DECLARED_REGISTERED_TEST_PENDING",
+  "cpu_test": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q01.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "test_sha256": "0c7ed1b911b1786653670f15cda0145834a69c95cbf90e9ac7803505bb4331bb"
+  },
+  "red": {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "experimental\\branching_context\\tests\\implementation",
+      "-p",
+      "test_q01.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "0c7ed1b911b1786653670f15cda0145834a69c95cbf90e9ac7803505bb4331bb"
+  },
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "registered_test": "test_g5_001_supported_matrix",
+  "registered_executed": false,
+  "source_sha256": {
+    "tests/implementation/test_q01.py": "0c7ed1b911b1786653670f15cda0145834a69c95cbf90e9ac7803505bb4331bb",
+    "tests/gates/G5/test_supported_matrix.py": "f9c7f843dcc606ba81d356f9c8b442d06ecef5efdc35003e8da85f88f3c78212",
+    "docs/support-matrix.json": "af455d1feca1f6803183c9fc934dd1f18e3aa95e2307cbdd966940bec22fd36d",
+    "docs/backend-adapter.md": "99d67c44b4915d81b750f5a7747486a420bf514e3c7d9b797ddd1073ecd9ffa0"
+  },
+  "raw_sha256": {
+    "g0.json": "8b3e6f9f68377eb8ec9715e04d1f0b63c997e3418b9b0972068683d62921f8ba",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "3941045d7c6ca44a0b7e5736d69057a58798f3b09f273a71fed345d6d139201e",
+    "green.json": "9fde2ba91b4ef8e731d269833256082b2c2cebdb398a832c47cb72fd3e6da64e",
+    "green.stderr": "57b709c591c6e99f5e8b4b1f89820b9feeacd4d549b71bed6e5dfed5ed86f4c1",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-green.json": "69fcaa820410e287f5cb72ac9cbf48537829ada3f7a1a10e242bcef3a2ab7bb4",
+    "host-green.stderr": "7283a70f309df18d931aab4cbfd31d0a06df79817af50c48e50ca59c7da884c0",
+    "host-green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.json": "c43a4a928343cfefe633ebde7232e6dfea472b71bf70150a674373e649719f10",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "f6e47c921715592210386dd25009fc99188efbaf774bcc6b6c49304d69f8412b",
+    "red.stderr": "0800c63f6840268ac8171c16d2910de641bff948f106d238bac14a2f3ed81768",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "filesystem_observation": {
+    "llm-60": {
+      "workspace": "ext4",
+      "tmp": "ext4"
+    },
+    "llm-49": {
+      "workspace": "ext4",
+      "tmp": "tmpfs"
+    }
+  },
+  "limitations": [
+    "No matrix PASS until registered real-backend execution.",
+    "llm-49 must place temporary test stores on ext4 for this declared target; previous default temporary CPU tests there ran on tmpfs.",
+    "Per-host profiles remain separate; one host does not qualify another."
+  ]
+}

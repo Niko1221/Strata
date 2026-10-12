@@ -1,0 +1,517 @@
+{
+  "schema": 1,
+  "version": "0.2.0",
+  "case_count": 85,
+  "cases": [
+    {
+      "id": "G1-001",
+      "gate": "G1",
+      "test": "test_g1_001_fresh_suffix_a",
+      "assertion": "Each token of suffix A matches a fresh uncached P||A[:i] next-logit vector."
+    },
+    {
+      "id": "G1-002",
+      "gate": "G1",
+      "test": "test_g1_002_fresh_suffix_b",
+      "assertion": "Each token of distinct suffix B matches uncached P||B[:i]; not A||B."
+    },
+    {
+      "id": "G1-003",
+      "gate": "G1",
+      "test": "test_g1_003_empty_suffix_frontier",
+      "assertion": "Snapshot P next logits agree with fresh P before any suffix is added."
+    },
+    {
+      "id": "G1-004",
+      "gate": "G1",
+      "test": "test_g1_004_every_accepted_boundary",
+      "assertion": "After each accepted generated/forced token, consumed length, positions and next logits align."
+    },
+    {
+      "id": "G1-005",
+      "gate": "G1",
+      "test": "test_g1_005_split_prefill_associativity",
+      "assertion": "Prefill P in one batch or chunks, with identical fixed tokens, yields equivalent state."
+    },
+    {
+      "id": "G1-006",
+      "gate": "G1",
+      "test": "test_g1_006_partial_page_boundary",
+      "assertion": "Fork at page_len-1, page_len, page_len+1; both children match fresh oracle."
+    },
+    {
+      "id": "G1-007",
+      "gate": "G1",
+      "test": "test_g1_007_repeated_token_history",
+      "assertion": "Same repeated token or last token in different histories cannot collide in prefix-cache identity."
+    },
+    {
+      "id": "G1-008",
+      "gate": "G1",
+      "test": "test_g1_008_same_last_block_different_prefix",
+      "assertion": "Two histories sharing the same final KV block contents but different earlier tokens never incorrectly share states."
+    },
+    {
+      "id": "G1-009",
+      "gate": "G1",
+      "test": "test_g1_009_absolute_positions",
+      "assertion": "Positions and attention visibility match a fresh reference at long and offset prefixes."
+    },
+    {
+      "id": "G1-010",
+      "gate": "G1",
+      "test": "test_g1_010_rope_and_yarn_contract",
+      "assertion": "RoPE/YaRN config changes are incompatible unless an explicitly proven converter exists."
+    },
+    {
+      "id": "G1-011",
+      "gate": "G1",
+      "test": "test_g1_011_tokenizer_and_template_contract",
+      "assertion": "Same displayed text with different exact tokenization/template identity cannot share incompatible history."
+    },
+    {
+      "id": "G1-012",
+      "gate": "G1",
+      "test": "test_g1_012_attention_mask_visibility",
+      "assertion": "Causal/window/multimodal visibility metadata is included and validated."
+    },
+    {
+      "id": "G1-013",
+      "gate": "G1",
+      "test": "test_g1_013_different_interleave_order",
+      "assertion": "Processing branches A and B in reverse/interleaved order cannot contaminate histories/logits."
+    },
+    {
+      "id": "G1-014",
+      "gate": "G1",
+      "test": "test_g1_014_pending_sampled_token",
+      "assertion": "Saving immediately after sample cannot produce sampled-but-unconsumed cache frontier."
+    },
+    {
+      "id": "G1-015",
+      "gate": "G1",
+      "test": "test_g1_015_mid_generation_rng_replay",
+      "assertion": "Seven accepted tokens, save, twenty more, restore, repeat: tokens and draws agree."
+    },
+    {
+      "id": "G1-016",
+      "gate": "G1",
+      "test": "test_g1_016_sampler_multiple_draws",
+      "assertion": "Controller stores actual RNG draw cursor if sampler uses variable draws per token."
+    },
+    {
+      "id": "G1-017",
+      "gate": "G1",
+      "test": "test_g1_017_grammar_mid_production",
+      "assertion": "Mid-grammar restoration preserves legal-token state and never bypasses grammar."
+    },
+    {
+      "id": "G1-018",
+      "gate": "G1",
+      "test": "test_g1_018_stop_progress_and_eos",
+      "assertion": "Stop matcher and EOS status survive restore; stopped scope remains stopped."
+    },
+    {
+      "id": "G1-019",
+      "gate": "G1",
+      "test": "test_g1_019_chunked_generate_equivalence",
+      "assertion": "Generate(7)+Generate(20) equals Generate(27) under same scope."
+    },
+    {
+      "id": "G1-020",
+      "gate": "G1",
+      "test": "test_g1_020_sibling_rng_independence",
+      "assertion": "One branch consuming 100 extra RNG draws cannot affect sibling stream."
+    },
+    {
+      "id": "G1-021",
+      "gate": "G1",
+      "test": "test_g1_021_alternate_stream_not_forced_different",
+      "assertion": "Different stream IDs may lead to identical tokens; API does not assert otherwise."
+    },
+    {
+      "id": "G1-022",
+      "gate": "G1",
+      "test": "test_g1_022_unsupported_hybrid_state",
+      "assertion": "Backend refuses incomplete recurrent/convolution state save rather than claiming support."
+    },
+    {
+      "id": "G1-023",
+      "gate": "G1",
+      "test": "test_g1_023_incompatible_model_rejected",
+      "assertion": "Different weights/adapters/architecture cannot import old numerical checkpoints."
+    },
+    {
+      "id": "G1-024",
+      "gate": "G1",
+      "test": "test_g1_024_execution_profile_mismatch",
+      "assertion": "A numerically incompatible checkpoint representation is rejected or safely recomputed."
+    },
+    {
+      "id": "G1-025",
+      "gate": "G1",
+      "test": "test_g1_025_true_uncached_oracle",
+      "assertion": "Independent oracle performs full-history forward with no SUT cache hits."
+    },
+    {
+      "id": "G1-026",
+      "gate": "G1",
+      "test": "test_g1_026_near_tie_numerics",
+      "assertion": "Logit comparison uses frozen tolerances and does not equate text similarity with correctness."
+    },
+    {
+      "id": "G1-027",
+      "gate": "G1",
+      "test": "test_g1_027_stream_publication_boundary",
+      "assertion": "A resumable streamed token has a durable, fully consumed matching snapshot."
+    },
+    {
+      "id": "G2-001",
+      "gate": "G2",
+      "test": "test_g2_001_cold_process_reopen",
+      "assertion": "Persist prefix/branch, close process and reopen, then continue same exact history."
+    },
+    {
+      "id": "G2-002",
+      "gate": "G2",
+      "test": "test_g2_002_remove_all_kv_checkpoints",
+      "assertion": "Delete every cached numeric state and reconstruct logits/tokens from retained inputs."
+    },
+    {
+      "id": "G2-003",
+      "gate": "G2",
+      "test": "test_g2_003_checkpoint_payload_corruption",
+      "assertion": "Flip checkpoint payload byte; detect checksum mismatch and refuse/rebuild."
+    },
+    {
+      "id": "G2-004",
+      "gate": "G2",
+      "test": "test_g2_004_checkpoint_manifest_corruption",
+      "assertion": "Corrupt consumed count, model fingerprint or position map; reject/check compatibility."
+    },
+    {
+      "id": "G2-005",
+      "gate": "G2",
+      "test": "test_g2_005_partial_checkpoint_write",
+      "assertion": "Interrupt staged checkpoint write before rename; incomplete object is never discoverable."
+    },
+    {
+      "id": "G2-006",
+      "gate": "G2",
+      "test": "test_g2_006_crash_before_snapshot_publish",
+      "assertion": "Kill before snapshot publish; branch pointer remains on prior fully durable history."
+    },
+    {
+      "id": "G2-007",
+      "gate": "G2",
+      "test": "test_g2_007_crash_before_branch_rename",
+      "assertion": "Kill after staging refs+receipt before rename; old head remains intact."
+    },
+    {
+      "id": "G2-008",
+      "gate": "G2",
+      "test": "test_g2_008_crash_after_branch_rename",
+      "assertion": "Kill after refs rename before ack; retry same operation ID returns a single committed result."
+    },
+    {
+      "id": "G2-009",
+      "gate": "G2",
+      "test": "test_g2_009_idempotency_payload_mismatch",
+      "assertion": "Reusing operation ID with different parameters returns conflict, not silent success."
+    },
+    {
+      "id": "G2-010",
+      "gate": "G2",
+      "test": "test_g2_010_aba_pointer_revision",
+      "assertion": "CAS with stale revision fails after P\u2192A\u2192P movement."
+    },
+    {
+      "id": "G2-011",
+      "gate": "G2",
+      "test": "test_g2_011_racing_cas_processes",
+      "assertion": "Independent workers contending on stale revision yield exactly one winner."
+    },
+    {
+      "id": "G2-012",
+      "gate": "G2",
+      "test": "test_g2_012_kill_during_decode",
+      "assertion": "Fault after partial backend token ingest discards lease; no partially consumed public snapshot."
+    },
+    {
+      "id": "G2-013",
+      "gate": "G2",
+      "test": "test_g2_013_out_of_memory_transaction",
+      "assertion": "Backend allocation failure does not corrupt published history or other branches."
+    },
+    {
+      "id": "G2-014",
+      "gate": "G2",
+      "test": "test_g2_014_eviction_vs_deletion",
+      "assertion": "Cache eviction can never delete retained history; historical deletion requires distinct authorization."
+    },
+    {
+      "id": "G2-015",
+      "gate": "G2",
+      "test": "test_g2_015_checkpoint_from_wrong_model",
+      "assertion": "Checkpoint from another model/positional profile cannot be silently loaded."
+    },
+    {
+      "id": "G2-016",
+      "gate": "G2",
+      "test": "test_g2_016_checkpoint_restore_grammar_rng",
+      "assertion": "After cold restore controller state includes RNG, grammar, penalties and stop state."
+    },
+    {
+      "id": "G2-017",
+      "gate": "G2",
+      "test": "test_g2_017_missing_input_artifact",
+      "assertion": "Lost required multimodal/input artifact yields explicit failure, not fabricated replay."
+    },
+    {
+      "id": "G2-018",
+      "gate": "G2",
+      "test": "test_g2_018_external_effects_not_replayed",
+      "assertion": "Restoring saved conversation does not rerun external tools or irreversible side effects."
+    },
+    {
+      "id": "G2-019",
+      "gate": "G2",
+      "test": "test_g2_019_power_loss_scope_honest",
+      "assertion": "Fault evidence explicitly distinguishes process kill from power-loss durability."
+    },
+    {
+      "id": "G3-001",
+      "gate": "G3",
+      "test": "test_g3_001_actual_prefix_work_shared",
+      "assertion": "Second hot fork shows zero duplicate full-prefix prefill work with internal counters."
+    },
+    {
+      "id": "G3-002",
+      "gate": "G3",
+      "test": "test_g3_002_unique_kv_page_accounting",
+      "assertion": "Unique prefix pages do not grow k-fold as k branches fork the same root."
+    },
+    {
+      "id": "G3-003",
+      "gate": "G3",
+      "test": "test_g3_003_partial_tail_cow",
+      "assertion": "Fork at each partial-page position: sibling append copies/makes private tail only."
+    },
+    {
+      "id": "G3-004",
+      "gate": "G3",
+      "test": "test_g3_004_shared_page_never_written",
+      "assertion": "Byte/checksum audit proves shared pages remain immutable across child generation."
+    },
+    {
+      "id": "G3-005",
+      "gate": "G3",
+      "test": "test_g3_005_quantization_scale_isolation",
+      "assertion": "Shared quantizer metadata/outlier state cannot be mutated by sibling."
+    },
+    {
+      "id": "G3-006",
+      "gate": "G3",
+      "test": "test_g3_006_recurrent_buffer_isolation",
+      "assertion": "When applicable, recurrent state is isolated or capability blocked."
+    },
+    {
+      "id": "G3-007",
+      "gate": "G3",
+      "test": "test_g3_007_evict_one_branch_keep_other",
+      "assertion": "Eviction of one numerical state leaves siblings and root reconstructible."
+    },
+    {
+      "id": "G3-008",
+      "gate": "G3",
+      "test": "test_g3_008_cpu_ram_ssd_roundtrip",
+      "assertion": "If supported, exact persisted state offload and restore agree with fresh oracle."
+    },
+    {
+      "id": "G3-009",
+      "gate": "G3",
+      "test": "test_g3_009_memory_pressure_recovery",
+      "assertion": "Forced allocation pressure uses fallback or error without branch corruption."
+    },
+    {
+      "id": "G3-010",
+      "gate": "G3",
+      "test": "test_g3_010_tail_copy_bounded",
+      "assertion": "Measured tail-copy work is bounded by page size, not the whole prefix."
+    },
+    {
+      "id": "G3-011",
+      "gate": "G3",
+      "test": "test_g3_011_fork_latency_and_work",
+      "assertion": "Fork costs O(1) logical reference work; classify physical lease activation separately."
+    },
+    {
+      "id": "G3-012",
+      "gate": "G3",
+      "test": "test_g3_012_allocation_leak_cycles",
+      "assertion": "Many fork/release/rewind cycles return allocations to stable baseline."
+    },
+    {
+      "id": "G3-013",
+      "gate": "G3",
+      "test": "test_g3_013_stress_interleaving_and_eviction",
+      "assertion": "Randomized concurrent branch updates, COW and cache eviction preserve the oracle."
+    },
+    {
+      "id": "G3-014",
+      "gate": "G3",
+      "test": "test_g3_014_corrupt_page_refusal",
+      "assertion": "Corrupt/offline cache page is never fed to attention; replay or explicit error."
+    },
+    {
+      "id": "G3-015",
+      "gate": "G3",
+      "test": "test_g3_015_counters_are_direct",
+      "assertion": "Instrumented counters reflect actual backend work, not guessed from response time."
+    },
+    {
+      "id": "G3-016",
+      "gate": "G3",
+      "test": "test_g3_016_long_context_resource_profile",
+      "assertion": "Capacity limits and scaling measured at short, medium and longest supported contexts."
+    },
+    {
+      "id": "G4-001",
+      "gate": "G4",
+      "test": "test_g4_001_three_future_demonstration",
+      "assertion": "P forks into three recorded alternative suffixes that each match fresh oracle."
+    },
+    {
+      "id": "G4-002",
+      "gate": "G4",
+      "test": "test_g4_002_rewind_and_new_fourth_future",
+      "assertion": "Rewind one branch to P and take another suffix; old future stays reachable."
+    },
+    {
+      "id": "G4-003",
+      "gate": "G4",
+      "test": "test_g4_003_evaluator_read_only",
+      "assertion": "Evaluation cannot modify model history, controller, other candidates or refs."
+    },
+    {
+      "id": "G4-004",
+      "gate": "G4",
+      "test": "test_g4_004_evaluator_reproducibility",
+      "assertion": "Same evaluator code, fixture, seed and snapshot produce same declared score."
+    },
+    {
+      "id": "G4-005",
+      "gate": "G4",
+      "test": "test_g4_005_evaluator_side_effects_sandbox",
+      "assertion": "Evaluator uses sandboxed or mocked external effects and never reruns irreversible tools."
+    },
+    {
+      "id": "G4-006",
+      "gate": "G4",
+      "test": "test_g4_006_winner_adoption_cas",
+      "assertion": "Validated winner adoption moves one branch pointer exactly once."
+    },
+    {
+      "id": "G4-007",
+      "gate": "G4",
+      "test": "test_g4_007_adoption_race_loses_cleanly",
+      "assertion": "Racing stale winner adoption fails without rewriting any candidate."
+    },
+    {
+      "id": "G4-008",
+      "gate": "G4",
+      "test": "test_g4_008_evaluation_records_are_immutable",
+      "assertion": "Scores and evaluator source identity are immutable provenance records."
+    },
+    {
+      "id": "G4-009",
+      "gate": "G4",
+      "test": "test_g4_009_winning_branch_cold_replay",
+      "assertion": "Selected branch survives all numerical eviction and matches fresh oracle."
+    },
+    {
+      "id": "G4-010",
+      "gate": "G4",
+      "test": "test_g4_010_evaluation_does_not_consume_rng",
+      "assertion": "Scoring a candidate does not perturb branch-local generation draws."
+    },
+    {
+      "id": "G4-011",
+      "gate": "G4",
+      "test": "test_g4_011_retained_loser_accessible",
+      "assertion": "Nonwinning futures remain reproducibly accessible until explicit history GC."
+    },
+    {
+      "id": "G5-001",
+      "gate": "G5",
+      "test": "test_g5_001_supported_matrix",
+      "assertion": "Run every advertised supported model/backend/precision/profile combination; report unsupported."
+    },
+    {
+      "id": "G5-002",
+      "gate": "G5",
+      "test": "test_g5_002_randomized_state_machine",
+      "assertion": "At least 1000 reproducible action sequences compare SUT to independent model-free and real oracles."
+    },
+    {
+      "id": "G5-003",
+      "gate": "G5",
+      "test": "test_g5_003_replay_after_upgrade",
+      "assertion": "Checkpoint migration refuses incompatible old layouts; retained inputs cold-replay under compatible model."
+    },
+    {
+      "id": "G5-004",
+      "gate": "G5",
+      "test": "test_g5_004_long_soak",
+      "assertion": "Long-duration release soak with memory/throughput/corruption stats and recorded hardware."
+    },
+    {
+      "id": "G5-005",
+      "gate": "G5",
+      "test": "test_g5_005_sanitizer_diagnostics",
+      "assertion": "Run applicable ASan/UBSan/TSan or memory-safety tools and record unsupported tools."
+    },
+    {
+      "id": "G5-006",
+      "gate": "G5",
+      "test": "test_g5_006_access_control_snapshot_ids",
+      "assertion": "Knowing a content hash does not bypass authorization to read/fork/evaluate."
+    },
+    {
+      "id": "G5-007",
+      "gate": "G5",
+      "test": "test_g5_007_encrypted_sensitive_persistence",
+      "assertion": "Access permissions/at-rest policy for potentially sensitive cache and history checked."
+    },
+    {
+      "id": "G5-008",
+      "gate": "G5",
+      "test": "test_g5_008_retention_and_gc",
+      "assertion": "Reachability-aware GC never deletes live heads or actively leased snapshots."
+    },
+    {
+      "id": "G5-009",
+      "gate": "G5",
+      "test": "test_g5_009_concurrent_gc_and_load",
+      "assertion": "GC under concurrent materialize, fork, rewind and eval cannot create dangling state."
+    },
+    {
+      "id": "G5-010",
+      "gate": "G5",
+      "test": "test_g5_010_restart_with_journal_ambiguity",
+      "assertion": "Ambiguous acknowledgements after process termination recovered by operation receipts."
+    },
+    {
+      "id": "G5-011",
+      "gate": "G5",
+      "test": "test_g5_011_negative_mutant_campaign",
+      "assertion": "All 12 specified failure mutants are detected by at least one independent test."
+    },
+    {
+      "id": "G5-012",
+      "gate": "G5",
+      "test": "test_g5_012_release_rollback",
+      "assertion": "Rollback leaves authoritative history and branch revision identities valid."
+    }
+  ]
+}

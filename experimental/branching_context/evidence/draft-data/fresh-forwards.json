@@ -1,0 +1,246 @@
+[
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "computed_tokens": 9,
+      "position_max": 8,
+      "logits_sha256": "77abafbe0ae2ee169096af6dc022ee8f889a6fe7066b3e7fa22564bfd652e535"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 9,
+      "position_max": 8,
+      "forward_tokens": 9,
+      "windows": 9,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 5.651357768976595,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71
+      ],
+      "computed_tokens": 10,
+      "position_max": 9,
+      "logits_sha256": "fe98bbd890b02d43ec8a57f77e7dd01ca6ab34f92a2da2a43be26bf910e04d22"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 10,
+      "position_max": 9,
+      "forward_tokens": 10,
+      "windows": 10,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 5.796743726998102,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81
+      ],
+      "computed_tokens": 10,
+      "position_max": 9,
+      "logits_sha256": "223817ddd73d42387f1740e7ea71705376c99b30667fc46b6ec98ec46b45b124"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 10,
+      "position_max": 9,
+      "forward_tokens": 10,
+      "windows": 10,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 5.790329915995244,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71,
+        71
+      ],
+      "computed_tokens": 11,
+      "position_max": 10,
+      "logits_sha256": "e616b7e27ff31511b618b19a993fd98352c74a315ae9c96cbe0c6d783ec782a8"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 11,
+      "position_max": 10,
+      "forward_tokens": 11,
+      "windows": 11,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 6.030628526990768,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81,
+        81
+      ],
+      "computed_tokens": 11,
+      "position_max": 10,
+      "logits_sha256": "00fb96808c9036901bb678ac9573ae3688803f0ab517fa7b51c2d002566ff49c"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 11,
+      "position_max": 10,
+      "forward_tokens": 11,
+      "windows": 11,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 6.0602338970056735,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71,
+        71,
+        71
+      ],
+      "computed_tokens": 12,
+      "position_max": 11,
+      "logits_sha256": "345bdd5f99fe42b4bf9e4a5737ced2979dd9db968dbf1cc97dcf36a30a99d37e"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 12,
+      "position_max": 11,
+      "forward_tokens": 12,
+      "windows": 12,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 6.290759024996078,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81,
+        81,
+        81
+      ],
+      "computed_tokens": 12,
+      "position_max": 11,
+      "logits_sha256": "28bfdcb11075c2bb6c49e7c7f380b7dbcd008610217a17d63b28548e612bc232"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 12,
+      "position_max": 11,
+      "forward_tokens": 12,
+      "windows": 12,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 6.272268175001955,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  },
+  {
+    "result": {
+      "tokens": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "computed_tokens": 9,
+      "position_max": 8,
+      "logits_sha256": "77abafbe0ae2ee169096af6dc022ee8f889a6fe7066b3e7fa22564bfd652e535"
+    },
+    "work": {
+      "status": "ok",
+      "consumed": 9,
+      "position_max": 8,
+      "forward_tokens": 9,
+      "windows": 9,
+      "logits_bytes": 993280
+    },
+    "returncode": 0,
+    "seconds": 5.537398430984467,
+    "oracle_binary_sha256": "9c79ce80df93076b4d12761ec2c14a45962c7845610e3d8ecacaa12b6b1aa536"
+  }
+]

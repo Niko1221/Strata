@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "status": "NEGATIVE_FINALIZATION_CHECK_PASS",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_n03_finalize.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "64e8594a5e3cb8bac9b3a05d64d54779ea472e395c74a92d93d6e7fdb9500542"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_n03_finalize.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "64e8594a5e3cb8bac9b3a05d64d54779ea472e395c74a92d93d6e7fdb9500542"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "64e8594a5e3cb8bac9b3a05d64d54779ea472e395c74a92d93d6e7fdb9500542"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "64e8594a5e3cb8bac9b3a05d64d54779ea472e395c74a92d93d6e7fdb9500542"
+    }
+  },
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "fixture_status": "RUNNING",
+  "source_sha256": {
+    "scripts/build_strata_profile.py": "103b2360b87a2278f556402414731cd131a9a8a318643a4256be78dcb6738bc4",
+    "tests/implementation/test_n03_finalize.py": "64e8594a5e3cb8bac9b3a05d64d54779ea472e395c74a92d93d6e7fdb9500542"
+  },
+  "raw_sha256": {
+    "G0.json": "c457173bab4b8fa0049eeebf549abeeaa565a573d3d30589ac9689a262dd6708",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "0f305588206e59144fd6b8f16a79d70935541e5c5e8cbbed22eb70f168414e06",
+    "green.json": "28c8ec7be9ac3d9b2366fbd1a7a81eab597bd17a897a1e57669d37525801cb4f",
+    "green.stderr": "39aa46cb1ee96efa66e56bc9df817133d593ffb16a79fe797b0b7b65e7895a44",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "incomplete-fixture.json": "c8be464b77add3b83faba348c740fe204dc7a57328bbc01b32a3b92ba04e858b",
+    "mutants.json": "47c644ca7d1d14722315ec3e816f8358a1d9ca70f2a9862e0df4929013b5aaaf",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "6599794250321294c0e42220c162b1c4367690e4b8409c6e2fa86cd116992ed3",
+    "red.stderr": "d452c8bb0b3cf495bcaa229c38dddb7655e17608d350affbd991956133df79c6",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Completed calibration finalization path not yet executed.",
+    "No numerical gate/profile qualification inferred from this negative unit test."
+  ]
+}

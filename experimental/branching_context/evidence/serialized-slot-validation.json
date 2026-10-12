@@ -1,0 +1,712 @@
+{
+  "schema": 1,
+  "scope": "Serialized local API branch slots and real execution ownership; no ordinary concurrent serving or gate certification",
+  "host": "llm-49 / r4090",
+  "archive_sha256": "c76ce63086385e0253dbde9965c9ae4d2b47d49bf8254bc10b87bae523cd735d",
+  "reports": [
+    {
+      "ticket": "S01-OWNER",
+      "run": "S01-OWNER-1b414890634d4e12bf5e6895a8a82f61",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 12.630051609012298,
+      "executed_ids": [
+        "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_s01_owner.py\", line 43, in test_foreign_owner_cannot_use_or_release_execution_lease\n    self.assertIsInstance(foreign,InvalidOperation,\n    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n                          'Foreign thread must not use an active execution lease')\n                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 8 is not an instance of <class 'context_time_travel.store.InvalidOperation'> : Foreign thread must not use an active execution lease\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-1b414890634d4e12bf5e6895a8a82f61/tests.json",
+          "sha256": "e40ebb4c84467ca401a684b5de13b2ba9b5698a90eab2a8b887b4f049782d88e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-1b414890634d4e12bf5e6895a8a82f61/tests.json",
+          "sha256": "e40ebb4c84467ca401a684b5de13b2ba9b5698a90eab2a8b887b4f049782d88e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-1b414890634d4e12bf5e6895a8a82f61/measurements.jsonl",
+          "sha256": "52def6b27e9675d839c78dc40e873080a1c90067e423f523a60b37ce287d9efc"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-1b414890634d4e12bf5e6895a8a82f61/native.jsonl",
+          "sha256": "9909301ac188aba66a96e052b0cdcf7ca85e756c828f7e24135f7eef770ce673"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-1b414890634d4e12bf5e6895a8a82f61/oracle.jsonl",
+          "sha256": "869007ce5af49e5805ae8474e504cf4a78df10f8a32114a9a1b8051fb18dfb20"
+        }
+      ],
+      "source_fingerprint": "3e65dd7f9adf8b0fa59b87012c7c4d17316e60eb1be50c355026cf7fa74f8fe2",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01-OWNER",
+      "run": "S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 19.043325106002158,
+      "executed_ids": [
+        "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3/tests.json",
+          "sha256": "529dafbaf98533f7e7a3ac2e83500ed22b6120c2dade5b79cdb05326d73c07fa"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3/tests.json",
+          "sha256": "529dafbaf98533f7e7a3ac2e83500ed22b6120c2dade5b79cdb05326d73c07fa"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3/measurements.jsonl",
+          "sha256": "16d26cbaf7a01a46f912f7bbaf8cf48386bdbf96279f6f1e1f53e11af31e74e1"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3/native.jsonl",
+          "sha256": "d68d5d355bf511c9c04994dd73bf951c55c39dc6bfd45afe92c5b17df94ba88d"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-OWNER-764ab8b0cf6840eba93fd9c0e7be29b3/oracle.jsonl",
+          "sha256": "1d0eb7d85c20299eeb97363bc2095637e68cbc3f6ec6ea8d60c222867bd13b45"
+        }
+      ],
+      "source_fingerprint": "e8f930a308cb7c29f8496c7c3c789a37043d4fb4973ad4e326322d5540278dc2",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01-OWNER",
+      "run": "S01-OWNER-f7ee450b5fa04531a71768ab3867a6dc",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.30907279401435517,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "f7af4235ac69c601e7602829b791479eb99c88e58462cf01f38b402e04d62277",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T05:37:29.404875+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T053729523562Z-G0.json",
+          "sha256": "4b123cc1ac9182c3987aabb9e9404eb9e86f0dbb3e90f649ab47b85bbe7869a2"
+        }
+      ],
+      "source_fingerprint": "e8f930a308cb7c29f8496c7c3c789a37043d4fb4973ad4e326322d5540278dc2",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01-OWNER",
+      "run": "S01-OWNER-18172e25efcd4ae186f6903330644adb",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.1617238000035286,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": [],
+      "source_fingerprint": "e8f930a308cb7c29f8496c7c3c789a37043d4fb4973ad4e326322d5540278dc2",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01",
+      "run": "S01-d5afeea723784c4497479cdb04d3b673",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 12.535145780013409,
+      "executed_ids": [
+        "test_s01.SerializedSlotTests.test_s01_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_s01.SerializedSlotTests.test_s01_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_s01.SerializedSlotTests.test_s01_invariant",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_s01.py\", line 36, in test_s01_invariant\n    self.assertTrue(callable(factory),'Canonical branch-slot FIFO execution must be available')\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: False is not true : Canonical branch-slot FIFO execution must be available\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-d5afeea723784c4497479cdb04d3b673/tests.json",
+          "sha256": "35d73e8d0052695371185d8cc8b35dff3c16905d0734d397e538500f3fbe7133"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-d5afeea723784c4497479cdb04d3b673/tests.json",
+          "sha256": "35d73e8d0052695371185d8cc8b35dff3c16905d0734d397e538500f3fbe7133"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-d5afeea723784c4497479cdb04d3b673/measurements.jsonl",
+          "sha256": "6fcdbb8b2a46261f20cf3268032146fa749060b9144dae0b30c3c2f9633cfaa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-d5afeea723784c4497479cdb04d3b673/native.jsonl",
+          "sha256": "c90e32929d2e60887503848d59a2de9b33258f179bafb445d243395ba5d3b90b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-d5afeea723784c4497479cdb04d3b673/oracle.jsonl",
+          "sha256": "561c3a99e7f694d7d36e1183816e3d7b4bd013051768899358afa4e06d7cd86b"
+        }
+      ],
+      "source_fingerprint": "9d2c8557c447cec15624859327c836bf6c15d5684d90d452d806cb38f198e3b7",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01",
+      "run": "S01-a812c317e6494cda88cbc928b92a2c5c",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 12.533650815021247,
+      "executed_ids": [
+        "test_s01.SerializedSlotTests.test_s01_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_s01.SerializedSlotTests.test_s01_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_s01.SerializedSlotTests.test_s01_invariant",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_s01.py\", line 36, in test_s01_invariant\n    self.assertTrue(callable(factory),'Canonical branch-slot FIFO execution must be available')\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: False is not true : Canonical branch-slot FIFO execution must be available\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-a812c317e6494cda88cbc928b92a2c5c/tests.json",
+          "sha256": "35d73e8d0052695371185d8cc8b35dff3c16905d0734d397e538500f3fbe7133"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-a812c317e6494cda88cbc928b92a2c5c/tests.json",
+          "sha256": "35d73e8d0052695371185d8cc8b35dff3c16905d0734d397e538500f3fbe7133"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-a812c317e6494cda88cbc928b92a2c5c/measurements.jsonl",
+          "sha256": "6fcdbb8b2a46261f20cf3268032146fa749060b9144dae0b30c3c2f9633cfaa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-a812c317e6494cda88cbc928b92a2c5c/native.jsonl",
+          "sha256": "bca05b5342cc1281137bd4b15be5ecebda4e404a85e14e5750a7e59639c3d2be"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-a812c317e6494cda88cbc928b92a2c5c/oracle.jsonl",
+          "sha256": "1fc1b87046a229f193cc2981b5a3729cef58e369f6716752d6da0ab7b39c52d4"
+        }
+      ],
+      "source_fingerprint": "3433b208df773dc67279c3ab64536ef4f3abdaa041a65a14eed41918fc6a5b70",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01",
+      "run": "S01-e6cc653f80a3414380436ce5572be92e",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 40.73382125401986,
+      "executed_ids": [
+        "test_s01.SerializedSlotTests.test_s01_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_s01.SerializedSlotTests.test_s01_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-e6cc653f80a3414380436ce5572be92e/tests.json",
+          "sha256": "92b6114b226a7e163c8acfb96df76054f80c1d618ee494da8ed84a34e92dc86d"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-e6cc653f80a3414380436ce5572be92e/tests.json",
+          "sha256": "92b6114b226a7e163c8acfb96df76054f80c1d618ee494da8ed84a34e92dc86d"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-e6cc653f80a3414380436ce5572be92e/measurements.jsonl",
+          "sha256": "e41d12c502018e7862a13972b210be7f34880f5b4686d1b9792fa7948c69f8e5"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-e6cc653f80a3414380436ce5572be92e/native.jsonl",
+          "sha256": "912c47b2c5ccb8c453c208257836b01134c09cbb522dc5991433de9df74d64c8"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/S01-e6cc653f80a3414380436ce5572be92e/oracle.jsonl",
+          "sha256": "1136fcaa1bd080f89b39501d4767dc83ad275bc6a5bf634b33a1ff04054b2357"
+        }
+      ],
+      "source_fingerprint": "f7c6126ffc1985b860d7a8dc6358be56a7cf3a126c1bcc8bdacb2657bb659623",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01",
+      "run": "S01-0086f9f541a94f1d8418243da512961e",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.3137384509900585,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "733ec0e5522fdfc09a7fec67e18134e346576f896e64a63c2ee9f484716ad625",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T05:52:34.351645+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T055234471883Z-G0.json",
+          "sha256": "070d65331e16c8106a1ad7fd9bdb0b944c2513af94368a4ab5cabcd8fd3ec348"
+        }
+      ],
+      "source_fingerprint": "f7c6126ffc1985b860d7a8dc6358be56a7cf3a126c1bcc8bdacb2657bb659623",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    },
+    {
+      "ticket": "S01",
+      "run": "S01-f357fcfd43bb4d929cdde33ca9694718",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.16528589799418114,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": [],
+      "source_fingerprint": "f7c6126ffc1985b860d7a8dc6358be56a7cf3a126c1bcc8bdacb2657bb659623",
+      "backend_artifacts": {
+        "model_manifest": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "native_source": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/source.json",
+          "sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743"
+        },
+        "oracle": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh",
+          "sha256": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39"
+        },
+        "profile": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/execution-profile.json",
+          "sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd"
+        },
+        "sut": {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch",
+          "sha256": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150"
+        }
+      }
+    }
+  ],
+  "measurements": [
+    {
+      "test": "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease",
+      "kind": "owner-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_s01_owner.ExecutionOwnerTests.test_foreign_owner_cannot_use_or_release_execution_lease",
+      "kind": "owner-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-numerics",
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11
+    },
+    {
+      "test": "test_s01.SerializedSlotTests.test_s01_invariant",
+      "kind": "slot-work",
+      "completed": 2,
+      "failed": 0,
+      "execution_seconds": 2.0762215069844387,
+      "execution_mode": "serialized"
+    }
+  ],
+  "limits": [
+    "One private execution workspace; no simultaneous kernels",
+    "Pinned Q8_0 weights and FP16 KV; numerical profile unqualified",
+    "Five FIFO-slot and two owner-affinity fresh comparisons; short prefix only",
+    "Native ordinary serving path and long qualification unexecuted"
+  ]
+}

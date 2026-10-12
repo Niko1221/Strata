@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "ticket": "E04",
+  "status": "RED_EXECUTED_IMPLEMENTATION_UNEXECUTED",
+  "red": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_e04.py",
+      "-v"
+    ],
+    "exit_code": 1,
+    "test_sha256": "f3937e910085ff364a0467541ba4d3e17c1d41b1160575c6a9cb06646b990363"
+  },
+  "source_sha256": {
+    "examples/branching_demo.py": "513a5464f47cc6b748a8a635a1a013b079dd6c8de966dc49ebf80376ddf5d816",
+    "tests/implementation/test_e04.py": "f3937e910085ff364a0467541ba4d3e17c1d41b1160575c6a9cb06646b990363",
+    "tests/gates/G4/test_evaluated_futures.py": "bdf73f2143995d6c01e4d5193f9e9f7096bfc3df0082107ff4cb8306a793b354"
+  },
+  "raw_sha256": {
+    "G0.json": "bcb702ee6b68e3eb699ef991985cdd117f86aa7c211eb9e333958c4780ca24b7",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "251b9daa58314fb9e07e7875a7ab541698b842855b449928f7c1691d21041298",
+    "mutants.json": "77bfd178a46255838769dc7c7dd928744439458b969d4a564e0953b09b744d66",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "fe23b70b8e9c4ac71216eda6a86dff4deb6096ab3e647695e825e8d97e6f7a59",
+    "red.stderr": "35bf0fd78fa41bc38220e242afddccd2fa84267600c2c749262fb40a94dda147",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "toy.json": "f9f1291656966083026f6533b7ae373bca5a8a2ca19625be401e0571c7ed1a32",
+    "toy.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "toy.stdout": "5660b18703f5ac0b4b0b2a0582ba21263dc7590523859727278db523dad5cc04"
+  },
+  "registered_tests_written": [
+    "test_g4_001_three_future_demonstration",
+    "test_g4_002_rewind_and_new_fourth_future",
+    "test_g4_009_winning_branch_cold_replay",
+    "test_g4_011_retained_loser_accessible"
+  ],
+  "limitations": [
+    "No green or registered execution yet.",
+    "Frozen calibration required; no fabricated numerical tolerance or mock backend.",
+    "Cold reopen starts a new native engine process in the same Python caller; a full Python crash/restart remains covered separately by G2."
+  ],
+  "regressions": {
+    "toy": {
+      "command": [
+        "/usr/bin/python3",
+        "examples/branching_demo.py"
+      ],
+      "exit_code": 0
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0
+    }
+  }
+}

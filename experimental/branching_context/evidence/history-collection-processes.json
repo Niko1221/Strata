@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "status": "CPU_PROCESS_VALIDATION_PASS_GPU_PENDING",
+  "run": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_p04_processes.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "seconds": 0.6583238510065712,
+    "test_sha256": "b461f4fa1f471cc601f4b4e9f1ed7232ffe14e7890b7c83bc2704834f90b1f6f"
+  },
+  "mutant": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "test_p04_processes.CollectionProcessTests.test_crash_sweep_preserves_remaining_ancestry",
+      "-v"
+    ],
+    "exit_code": 1,
+    "mutation": "Delete parents before children in isolated source copy",
+    "canonical_source_changed": false
+  },
+  "tests": 2,
+  "fork_append_races": 8,
+  "crash_exit_code": 42,
+  "registered_tests_written": [
+    "test_g5_008_retention_and_gc",
+    "test_g5_009_concurrent_gc_and_load"
+  ],
+  "registered_tests_executed": false,
+  "source_sha256": {
+    "tests/implementation/test_p04_processes.py": "b461f4fa1f471cc601f4b4e9f1ed7232ffe14e7890b7c83bc2704834f90b1f6f",
+    "tests/gates/G5/test_retention_gc.py": "3467f427e6f1110d78cb8f94893fad777368a6a40c28a2ea3524de34e72b93f1"
+  },
+  "raw_sha256": {
+    "mutant.json": "b6b9ea5466b551167474856c7055a983f1da87484b02daac5c8c51560f55756a",
+    "mutant.stderr": "a5d125e0b3e5d1736e066dfda1896278b546b4f9132f7a6a47f32de3d04d070d",
+    "mutant.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "run.json": "dd7d65c913979b8b7ee5a61a7df36e20c7ce780ae9b5591ec685a8e5cd22a69a",
+    "run.stderr": "c0db4d7c9d02a1aeeca1f652a2dfc3e9305f59eadc0558e2cd97fdc52d8d7176",
+    "run.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Bounded process schedules, not exhaustive concurrency or power-loss testing.",
+    "Registered GPU methods unexecuted; concurrent evaluation/rewind schedule coverage still needs expansion."
+  ]
+}

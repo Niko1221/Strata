@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "ticket": "P04",
+  "status": "CPU_PREWORK_PASS_CRASH_AND_GPU_PENDING",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p04.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p0*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+    },
+    "evaluation-regression": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e02*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+    }
+  },
+  "green_tests": 4,
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "source_sha256": {
+    "src/context_time_travel/store.py": "23c4488bdc9004f6e3db470413e8da3bac7c43d6b288e6e2e065e4e12b22b8c0",
+    "tests/implementation/test_p04.py": "7c6da93c9db512226c17fc69f81f09ffec17ec68e0fcde5c25d9f0233e95b6bc"
+  },
+  "raw_sha256": {
+    "evaluation-regression.json": "0b09eb9a4194f192e71249cb50a568037984f888058247d9cd3c5c38f9e899d7",
+    "evaluation-regression.stderr": "506ef4291bd9400af6fb192b24a92d9be3d9a9d12d18da9ef6dda18ee2c26214",
+    "evaluation-regression.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.json": "c190cfa786ee1786451ecd02975b9a230130a9015e84be0977a05789f7d47ba3",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "a43fefaee6eea23b0d4b0b20fa6e018690fc8f92c4d6f6e3f601b222a0fdf76c",
+    "green.json": "a218213f9a133601dbed4ad7463ac34e99633ab85b5cc44b2bb16a6f6c8355aa",
+    "green.stderr": "ed63a55ad1d4581f578f10cf92becc6a9341be0fbd321ec55a3bf044b27eff13",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "ef2b509f3ea3b059ee1a3cdcbfbc3db156313e3999e3cc512df583627edd3e24",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "70db7386b722aaca4a145096df80e3d6034c9da37db1e3c500cf30649131e54e",
+    "red.stderr": "abf0f5bbbad4ec2e8bd2a8ca9060ce4f6f5b60444d31ad897ab995ed5084a779",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Crash-during-sweep and competing append/fork schedules not executed yet.",
+    "Registered real-backend G5 retention/concurrent-GC tests not written/executed yet.",
+    "Collector uses a correctness-first complete scan; no GC performance claim."
+  ]
+}

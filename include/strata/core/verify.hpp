@@ -303,6 +303,9 @@ public:
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
+    // Successful single-sequence GPU forwards, counted after stream completion
+    // inside run(). Includes computed tokens even when commit later fails.
+    uint64_t completed_forward_tokens = 0;
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
     std::string profile_report();

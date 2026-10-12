@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "ticket": "P02",
+  "status": "CPU_PREWORK_PASS_REAL_ACCEPTANCE_PENDING",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p02.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "1b7c6c4f94a8f19ee980c663abefc882c5a7c4318af1d7fdea0dcf678ec972c9"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_p0*.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "1b7c6c4f94a8f19ee980c663abefc882c5a7c4318af1d7fdea0dcf678ec972c9"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "1b7c6c4f94a8f19ee980c663abefc882c5a7c4318af1d7fdea0dcf678ec972c9"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "1b7c6c4f94a8f19ee980c663abefc882c5a7c4318af1d7fdea0dcf678ec972c9"
+    }
+  },
+  "green_tests": 2,
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "policy": {
+    "kind": "owner-only-plaintext",
+    "encrypted": false,
+    "directory_mode": "0700",
+    "file_mode": "0600"
+  },
+  "other_os_principal": "nobody (uid 65534)",
+  "registered_test": "test_g5_007_encrypted_sensitive_persistence",
+  "registered_test_executed": false,
+  "source_sha256": {
+    "src/context_time_travel/store.py": "272c06035c04fb056ff1a72e52dd5564891ae1863fd1d8c7510ca96266a0f6d9",
+    "src/context_time_travel/real.py": "026a3bfae7713c01f0b30ba27e1d456b54276980e421db968f8bb0c19169344d",
+    "tests/implementation/test_p02.py": "1b7c6c4f94a8f19ee980c663abefc882c5a7c4318af1d7fdea0dcf678ec972c9",
+    "tests/gates/G5/test_sensitive_storage.py": "114b20bc62863fc5314a5568406848d679701577d6820f45f8c711d90a771cc5"
+  },
+  "raw_sha256": {
+    "G0.json": "377db1a75ba3bda54198d950e3d027aaadb1d53387349dd3052a97e877c35c49",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "871ab744114643567470892169a3c6a8f6f2b99773051b64f6fb32e2f111cec7",
+    "green.json": "2a5ac653e2235b83f5a9805c641785451f61be773d62ef82a8a745947734a24e",
+    "green.stderr": "a644d9f9e09b87adf7d20bece5c89262c8c3e10e50935fdfaec807f0a5f15ad7",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "48562126346a002a28a9880870d3aabd15082f9c9bfe4da26ae90dfec89bb273",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "6e77da25532c3a2a92e9ed33d27a5bb26bf65a3a909875674281a2eec35852d9",
+    "red.stderr": "348656ef6d5fd6498789a76493b77da6e5a6ff833ac12e52b3437ebacd1705c5",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "Encryption/key-management capability unsupported.",
+    "Real native checkpoint permission test written but not executed.",
+    "POSIX local trusted-owner paths only; native Windows and hostile shared-path races remain unsupported.",
+    "Existing legacy payload file modes are not recursively migrated; owner-only root traversal protects them."
+  ]
+}

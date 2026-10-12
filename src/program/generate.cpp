@@ -23,6 +23,15 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#ifdef STRATA_STEP_DRIVER
+#include "strata/core/step_dump.hpp"
+#endif
+#ifdef STRATA_BRANCH_DRIVER
+#include "strata/core/branch_driver.hpp"
+#endif
+#ifdef STRATA_FRESH_DRIVER
+#include "strata/core/fresh_driver.hpp"
+#endif
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -2542,8 +2551,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --max-context must be below 2^31\n");
         return 2;
     }
+    // The final selected token is not consumed by this CLI. Capacity therefore
+    // covers prompt + max_new - 1 inputs, including a prompt exactly at capacity
+    // when only its next-token logits are requested.
     if (o.max_new <= 0 || o.max_context <= 0 || o.max_new > o.max_context ||
-        o.tokens.size() > (size_t) (o.max_context - o.max_new)) {
+        o.tokens.size() > (size_t) (o.max_context - o.max_new + 1)) {
         std::fprintf(stderr, "strata generate: positive --max-new and --max-context must fit the prompt and generation\n");
         return 2;
     }
@@ -2885,9 +2897,19 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::NativeEmbed native_embed;
+#ifdef STRATA_STEP_DRIVER
+    // Diagnostic executable only: ordinary initialization, forced T=1 history.
+    constexpr bool ordinary_step_control = true;
+    if (!native_pack || o.serve || o.prefill_chunk < 0 || !o.mtp.empty()) {
+        std::fprintf(stderr, "strata step: requires native pack, nonnegative prefill, no serve or MTP\n");
+        return 2;
+    }
+#else
+    constexpr bool ordinary_step_control = false;
+#endif
     if (native_pack) {
         if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
-            (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
+            (o.prefill_chunk <= 0 && o.tokens.size() > 1 && !ordinary_step_control)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
@@ -3083,7 +3105,7 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
+    if (o.max_context < (int64_t) o.tokens.size() + o.max_new - 1) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
         return 2;
@@ -6856,6 +6878,29 @@ int main(int argc, char** argv) {
                          ev, v.why.c_str());
         return false;
     };
+#if defined(STRATA_BRANCH_DRIVER) || defined(STRATA_FRESH_DRIVER)
+    {
+        if (o.serve || o.kv_grow || o.kv_resident || !stages.empty() || o.adapt_async || o.batch > 1) {
+            std::fprintf(stderr, "strata branch: requires one synchronous, fully resident inference session\n");
+            return 2;
+        }
+        strata::core::VerifyHits hits;
+        hits.d_res = thits.d_res;
+        hits.h_res = host_res.empty() ? nullptr : host_res.data();
+        hits.cache_base = thits.cache_base; hits.blob = thits.blob;
+        hits.slot_off = xcache.slot_offsets(); hits.n_slots = xcache.slots();
+        drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
+        const int pcie_mode = o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2;
+#ifdef STRATA_BRANCH_DRIVER
+        return strata::core::branch_driver(wt, g, ss, hits, native_head.loaded() ? &native_head : nullptr,
+                                           &drive_pool_multi, &drive, drive.d, pcie_mode);
+#else
+        const char* output = std::getenv("STRATA_DUMP_FIRST_LOGITS");
+        return strata::core::fresh_driver(wt, g, ss, hits, native_head.loaded() ? &native_head : nullptr,
+                                          &drive_pool_multi, &drive, drive.d, pcie_mode, o.tokens, output ? output : "");
+#endif
+    }
+#endif
     if (o.serve) {
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
@@ -12404,6 +12449,12 @@ int main(int argc, char** argv) {
 
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.
+#ifdef STRATA_STEP_DRIVER
+    strata::core::StepProjection projection_probe;
+    if (std::getenv("STRATA_STEP_STATE") && !projection_probe.init((size_t) g.n_embd, (size_t) g.ssm_conv_channels)) {
+        std::fprintf(stderr, "strata step: projection diagnostic allocation failed\n"); return 1;
+    }
+#endif
     int64_t pos_start = 0;
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
     strata::prefill::Prefill prefill;
@@ -12765,7 +12816,10 @@ int main(int argc, char** argv) {
     // round emits (accepted drafts + 1) tokens.  `commit` keeps the state of the tokens that were emitted.
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
-    if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
+    // A native pack enters here at its last prompt token, including position 0
+    // for a one-token prompt. Zero is only the unused sentinel for the legacy
+    // per-token path; applying it to native packs silently consumed nothing.
+    if ((native_pack || spec_pos > 0) && (int64_t) produced.size() < o.max_new && !ended) {
         auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
             std::ifstream in(path);
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -12820,6 +12874,53 @@ int main(int argc, char** argv) {
         drive.d.pcie_num = (int) (o.pcie_frac * 256.0 + 0.5);
         if (drive.d.pcie_num < 0) drive.d.pcie_num = 0;
         if (drive.d.pcie_num > 256) drive.d.pcie_num = 256;
+#ifdef STRATA_STEP_DRIVER
+        // Use this ordinary path's initialized verifier and expert dispatcher.
+        // No branch/fresh driver, retained checkpoint or sampled continuation.
+        const char* step_output = std::getenv("STRATA_DUMP_FIRST_LOGITS");
+        if (spec_pos < 0 || spec_pos >= (int64_t) o.tokens.size() || step_output == nullptr) {
+            std::fprintf(stderr, "strata step: requires complete prompt frontier and logits output\n");
+            return 2;
+        }
+        ver.set_head_sampling(false);
+        const char* state_output = std::getenv("STRATA_STEP_STATE");
+        if (state_output && spec_pos > 1) return 2; // this diagnostic observes exactly one consumed token
+        if (state_output && spec_pos == 1 && !strata::core::dump_first_consumed_state(state_output, ss, g, err)) {
+            std::fprintf(stderr, "%s\n", err.c_str()); return 1;
+        }
+        int64_t consumed = spec_pos;
+        for (size_t step = (size_t) spec_pos; step < o.tokens.size(); ++step) {
+            const int64_t token = o.tokens[step];
+            if (token < 0 || token >= ver.vocab()) return 2;
+            const int32_t input = (int32_t) token;
+            int32_t unused = 0;
+            drive.d.failed = false;
+            if (!ver.run(1, &input, consumed, &drive_pool_multi, &drive, &unused, err) ||
+                drive.d.failed || !ver.commit(1, err)) {
+                std::fprintf(stderr, "strata step: consumed %lld: %s\n", (long long) consumed, err.c_str());
+                return 1;
+            }
+            ++consumed;
+            if (state_output && consumed == 1 && !strata::core::dump_first_consumed_state(state_output, ss, g, err)) {
+                std::fprintf(stderr, "%s\n", err.c_str()); return 1;
+            }
+        }
+        if (ver.completed_forward_tokens != (uint64_t) (consumed - spec_pos)) return 1;
+        std::vector<float> step_logits((size_t) ver.vocab());
+        if (!ver.copy_logits(0, step_logits.data())) return 1;
+        for (float value : step_logits) if (!std::isfinite(value)) return 1;
+        std::ofstream step_file(step_output, std::ios::binary | std::ios::trunc);
+        step_file.write((const char*) step_logits.data(), (std::streamsize) step_logits.size() * sizeof(float));
+        step_file.close();
+        if (!step_file) return 1;
+        std::printf("{\"consumed\":%lld,\"position_max\":%lld,\"forward_tokens\":%llu,"
+                    "\"windows\":%llu,\"resident_expert_entries\":%lld,\"cpu_expert_entries\":%lld}\n",
+                    (long long) consumed, (long long) consumed - 1,
+                    (unsigned long long) ver.completed_forward_tokens, (unsigned long long) ver.windows,
+                    (long long) drive.d.cache_hits, (long long) drive.d.cache_refused);
+        drive.d.plan = nullptr;
+        return 0;
+#endif
         const int64_t pcie0 = drive.d.pcie_experts;
         // CS-T: the file tier since the decode began (the prompt path's copies are before this)
         const int64_t files0 = src.file_reads(), ram0 = src.ram_reads();
@@ -13247,6 +13348,8 @@ int main(int argc, char** argv) {
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,
                         (double) mtp.vram_bytes() / 1048576.0);
+        std::fprintf(stderr, "strata forward: prefill_tokens=%lld verifier_tokens=%llu\n",
+                     (long long)prefill.stats().tokens, (unsigned long long)ver.completed_forward_tokens);
     }
 
     if (dump != nullptr && std::fclose(dump) != 0) {

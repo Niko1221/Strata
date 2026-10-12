@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "ticket": "E03",
+  "status": "CPU_PREWORK_PASS_REGISTERED_ACCEPTANCE_PENDING",
+  "host": "llm-49",
+  "checks": {
+    "red": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e03.py",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_sha256": "542b1ff7725116d57e473ded667d3cd3934afd5bc4efe2987c011d961fee0033"
+    },
+    "green": {
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/implementation",
+        "-p",
+        "test_e03.py",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_sha256": "542b1ff7725116d57e473ded667d3cd3934afd5bc4efe2987c011d961fee0033"
+    },
+    "G0": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/verify.py",
+        "--gate",
+        "G0"
+      ],
+      "exit_code": 0,
+      "test_sha256": "542b1ff7725116d57e473ded667d3cd3934afd5bc4efe2987c011d961fee0033"
+    },
+    "mutants": {
+      "command": [
+        "/usr/bin/python3",
+        "scripts/mutation_smoke.py"
+      ],
+      "exit_code": 0,
+      "test_sha256": "542b1ff7725116d57e473ded667d3cd3934afd5bc4efe2987c011d961fee0033"
+    }
+  },
+  "green_tests": 1,
+  "G0_tests": 51,
+  "mutants_detected": 4,
+  "registered_tests_written": [
+    "test_g4_006_winner_adoption_cas",
+    "test_g4_007_adoption_race_loses_cleanly"
+  ],
+  "registered_tests_executed": false,
+  "source_sha256": {
+    "src/context_time_travel/evaluation.py": "9b6ce80602f11908eccb2febac186c4ec52f16227d8e841ba4bafa44cf8f3373",
+    "tests/implementation/test_e03.py": "542b1ff7725116d57e473ded667d3cd3934afd5bc4efe2987c011d961fee0033",
+    "tests/gates/G4/test_adoption.py": "8c08f03be3918e30219dd363f8b48f58e16019fa96a95d1e4fbd4e6fe8e28bcd"
+  },
+  "raw_sha256": {
+    "G0.json": "72aef054e72824ae4a68ae604adac2a642fff6b80196f337e911ab88de2ee687",
+    "G0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "G0.stdout": "d295e58e5f6f48934066fad7c9fe309d287f31f53e41c416ffa75f760d7197b5",
+    "green.json": "7fae869a52920c585ff4ef855d7df3638c2fac0e19f5ffe46ff72bcac3e60197",
+    "green.stderr": "b612b2e54b370f07a4f55131ac79bdca22097f011fd7cc0820e5381bb3cfe31b",
+    "green.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.json": "f28e1172d8562fe777854df99013327068cd1aa3eaae4d5e84e8423bca4dd93c",
+    "mutants.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutants.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "red.json": "373356902e28558fe865c4cf54ad69e04636c9af069c5411ca482af66117dfbd",
+    "red.stderr": "492de714152b78496d7a78f31dee73642dd2775459174da6c8c51ca5ad7bd397",
+    "red.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "ordering": [
+    "mandatory validity",
+    "declared metric direction",
+    "fewer appended input tokens since task root",
+    "snapshot ID",
+    "evaluation ID"
+  ],
+  "limitations": [
+    "CPU selection/receipt evidence only; registered GPU adoption/race cases unexecuted.",
+    "N03 calibration remains active; no queue VALIDATED or gate PASS claim."
+  ]
+}

@@ -1,0 +1,810 @@
+{
+  "schema": 1,
+  "scope": "Automatic canonical numerical materialization via actual native RAM; no cumulative gate certification",
+  "host": "llm-49 / r4090",
+  "raw_archive_sha256": "5b0f90aee8b05bcc4bc5bf381a9dc2b4e9ca1654c402f69117edafc942706cb5",
+  "profile_sha256": "07e35a1bc335fc48c13670e46c1e4da6871f23cb1c2bbff2bb581d3049e997fd",
+  "execution_profile_id": "5acddbcff7c906177f838bf63bdfbbd9607ec5ba33de87c3b70cea714e0774d5",
+  "model_contract_id": "e6dd3015773336aa239030ac93b3b4208dbfef231b7ef6972385818b2e474cad",
+  "model_weights_sha256": "b1266609ec32d232b982200c35fed90d283f72fb057781d02aa061e5172584d9",
+  "hardware": "NVIDIA GeForce RTX 4090, GPU-118fc99e-3bb2-7644-f0e6-30211b561a65, 595.99.02, 24564 MiB",
+  "native_binary_sha256": {
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-branch": "67b5cdcbac76a9804476accf70dbcdd947ba22757a8a1047a8e95e5631869150",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/native-auto-primary/bin/strata-fresh": "c6e4be51757a4a9daf0f9134c12885f00138bd296d8b30c3f5354bf7af803f39",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/tools/gguf_reader.py": "5ecf739bb3c2f07bc7f889f7f3a455e3dfdb40068409e10781a1a9b2be289b5e"
+  },
+  "source_manifest_sha256": "f10451efe7436da52799fed9d71d44428ab82413bd5b0944623ee9913e5dc743",
+  "reports": [
+    {
+      "ticket": "C01-AUTO",
+      "run": "C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 14.479128270002548,
+      "executed_ids": [
+        "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_auto.py\", line 37, in test_canonical_ram_hit_miss_and_complete_eviction\n    self.assertEqual(backend.stats['consumed_tokens']-before,0,\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                     'Canonical cache miss must restore exact parked history without prefix replay')\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 9 != 0 : Canonical cache miss must restore exact parked history without prefix replay\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd/tests.json",
+          "sha256": "9d0f18496d5d7ad1b35cc1d9b59bff1ddde670d4110abcaf48468fa9d00ffff6"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd/tests.json",
+          "sha256": "9d0f18496d5d7ad1b35cc1d9b59bff1ddde670d4110abcaf48468fa9d00ffff6"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd/measurements.jsonl",
+          "sha256": "79c6588b9e5613d98e75d3f57ceb66d8fa5af28ccd9a8ee0482bfbcca00652ba"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd/native.jsonl",
+          "sha256": "29eb168450595d21612fc1e15c112fd17ed6b799b2d767cdb1c13ab1f6817ae8"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-8d91613ff0ea41ffb7dff1f1598f7edd/oracle.jsonl",
+          "sha256": "aec1a8eea98708ea5fd85241fcad9b4a6908fb1f81b6c99c36d7635ca3ee9a74"
+        }
+      ],
+      "fingerprint": "96d9101682fb584b33a004d297e38ec0bbb053873b1918e34bdcbb8a4b3eb7e9"
+    },
+    {
+      "ticket": "C01-AUTO",
+      "run": "C01-AUTO-987b7905023040aca9b9234162fdbfe5",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 84.93664370599436,
+      "executed_ids": [
+        "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-987b7905023040aca9b9234162fdbfe5/tests.json",
+          "sha256": "7a3c43b2f811c37a912e4bdd7c47fa98ea981cae90b3f24cba0b204f0a89baa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-987b7905023040aca9b9234162fdbfe5/tests.json",
+          "sha256": "7a3c43b2f811c37a912e4bdd7c47fa98ea981cae90b3f24cba0b204f0a89baa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-987b7905023040aca9b9234162fdbfe5/measurements.jsonl",
+          "sha256": "0324dc887baf2f819f445343ddece1989cd12eaab6ab9f9f1b859aeaa0ded092"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-987b7905023040aca9b9234162fdbfe5/native.jsonl",
+          "sha256": "b082bfd9a7b55266b09b17c1da9ad1c073636c5d96ab7b2e32d61940003698cf"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-987b7905023040aca9b9234162fdbfe5/oracle.jsonl",
+          "sha256": "10d20e3711ba20f1d83edfba94bd823efc3547bbcef2b8a1e1f52782968ca1f3"
+        }
+      ],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01-AUTO",
+      "run": "C01-AUTO-81e79ebd4aef4cc282f262ec567214c8",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.30572997801937163,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "68472775f931b7ce36a1ad0cc4faa344d7ec4f96a181cd4ecd1f9d42d76c13af",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T04:52:46.512459+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T045246622975Z-G0.json",
+          "sha256": "7d473735d1649e8754ae6105da3e94782c26e746f9245bafb7cc233ca6ba7218"
+        }
+      ],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01-AUTO",
+      "run": "C01-AUTO-77fb03bf069b43b7820168b81410f790",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.17599673999939114,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": [],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01",
+      "run": "C01-f59f2d84138048b7a9fa62de362e63cb",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 37.87643524698797,
+      "executed_ids": [
+        "test_c01.CanonicalCheckpointIdentityTests.test_c01_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01.CanonicalCheckpointIdentityTests.test_c01_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-f59f2d84138048b7a9fa62de362e63cb/tests.json",
+          "sha256": "0cbfd60e83b3b51744823fa2c2bf72b1a9535b974c83844692914804ec12a3dd"
+        }
+      ],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01-COLD",
+      "run": "C01-COLD-9c07df9299284117a0120872fb7de089",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 15.647065601981012,
+      "executed_ids": [
+        "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_cold_identity.ColdIdentityTests.test_cold_resident_identity_and_no_replay"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-9c07df9299284117a0120872fb7de089/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-9c07df9299284117a0120872fb7de089/tests.json",
+          "sha256": "3c5d26b3bd6520bf9be95b0290adbf73ecde4adb0079bdfdc0a6bf942e23493e"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-9c07df9299284117a0120872fb7de089/measurements.jsonl",
+          "sha256": "942cce1416f6fef45288a0a27889876fff288e443b4810586a9fbc1831386a0b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-9c07df9299284117a0120872fb7de089/native.jsonl",
+          "sha256": "2fcd28072ce8c692fe9cbcf417067563d2813b681b0e198243d52e8e828a1c91"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-COLD-9c07df9299284117a0120872fb7de089/oracle.jsonl",
+          "sha256": "35a38957baf162143b9203722b5eafb14441e95b8f528fd31b7ab0e33a103c3e"
+        }
+      ],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-b11171f21407464892d1d90569ec9a0a",
+      "command_id": "green",
+      "outcome": "FAIL",
+      "elapsed_seconds": 44.8360593530233,
+      "executed_ids": [
+        "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_ram.py\", line 62, in test_native_ram_forced_siblings_and_exact_miss\n    self.assertEqual(stats['entries'],1)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\nAssertionError: 2 != 1\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-b11171f21407464892d1d90569ec9a0a/tests.json",
+          "sha256": "c63d4b5b17c747ac6edda268102b7f565bb3d283d61b8c099fbbb42866234c02"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-b11171f21407464892d1d90569ec9a0a/tests.json",
+          "sha256": "c63d4b5b17c747ac6edda268102b7f565bb3d283d61b8c099fbbb42866234c02"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-b11171f21407464892d1d90569ec9a0a/measurements.jsonl",
+          "sha256": "455b9a033338ec90dbd5b040f2627193e242df9d36aa74d8a857d6c892f0ecbe"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-b11171f21407464892d1d90569ec9a0a/native.jsonl",
+          "sha256": "aedbec69127625d36d19de83d7279f966a919ba7f072ae9d0dd54daf1198c97b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-b11171f21407464892d1d90569ec9a0a/oracle.jsonl",
+          "sha256": "2a822c9276716291969bcb0c6127640eb01813ce8ab416162b8451d4aadfed8c"
+        }
+      ],
+      "fingerprint": "8d564939603df5e733f5eb97f187fbeb2cd8b902bf301fc6496333820bbe30d6"
+    },
+    {
+      "ticket": "C01-DUPLICATE",
+      "run": "C01-DUPLICATE-138d8e32ae974e3e8cb6c7cf81464c58",
+      "command_id": "red",
+      "outcome": "RED",
+      "elapsed_seconds": 1.2583721620030701,
+      "executed_ids": [
+        "test_c01_duplicate.DuplicateConsumedCacheTests.test_duplicate_consumed_history_replaces_unpinned_entry"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_duplicate.DuplicateConsumedCacheTests.test_duplicate_consumed_history_replaces_unpinned_entry"
+        ],
+        "expected_failures": [],
+        "failures": [
+          {
+            "id": "test_c01_duplicate.DuplicateConsumedCacheTests.test_duplicate_consumed_history_replaces_unpinned_entry",
+            "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/tests/implementation/test_c01_duplicate.py\", line 27, in test_duplicate_consumed_history_replaces_unpinned_entry\n    self.assertEqual(result.returncode,0,'Duplicate consumed histories must replace their unpinned checkpoint')\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 2 != 0 : Duplicate consumed histories must replace their unpinned checkpoint\n"
+          }
+        ],
+        "skipped": [],
+        "status": "FAIL",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-DUPLICATE-138d8e32ae974e3e8cb6c7cf81464c58/tests.json",
+          "sha256": "f0bedcf7f9d93a97eed1353950de1a42fdd4fc47a0985c5b7f4c20575cc58774"
+        }
+      ],
+      "fingerprint": "f5757bf31b23d49196aaa845cafa5384fdb15c64018e111b0dad22207c8f7a2a"
+    },
+    {
+      "ticket": "C01-DUPLICATE",
+      "run": "C01-DUPLICATE-8cbbad6978b14c2699714643e14f1848",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 1.036967461986933,
+      "executed_ids": [
+        "test_c01_duplicate.DuplicateConsumedCacheTests.test_duplicate_consumed_history_replaces_unpinned_entry"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_duplicate.DuplicateConsumedCacheTests.test_duplicate_consumed_history_replaces_unpinned_entry"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-DUPLICATE-8cbbad6978b14c2699714643e14f1848/tests.json",
+          "sha256": "1370d1ed1606c30a5bc352fd2cc9edeb8ef8a43a292c4daa99fca0a52f384241"
+        }
+      ],
+      "fingerprint": "7f79bfb36aac99c294d94bc7deb81594d42cebcd802f346113c773751747053d"
+    },
+    {
+      "ticket": "C01-DUPLICATE",
+      "run": "C01-DUPLICATE-40d4b03e9ed34c8a8de6605219ed6a3f",
+      "command_id": "prior-host",
+      "outcome": "PASS",
+      "elapsed_seconds": 2.0879637430189177,
+      "executed_ids": [
+        "test_r01.HostPrefixSharingTests.test_r01_invariant",
+        "test_r02.PublishedTailIsolationTests.test_r02_invariant",
+        "test_r03.SharedStorageAccountingTests.test_r03_invariant"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_r01.HostPrefixSharingTests.test_r01_invariant",
+          "test_r02.PublishedTailIsolationTests.test_r02_invariant",
+          "test_r03.SharedStorageAccountingTests.test_r03_invariant"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 3,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-DUPLICATE-40d4b03e9ed34c8a8de6605219ed6a3f/tests.json",
+          "sha256": "c5b5c21c23697dbd070040ae7dc4dffcac64f280d6ea9b5c52dc0c04746d6298"
+        }
+      ],
+      "fingerprint": "7f79bfb36aac99c294d94bc7deb81594d42cebcd802f346113c773751747053d"
+    },
+    {
+      "ticket": "C01-DUPLICATE",
+      "run": "C01-DUPLICATE-ed963d896d7c4b16abccd4215bd60374",
+      "command_id": "G0",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.38948829198488966,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ],
+      "test_report": {
+        "gates": [
+          {
+            "errors": 0,
+            "expected_failures": 0,
+            "failure_ids": [],
+            "failures": 0,
+            "found_tests": 51,
+            "gate": "G0",
+            "required_cases": 0,
+            "skipped": 0,
+            "skipped_ids": [],
+            "status": "PASS",
+            "test_count": 51,
+            "unexpected_successes": 0
+          }
+        ],
+        "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+        "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "requested": "G0",
+        "schema": 1,
+        "source_tree_sha256": "bc15f975b82d494afaf92c822d0d7afa6298349ef838cea69a75f892bf6facfd",
+        "status": "PASS",
+        "timestamp_utc": "2026-10-12T04:59:49.890794+00:00",
+        "tool": "scripts/verify.py"
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/20261012T045950086496Z-G0.json",
+          "sha256": "9df63d52886b469db412a376a33e68c4facdb5f6c41cf36e710b63478a7250c2"
+        }
+      ],
+      "fingerprint": "7f79bfb36aac99c294d94bc7deb81594d42cebcd802f346113c773751747053d"
+    },
+    {
+      "ticket": "C01-DUPLICATE",
+      "run": "C01-DUPLICATE-49c3f2da9e18482fa8f1f638d66abac4",
+      "command_id": "mutants",
+      "outcome": "PASS",
+      "elapsed_seconds": 0.1722763970028609,
+      "executed_ids": [],
+      "test_report": null,
+      "artifacts": [],
+      "fingerprint": "7f79bfb36aac99c294d94bc7deb81594d42cebcd802f346113c773751747053d"
+    },
+    {
+      "ticket": "C01-RAM",
+      "run": "C01-RAM-2aff3ee926c64a5d8430b8b93496ddee",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 44.98778206098359,
+      "executed_ids": [
+        "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_ram.NativeRamCacheTests.test_native_ram_forced_siblings_and_exact_miss"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-2aff3ee926c64a5d8430b8b93496ddee/tests.json",
+          "sha256": "38d378232edea4bd2fc7e0984c59c06e72e29e923fc2cd31404e52a7f6bb3a5f"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-2aff3ee926c64a5d8430b8b93496ddee/tests.json",
+          "sha256": "38d378232edea4bd2fc7e0984c59c06e72e29e923fc2cd31404e52a7f6bb3a5f"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-2aff3ee926c64a5d8430b8b93496ddee/measurements.jsonl",
+          "sha256": "8b0d17a51791927c51db1979e698e57a1739f6a182d967f6e350034eb21accd4"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-2aff3ee926c64a5d8430b8b93496ddee/native.jsonl",
+          "sha256": "c249a5937d07993ed5c25080f36036b4b80da32a9ca897c798dbd3eb0ee2e0ff"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-RAM-2aff3ee926c64a5d8430b8b93496ddee/oracle.jsonl",
+          "sha256": "872ac8755df69e8ac80545a7c4d1b0fdfb90a9d484fd447173bc1a0979443eb0"
+        }
+      ],
+      "fingerprint": "d479c29efc75984e400a738b47077317745a98900531ce6b57ccd0e0e1c33b44"
+    },
+    {
+      "ticket": "C01-AUTO",
+      "run": "C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2",
+      "command_id": "green",
+      "outcome": "PASS",
+      "elapsed_seconds": 93.81540099502308,
+      "executed_ids": [
+        "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+      ],
+      "test_report": {
+        "errors": [],
+        "executed_ids": [
+          "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction"
+        ],
+        "expected_failures": [],
+        "failures": [],
+        "skipped": [],
+        "status": "PASS",
+        "test_count": 1,
+        "unexpected_successes": []
+      },
+      "artifacts": [
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2/tests.json",
+          "sha256": "7a3c43b2f811c37a912e4bdd7c47fa98ea981cae90b3f24cba0b204f0a89baa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2/tests.json",
+          "sha256": "7a3c43b2f811c37a912e4bdd7c47fa98ea981cae90b3f24cba0b204f0a89baa7"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2/measurements.jsonl",
+          "sha256": "0324dc887baf2f819f445343ddece1989cd12eaab6ab9f9f1b859aeaa0ded092"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2/native.jsonl",
+          "sha256": "a6d29b1f8a1882ad12dedf1ac8cb1447d42adff0b14acba9b988a9d50d48f72b"
+        },
+        {
+          "path": "/home/dflanag3/branching-g3/primary-queue-20261012T031643-admission/experimental/branching_context/evidence/runs/luna/C01-AUTO-c5ef0d17f2ea465b984b39ca521201c2/oracle.jsonl",
+          "sha256": "4685023b5177bd554855a2b997518dd9be5ca23314312fbd7868731f546510aa"
+        }
+      ],
+      "fingerprint": "d479c29efc75984e400a738b47077317745a98900531ce6b57ccd0e0e1c33b44"
+    }
+  ],
+  "measurements": [
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        71,
+        71
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 10
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34,
+        81,
+        81
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 11
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        2,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    },
+    {
+      "test": "test_c01_auto.AutomaticRamTests.test_canonical_ram_hit_miss_and_complete_eviction",
+      "kind": "automatic-ram-numerics",
+      "history": [
+        1,
+        14,
+        27,
+        40,
+        53,
+        66,
+        8,
+        21,
+        34
+      ],
+      "max_absolute_error": 0.0,
+      "oracle_computed_tokens": 9
+    }
+  ],
+  "numerical_comparisons": 9,
+  "numerical_max_absolute_error": 0.0,
+  "oracle_computed_tokens": 87,
+  "work_assertions": {
+    "RAM_hit_prefix_forward_tokens": 0,
+    "changed_prefix_miss_forward_tokens": 9,
+    "all_checkpoints_evicted_replay_forward_tokens": 9,
+    "suffix_append_forward_tokens_each": 1
+  },
+  "limits": [
+    "Unqualified numerical profile; no gate admission",
+    "Native RAM cache has one execution lease, 1 GiB budget and eight entries",
+    "Capture copies numerical state to host; no host-prefix sharing or latency savings claimed",
+    "Ordinary native concurrent batch serving not integrated",
+    "Original native snapshot pointer-retention assertion still fails for rewritten shared prefixes",
+    "No HIP/SYCL builds; no long campaign"
+  ]
+}

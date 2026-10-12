@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "scope": "Actual CUDA bounded validation; not cumulative gate certification",
+  "host": "llm-49 / r4090",
+  "raw_archive_sha256": "56fd895e88e79e31899e5ae5e7fe1b2d30ee492fa2dbd2e89de6d9c095a5310d",
+  "profile_sha256": "4f5ab89c240a5ed08b95dc0d0799409837da6e30d89487b37e11b282e7ce05b3",
+  "execution_profile_id": "6b63d3494acd3e0879f528eb3f4ead05ea67b619280dfc9ad417c3dea6e23c05",
+  "model_contract_id": "e6dd3015773336aa239030ac93b3b4208dbfef231b7ef6972385818b2e474cad",
+  "model_weights_sha256": "b1266609ec32d232b982200c35fed90d283f72fb057781d02aa061e5172584d9",
+  "hardware": "NVIDIA GeForce RTX 4090, GPU-118fc99e-3bb2-7644-f0e6-30211b561a65, 595.99.02, 24564 MiB",
+  "binary_sha256": {
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/build-primary/strata-branch": "798a77a6bb9f82ff540a606714f5d1fed6dec0ae848d0f3fed372f33d98aed26",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/build-primary/strata-fresh": "114a12cd4f141437e6033ceacc587fbef6e4270a1bd21c3212e5256c63ccf63c",
+    "/home/dflanag3/branching-g3/primary-queue-20261012T031643/tools/gguf_reader.py": "5ecf739bb3c2f07bc7f889f7f3a455e3dfdb40068409e10781a1a9b2be289b5e"
+  },
+  "source_manifest_sha256": "affea9c5ec5f22c2135a15979090da7425a98ac18f122f9fb218579e0da76a2b",
+  "reports": [
+    {
+      "errors": [],
+      "executed_ids": [
+        "test_c02_idle.IdleControllerTests.test_c02_idle_invariant",
+        "test_c02_idle.RealIdleBoundaryTests.test_real_idle_forced_futures",
+        "test_c02_idle.RealIdleBoundaryTests.test_stream_publication_cancel_and_cold_controller_resume"
+      ],
+      "expected_failures": [],
+      "failures": [],
+      "skipped": [],
+      "status": "PASS",
+      "test_count": 3,
+      "unexpected_successes": []
+    },
+    {
+      "errors": [],
+      "executed_ids": [
+        "test_immutability.SharedPageTests.test_g3_004_shared_page_never_written"
+      ],
+      "expected_failures": [],
+      "failures": [],
+      "skipped": [],
+      "status": "PASS",
+      "test_count": 1,
+      "unexpected_successes": []
+    }
+  ],
+  "numerical_comparisons": 17,
+  "numerical_max_absolute_error": 0.0,
+  "oracle_computed_tokens": 175,
+  "measurement_counts": {
+    "numerics": 17,
+    "retained-image": 7,
+    "generation-work": 6,
+    "retained-image-after-generation": 28
+  },
+  "limitations": [
+    "Profile unqualified; no baseline tolerances claimed",
+    "One registered G3 case of 16; short prefix cannot establish populated long-prefix sharing",
+    "Unchanged native snapshot test still fails its address-preservation assertion across prefix rewrites",
+    "HIP/SYCL builds absent; ordinary serving integration absent",
+    "Model fingerprints checked using existing 11-file executed hash receipt with current stat reuse; model bytes not freshly hashed in this run"
+  ],
+  "generation_work": {
+    "append_count": 6,
+    "forward_token_deltas": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "cow_pages": 216,
+    "copied_bytes": 452984832,
+    "sampled_peak_live_vmm_bytes": 578813952,
+    "memory_scope": "Tracked VMM allocations only; model arenas, host memory and allocator overhead excluded"
+  }
+}

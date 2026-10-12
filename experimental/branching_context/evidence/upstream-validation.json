@@ -1,0 +1,519 @@
+{
+  "schema": 1,
+  "status": "READY_FOR_DRAFT_REVIEW",
+  "scope": "Executed bounded validation of the upstream port; not cumulative certification",
+  "related_issues": [
+    "https://github.com/Niko1221/Strata/issues/1938",
+    "https://github.com/Niko1221/Strata/issues/1962"
+  ],
+  "upstream_base": "7695859aa13afb248bdb4d36f9b2e95707db079d",
+  "native_source_commit": "ed5c45574877ccb17f791ccf394bc3103717ee6f",
+  "native_source_tree": "61e6d4fed182b288f6c4eb6c775987504df262da",
+  "source_files_verified": 509,
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "vram_mib": 24564,
+    "driver": "595.99.02",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "cuda": "13.3.73",
+    "cxx": "GCC 15.2.0",
+    "ggml_revision": "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+  },
+  "binary_sha256": {
+    "strata": "a53a06fca21fc1aaf711f058c02fc3c86b224274bab0f66967789ce07e866460",
+    "strata-branch": "9d045e709db093ad66d77bfd958d717f78e3dda26fde3b510f197b41d7e3db8c",
+    "strata-fresh": "d2e6b7152898cda0723e1f310b4a9cab0efa22211bfadd4c40167a8de45788ca",
+    "branch_handles_test": "af6240a5a15d0b6f69aad23b52076493486f5831e3daa7d41772d55b88f91b84",
+    "branch_lifecycle_test": "4595e228a1076b63c6bb2cc26a22c925e2e8c069973e78c4e0b505f6c6d000d3",
+    "branch_pages_test": "a1bdac30846700e3d7ea4d6be572e424cc057ddd34880d4894883a9f5321b616",
+    "branch_pages_stress": "e00cf9d481f8519ba1fe74748a5e983207a3af6c10809b46a29a4630dc70d515",
+    "branch_pages_readonly": "04c64e03844973e20ecaea0843e619132abdd4365f82c7d280ce6e0007339881",
+    "branch_pages_graph": "5ec217c4a9cb1b3018d21dfb44c845676bd3933dd7af49b99d9397bddd1119d8",
+    "branch_session_test": "4bd104eec77a7d0bc1996fc01a6ea35a7bbe9177c11f7f6d2df8468e7f115b01",
+    "branch_audit_test": "ccd929321723ea40d61fb1eead1bcc8681fc056a2f87486b8653e32428c9e8fe",
+    "branch_integrity_test": "b239bd58c25b5acd06b16a73be93c991a1305588cda74bf1ff42c7530f6dbcd0",
+    "branch_digest_host": "997d46f681601f307745a15aff7d7dddaf074906d73301de5b8f065164781fe3",
+    "branch_digest_gpu": "60ac414402b1dcb72032403c0c8ffd11c8482a8114c019e4e3a1175b16ba1f5c"
+  },
+  "model": {
+    "weights": "Qwen3.8-Flash-Next Q8_0",
+    "kv": "FP16",
+    "manifest_sha256": "b1266609ec32d232b982200c35fed90d283f72fb057781d02aa061e5172584d9",
+    "contract_id": "e6dd3015773336aa239030ac93b3b4208dbfef231b7ef6972385818b2e474cad",
+    "measured_file_count": 11,
+    "file_hash_receipts_reused": 11
+  },
+  "execution": {
+    "profile_sha256": "b62135ea60c3581762dc5676c2da9894364cfb1cb73e6ede96e2928aa191eed9",
+    "profile_id": "6cad3e05a2b9bb476e89890f82b2d82a510ba985f7f5d531332083fd6e171db5",
+    "operator": "Verifier.run(T=1); successful recurrent commit; next-token frontier",
+    "capacity": 4096,
+    "numerical_gate_qualified": false,
+    "comparison": "Exact float tuples, no numerical tolerance applied",
+    "oracle": "Separate executable and fresh process per full history; no retained branch-state symbols in oracle",
+    "oracle_branch_state_symbols_absent": true
+  },
+  "gates": {
+    "G0": {
+      "errors": 0,
+      "expected_failures": 0,
+      "failure_ids": [],
+      "failures": 0,
+      "found_tests": 51,
+      "gate": "G0",
+      "required_cases": 0,
+      "skipped": 0,
+      "skipped_ids": [],
+      "status": "PASS",
+      "test_count": 51,
+      "unexpected_successes": 0,
+      "executed_ids": [
+        "test_logical_store.LogicalStoreTests.test_01_root_history",
+        "test_logical_store.LogicalStoreTests.test_02_fork_same_logical_state",
+        "test_logical_store.LogicalStoreTests.test_03_independent_suffixes",
+        "test_logical_store.LogicalStoreTests.test_04_empty_delta_controller_transition",
+        "test_logical_store.LogicalStoreTests.test_05_canonical_content_identity",
+        "test_logical_store.LogicalStoreTests.test_06_mutable_arguments_do_not_modify_saved_state",
+        "test_logical_store.LogicalStoreTests.test_07_snapshot_integrity_reject_tampered_blob",
+        "test_logical_store.LogicalStoreTests.test_08_missing_parent_fails_closed",
+        "test_logical_store.LogicalStoreTests.test_09_invalid_inputs_rejected",
+        "test_logical_store.LogicalStoreTests.test_10_invalid_controller_rejected",
+        "test_logical_store.LogicalStoreTests.test_11_fork_duplicate_fails",
+        "test_logical_store.LogicalStoreTests.test_12_missing_head_fails",
+        "test_logical_store.LogicalStoreTests.test_13_atomic_CAS_updates_one_revision",
+        "test_logical_store.LogicalStoreTests.test_14_successful_retry_is_idempotent",
+        "test_logical_store.LogicalStoreTests.test_15_reuse_operation_id_with_different_payload_rejected",
+        "test_logical_store.LogicalStoreTests.test_16_ABA_fails_with_stale_revision",
+        "test_logical_store.LogicalStoreTests.test_17_cannot_move_between_unrelated_roots",
+        "test_logical_store.LogicalStoreTests.test_18_branch_pointer_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_19_retry_receipt_restart_persists",
+        "test_logical_store.LogicalStoreTests.test_20_crash_before_reference_staging_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_21_crash_after_stage_before_rename_keeps_old_tip",
+        "test_logical_store.LogicalStoreTests.test_22_failure_after_rename_has_retryable_receipt",
+        "test_logical_store.LogicalStoreTests.test_23_evaluation_like_reads_do_not_move_branch",
+        "test_logical_store.LogicalStoreTests.test_24_store_ref_index_rejects_corrupt_json",
+        "test_logical_store.LogicalStoreTests.test_25_invalid_branch_or_operation_names",
+        "test_logical_store.LogicalStoreTests.test_26_history_can_have_multiple_empty_deltas",
+        "test_logical_store.LogicalStoreTests.test_27_copy_on_read_cannot_modify_store",
+        "test_logical_store.LogicalStoreTests.test_28_same_history_different_controller_not_same_snapshot",
+        "test_logical_store.LogicalStoreTests.test_29_racing_writers_exactly_one_wins",
+        "test_logical_store.LogicalStoreTests.test_30_unreferenced_snapshot_survives_branch_rewind",
+        "test_logical_store.LogicalStoreTests.test_31_second_future_after_rewind_stays_independent",
+        "test_logical_store.LogicalStoreTests.test_32_external_mutation_after_fork_does_not_propagate",
+        "test_numerics.NumericalOracleTests.test_close_tie_is_not_mislabelled_large_margin",
+        "test_numerics.NumericalOracleTests.test_corruption_is_detected",
+        "test_numerics.NumericalOracleTests.test_exact_vectors_pass",
+        "test_numerics.NumericalOracleTests.test_invalid_tolerance_rejected",
+        "test_numerics.NumericalOracleTests.test_kl_zero_for_identical_values",
+        "test_numerics.NumericalOracleTests.test_nan_rejected",
+        "test_numerics.NumericalOracleTests.test_nonmatching_shape_rejected",
+        "test_numerics.NumericalOracleTests.test_shift_in_logits_detected_by_elementwise_even_if_softmax_same",
+        "test_numerics.NumericalOracleTests.test_small_numerical_error_passes",
+        "test_numerics.NumericalOracleTests.test_top1_flip_is_detected",
+        "ctt_toy_reference.TimeTravelTests.test_chunking_does_not_reset_random_stream",
+        "ctt_toy_reference.TimeTravelTests.test_eviction_preserves_history_and_rng_position",
+        "ctt_toy_reference.TimeTravelTests.test_feed_associativity",
+        "ctt_toy_reference.TimeTravelTests.test_fresh_input_oracle_matches_each_forced_future",
+        "ctt_toy_reference.TimeTravelTests.test_other_stream_does_not_mutate_parent",
+        "ctt_toy_reference.TimeTravelTests.test_rewind_does_not_delete_old_future",
+        "ctt_toy_reference.TimeTravelTests.test_same_snapshot_repeats_sampled_future",
+        "ctt_toy_reference.TimeTravelTests.test_sibling_scheduling_does_not_change_a",
+        "ctt_toy_reference.TimeTravelTests.test_worked_attention_outputs"
+      ]
+    },
+    "G1": {
+      "status": "BLOCKED",
+      "reason": "Cumulative registered suite not executed on this port"
+    },
+    "G2": {
+      "status": "BLOCKED",
+      "reason": "Cumulative registered suite not executed on this port"
+    },
+    "G3": {
+      "status": "BLOCKED",
+      "required_cases": 16,
+      "executed_cases": 1,
+      "reason": "One exact draft case; full gate and numerical baseline binding incomplete"
+    },
+    "G4": {
+      "status": "BLOCKED",
+      "reason": "Not implemented or executed"
+    },
+    "G5": {
+      "status": "BLOCKED",
+      "reason": "Not implemented or executed"
+    }
+  },
+  "branch_case": {
+    "status": "PASS",
+    "scope": "ticket only; does not certify a cumulative gate",
+    "executed_ids": [
+      "test_immutability.SharedPageTests.test_g3_004_shared_page_never_written"
+    ],
+    "test_count": 1,
+    "failures": [],
+    "errors": [],
+    "skipped": [],
+    "expected_failures": [],
+    "evidence_integrity_errors": [],
+    "started": 1791765222.3164988,
+    "finished": 1791765297.0529046
+  },
+  "measured": {
+    "full_vocabulary_comparisons": 8,
+    "vocabulary_entries": 248320,
+    "max_absolute_logit_error": 0.0,
+    "retained_images": 7,
+    "retained_byte_audits": 28,
+    "hot_appends": 6,
+    "forward_tokens_per_hot_append": 1,
+    "prefix_tokens_recomputed_per_hot_append": 0,
+    "sut_forward_tokens": 24,
+    "oracle_forward_tokens": 84,
+    "first_child_shared_root_allocations": [
+      24,
+      24
+    ],
+    "cow_pages": 216,
+    "copied_bytes": 452984832,
+    "sampled_peak_vmm_bytes": 704643072,
+    "vmm_scope": "Tracked physical page allocations only; excludes model arenas and temporary workspaces",
+    "final_native_counters": {
+      "consumed_tokens": 24,
+      "checkpoint_export_bytes": 944505216,
+      "checkpoint_import_bytes": 2951578800,
+      "contexts_created": 1,
+      "contexts_freed": 1,
+      "lease_acquires": 27,
+      "lease_releases": 27,
+      "frontier_read_bytes": 21852160,
+      "model_bytes_hashed_this_process": 0,
+      "model_file_hash_receipts_reused": 11,
+      "consumed": 9,
+      "forward_tokens": 24,
+      "windows": 24,
+      "allocations": 396,
+      "releases": 336,
+      "live_bytes": 125829120,
+      "cow_pages": 216,
+      "copied_bytes": 452984832,
+      "mappings": 5712,
+      "unmappings": 5652,
+      "address_reservations": 2388,
+      "address_releases": 2316,
+      "vmm_driver_failures": 0,
+      "vmm_out_of_memory_failures": 0,
+      "vmm_last_driver_error": 0,
+      "vmm_last_failed_operation": "",
+      "audit_read_bytes": 4404019200,
+      "integrity_checked_pages": 2004,
+      "integrity_mismatches": 0,
+      "integrity_device_hashed_bytes": 4907335680,
+      "integrity_digest_copy_bytes": 38338560,
+      "integrity_kernel_calls": 2340,
+      "integrity_workspace_allocations": 36,
+      "integrity_workspace_releases": 0,
+      "integrity_workspace_live_bytes": 589824,
+      "binding_copy_bytes": 106967040,
+      "saved_running_bytes": 944505216,
+      "restored_running_bytes": 2951578800,
+      "written_file_bytes": 0,
+      "loaded_file_bytes": 0,
+      "captures": 8,
+      "restores": 25,
+      "handle_allocations": 8,
+      "handle_releases": 8,
+      "handle_live_entries": 0,
+      "handle_live_bytes": 0,
+      "handle_peak_bytes": 320,
+      "handle_issued": 8,
+      "handle_lookup_steps": 183,
+      "snapshot_allocations": 8,
+      "snapshot_releases": 8,
+      "snapshot_live_images": 0,
+      "snapshot_payload_capacity_bytes": 0,
+      "snapshot_peak_payload_capacity_bytes": 952451792,
+      "host_heap_allocated_bytes": 1871142512
+    },
+    "native_counter_phase": "last measurement before native teardown; process exit observed separately",
+    "wall_seconds": 74.79775190353394
+  },
+  "native_support": {
+    "branch_audit_test": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "checks": 387,
+          "formats": 4,
+          "model_forward": false
+        }
+      ],
+      "log_sha256": "5ec9b9f756742ab3f4691349a62c901c3bf004a00e4f2c4ca8878665308d603c"
+    },
+    "branch_handles_test": {
+      "measurements": [
+        {
+          "cycle": 0,
+          "live_entries": 1,
+          "live_bytes": 40,
+          "baseline_bytes": 40
+        },
+        {
+          "cycle": 15,
+          "live_entries": 1,
+          "live_bytes": 40,
+          "baseline_bytes": 40
+        },
+        {
+          "cycle": 255,
+          "live_entries": 1,
+          "live_bytes": 40,
+          "baseline_bytes": 40
+        },
+        {
+          "cycle": 4095,
+          "live_entries": 1,
+          "live_bytes": 40,
+          "baseline_bytes": 40
+        },
+        {
+          "status": "PASS",
+          "checks": 24605,
+          "failures": 0,
+          "cycles": 4096,
+          "allocations": 4098,
+          "releases": 4098,
+          "peak_bytes": 80,
+          "issued": 4098,
+          "live_bytes": 0,
+          "model_forward": false,
+          "gpu_used": false
+        }
+      ],
+      "log_sha256": "ec29ef75ef2dfec68c6b19989ed1cfe3a125c1998fa6ac479200aa376af02a50"
+    },
+    "branch_integrity_test": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "checks": 30,
+          "failures": 0,
+          "granularity": 2097152
+        }
+      ],
+      "log_sha256": "3ae1b671d89e641d3fac794cb06dc7df367cc9d560afb227f171451b5b3ab0de"
+    },
+    "branch_lifecycle_test": {
+      "measurements": [
+        {
+          "format": 0,
+          "cycles": 64,
+          "children": 128,
+          "images_allocated": 129,
+          "images_released": 129,
+          "live_images": 0,
+          "payload_capacity_bytes": 0,
+          "page_allocations": 390,
+          "page_releases": 390,
+          "live_page_bytes": 0,
+          "handle_peak_bytes": 80,
+          "handle_live_bytes": 0
+        },
+        {
+          "format": 1,
+          "cycles": 64,
+          "children": 128,
+          "images_allocated": 129,
+          "images_released": 129,
+          "live_images": 0,
+          "payload_capacity_bytes": 0,
+          "page_allocations": 650,
+          "page_releases": 650,
+          "live_page_bytes": 0,
+          "handle_peak_bytes": 80,
+          "handle_live_bytes": 0
+        },
+        {
+          "format": 2,
+          "cycles": 64,
+          "children": 128,
+          "images_allocated": 129,
+          "images_released": 129,
+          "live_images": 0,
+          "payload_capacity_bytes": 0,
+          "page_allocations": 390,
+          "page_releases": 390,
+          "live_page_bytes": 0,
+          "handle_peak_bytes": 80,
+          "handle_live_bytes": 0
+        },
+        {
+          "format": 3,
+          "cycles": 64,
+          "children": 128,
+          "images_allocated": 129,
+          "images_released": 129,
+          "live_images": 0,
+          "payload_capacity_bytes": 0,
+          "page_allocations": 520,
+          "page_releases": 520,
+          "live_page_bytes": 0,
+          "handle_peak_bytes": 80,
+          "handle_live_bytes": 0
+        },
+        {
+          "status": "PASS",
+          "checks": 14728,
+          "formats": 4,
+          "model_forward": false,
+          "gpu_used": true
+        }
+      ],
+      "log_sha256": "724e36040f66f5456a14bf49003c78476cf3a86f8290e0961ecfde233fefa845"
+    },
+    "branch_pages_graph": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "graph_replays": 8,
+          "cow_pages": 8,
+          "copied_bytes": 16777216,
+          "live_bytes": 0,
+          "failures": 0
+        }
+      ],
+      "log_sha256": "2dca31eeba844a0d951abb66794a08a6a2bbec38514d48ed86f7e0ba324283f8"
+    },
+    "branch_pages_readonly": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "cuda_error": 700,
+          "readonly_write_rejected": true
+        }
+      ],
+      "log_sha256": "55ee6807e74ee0586f4c5c937f279095b51bbe8f099fc533b12a56219af169f8"
+    },
+    "branch_pages_stress": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "workers": 4,
+          "fork_restore_cycles": 64,
+          "cow_pages": 64,
+          "copied_bytes": 134217728,
+          "allocations": 67,
+          "releases": 67,
+          "live_bytes": 0,
+          "failures": 0
+        }
+      ],
+      "log_sha256": "5abc252f64f0e60dcf4df37a7c6c252d84e276f209f79ab11fd97a9d2173a458"
+    },
+    "branch_pages_test": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "granularity": 2097152,
+          "allocations": 6,
+          "releases": 6,
+          "cow_pages": 3,
+          "copied_bytes": 6291456,
+          "live_bytes": 0,
+          "failures": 0
+        }
+      ],
+      "log_sha256": "0bd3ee304ff03af0f1ca1651fd60fccffdc7590eb7086300070068fdd4c9c9b3"
+    },
+    "branch_session_test": {
+      "measurements": [
+        {
+          "status": "PASS",
+          "checks": 434,
+          "formats": 4,
+          "model_forward": false
+        }
+      ],
+      "log_sha256": "ccd86a1da721606410fa8512cdb4420b804e6ee47da0c38487944ab8149c5acc"
+    }
+  },
+  "digest": {
+    "status": "PASS",
+    "tests": 2,
+    "failures": 0,
+    "skips": 0,
+    "executed_ids": [
+      "CudaDigestTests.test_actual_cuda_tiles_match_independent_sha256",
+      "HostDigestTests.test_sha256_known_vectors_and_padding_boundaries"
+    ],
+    "log_sha256": "39bb159d41df92a12a587de0c88c80cfae6dd8c6c19429c21dfcb2beb816f619"
+  },
+  "reference_support": {
+    "demo": "PASS",
+    "mutation_smoke_killed": 4,
+    "calibration_input_tests": 6
+  },
+  "builds": {
+    "CUDA": "PASS: strata, strata-branch, strata-fresh and eleven support targets",
+    "HIP": "NOT_RUN",
+    "SYCL": "NOT_RUN",
+    "Windows": "NOT_RUN"
+  },
+  "resolved_build_failure": {
+    "source_commit": "ee9633569abba68433f5c1797b0048a7f2f3624b",
+    "error": "Two no-MTP cold-snapshot calls lacked nullable draft overloads in upstream main",
+    "fix_commit": "ed5c45574877ccb17f791ccf394bc3103717ee6f",
+    "build_log_sha256": "3fa2cdea3ac9595facd430a6d101a0a2f8d1bb8aa6cfb4c3c56090178713ddbc"
+  },
+  "native_windows_reference_probe": {
+    "status": "FAIL",
+    "reported_tests": 11,
+    "import_errors": 2,
+    "reason": "POSIX fcntl required; demo and mutation smoke also fail at import on native Windows"
+  },
+  "limitations": [
+    "Initial draft only; no G1-G5 gate PASS on the port",
+    "POSIX local API and CUDA backend only",
+    "Host-RAM prefix deduplication and concurrent server/batch-slot integration remain unimplemented",
+    "No image-input compatibility validation",
+    "Normal batched-prefill equivalence not established",
+    "No full crash, power-loss, pressure or all-checkpoints-evicted certification on this port",
+    "Default serving-path parity, HIP and SYCL builds not verified"
+  ],
+  "original_reports": {
+    "port_progress_sha256": "692610bf71290ef785074d1287d51507b1321622f0d761945dc997855a8fb0c4",
+    "ticket_report_sha256": "a6c2c30083dc8cd3e71f12fdd6f890050f20db8ba646007456ba8eb8cb93101e",
+    "G0_report_sha256": "6a4a97bb14d3f3925d5a169ec91ce0ed37f27b5e065673b9d9cdefe384f1ad48",
+    "private_archive_sha256": "7d6d2856d548f5ca6c8bb8fffea9b0eb0095e02af08684e19a7b0038cab027e8"
+  },
+  "artifacts": [
+    {
+      "path": "upstream-data/measurements.jsonl",
+      "sha256": "f60406ddc523124549c35239a01bf185f13cd80d3c5114251b9552b5b4e0500b",
+      "bytes": 742535,
+      "scope": "Unmodified measured trace",
+      "original_sha256": "f60406ddc523124549c35239a01bf185f13cd80d3c5114251b9552b5b4e0500b"
+    },
+    {
+      "path": "upstream-data/native.jsonl",
+      "sha256": "f0d77bb81c18c5985016114562923d0600b1a260d7aeb119cf4eed05eb7f3bdc",
+      "bytes": 1498436,
+      "scope": "Derived trace: only temporary output directories replaced; responses and counters unchanged",
+      "original_sha256": "a58681ffd5e8da9ace956a9f28d5f59cbeb461844feb66413e03e39e56271a85"
+    },
+    {
+      "path": "upstream-data/fresh-forwards.json",
+      "sha256": "70b23087bee80114416e4899de348d8cdaedbf06bb88fa9b22666651b4388624",
+      "bytes": 4388,
+      "scope": "Derived fresh-process trace: private command and temporary paths omitted",
+      "original_sha256": "37d04f2344f366e22ab87ad24f48a72769cc982f8ff4e636f95d07b88cc3794e"
+    },
+    {
+      "path": "upstream-data/source-manifest.json",
+      "sha256": "26d396d4a611674373ef2877f3144651c21f9481e4ad817f0e5fcd7fd86fa9b2",
+      "bytes": 58387,
+      "scope": "Exact source hashes verified before and after execution"
+    }
+  ]
+}

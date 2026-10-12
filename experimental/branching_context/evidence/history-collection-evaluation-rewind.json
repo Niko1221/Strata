@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "status": "CPU_PROCESS_VALIDATION_PASS_GPU_PENDING",
+  "host": "llm-49",
+  "run": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/implementation",
+      "-p",
+      "test_p04_processes.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "seconds": 0.9673425240034703,
+    "test_sha256": "92969de5b7a74ed9557776d47251c5f9568e36ef53961cb0cde547f7ad877c3e",
+    "store_sha256": "23c4488bdc9004f6e3db470413e8da3bac7c43d6b288e6e2e065e4e12b22b8c0",
+    "evaluation_sha256": "50eb565b92de2e5a52e8367d2f142b11d71b15d836cd6fca757c2bd0a7c0f1d8"
+  },
+  "mutant": {
+    "command": [
+      "/usr/bin/python3",
+      "-m",
+      "unittest",
+      "test_p04_processes.CollectionProcessTests.test_collection_during_evaluation_and_after_publication",
+      "-v"
+    ],
+    "exit_code": 1,
+    "mutation": "Remove public evaluate read lease in isolated source copy",
+    "canonical_source_changed": false
+  },
+  "tests": 4,
+  "failures": 0,
+  "skips": 0,
+  "fork_append_races": 8,
+  "rewind_races": 4,
+  "evaluation_schedule": "Actual public evaluate read lease observed before isolated scoring; collection before and after durable report publication",
+  "g0_tests": 51,
+  "reference_mutants_killed": 4,
+  "numerical_max_error": null,
+  "raw_sha256": {
+    "g0.json": "8b3e6f9f68377eb8ec9715e04d1f0b63c997e3418b9b0972068683d62921f8ba",
+    "g0.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "g0.stdout": "023ec83d7238a04bc681ba219577e065cff2775f15cfd1ae366107e9b7ab7c45",
+    "mutant.json": "89951277886d4927f82188ae12986a26b0b95d70343014ba7e4ebcc1e64a5597",
+    "mutant.stderr": "3413939c921156871cbcf8bfebd86e82953176bccbb7a7175ebb4b581fbfe001",
+    "mutant.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.json": "c43a4a928343cfefe633ebde7232e6dfea472b71bf70150a674373e649719f10",
+    "mutations.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mutations.stdout": "64e8a1d32187b95415f5830742aab198fc400dbad44d6214c7003a402c862101",
+    "run.json": "89a2da1ef21b7faf1bb8c2a033f54f5a8130eac328410a15122d1a1969bfccbe",
+    "run.stderr": "dea4661e6a9f8b8ac615a5956f7e6283af838c82849e2376612efb21c1dc603a",
+    "run.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "limitations": [
+    "CPU control-plane validation, no GPU gate qualification.",
+    "Bounded schedules; not exhaustive concurrency or power-loss certification.",
+    "Evaluator synchronization observes the actual Store read lease; evaluator itself runs in bubblewrap.",
+    "Registered G5 real-backend cases remain unexecuted pending frozen numerical profile."
+  ]
+}
