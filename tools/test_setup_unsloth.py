@@ -170,6 +170,8 @@ class Base(unittest.TestCase):
 
         patches = [
             mock.patch.object(setup, "ROOT", self.t),
+            mock.patch.object(setup, "ARM64", False),
+            mock.patch.object(setup, "WIN_ARM64", False),
             mock.patch.object(setup, "GPU_PICK", None),
             mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),

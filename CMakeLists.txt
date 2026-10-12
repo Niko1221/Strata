@@ -1157,12 +1157,27 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
 endif()
 
-add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+  set(STRATA_CPU_ARM64 ON)
+else()
+  set(STRATA_CPU_ARM64 OFF)
+endif()
+
+if(STRATA_CPU_ARM64)
+  add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert_arm64.cpp src/kernels/cpu/pool.cpp
+              src/kernels/cpu/expert_layout.cpp)
+  target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_CPU_ARM64=1)
+else()
+  add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
+              src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
+endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
-if(MSVC)
+if(STRATA_CPU_ARM64)
+  # Native/IQ experts fall through to ggml-cpu's ARM kernels.  The legacy Q2_0 entry points are explicit
+  # unsupported stubs in expert_arm64.cpp and setup does not offer that model on ARM64.
+elseif(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
@@ -1176,12 +1191,15 @@ endif()
 # target("avxvnni") - never -mavxvnni on a file, which would let the compiler use it anywhere - and MSVC takes the
 # intrinsics under /arch:AVX2.  A compiler without them (GCC < 11, Clang < 12) builds the files without the copies.
 include(CheckCXXSourceCompiles)
-if(MSVC)
+if(STRATA_CPU_ARM64)
+  set(STRATA_HAVE_AVXVNNI_INTRINSICS OFF)
+elseif(MSVC)
   set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
 else()
   set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
 endif()
-check_cxx_source_compiles([=[
+if(NOT STRATA_CPU_ARM64)
+  check_cxx_source_compiles([=[
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avxvnni")))
@@ -1192,13 +1210,16 @@ int main() {
     return _mm256_extract_epi32(dots(_mm256_set1_epi32(x), _mm256_set1_epi32(x)), 0) == 0;
 }
 ]=] STRATA_HAVE_AVXVNNI_INTRINSICS)
+endif()
 unset(CMAKE_REQUIRED_FLAGS)
 if(STRATA_HAVE_AVXVNNI_INTRINSICS)
   set(_strata_avxvnni STRATA_AVXVNNI=1)
 else()
   set(_strata_avxvnni STRATA_AVXVNNI=0)
 endif()
-set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+if(NOT STRATA_CPU_ARM64)
+  set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
@@ -1264,11 +1285,17 @@ if(STRATA_NATIVE_EXPERTS)
   endif()
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
-  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp)
+  if(STRATA_CPU_ARM64)
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)
+  else()
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
+                                             src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
+                                             src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+                                             src/kernels/cpu/iq_avx1.cpp)
+  endif()
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
-  if(MSVC)
+  if(STRATA_CPU_ARM64)
+  elseif(MSVC)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
     set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
@@ -1295,7 +1322,9 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
                                 "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
   endif()
-  set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+  if(NOT STRATA_CPU_ARM64)
+    set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+  endif()
   if(STRATA_ISA_FLOOR STREQUAL "avx")
     target_compile_definitions(strata_kernels_cpu PRIVATE STRATA_ISA_FLOOR_AVX=1)
   elseif(STRATA_ISA_FLOOR STREQUAL "none")
@@ -1310,38 +1339,42 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME dequant_q5_1_test COMMAND dequant_q5_1_test)
   endif()
   # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
-  add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
-  target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
     add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
-    add_test(NAME router_dot_parity COMMAND router_dot_parity)
-    add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
   endif()
-  # the AVX-2 expert kernels' variants (iq_avx2.cpp, q2_avx2.cpp) bit for bit against each other at 1..8 tokens and
-  # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
-  add_executable(iq_avx2_parity src/kernels/cpu/iq_avx2_parity.cpp)
-  target_link_libraries(iq_avx2_parity PRIVATE strata_kernels_cpu)
-  if(STRATA_BUILD_TESTS)
-    add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
-    add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
-  endif()
-  # the older CPUs' AVX1 expert rows (iq_avx1.cpp) against ggml-cpu's dots and against their own one-token
-  # rows at every width; --bench: ms per expert, the weights streamed from DRAM.  Runs on any AVX CPU:
-  # on an AVX2 machine it checks the older-CPU path as an AVX-only machine would run it.
-  add_executable(iq_avx1_parity src/kernels/cpu/iq_avx1_parity.cpp)
-  target_link_libraries(iq_avx1_parity PRIVATE strata_kernels_cpu)
-  if(STRATA_BUILD_TESTS)
-    add_test(NAME iq_avx1_parity COMMAND iq_avx1_parity)
-  endif()
-  # the AVX-2 Q8_K activation quantizer against ggml's, byte for byte (--bench: its time)
-  add_executable(q8k_quant_parity src/kernels/cpu/q8k_quant_parity.cpp)
-  target_link_libraries(q8k_quant_parity PRIVATE strata_kernels_cpu)
-  if(STRATA_BUILD_TESTS)
-    add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
-    add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
+    target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME router_dot_parity COMMAND router_dot_parity)
+      add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
+    endif()
+    # the AVX-2 expert kernels' variants (iq_avx2.cpp, q2_avx2.cpp) bit for bit against each other at 1..8 tokens and
+    # against ggml-cpu's dot, on random blocks; --bench: ms per expert on one thread, the weights streamed from DRAM
+    add_executable(iq_avx2_parity src/kernels/cpu/iq_avx2_parity.cpp)
+    target_link_libraries(iq_avx2_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
+      add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
+    endif()
+    # the older CPUs' AVX1 expert rows (iq_avx1.cpp) against ggml-cpu's dots and against their own one-token
+    # rows at every width; --bench: ms per expert, the weights streamed from DRAM.  Runs on any AVX CPU:
+    # on an AVX2 machine it checks the older-CPU path as an AVX-only machine would run it.
+    add_executable(iq_avx1_parity src/kernels/cpu/iq_avx1_parity.cpp)
+    target_link_libraries(iq_avx1_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME iq_avx1_parity COMMAND iq_avx1_parity)
+    endif()
+    # the AVX-2 Q8_K activation quantizer against ggml's, byte for byte (--bench: its time)
+    add_executable(q8k_quant_parity src/kernels/cpu/q8k_quant_parity.cpp)
+    target_link_libraries(q8k_quant_parity PRIVATE strata_kernels_cpu)
+    if(STRATA_BUILD_TESTS)
+      add_test(NAME q8k_quant_parity COMMAND q8k_quant_parity)
+      add_test(NAME q8k_quant_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:q8k_quant_parity>)
+    endif()
   endif()
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
   # #296: OrcaRouter Q4_K_S's Q5_0 experts (Q4_K and Q5_1 come with STRATA_MMQ_KQUANTS on CUDA, S5's branch)
@@ -1556,10 +1589,12 @@ if(STRATA_BUILD_TESTS)
     target_link_libraries(dequant_bf16_test PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
   endif()
 
-  add_executable(expert_multi_test src/kernels/cpu/expert_multi_test.cpp)
-  target_link_libraries(expert_multi_test PRIVATE strata_kernels_cpu)
-  add_test(NAME expert_multi_test COMMAND expert_multi_test)
-  set_tests_properties(expert_multi_test PROPERTIES SKIP_RETURN_CODE 77)   # no AVX-512: skipped
+  if(NOT STRATA_CPU_ARM64)
+    add_executable(expert_multi_test src/kernels/cpu/expert_multi_test.cpp)
+    target_link_libraries(expert_multi_test PRIVATE strata_kernels_cpu)
+    add_test(NAME expert_multi_test COMMAND expert_multi_test)
+    set_tests_properties(expert_multi_test PROPERTIES SKIP_RETURN_CODE 77)   # no AVX-512: skipped
+  endif()
 
   # PR #706: the opt-in AVX-2 Q2_0 bit-plane kernel (STRATA_Q2_BITPLANE=1) against the legacy one, bitwise alone/window
   if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|x64|X86")

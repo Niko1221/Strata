@@ -57,7 +57,7 @@ class FloorTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": "bogus"}):
             self.assertEqual(setup.cpu_floor(True), "")
 
-    @unittest.skipUnless(os.name == "nt", "the CPUID stub runs on Windows")
+    @unittest.skipUnless(os.name == "nt" and not setup.ARM64, "the x64 CPUID stub runs on Windows x86-64")
     def test_this_pc_probe(self):
         self.assertIn(setup._cpuid_floor(), ("avx", "sse4.2"))   # any x86-64 PC that runs the tests
 

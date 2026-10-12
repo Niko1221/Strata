@@ -8,7 +8,9 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#if !defined(STRATA_CPU_ARM64)
 #include <immintrin.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +29,18 @@
 namespace strata::kernels::cpu {
 
 namespace {
+inline void cpu_pause() {
+#if !defined(STRATA_CPU_ARM64)
+    _mm_pause();
+#elif defined(_WIN32)
+    YieldProcessor();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
+#else
+    std::this_thread::yield();
+#endif
+}
+
 constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
     return ((uint64_t) epoch << 32) | ((uint64_t) n << 16) | (uint64_t) i;
 }
@@ -511,7 +525,7 @@ void ExpertPool::worker(int id) {
         uint32_t spins = 0;
         while (epoch_.load(std::memory_order_acquire) == seen) {
             if (stop_.load(std::memory_order_relaxed)) return;
-            _mm_pause();
+            cpu_pause();
             if ((++spins & 1023u) != 0) continue;
             if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
@@ -569,7 +583,7 @@ void ExpertPool::wait_parked(const char* what) {
     uint32_t spins = 0;
     std::chrono::steady_clock::time_point t0{};
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) {
-        _mm_pause();
+        cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u) t0 = now;
@@ -592,7 +606,7 @@ void ExpertPool::wait_done(int n) {
     for (;;) {
         const uint32_t d = done_.load(std::memory_order_acquire);
         if (d >= (uint32_t) n) return;                                // `>=`: never a wait that an overshoot outlives
-        _mm_pause();
+        cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock

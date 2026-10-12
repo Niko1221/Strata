@@ -540,6 +540,7 @@ class CudaVision(unittest.TestCase):
                     (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
 
                 with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                        mock.patch.object(setup, "WIN_ARM64", False), \
                         mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
                         mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
                         mock.patch.object(setup, "source_version", lambda: "test"):
@@ -602,6 +603,7 @@ class HostCompilers(unittest.TestCase):
 
             env = {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": ""}
             with mock.patch.dict(os.environ, env), mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "WIN_ARM64", False), \
                     mock.patch.object(setup, "cmake_build", cmake_build), \
                     mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "new"), \
                     mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
