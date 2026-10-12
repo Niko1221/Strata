@@ -4891,6 +4891,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    # A calibration targets an installed config. Setup/model selection arguments otherwise bypass it silently.
+    if a.backend != "sycl" and a.calibrate and (a.setup or a.model or a.family or a.check):
+        ap.error("--calibrate cannot be combined with --setup, --model, --family, or --check; "
+                 "run --calibrate alone to tune an installed model")
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
