@@ -9840,6 +9840,7 @@ int main(int argc, char** argv) {
         double bt_wait0 = 0, bt_pool0 = 0;
         int64_t bt_miss0 = 0, bt_hits0 = 0, bt_pcie0 = 0;
         int64_t bt_windows = 0, bt_rows = 0, bt_tokens = 0, bt_accepted = 0;   // bt_accepted: --batch-mtp proposals taken
+        int64_t pipe_rows = 0;   // the pipelined groups' rows, never reset (bt_rows restarts when the slots go idle)
         // per stage (0 = CUDA0's verifier): the GPU-reach wait and pool time when the timed windows began; and the routed
         // (token, expert) entries the CPU and the PCIe share had served by then (bt_hits0 holds the VRAM entries)
         std::vector<double> bt_stage_wait0, bt_stage_pool0;
@@ -10231,6 +10232,7 @@ int main(int argc, char** argv) {
                     std::printf("BT %d %d\n", gi * GS + t, (int) y);
                     ++sl.produced;
                     ++bt_rows;
+                    ++pipe_rows;
                     const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
                     const char* fin = eos ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
                                     : sl.p + 2 > o.max_context ? "length" : nullptr;
@@ -11633,11 +11635,11 @@ int main(int argc, char** argv) {
                         pr_have_prev ? std::chrono::duration<double, std::milli>(Clock::now() - pr_prev_end).count()
                                      : -1.0;
                     if (strata::program::piped_read_lead_in(true, batch_on(), since, lead)) {
-                        const int64_t rows0 = bt_rows;
+                        const int64_t rows0 = pipe_rows;
                         const auto tl = Clock::now();
                         if (!piped_decode(lead, e)) return false;
                         std::fprintf(stderr, "strata batch: a read right after a read: the slots decoded %lld rows in "
-                                             "%.0f ms first\n", (long long) std::max<int64_t>(0, bt_rows - rows0),
+                                             "%.0f ms first\n", (long long) (pipe_rows - rows0),
                                      std::chrono::duration<double, std::milli>(Clock::now() - tl).count());
                     }
                 }
@@ -11711,13 +11713,12 @@ int main(int argc, char** argv) {
                         }
                         const double budget =
                             strata::program::piped_decode_budget_ms(piece_ms, decode_share, pr_cap, pr_floor);
-                        const int64_t rows0 = bt_rows;
+                        const int64_t rows0 = pipe_rows;
                         const auto td = Clock::now();
                         if (!piped_decode(budget, e)) return false;
                         std::fprintf(stderr, "strata batch: piped read %lld tokens in %.0f ms (to %lld of %lld), "
                                              "then the slots decoded %lld rows in %.0f ms\n", (long long) piece_tokens,
-                                     piece_ms, (long long) q, (long long) n,
-                                     (long long) std::max<int64_t>(0, bt_rows - rows0),
+                                     piece_ms, (long long) q, (long long) n, (long long) (pipe_rows - rows0),
                                      std::chrono::duration<double, std::milli>(Clock::now() - td).count());
                         continue;
                     }
