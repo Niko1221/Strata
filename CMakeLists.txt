@@ -1387,6 +1387,15 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
   endif()
+  # one token's gate/up rows on an AVX-2 CPU without AVX-512 (iq256_gu_single_exact and native_gu_rows at nt = 1)
+  # bit for bit against ggml-cpu's AVX2 vec_dot; exit 77 (skipped) on other CPUs or builds
+  add_executable(iq_single_parity src/kernels/cpu/iq_single_parity.cpp)
+  target_link_libraries(iq_single_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME iq_single_parity COMMAND iq_single_parity)
+    add_test(NAME iq_single_parity_off COMMAND ${CMAKE_COMMAND} -E env STRATA_CPU_SINGLE_EXACT=0 $<TARGET_FILE:iq_single_parity>)
+    set_tests_properties(iq_single_parity iq_single_parity_off PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   # the older CPUs' AVX1 expert rows (iq_avx1.cpp) against ggml-cpu's dots and against their own one-token
   # rows at every width; --bench: ms per expert, the weights streamed from DRAM.  Runs on any AVX CPU:
   # on an AVX2 machine it checks the older-CPU path as an AVX-only machine would run it.

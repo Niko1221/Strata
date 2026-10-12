@@ -44,4 +44,11 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                           float* const* out, int r0, int r1);
 
+/// One token, bit for bit ggml-cpu's AVX2 single-token vec_dot (iq_single_parity): the same rows as iq256_gu_rows
+/// at nt = 1, but with ggml's scale placement and horizontal reduction instead of theirs.
+/// Only where ggml-cpu was itself built for AVX2 and the CPU has no AVX-512 (native_expert.cpp checks both).
+/// Gate/up for IQ3_XXS (18), IQ3_S (21) and IQ2_S (22) only, act one block_q8_K token; another type writes nothing.
+void iq256_gu_single_exact(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act,
+                           float* ff, int r0, int r1);
+
 }  // namespace strata::kernels::cpu

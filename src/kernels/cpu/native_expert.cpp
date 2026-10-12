@@ -107,6 +107,20 @@ bool q8k_avx1(int type) {
     static const bool on = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_Q8K_AVX1") == nullptr;
     return on && type == (int) GGML_TYPE_Q8_K;
 }
+// One token on an AVX-2 CPU without AVX-512 runs ggml-cpu's vec_dot below (the #152 rule).  For IQ3_XXS, IQ3_S and
+// IQ2_S gate/up rows, iq256_gu_single_exact computes that dot's bits with the AVX-2 rows' decode (iq_single_parity:
+// every row, bit for bit), so the output does not change, only the time.  Only where ggml-cpu itself was built for
+// AVX2 and not AVX-512 (ggml_cpu_has_*: a STRATA_ISA_FLOOR build's ggml-cpu runs its AVX1/SSE dots, which round
+// differently) and the CPU has no AVX-512.  Measured on a Ryzen 7 3800X (Zen 2) only;
+// STRATA_CPU_SINGLE_EXACT=0 keeps ggml's vec_dot.
+bool single_exact() {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_CPU_SINGLE_EXACT");
+        return (e == nullptr || std::atoi(e) != 0) && cpu_avx2_ok() && !cpu_avx512_ok() && ggml_cpu_has_avx2() &&
+               !ggml_cpu_has_avx512();
+    }();
+    return on;
+}
 }  // namespace
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
@@ -189,6 +203,11 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     }
     if (avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
         iq128_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
+    // ggml's own bits for a lone token, faster (single_exact above); STRATA_NO_IQ256 keeps ggml's dot as before
+    if (nt == 1 && avx2 && single_exact() && (f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22)) {
+        iq256_gu_single_exact(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
     const int n = (int) f.n_embd;
