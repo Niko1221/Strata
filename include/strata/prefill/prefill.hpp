@@ -179,6 +179,9 @@ public:
     /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
     /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
     bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
+    /// SYCL port, --expert-parallel-device: the experts `cache` holds on card `device` are computed there for every
+    /// prompt chunk instead of being streamed to this card.
+    bool set_ep_peer(int device, core::ExpertCache* cache, std::string& err);
 
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its

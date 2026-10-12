@@ -7265,6 +7265,16 @@ int main(int argc, char **argv) try {
                 err.clear();
             }
         }
+        // expert parallel: without this the prompt path reads card 1's experts from the GGUF for every chunk.
+        // STRATA_EP_PREFILL=0 keeps it that way (the A/B arm).
+        if (ep_cache != nullptr && o.ep_device >= 0 &&
+            [] { const char* v = std::getenv("STRATA_EP_PREFILL"); return v == nullptr || std::atoi(v) != 0; }()) {
+            if (!sp.set_ep_peer(o.ep_device, ep_cache, err)) {
+                std::fprintf(stderr, "strata serve: %s - card %d's experts are streamed for prompts\n", err.c_str(),
+                             o.ep_device);
+                err.clear();
+            }
+        }
         // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
         // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
         if (multi_gpu && !stages.empty()) {
