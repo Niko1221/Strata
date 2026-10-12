@@ -395,6 +395,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME qsa_topk_active_parity COMMAND qsa_topk_active_parity)
     set_tests_properties(qsa_topk_active_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
+  # QSAROWS (docs/QSAROWS.md): what the T rows of a verification window cost in a QSA layer's decode kernels at a long
+  # context (block scores, top-k, attention over each row's selection, indexer append), row by row; GPU, synthetic, no
+  # model.  Not in the default build: `cmake --build <dir> --target qsa_rows_bench`.
+  if(STRATA_ENABLE_CUDA)
+    add_executable(qsa_rows_bench EXCLUDE_FROM_ALL src/kernels/qsa_rows_bench.cpp)
+    target_include_directories(qsa_rows_bench PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_rows_bench PRIVATE strata_kernels CUDA::cudart)
+  endif()
   # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
   # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
   # 262144-cell capacity (the top-k dispatch follows the capacity) and exits non-zero on a failed gate

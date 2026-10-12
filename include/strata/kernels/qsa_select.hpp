@@ -29,6 +29,13 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
                       int64_t active_blocks = -1);   ///< perf-review C-1: > 0 launches only this many blocks (the
                                                      ///< batch's largest n_bid + 1; not for a captured graph)
 
+/// QSAROWS (docs/QSAROWS.md): block_scores_multi_kernel's scores for a call of up to 4 queries, bit for bit, with the
+/// queries in registers and the four heads reduce-scattered (six shuffles instead of twenty a block and query).
+/// qsa_block_scores takes it with STRATA_QSA_ROWS=1; false (nothing launched) above 4 queries or on another geometry.
+/// For qsa_rows_bench's parity and timing it is callable on its own.
+bool qsa_block_scores_rows(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
+                           int64_t max_blocks, const QsaShapes& s, float* scores, void* stream);
+
 /// The same scores on tensor cores (3xTF32, FP32-level accuracy but another summation order: not bitwise; the tail
 /// block n_bid is the warp kernel's arithmetic). For the prompt path; false (nothing launched) on another geometry.
 /// On AMD it is the gfx12 (RDNA4) WMMA kernel (a three-way bf16 split, six products); false on any other AMD target.
