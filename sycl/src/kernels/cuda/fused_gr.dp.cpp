@@ -3,6 +3,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <sycl/sycl.hpp>
+#include <utility>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
@@ -250,6 +252,19 @@ struct GrMulti {
     float* part2 = nullptr;    ///< SYCL port: [GRS_SLICES][kFusedGrMaxT][LR + HC] slice partials of the sliced kernel
 };
 
+// SYCL port (Arc): a RUNTIME index into the by-value kernel argument (m.a[k]) makes IGC copy the whole GrMulti
+// (~1.2 KB) into every work-item's private scratch - unitrace: ~40 KB private per SIMD32 thread on the A770 for
+// gr_up_multi / gr_down_reduce / gr_norm_split. GR_PICK selects ONE field with compile-time indices only (a chain
+// of selects over uniform kernel arguments), so nothing is copied. Addressing only: values and orders unchanged.
+template <class F, std::size_t... J>
+__dpct_inline__ auto gr_pick_impl(const GrMulti& m, int k, F f, std::index_sequence<J...>) {
+    auto v = f(m.a[0]);
+    ((v = (k == (int) J) ? f(m.a[J]) : v), ...);
+    return v;
+}
+#define GR_PICK(m, k, field) \
+    gr_pick_impl((m), (k), [](const FusedGrArgs& x_) { return x_.field; }, std::make_index_sequence<kFusedGrMaxT>{})
+
 // Step 1 of `gr_down_kernel`, one block per token, same threads and reduction order: rs[t] and xn[t] to global.
 /*
 DPCT1110: The total declared local variable size in device function
@@ -331,10 +346,15 @@ __dpct_inline__ void gr_norm_split_port_kernel(GrMulti m) {
     auto& part = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS]>(item.get_group());
     auto& s_rs = *sycl::ext::oneapi::group_local_memory_for_overwrite<float>(item.get_group());
     const int tok = (int) item.get_group(2) / HC, c = (int) item.get_group(2) % HC;
-    const FusedGrArgs& a = m.a[tok];
+    const float* const aR = GR_PICK(m, tok, R);
+    const bool aapply = GR_PICK(m, tok, apply);
+    const float* const abo = GR_PICK(m, tok, bo_prev);
+    const float* const awn = GR_PICK(m, tok, w_norm);
+    const float aeps = GR_PICK(m, tok, eps);
+    float* const ars = GR_PICK(m, tok, rs);
     float* xn = m.xn + (size_t) tok * D;
     const int t = (int) item.get_local_id(2), lane = t & 31, warp = t >> 5;
-    const float gw = a.apply ? 2.0f * sigmoidf_(a.inj_prev[c] / (float) HC) : 0.0f;
+    const float gw = aapply ? 2.0f * sigmoidf_(GR_PICK(m, tok, inj_prev)[c] / (float) HC) : 0.0f;
     constexpr int MAXK = (N + THREADS * 4 - 1) / (THREADS * 4) + 1;   // 3: float4s of one stream per thread
     sycl::float4 keep[MAXK];
     int kept = 0;
@@ -342,15 +362,15 @@ __dpct_inline__ void gr_norm_split_port_kernel(GrMulti m) {
     for (int i = t * 4; i < D; i += THREADS * 4) {
         if (i / N != c) continue;
         const int d = i - c * N;
-        sycl::float4 r = *reinterpret_cast<const sycl::float4*>(a.R + i);
-        if (a.apply) {
-            const sycl::float4 b = *reinterpret_cast<const sycl::float4*>(a.bo_prev + d);
+        sycl::float4 r = *reinterpret_cast<const sycl::float4*>(aR + i);
+        if (aapply) {
+            const sycl::float4 b = *reinterpret_cast<const sycl::float4*>(abo + d);
             r.x() = sycl::fma((float) (b.x()), gw, r.x());
             r.y() = sycl::fma((float) (b.y()), gw, r.y());
             r.z() = sycl::fma((float) (b.z()), gw, r.z());
             r.w() = sycl::fma((float) (b.w()), gw, r.w());
         }
-        const sycl::float4 g = *reinterpret_cast<const sycl::float4*>(a.w_norm + i);
+        const sycl::float4 g = *reinterpret_cast<const sycl::float4*>(awn + i);
         ss += r.x() * r.x() + r.y() * r.y() + r.z() * r.z() + r.w() * r.w();
         if (kept < MAXK) keep[kept++] = sycl::float4(r.x() * g.x(), r.y() * g.y(), r.z() * g.z(), r.w() * g.w());
     }
@@ -361,8 +381,8 @@ __dpct_inline__ void gr_norm_split_port_kernel(GrMulti m) {
         float sum = 0.0f;
 #pragma unroll
         for (int w = 0; w < WARPS; ++w) sum += part[w];
-        s_rs = sycl::rsqrt(sum / (float) N + a.eps);
-        a.rs[c] = s_rs;
+        s_rs = sycl::rsqrt(sum / (float) N + aeps);
+        ars[c] = s_rs;
     }
     item.barrier(sycl::access::fence_space::local_space);
     const float rs = s_rs;
@@ -577,7 +597,19 @@ __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     float x = 0.0f;
     for (int sl = 0; sl < GRS_SLICES; ++sl) x += m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r];
     if (r < LR) m.part[(size_t) k * LR + r] = x;   // split 0
-    else m.a[k].inject_out[r - LR] = x;
+    else GR_PICK(m, k, inject_out)[r - LR] = x;
+}
+// Large-GRF mode (256 registers per thread instead of 128) for the sliced down kernel and the multi-token up kernel.
+// On the A770 the up kernel spills ~3.4 KB per thread at 128 (unitrace). Large GRF halves the threads an Xe core keeps
+// resident, so it is the default on Arc A-series (Alchemist) only, where it was measured; Battlemage and anything else
+// keep the compiler's default GRF and the same kernels as before. STRATA_GR_LARGE_GRF=1 forces it on, =0 off.
+bool gr_large_grf(sycl::queue* q) {
+    static const bool v = [q] {
+        const char* e = std::getenv("STRATA_GR_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
 }
 bool gr_down_sliced() {   // default (gr_bench: GR read 108.6 -> 76.5 us at 6 tokens); STRATA_GR_DOWN_SLICED=0: direct
     static const bool v = std::getenv("STRATA_GR_DOWN_SLICED") == nullptr || std::atoi(std::getenv("STRATA_GR_DOWN_SLICED")) != 0;
@@ -629,7 +661,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         x /= (float) HC;
         const float v = x / (1.0f + sycl::native::exp(-x));
         lo[k][r] = v;
-        m.a[k].lo[r] = v;
+        GR_PICK(m, k, lo)[r] = v;
     }
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
@@ -637,6 +669,15 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
+    // this lane's token (lane < T), picked once - not per row
+    const int pk = lane < T ? lane : 0;
+    const float* const pR = GR_PICK(m, pk, R);
+    const float* const pWn = GR_PICK(m, pk, w_norm);
+    const float* const pRs = GR_PICK(m, pk, rs);
+    const bool pApply = GR_PICK(m, pk, apply);
+    const float* const pBo = GR_PICK(m, pk, bo_prev);
+    const float* const pIp = GR_PICK(m, pk, inj_prev);
+    float* const pRout = GR_PICK(m, pk, R_out);
     for (int r = warp; r < HC * UPM_COLS; r += WARPS) {
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const sycl::uint4 *w4 =
@@ -658,12 +699,11 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f;
         bool apply = false;
         if (lane < T) {
-            const FusedGrArgs& a = m.a[lane];
-            rv = a.R[i];
-            wn = a.w_norm[i];
-            rsc = a.rs[c];
-            apply = a.apply;
-            if (apply) { bo = a.bo_prev[d0 + dd]; ip = a.inj_prev[c]; }
+            rv = pR[i];
+            wn = pWn[i];
+            rsc = pRs[c];
+            apply = pApply;
+            if (apply) { bo = pBo[d0 + dd]; ip = pIp[c]; }
         }
         float mine = 0.0f;
 #pragma unroll
@@ -677,7 +717,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         if (lane < T) {
             if (apply) {
                 rv = sycl::fma(bo, 2.0f * sigmoidf_(ip / (float)HC), rv);
-                m.a[lane].R_out[i] = rv;
+                pRout[i] = rv;
             }
             const float x = rv * wn * rsc;
             g[lane][c][dd] = x * sigmoidf_(mine);
@@ -694,7 +734,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         float s = 0.0f;
 #pragma unroll
         for (int c = 0; c < HC; ++c) s += g[k][c][col];
-        m.a[k].mixed[d0 + col] = s / (float) HC;
+        GR_PICK(m, k, mixed)[d0 + col] = s / (float) HC;
     }
 }
 
@@ -1793,13 +1833,21 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     if (gr_down_sliced()) {
         m.part2 = slice_partials(st);
         m.nsplit = 1;
+        const bool big = gr_large_grf(st);
         st->submit([&](sycl::handler& cgh) {
             sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
-            cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_k>>(
-                sycl::nd_range<3>(sycl::range(1, 1, GRS_SLICES) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
-                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
-                    gr_down_sliced_kernel(m, tl.get_multi_ptr<sycl::access::decorated::no>().get());
-                });
+            const sycl::nd_range<3> nr(sycl::range(1, 1, GRS_SLICES) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+            if (big)
+                cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_k_grf256>>(
+                    nr, sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_sliced_kernel(m, tl.get_multi_ptr<sycl::access::decorated::no>().get());
+                    });
+            else
+                cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_k>>(
+                    nr, [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_sliced_kernel(m, tl.get_multi_ptr<sycl::access::decorated::no>().get());
+                    });
         });
         const unsigned nred = unsigned((n_tok * GRS_ROWS + 127) / 128);
         st->parallel_for<dpct_kernel_name<class gr_down_reduce_k>>(
@@ -1860,7 +1908,14 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, stream);
-    {
+    if (gr_large_grf(st)) {
+        // Arc A-series: large-GRF mode (256 regs/thread) - at 128 this kernel spills ~3.4 KB/thread on the A770 (unitrace)
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_kernel_grf256>>(
+            sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+            sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
+                                                        sycl::ext::intel::experimental::grf_size<256>},
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel(m); });
+    } else {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
