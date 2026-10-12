@@ -21,6 +21,33 @@ struct PeerPlacement {
     uint64_t primary_bytes = 0, peer_bytes = 0;
 };
 
+inline int64_t peer_primary_writeback_give(int64_t live_free, int64_t held_back, int64_t cache_bytes,
+                                          int& zero_reads) {
+    constexpr int64_t margin = 64ll << 20;
+    if (live_free >= held_back - margin) return 0;
+    int64_t give = held_back - live_free + margin;
+    if (live_free < (16ll << 20))
+        give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : cache_bytes / 4);
+    return give;
+}
+
+// Allocation retries keep a prefix, so the slot sizes and ownership must be
+// trimmed together. The peer fill can subsequently backfill these misses.
+inline void trim_peer_primary(PeerPlacement& plan, const std::vector<uint64_t>& layer_bytes,
+                              uint64_t keep_bytes) {
+    uint64_t used = 0;
+    size_t keep = 0;
+    while (keep < plan.primary.size()) {
+        const uint64_t b = (layer_bytes[(size_t) plan.primary[keep].first] + 255) / 256 * 256;
+        if (b > keep_bytes - used) break;
+        used += b;
+        ++keep;
+    }
+    plan.missed.insert(plan.missed.end(), plan.primary.begin() + keep, plan.primary.end());
+    plan.primary.resize(keep);
+    plan.primary_bytes = used;
+}
+
 // STRP v1 records rank, not counts. Reciprocal square-root rank is a load proxy,
 // not a measured frequency. Byte feasibility always takes precedence over it.
 inline PeerPlacement plan_peer_placement(const std::vector<PeerPlacement::Pair>& ranked,

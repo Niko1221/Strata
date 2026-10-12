@@ -96,6 +96,48 @@ int main() {
     for (size_t r = 0; r < 100; ++r) on_peer += unequal_peer.count(hot[r]);
     check(on_peer >= 40 && on_peer <= 60, "unequal capacities still balance the hottest ranks");
 
+    // Contributor's counts: a full peer cannot absorb primary slots lost to a
+    // live-free correction. Do not keep reporting the original 760 misses.
+    const uint64_t blob = 1748480;
+    const std::vector<uint64_t> uniform(48, blob - 1);
+    auto trimmed = plan_peer_placement(hot, uniform, 512, 10230 * blob, 13586 * blob);
+    check(trimmed.primary.size() == 10230 && trimmed.peer.size() == 13586 && trimmed.missed.size() == 760,
+          "initial planned ownership uses exactly the intended slot capacities");
+    const auto original_primary = trimmed.primary;
+    strata::core::trim_peer_primary(trimmed, uniform, 9614 * blob + blob - 256);
+    invariant(trimmed, uniform, 512, 9614 * blob + blob - 256, 13586 * blob);
+    check(trimmed.primary.size() == 9614 && trimmed.peer.size() == 13586 && trimmed.missed.size() == 1376,
+          "aligned allocation correction moves precisely 616 primary pairs into misses");
+    check(trimmed.primary == std::vector<Pair>(original_primary.begin(), original_primary.begin() + 9614),
+          "allocation retry retains admission order and sized-slot ownership");
+    strata::core::trim_peer_primary(trimmed, uniform, 9614 * blob);
+    check(trimmed.primary.size() == 9614 && trimmed.missed.size() == 1376,
+          "repeated correction does not duplicate dropped pairs");
+    strata::core::trim_peer_primary(trimmed, uniform, 0);
+    invariant(trimmed, uniform, 512, 0, 13586 * blob);
+    check(trimmed.primary.empty() && trimmed.missed.size() == 10990, "zero capacity removes every primary slot");
+    auto mixed = plan_peer_placement({}, {257, 769}, 2, 3072, 0);
+    strata::core::trim_peer_primary(mixed, {257, 769}, 1535);
+    invariant(mixed, {257, 769}, 2, 1535, 0);
+    check(mixed.primary.size() == 1 && mixed.primary_bytes == 512,
+          "heterogeneous allocation prefix cannot retain a partially fitting aligned slot");
+    using strata::core::peer_primary_writeback_give;
+    constexpr int64_t mib = 1ll << 20;
+    int zero_reads = 0;
+    const int64_t held = (700 + 184 + 256 + 128) * mib;
+    check(peer_primary_writeback_give(held, held, 16ll << 30, zero_reads) == 0,
+          "live free already includes the reserve; do not subtract it a second time");
+    check(peer_primary_writeback_give(held - 64 * mib, held, 16ll << 30, zero_reads) == 0,
+          "writeback retains the existing 64 MiB tolerance");
+    check(peer_primary_writeback_give(700 * mib, held, 16ll << 30, zero_reads) == (184 + 256 + 128 + 64) * mib,
+          "post-write check preserves draft, owned prefill and pipeline budgets, not just the bare reserve");
+    check(peer_primary_writeback_give(100 * mib, 700 * mib, 16ll << 30, zero_reads) == 664 * mib,
+          "live-free shortage gives back only the deficit plus the allocator margin");
+    check(peer_primary_writeback_give(0, 700 * mib, 16ll << 30, zero_reads) == 1024 * mib &&
+          peer_primary_writeback_give(0, 700 * mib, 16ll << 30, zero_reads) == 1024 * mib &&
+          peer_primary_writeback_give(0, 700 * mib, 16ll << 30, zero_reads) == 4096 * mib,
+          "zero live-free readings retain bounded first retries then quarter-cache fallback");
+
     uint32_t state = 7;
     for (int t = 0; t < 200; ++t) {
         auto next = [&]() { state = state * 1664525u + 1013904223u; return state; };

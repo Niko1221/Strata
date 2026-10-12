@@ -193,6 +193,26 @@ This needs explicit `--peer-device`, a native pack, `--expert-profile` and the
 shared non-elastic expert cache with the CPU pool. With it on, the legacy
 `STRATA_PEER_HOT` and `STRATA_PEER_HOT_AT` settings are ignored. Without the
 switch, or without a peer, the existing placement is unchanged. Startup logs
-the byte caps and planned ownership. The planner has no GPU-name or
+the byte caps and planned ownership, then counts actual primary/peer/missed
+pairs from the residency tables after allocation correction and peer backfill.
+The primary's post-write live-free check retains the same reserve, owned
+prefill, unbound draft head and pipeline costs used to price its plan. It does
+not subtract that reserve twice. On Windows the pre-allocation free reading
+can run high; a post-write correction can legitimately reduce coverage when
+the peer is already full. The pricing and correction logs expose both readings
+and the bytes held back rather than promising the initial plan will fit.
+The planner has no GPU-name or
 architecture-specific selection rule. CPU-only tests cover unequal capacities
-and heterogeneous blobs; no two-GPU speed or answer-parity result is claimed.
+and heterogeneous blobs, including aligned retry trimming.
+
+[ruibeikaa's Windows contributor report](https://github.com/Niko1221/Strata/pull/1438#issuecomment-6055005922)
+on pristine 0.1.40.3 plus the original PR measured two GP100 dies on a PH402
+board (experimental sm_60, CUDA 12.9): +6.5% decode and +17.5% prompt throughput
+versus default placement, with equal outputs in all three placement arms.
+Two RTX 3090 Ti cards were neutral within run-to-run noise; their planned
+10,230 primary pairs became 9,614 actual pairs with the peer full, so 1,376
+pairs were missed rather than 760. That report does not include the intervening
+allocation-correction logs, so the reason for that hardware's lower live
+capacity is not established. These are contributor measurements of the old
+branch, not measurements of this rebased correction. The updated code has no
+two-GPU runtime, Windows runtime, or mixed-size hardware validation.
