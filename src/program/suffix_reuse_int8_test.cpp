@@ -321,9 +321,11 @@ int main() {
                                       /*kv_resident=*/0, /*layer_split=*/false, /*kv_rot=*/false)
               == SpliceStatus::NoOp,
               "T11.c: guard ACCEPTS plain --kv int8 (kv_rot off, the default)");
-        check(splice_scope_guard_int8(true, false, false, 0, false, /*kv_rot=*/true)
-              == SpliceStatus::UnsupportedFormat,
-              "T11.c: guard REFUSES int8+kv_rot (STRATA_KV_ROT=1 Hadamard domain)");
+        check(splice_scope_guard_int8(/*kv_int8=*/true, /*kv_q4=*/false, /*kv_hybrid=*/false,
+                                      /*kv_resident=*/0, /*layer_split=*/false, /*kv_rot=*/true)
+              == SpliceStatus::NoOp,
+              "T11.c: guard ACCEPTS int8+kv_rot (the H-sandwich handles it; head_dim!=256 "
+              "refuses inside the helper, fail-closed)");
         check(splice_scope_guard_int8(/*kv_int8=*/true, /*kv_q4=*/false, /*kv_hybrid=*/true,
                                       /*kv_resident=*/0, /*layer_split=*/false, /*kv_rot=*/false)
               == SpliceStatus::NoOp,
@@ -377,6 +379,175 @@ int main() {
             for (size_t i = 0; i < h_v_q4.size(); ++i)
                 if (h_v_q4[i] != (uint8_t) (i * 37 + 11)) ++v4_diff;
             check(v4_diff == 0, "T11.d: hybrid V (Q4_0 bytes) byte-identical after the splice");
+        }
+
+        // ---- T11.e: int8 + STRATA_KV_ROT=1 - the Hadamard sandwich is exact ----
+        // Store K the way the rotated writer does (H * R(p) * k, then int8-quantized), run
+        // the splice, and compare against the DIRECT reference: quantize(H * R(p+delta) * k)
+        // with the writer's own math.  The sandwich (dequant -> H -> R(delta) -> H -> requant)
+        // must match that reference BITWISE (the requant count is unchanged: one, at the end;
+        // H*R(delta)*H*(H*R(p)*k) = H*R(p+delta)*k exactly, so the only difference vs T11.c's
+        // unrotated case is the fp-sum order inside fwht - asserted small, and the QUANTIZED
+        // result asserted bitwise because quantization buckets absorb sub-ulp reordering).
+        {
+            std::vector<int8_t>   r_k_q = k_q_before;
+            std::vector<uint16_t> r_k_scale = k_scale_before;
+            // rebuild the rotated-domain arena from `raw`: stored = quant(H * R(p) * k)
+            for (int p = 0; p < max_cells; ++p) {
+                const int page = p / page_size, off = p % page_size;
+                for (int h = 0; h < n_head_kv; ++h) {
+                    const size_t row = (size_t) page * n_head_kv * page_size + (size_t) h * page_size + off;
+                    std::vector<float> cell(head_dim);
+                    for (int d = 0; d < head_dim; ++d)
+                        cell[d] = raw[(size_t) p * n_head_kv * head_dim + (size_t) h * head_dim + d];
+                    rope_at_fp32(cell.data(), n_rot, p, cos_tab.data(), sin_tab.data(), max_pos);
+                    strata::program::suffix_reuse::fwht256_row_host(cell.data());   // the rotated writer's H
+                    for (int g = 0; g < groups; ++g) {
+                        strata::kernels::KvQ8Group qg{};
+                        strata::kernels::kv_q8_quant_group(&cell[g * KV_Q8_GROUP], qg);
+                        for (int t = 0; t < KV_Q8_GROUP; ++t) r_k_q[row * head_dim + g * KV_Q8_GROUP + t] = qg.codes[t];
+                        r_k_scale[row * groups + g] = qg.scale_bits;
+                    }
+                }
+            }
+            strata::core::QsaState rst;
+            rst.kv_int8 = true;
+            rst.kv_rot = true;      // STRATA_KV_ROT=1: the sandwich path
+            const std::vector<int8_t>   r_k_q_before = r_k_q;       // snapshots for the
+            const std::vector<uint16_t> r_k_scale_before = r_k_scale;   // out-of-range check
+            rst.k_q = r_k_q.data();
+            rst.k_scale = r_k_scale.data();
+            rst.v_q = v_q.data();
+            rst.kv_mode = 0;
+            rst.max_cells = max_cells;
+            rst.n_pages = n_pages;
+            rst.n_slots = n_pages;
+            rst.cos_tab = cos_tab.data();
+            rst.sin_tab = sin_tab.data();
+            rst.owns_rope = false;
+            const bool rok = rotate_qsa_tail_inplace_int8(
+                rst, head_dim, n_rot, n_head_kv, max_pos, page_size,
+                edit_pos, old_suffix_len, /*uniform=*/true, delta, /*deltas=*/nullptr,
+                /*pool_rows=*/(int64_t) pool_rows);
+            check(rok, "T11.e: rotated int8 splice runs (kv_rot path, head_dim 256)");
+            // Reference A (BITWISE, the wiring check): an independently-coded sandwich of the
+            // STORED cell - dequant, H, rotate_k_by_delta (pinned independently by T11.c), H,
+            // requant.  This mirrors how T11.c references dequant(stored) rather than raw: the
+            // stored cell already carries the first quant's noise, and the splice must move
+            // THAT image faithfully (the double-quant delta is measured by reference B).
+            auto ref_sandwich = [&](int p, int h) {
+                std::vector<float> cell(head_dim);
+                for (int g = 0; g < groups; ++g) {
+                    strata::kernels::KvQ8Group qg{};
+                    qg.scale_bits = r_k_scale_before[(size_t) (p / page_size) * n_head_kv * page_size * groups
+                                                   + (size_t) h * page_size * groups + (size_t) (p % page_size) * groups + g];
+                    for (int t = 0; t < KV_Q8_GROUP; ++t)
+                        qg.codes[t] = r_k_q_before[(size_t) (p / page_size) * n_head_kv * page_size * head_dim
+                                                 + (size_t) h * page_size * head_dim + (size_t) (p % page_size) * head_dim
+                                                 + g * KV_Q8_GROUP + t];
+                    strata::kernels::kv_q8_dequant_group(qg, &cell[g * KV_Q8_GROUP]);
+                }
+                // local independent fwht (same Sylvester/1-16 math as the parity reference)
+                for (int s = 1; s < 256; s *= 2)
+                    for (int i2 = 0; i2 < 256; i2 += 2 * s)
+                        for (int j = 0; j < s; ++j) {
+                            const float u = cell[i2 + j], v = cell[i2 + j + s];
+                            cell[i2 + j] = u + v; cell[i2 + j + s] = u - v;
+                        }
+                for (int i2 = 0; i2 < 256; ++i2) cell[i2] *= 1.0f / 16.0f;
+                strata::program::suffix_reuse::rotate_k_by_delta(
+                    cell.data(), 1, head_dim, n_rot, p, delta, cos_tab.data(), sin_tab.data(), max_pos);
+                for (int s = 1; s < 256; s *= 2)
+                    for (int i2 = 0; i2 < 256; i2 += 2 * s)
+                        for (int j = 0; j < s; ++j) {
+                            const float u = cell[i2 + j], v = cell[i2 + j + s];
+                            cell[i2 + j] = u + v; cell[i2 + j + s] = u - v;
+                        }
+                for (int i2 = 0; i2 < 256; ++i2) cell[i2] *= 1.0f / 16.0f;
+                return cell;
+            };
+            int r_mismatch = 0, r_out_changed = 0, r_ideal_off = 0;
+            double r_max_step = 0.0;
+            for (int p = 0; p < max_cells; ++p) {
+                const int page = p / page_size, off = p % page_size;
+                const bool in_range = (p >= edit_pos) && (p < edit_pos + old_suffix_len);
+                for (int h = 0; h < n_head_kv; ++h) {
+                    const size_t row = (size_t) page * n_head_kv * page_size + (size_t) h * page_size + off;
+                    // out-of-range: byte-identical to the stored-before image
+                    if (!in_range) {
+                        for (int d = 0; d < head_dim; ++d)
+                            if (r_k_q[row * head_dim + d] != r_k_q_before[row * head_dim + d]) { ++r_out_changed; break; }
+                        continue;
+                    }
+                    // Reference A: bitwise sandwich-of-stored
+                    const std::vector<float> ref = ref_sandwich(p, h);
+                    for (int g = 0; g < groups; ++g) {
+                        strata::kernels::KvQ8Group want{};
+                        strata::kernels::kv_q8_quant_group(&ref[g * KV_Q8_GROUP], want);
+                        if (r_k_scale[row * groups + g] != want.scale_bits) ++r_mismatch;
+                        for (int t = 0; t < KV_Q8_GROUP; ++t)
+                            if (r_k_q[row * head_dim + g * KV_Q8_GROUP + t] != want.codes[t]) ++r_mismatch;
+                    }
+                    // Reference B (the measured claim): vs the IDEAL fresh-write image
+                    // quant(H*R(p+delta)*raw) - allowed to differ by the double-quant noise
+                    // (the stored cell's first quant + the splice's requant): at most 1 code
+                    // step per component, scale-relative.
+                    std::vector<float> ideal(head_dim);
+                    for (int d = 0; d < head_dim; ++d)
+                        ideal[d] = raw[(size_t) p * n_head_kv * head_dim + (size_t) h * head_dim + d];
+                    rope_at_fp32(ideal.data(), n_rot, p + delta, cos_tab.data(), sin_tab.data(), max_pos);
+                    strata::program::suffix_reuse::fwht256_row_host(ideal.data());
+                    for (int g = 0; g < groups; ++g) {
+                        strata::kernels::KvQ8Group iw{};
+                        strata::kernels::kv_q8_quant_group(&ideal[g * KV_Q8_GROUP], iw);
+                        const float isf = strata::kernels::f32_from_f16(iw.scale_bits);
+                        const float ssf = strata::kernels::f32_from_f16(r_k_scale[row * groups + g]);
+                        for (int t = 0; t < KV_Q8_GROUP; ++t) {
+                            const double got_v = (double) r_k_q[row * head_dim + g * KV_Q8_GROUP + t] * ssf;
+                            const double idea_v = (double) iw.codes[t] * isf;
+                            const double step = std::fabs(got_v - idea_v) / std::max(1e-9, (double) isf);
+                            r_max_step = std::max(r_max_step, step);
+                            if (step > 2.0) ++r_ideal_off;
+                        }
+                    }
+                }
+            }
+            check(r_out_changed == 0, "T11.e: cells OUTSIDE the splice range byte-identical");
+            // Same ideal-distance metric for the UNROTATED T11.c result: the accepted int8
+            // splice has the identical double-quant structure (quant1 at write time + the
+            // splice's requant), so the rotated path's noise must be no worse than it (the
+            // fwht preserves the error vector's norm; per-component it stays ~same scale).
+            double u_max_step = 0.0;
+            for (int p = edit_pos; p < edit_pos + old_suffix_len; ++p) {
+                const int page = p / page_size, off = p % page_size;
+                for (int h = 0; h < n_head_kv; ++h) {
+                    const size_t row = (size_t) page * n_head_kv * page_size + (size_t) h * page_size + off;
+                    std::vector<float> ideal(head_dim);
+                    for (int d = 0; d < head_dim; ++d)
+                        ideal[d] = raw[(size_t) p * n_head_kv * head_dim + (size_t) h * head_dim + d];
+                    rope_at_fp32(ideal.data(), n_rot, p + delta, cos_tab.data(), sin_tab.data(), max_pos);
+                    for (int g = 0; g < groups; ++g) {
+                        strata::kernels::KvQ8Group iw{};
+                        strata::kernels::kv_q8_quant_group(&ideal[g * KV_Q8_GROUP], iw);
+                        const float isf = strata::kernels::f32_from_f16(iw.scale_bits);
+                        const float ssf = strata::kernels::f32_from_f16(k_scale[row * groups + g]);
+                        for (int t = 0; t < KV_Q8_GROUP; ++t) {
+                            const double got_v = (double) k_q[row * head_dim + g * KV_Q8_GROUP + t] * ssf;
+                            const double idea_v = (double) iw.codes[t] * isf;
+                            u_max_step = std::max(u_max_step,
+                                std::fabs(got_v - idea_v) / std::max(1e-9, (double) isf));
+                        }
+                    }
+                }
+            }
+            std::printf("       (bitwise-sandwich mismatches: %d; ideal code-steps: rotated %.2f vs unrotated %.2f)\n",
+                        r_mismatch, r_max_step, u_max_step);
+            check(r_mismatch == 0,
+                  "T11.e: sandwich result BITWISE == independent sandwich-of-stored reference");
+            check(r_ideal_off == 0,
+                  "T11.e: no component beyond the guardrail of 2 code steps from the ideal");
+            check(r_max_step <= std::max(u_max_step, 1.0) * 1.10,
+                  "T11.e: rotated double-quant noise within 10% of the accepted unrotated path's");
         }
     }
 
