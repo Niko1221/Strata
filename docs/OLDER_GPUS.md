@@ -169,6 +169,60 @@ Setup does not build these; build by hand and run `serve/server.py` with a confi
   `__syncwarp` are version-gated, and RDNA1's missing signed dot4 uses llama.cpp's SDWA sequence
   (`-DSTRATA_GFX1012_PORTABLE_DOT=ON`: the portable one).
 
+## Turing (sm_75): opt-in interleaved verify projections
+
+`STRATA_MMVQ_IL=1` enables an exact-shape table for dense IQ4_XS, Q4_K, Q5_K and Q6_K projections in
+2-4-token verify windows. All sm_75 cards are eligible, including RTX 20 and Quadro RTX cards, but the original
+table tuning and author measurements used **only a Quadro RTX 8000**. An unset value, `0`, or `true` keeps the existing sm_75 path.
+Unlisted shapes also keep it. The other architectures' tables, including Pascal/Volta and the sm_86 Q3_K and
+one-column choices, are unchanged; HIP has no interleaved path. The sm_75 table is registered in `kIlArch`,
+but uses exact input/output dimensions rather than output-row classes. `STRATA_MMVQ_IL_ROWS` does not override
+this exact-shape policy on sm_75; it still works on the other eligible architectures. On sm_75 an unspecified
+input width, Q3_K or one column falls back. It reorders the same Q8_1 bytes and preserves the multi-column
+kernel's output bit for bit.
+
+In the original RTX 8000 measurements, CUDA 12.4 / GCC 13, the table retained 46 of 69 dense shape/window cells: each saved at least
+3% in every alternating A/B pair in two seven-pair sweeps, including the full interleave launch cost. Weights
+rotate between copies to avoid measuring only L2-resident data. These are not speed guarantees for other sm_75 cards.
+
+Previously recorded controlled whole-model decode on the same card at 260 W, with a Xeon W-2295, IQ3_S + MTP, `--spec 4`, fixed
+19,000 expert slots, automatic prefill (8,192), INT8 KV, maximum context 262,144 / resident 32,768 and PCIe fraction
+0.20, gave the following medians of three runs with 128 output tokens each. Prompt caching and adaptation were disabled;
+the baseline already enabled the BF16-to-FP16 tensor-core projection path, and only `STRATA_MMVQ_IL=1` changed.
+These are historical measurements, not a whole-model retest of the rebased PR.
+
+| Prompt tokens | baseline decode (tok/s) | interleaved decode (tok/s) |
+| --- | ---: | ---: |
+| 537 | 83.7 | 88.9 |
+| 4,057 | 75.4 | 80.4 |
+| 32,057 | 68.4 | 72.1 |
+
+For a CUDA build with `-DSTRATA_BUILD_TESTS=ON`, `STRATA_MMVQ_IL=1 ./build/mmvq_il_parity` checks bitwise
+parity and the actual dispatch path for table, fallback and forced 1/2/4-row kernels. Repeat with `=0` and `=true`
+to check strict opt-in behavior; `./build/mmvq_il_parity --sm75-bench` runs the paired shape sweep on sm_75.
+No model is needed. Select the intended card with `CUDA_VISIBLE_DEVICES`; other sm_75 hardware needs its own measurements.
+`./build/mmvq_il_parity --tables-only` checks architecture selection without initializing CUDA; with
+`STRATA_MMVQ_IL_ROWS` set, `--sm75-tables-only` checks that class overrides cannot broaden the sm_75 table.
+
+### Community reports (not tests of the rebased PR head)
+
+- [ioridev's RTX 2080 Ti report](https://github.com/Niko1221/Strata/pull/1437#issuecomment-6108554652)
+  ports the unchanged shape table, strict opt-in and actual input widths onto 0.1.42 (`61b3fb5d`).
+  It does **not** use the original PR head or port its extended parity harness/last-launch observation.
+  On two RTX 2080 Ti cards (22 GB main / 11 GB peer, 250 W, i9-9820X, CUDA 12.4/GCC 15.2),
+  IQ3_S + MTP, spec 4, INT8 KV, BF16_TC and SELECT_SIMT enabled, the reporter found bitwise kernel parity
+  with 0.1.42's harness and mean decode 68.3 → 71.3 tok/s (+4.4%) across five workloads. Medians use
+  four runs per cell with reversed arm order. The ~8K result was noisy; baseline temperature-zero
+  replies already varied, so text equality was not a correctness check. This is independent evidence
+  for a port, not our own measurement or validation of the rebased code.
+- [xrip's CMP 50HX report](https://github.com/Niko1221/Strata/pull/1437#issuecomment-6122392200)
+  uses a **different** output-row-class table, with Q3_K and one-column choices, not this PR's exact-shape table.
+  On two CMP 50HX cards (TU102, 2100 MHz, 56 SMs, CUDA 13.3/GCC 14), IQ3_XXS, layer split,
+  spec 4 + MTP, INT8 KV and PCIe fraction 0.17, the reporter found bitwise T=1–4 kernel parity
+  and +7.0% decode (72.62/72.57 → 77.85/77.46 tok/s) for a 35.7K-token prompt followed by six
+  512-token questions. That table is not adopted here. The same comment's `STRATA_EXP_MODE=8`
+  results concern the expert layout and are outside this PR.
+
 ## Reports welcome
 
 These paths stay experimental until more people run them. A report with the card, the driver / ROCm version, the
