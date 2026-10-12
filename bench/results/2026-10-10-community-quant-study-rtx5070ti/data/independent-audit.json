@@ -1,0 +1,98 @@
+{
+  "method": "Recompute all 18 tool-eval arms from raw 92x5 point arrays, rounded per-trial headline scores, sample standard deviation, and full-marks ceiling/floor counts.",
+  "result": "passed",
+  "audited_tool_arms": 18,
+  "gyro_m": {
+    "low": {
+      "points_totals": [
+        158,
+        161,
+        155,
+        159,
+        158
+      ],
+      "rounded_trial_scores": [
+        86,
+        88,
+        84,
+        86,
+        86
+      ],
+      "mean": 86.0,
+      "std": 1.4,
+      "solid": 72,
+      "flaky": 6,
+      "partial_only": 8,
+      "zero_only": 6
+    },
+    "xhigh": {
+      "points_totals": [
+        161,
+        163,
+        161,
+        158,
+        161
+      ],
+      "rounded_trial_scores": [
+        88,
+        89,
+        88,
+        86,
+        88
+      ],
+      "mean": 87.8,
+      "std": 1.1,
+      "solid": 66,
+      "flaky": 16,
+      "partial_only": 6,
+      "zero_only": 4
+    },
+    "floor_lost_scenarios": [
+      "TC-03",
+      "TC-21",
+      "TC-32",
+      "TC-35",
+      "TC-42",
+      "TC-49",
+      "TC-58",
+      "TC-60",
+      "TC-63",
+      "TC-79",
+      "TC-81",
+      "TC-88",
+      "TC-90"
+    ],
+    "floor_gained_scenarios": [
+      "TC-14",
+      "TC-52",
+      "TC-74",
+      "TC-82",
+      "TC-84",
+      "TC-85",
+      "TC-91"
+    ]
+  },
+  "partial_humaneval_arms": [
+    [
+      "base-iq3_xxs",
+      "low"
+    ],
+    [
+      "swift-iq3_s",
+      "low"
+    ],
+    [
+      "gyro-s",
+      "xhigh"
+    ]
+  ],
+  "secret_pattern_sweep": {
+    "matches": 0,
+    "patterns": [
+      "ghp token",
+      "sk token",
+      "literal Bearer token"
+    ]
+  },
+  "original_pdf_sha256": "afee7c931629228601f6c4b2ee32a5c4d46cce54d55c757857e919ddb06774a3"
+}

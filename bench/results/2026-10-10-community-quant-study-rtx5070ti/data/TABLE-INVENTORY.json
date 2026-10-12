@@ -1,0 +1,151 @@
+[
+  {
+    "id": "T01",
+    "title": "Model provenance and engine cohorts",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Quant",
+      "File GB",
+      "Engine",
+      "Status",
+      "Download"
+    ]
+  },
+  {
+    "id": "T02",
+    "title": "Integrated headline scorecard",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Tool mean",
+      "Pass^5",
+      "HE+ low",
+      "HE+ xhigh",
+      "Math",
+      "Algebra",
+      "Debug"
+    ]
+  },
+  {
+    "id": "T03",
+    "title": "Integrated five-trial tool reliability",
+    "rows": 18,
+    "headers": [
+      "Arm / lab",
+      "Mean +/- SD",
+      "95% CI",
+      "Pass@5",
+      "Pass^5 floor",
+      "Ceiling-floor gap",
+      "Last-trial rating",
+      "Warnings",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T04",
+    "title": "Multi-step tool-chain results",
+    "rows": 18,
+    "headers": [
+      "Arm / lab",
+      "Hard Mode mean",
+      "SD across five",
+      "Turn budget",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T05",
+    "title": "Integrated coding results \u2014 full and qualified coverage",
+    "rows": 20,
+    "headers": [
+      "Arm / lab",
+      "First %",
+      "Final %",
+      "Solved / scored",
+      "Repairs",
+      "Wall",
+      "tok/s",
+      "Blank finals",
+      "Infra excluded",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T06",
+    "title": "Integrated sampled knowledge, debugging and long-context recall",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "GSM8K /100",
+      "Algebra /100",
+      "IFEval prompt / instruction %",
+      "Bugs visible",
+      "Bugs hidden",
+      "Needle % @ tokens",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T07",
+    "title": "Integrated time-to-result economics",
+    "rows": 20,
+    "headers": [
+      "Arm / lab",
+      "Output tokens",
+      "Passing tokens",
+      "Passing seconds",
+      "Failed response time %",
+      "Wall",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T08",
+    "title": "Integrated low-effort performance profiles",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Context tokens: 0 / mid / deep",
+      "Decode tok/s: 0 / mid / deep",
+      "First-token rate: 0 / mid / deep",
+      "Deep TTFT s"
+    ]
+  },
+  {
+    "id": "T09",
+    "title": "Integrated xhigh-effort performance profiles",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Context tokens: 0 / mid / deep",
+      "Decode tok/s: 0 / mid / deep",
+      "First-token rate: 0 / mid / deep",
+      "Deep TTFT s"
+    ]
+  },
+  {
+    "id": "T10",
+    "title": "One recommendation registry \u2014 all-rounder versus specialists",
+    "rows": 6,
+    "headers": [
+      "Decision",
+      "File / effort",
+      "OVERALL rank",
+      "Why this agrees with the board"
+    ]
+  },
+  {
+    "id": "T11",
+    "title": "Version-pinned provenance",
+    "rows": 8,
+    "headers": [
+      "Provenance item",
+      "Pinned value"
+    ]
+  }
+]

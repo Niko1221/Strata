@@ -1,0 +1,55 @@
+{
+  "created_at": "2026-10-12T12:33:45+02:00",
+  "campaign_id": "full-20261012-rerun-1230",
+  "model": "gyro-m-strata",
+  "lab": "AgentionAI",
+  "quant": "TQ2_0",
+  "engine": "AgentionAI Strata rc2",
+  "engine_commit": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+  "engine_sha256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f",
+  "engine_runtime_provenance": {
+    "ENGINE_COMMIT": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+    "ENGINE_DIRTY_LINES": "0",
+    "ENGINE_DIFF_SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ENGINE_BINARY_SHA256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f"
+  },
+  "model_revision": "2cd4f24bcb0fa053149a4e4ec15506ecc64cafab",
+  "model_sha256": "7aa36d15131d255179ab6c87fa9c9f81a0b541fc9e81e959d4c3e29eb20feb5f",
+  "context": 131072,
+  "kv": "int8",
+  "teb_version": "2.7.1.dev16+gf7c34a130",
+  "llama_benchy": "llama-benchy 0.4.0",
+  "initial_resources": {
+    "log": "<study-home>/gyro-m/logs/strata-console.log",
+    "size_bytes": 169741,
+    "counts": {
+      "stall_report": 0,
+      "no_progress": 0,
+      "verify_timeout": 0,
+      "cuda_error": 0,
+      "engine_restart": 0
+    },
+    "last_events": [],
+    "gpu": {
+      "memory_used_mib": 15633,
+      "memory_free_mib": 363,
+      "utilization_gpu_pct": 13,
+      "temperature_c": 39
+    },
+    "ram": {
+      "total_bytes": 61083901952,
+      "used_bytes": 41671254016,
+      "available_bytes": 19412647936
+    }
+  },
+  "benchkit": {
+    "head": "9636e3cd2f382ef1727984201f29baead56cfed8",
+    "dirty": true,
+    "tracked_diff_sha256": "f05f5b3651f2d7ad754939a2f3e5ab243766c4ba0b25ae58771414221c520fb1",
+    "file_sha256": {
+      "src/benchkit/client.py": "51f6d5de3a13863d2eef5c265a42db633f605fcf40dd65b77651c03493b4e1fc",
+      "src/benchkit/benchmarks/__init__.py": "b93c3a5f4349184a41c9a4b77f2904a906029aef91d69ef80acc87ec302c11e4"
+    }
+  },
+  "comparator_notes": "Gyro-M below published memory floor; experimental on 16 GB. TEB v2.7.1.dev16 pinned for prior-PR comparison; needle uses 131,072 maximum, not 260K."
+}

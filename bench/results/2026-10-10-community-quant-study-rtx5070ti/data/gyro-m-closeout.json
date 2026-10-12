@@ -1,0 +1,25 @@
+{
+  "reason": "completed_with_invalid_slices",
+  "stopped_gyro": {
+    "exit_code": 0,
+    "output": "MATCHED_SERVER_PIDS []\nMATCHED_GYRO_ENGINE_PIDS []\nGYRO_ENGINES_AFTER_SERVER_STOP []\nREMAINING_GYRO_SERVER_PIDS []\nREMAINING_GYRO_ENGINE_PIDS []\nmemory.used [MiB], memory.free [MiB], utilization.gpu [%]\n742 MiB, 15254 MiB, 0 %\n"
+  },
+  "closeout_exit_code": 0,
+  "chain_up": true,
+  "tasks_enabled": true,
+  "probes_ok": true,
+  "target_model": "swift-1.5-iq3_s",
+  "tunnel_health": {
+    "status": "ok",
+    "max_context": 262144,
+    "model": "swift-1.5-iq3_s",
+    "images": true,
+    "api_key": true,
+    "loaded": true,
+    "service": "strata"
+  },
+  "tunnel_ok": true,
+  "cron_resume_rc": 0,
+  "closeout_log": "<study-home>/teb-campaign/logs/gyro-m-full-20261012-rerun-1230/production-closeout.log",
+  "finished_at": "2026-10-12T17:27:48+02:00"
+}

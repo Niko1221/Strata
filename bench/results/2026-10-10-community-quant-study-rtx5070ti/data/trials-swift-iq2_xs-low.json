@@ -2906,7 +2906,7 @@
       "TC-85 (Exactly-Once Provisioning After Ambiguous Commit): Sent a premature, duplicate, or invalid owner notification."
     ]
   },
-  "report_path": "/home/claw/teb-campaign/runs/2026/10/2026-10-08T14-16-16.541968Z_69df6bfa--trials-swift-iq2_xs-low.md",
+  "report_path": "<study-home>/teb-campaign/runs/2026/10/2026-10-08T14-16-16.541968Z_69df6bfa--trials-swift-iq2_xs-low.md",
   "trial_statistics": {
     "trials": 5,
     "final_score_mean": 87.2,

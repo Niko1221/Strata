@@ -1,0 +1,131 @@
+{
+  "inventory": {
+    "models": 10,
+    "effort_arms": 20,
+    "tool_arms": 18,
+    "partial_he_arms": [
+      [
+        "base-iq3_xxs",
+        "low"
+      ],
+      [
+        "swift-iq3_s",
+        "low"
+      ],
+      [
+        "gyro-s",
+        "xhigh"
+      ]
+    ]
+  },
+  "fastest_full_he": {
+    "key": "swift-iq3_xxs",
+    "effort": "low",
+    "wall_s": 716.5
+  },
+  "best_complete_he": {
+    "score": 96.3,
+    "arms": [
+      [
+        "iq3_s",
+        "xhigh"
+      ],
+      [
+        "gyro-s",
+        "low"
+      ]
+    ]
+  },
+  "stock_best_mean": {
+    "key": "q2_0",
+    "effort": "xhigh",
+    "mean": 89.4
+  },
+  "stock_best_floor": {
+    "key": "swift-q2_0",
+    "effort": "low",
+    "floor": 78.3
+  },
+  "stock_composite_leader": {
+    "key": "q2_0",
+    "arm": "xhigh",
+    "label": "Q-Q2_0 (ISTA-DASLab)",
+    "cohort": "stock",
+    "coding": 95.1,
+    "floor": 73.9,
+    "hardmode": 86.8,
+    "mmlu": 78.0,
+    "gsm8k": 97.0,
+    "debug": 19,
+    "decode": 131.57251234644696,
+    "capped": false,
+    "complete_scoring": true,
+    "composite": 72.02737903287453,
+    "rank": 1,
+    "eligible": true,
+    "reason": ""
+  },
+  "gyro_m_he_wall_ratio": 4.777126381547333,
+  "gyro_m_he_token_ratio": 4.861555083640699,
+  "gyro_m_resources": {
+    "min_free_vram_mib": 205,
+    "max_temperature_c": 78
+  },
+  "partial_he_arms": [
+    [
+      "base-iq3_xxs",
+      "low"
+    ],
+    [
+      "swift-iq3_s",
+      "low"
+    ],
+    [
+      "gyro-s",
+      "xhigh"
+    ]
+  ],
+  "tool_method": {
+    "version": "2.7.1.dev16+gf7c34a130",
+    "scenarios": 92,
+    "trials": 5
+  },
+  "recommendations": [
+    {
+      "role": "all_rounder",
+      "key": "q2_0",
+      "effort": "xhigh",
+      "rank": 1
+    },
+    {
+      "role": "reliability",
+      "key": "swift-q2_0",
+      "effort": "low",
+      "rank": 13
+    },
+    {
+      "role": "fast_coding",
+      "key": "swift-iq3_xxs",
+      "effort": "low",
+      "rank": 9
+    },
+    {
+      "role": "coding_ceiling",
+      "key": "iq3_s",
+      "effort": "xhigh",
+      "rank": 7
+    },
+    {
+      "role": "knowledge_debug",
+      "key": "swift-iq3_s",
+      "effort": "xhigh",
+      "rank": 12
+    },
+    {
+      "role": "experimental_not_production",
+      "key": "gyro-m",
+      "effort": "low",
+      "rank": null
+    }
+  ]
+}

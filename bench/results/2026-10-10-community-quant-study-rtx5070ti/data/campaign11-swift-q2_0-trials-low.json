@@ -2912,7 +2912,7 @@
       "TC-89 (Compensation After Partial Success): Told the user the invoice was paid; left the funds on hold."
     ]
   },
-  "report_path": "/home/claw/teb-campaign/runs/2026/10/2026-10-10T03-11-59.955478Z_726ea826--campaign11-swift-q2_0-trials-low.md",
+  "report_path": "<study-home>/teb-campaign/runs/2026/10/2026-10-10T03-11-59.955478Z_726ea826--campaign11-swift-q2_0-trials-low.md",
   "trial_statistics": {
     "trials": 5,
     "final_score_mean": 85,

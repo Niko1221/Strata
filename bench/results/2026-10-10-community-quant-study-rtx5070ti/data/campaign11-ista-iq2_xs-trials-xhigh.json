@@ -2953,7 +2953,7 @@
       "TC-74 (Stateful Multi-Turn Corrections): Batched send_email with create_calendar_event in the same turn instead of waiting for the create_calendar_event result."
     ]
   },
-  "report_path": "/home/claw/teb-campaign/runs/2026/10/2026-10-10T00-34-42.778887Z_f48bd1af--campaign11-ista-iq2_xs-trials-xhigh.md",
+  "report_path": "<study-home>/teb-campaign/runs/2026/10/2026-10-10T00-34-42.778887Z_f48bd1af--campaign11-ista-iq2_xs-trials-xhigh.md",
   "trial_statistics": {
     "trials": 5,
     "final_score_mean": 88.6,

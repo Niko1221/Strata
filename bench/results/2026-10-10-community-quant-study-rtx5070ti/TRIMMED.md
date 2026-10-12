@@ -1,34 +1,21 @@
-# What this folder does NOT include (and where it lives)
+# Curated evidence and exclusions
 
-We ship the numbers that back every claim in the README/PDF, plus the pipeline that
-rebuilds them. This is what we deliberately left out, so you know the package is a
-curated subset, not the whole lab notebook.
+## Included
 
-## Excluded from `data/` on purpose
+- Canonical ALL-METRICS, 20 complete attempted-task HumanEval+ files (gzip JSON), all 18 pinned 92 x 5 tool arms, all 18 finite three-depth performance profiles, baseline knowledge/needle notes plus the four new notes, baseline debugging matrix and 25 new debugging records with their grading summary.
+- Original Gyro-M done/manifest/closeout records and CTest/audit logs: invalid-slice status, missing audit-step names and failed parity test are retained, not repaired away.
+- Ten shared charts, final PDF/HTML, generated README/PR draft, claim/recommendation registry, final scoreboard, table inventory, numerical/page proof and portable build/audit scripts.
 
-- **Gyro-S tool-eval trials** — excluded-with-finding (C1). The rc1 fork serve has no
-  tool support, so Gyro's tool scenarios are not comparable; the proxy runs that produced
-  them are also transport-contaminated. Gyro's agent columns are `n/a` in every table for
-  this reason. Its HE+, knowledge, needle and five-bugs results ARE included (served clean).
-- **Old-era perf files** (`iq3_s.perf.json`, `q2_0.perf.json`, `swift-iq2_xs*.perf.json`,
-  `swift-iq3_xxs*.perf.json`) — pre-rebase speed runs on earlier engine builds, not the
-  pinned 0.1.40.3 cohort. Kept only the canonical `rebase-*` and `campaign11-*` perf JSONs.
-- **Gyro perf v1** (pre-vram-reserve) — superseded by `-v2` files; kept v2 only.
+## Excluded from scoring/package
 
-## Not shipped (large, on our machines, available on request)
+- Gyro-S rc1 tool/proxy runs: no usable native forced tool support and contaminated transport; tool fields are n/a.
+- All Gyro-S synthetic speed files, including v2: malformed million-token/s/null decode cells; no usable throughput baseline. Retired earlier-engine and superseded speed files are not included.
+- Aborted first Gyro-M campaign, pilots, standalone effort probe, other-engine runs and the separate Swift v2.8.0 / 97-scenario dataset. The final rerun evidence, not the pilots, backs the scores.
+- Old original rollup/summary/wall intermediates and obsolete chart/scripts: no stale second recommendation source is shipped.
+- Model weights, expert/MTP packs, full build/server logs and rig-specific lifecycle/service scripts. The extractor requires the study rig and is not needed to rebuild from the packaged canonical store.
 
-- **`runs/` full run logs** (~41 MB of per-run markdown, incl. the 28 knowledge/needle
-  reports — a curated copy of those IS in `data/knowledge-needle/`). The full HE+ per-task
-  logs and tool-eval raw transcripts are on our rig; ask on the PR and we will attach a zip.
-- **Model weights / packs** — not ours to redistribute; see the Hugging Face links in README.
-- **Campaign driver scripts + systemd units** (`run_campaign*.sh`, `campaign_swap.ps1`) —
-  rig-specific (Windows paths, SSH host aliases). The *measurement* pipeline is in `scripts/`.
+## Redaction and reproducibility boundary
 
-## Reproducibility boundary
+Credentials are [REDACTED]; home/host/LAN paths are placeholders. JSON object structure, scenario points, task grades, completion status and timings are retained. Gzip compression is lossless after this explicit privacy sanitation; original unredacted measurement files were not modified. The extracted store retains measurement-source hashes; SOURCE-MANIFEST hashes the actual sanitized distributed bytes.
 
-`scripts/extract_all.py → data/ALL-METRICS.json → make_charts.py (F1–F15) →
-compile_pr_readme.py` rebuilds every figure and this README from the raw JSONs in `data/`.
-The raw JSONs themselves are the ground truth; if a number in the prose disagrees with
-`data/`, the data wins — open an issue.
-
-Engine pinned `34CDE150B21148E6` · Strata `0.1.40.3` · tool-eval-bench `2.7.1.dev16+gf7c34a130`.
+The portable compiler reads data/ALL-METRICS.json only, rebuilds ten charts, the PDF and the GitHub report, and generates one registry for the final board and recommendations. Auditors verify task-level denominators, all raw five-trial arrays, profile source values, all common-table rows, whole-table PDF pagination and package completeness. No engine or production settings are changed.

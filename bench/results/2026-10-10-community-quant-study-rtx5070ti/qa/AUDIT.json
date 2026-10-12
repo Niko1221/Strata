@@ -1,0 +1,820 @@
+{
+  "checks": [
+    {
+      "claim": "10 files, 20 effort arms, 18 tool arms",
+      "passed": true
+    },
+    {
+      "claim": "All 20 coding arms printed exactly once in coding tables",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh final/count/first/repairs/wall",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh raw score denominator",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh blank-final count",
+      "passed": true
+    },
+    {
+      "claim": "All 18 tool arms printed exactly once",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "All 10 knowledge/debug/needle rows printed once",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "q2_0 printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0 printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m printed knowledge/debug/needle",
+      "passed": true
+    },
+    {
+      "claim": "Both effort profiles share all 10 model rows",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low unavailable malformed profile labeled n/a",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/low all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "q2_0/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "base-iq3_xxs/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "ista-iq2_xs/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_xxs/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq2_xs/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-iq3_s/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "swift-q2_0/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh unavailable malformed profile labeled n/a",
+      "passed": true
+    },
+    {
+      "claim": "gyro-m/xhigh all decode, first-token rates, depths and deep TTFT",
+      "passed": true
+    },
+    {
+      "claim": "No standalone Gyro-M chapter",
+      "passed": true
+    },
+    {
+      "claim": "Coding, tool and knowledge tables integrate model rows",
+      "passed": true
+    },
+    {
+      "claim": "One recommendation registry with six aligned roles",
+      "passed": true
+    },
+    {
+      "claim": "Composite excludes all fork and partial arms",
+      "passed": true
+    },
+    {
+      "claim": "Composite q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite ista-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Composite swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Registry ranks match the scoreboard",
+      "passed": true
+    },
+    {
+      "claim": "First pick is the same all-rounder as the scoreboard",
+      "passed": true
+    },
+    {
+      "claim": "Composite rows ranked exactly",
+      "passed": true
+    },
+    {
+      "claim": "Outcome and critical caveats retained",
+      "passed": true
+    },
+    {
+      "claim": "Inflated prompt throughput not recommended",
+      "passed": true
+    },
+    {
+      "claim": "No fabricated placeholder values",
+      "passed": true
+    },
+    {
+      "claim": "No emoji, stars or forced page breaks",
+      "passed": true
+    },
+    {
+      "claim": "All 10 figures exist and are used",
+      "passed": true
+    },
+    {
+      "claim": "PDF contains new model, status, scoring denominators and provenance",
+      "passed": true
+    },
+    {
+      "claim": "PDF has expected complete page inventory",
+      "passed": true
+    },
+    {
+      "claim": "No near-empty non-final pages",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T01 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T02 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T03 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T04 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T05 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T06 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T07 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T08 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T09 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T10 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "Whole table T11 stays on one PDF page",
+      "passed": true
+    },
+    {
+      "claim": "No secret patterns in delivered PDF text/HTML",
+      "passed": true
+    }
+  ],
+  "passed": 190,
+  "failed": 0,
+  "pdf_sha256": "67c82ebaff406ec386527215205ed5de31a56e238a7f6943194549e1b75d9894",
+  "pdf_bytes": 1745297,
+  "pages": 13,
+  "page_fill": [
+    0.725,
+    0.786,
+    0.766,
+    0.889,
+    0.92,
+    0.916,
+    0.928,
+    0.937,
+    0.726,
+    0.571,
+    0.711,
+    0.715,
+    0.532
+  ],
+  "figures": 10,
+  "table_pages": {
+    "T01": [
+      2
+    ],
+    "T02": [
+      2
+    ],
+    "T03": [
+      4
+    ],
+    "T04": [
+      5
+    ],
+    "T05": [
+      6
+    ],
+    "T06": [
+      7
+    ],
+    "T07": [
+      8
+    ],
+    "T08": [
+      10
+    ],
+    "T09": [
+      10
+    ],
+    "T10": [
+      11
+    ],
+    "T11": [
+      13
+    ]
+  }
+}

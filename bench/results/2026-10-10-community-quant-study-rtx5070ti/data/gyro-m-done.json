@@ -1,0 +1,129 @@
+{
+  "outcome": "completed_with_invalid_slices",
+  "error": null,
+  "summary": {
+    "low_gate": {
+      "total": 164,
+      "scored_total": 164,
+      "tasks_len": 164,
+      "passed": 156,
+      "score": 95.1,
+      "first_attempt_score": 93.3,
+      "repair_successes": 3,
+      "repair_attempted": 11,
+      "tok_s": 88.9,
+      "total_time": 1040.5,
+      "output_tokens": 80523,
+      "loop_kills": 0,
+      "timeouts": 0,
+      "errors": 0,
+      "harness_errors": 0,
+      "result_dir": "<study-home>/teb-campaign/results/gyro-m-rc2/full-20261012-rerun-1230/heplus-low",
+      "source_dir": "<study-home>/benchkit/results/2026-10-12_12-51-22"
+    },
+    "xhigh_heplus": {
+      "total": 164,
+      "scored_total": 164,
+      "tasks_len": 164,
+      "passed": 157,
+      "score": 95.7,
+      "first_attempt_score": 92.1,
+      "repair_successes": 6,
+      "repair_attempted": 13,
+      "tok_s": 77.6,
+      "total_time": 4970.6,
+      "output_tokens": 391467,
+      "loop_kills": 0,
+      "timeouts": 0,
+      "errors": 0,
+      "harness_errors": 0,
+      "result_dir": "<study-home>/teb-campaign/results/gyro-m-rc2/full-20261012-rerun-1230/heplus-xhigh",
+      "source_dir": "<study-home>/benchkit/results/2026-10-12_14-14-25"
+    }
+  },
+  "slice_audit": {
+    "all_required_valid": false,
+    "slices": {
+      "heplus-low-audit": {
+        "present": false,
+        "valid": false
+      },
+      "heplus-xhigh-audit": {
+        "present": false,
+        "valid": false
+      },
+      "teb-low": {
+        "present": true,
+        "valid": true
+      },
+      "teb-xhigh": {
+        "present": true,
+        "valid": true
+      },
+      "perf-low": {
+        "present": true,
+        "valid": true
+      },
+      "perf-xhigh": {
+        "present": true,
+        "valid": true
+      },
+      "fivebugs": {
+        "present": true,
+        "valid": true
+      },
+      "plugin-gsm8k": {
+        "present": true,
+        "valid": true
+      },
+      "plugin-mmlu": {
+        "present": true,
+        "valid": true
+      },
+      "plugin-ifeval": {
+        "present": true,
+        "valid": true
+      },
+      "plugin-needle": {
+        "present": true,
+        "valid": true
+      },
+      "ctest-full": {
+        "present": true,
+        "valid": false
+      },
+      "ctest-ple-reader-selftest": {
+        "present": true,
+        "valid": true
+      }
+    }
+  },
+  "closeout": {
+    "reason": "completed_with_invalid_slices",
+    "stopped_gyro": {
+      "exit_code": 0,
+      "output": "MATCHED_SERVER_PIDS []\nMATCHED_GYRO_ENGINE_PIDS []\nGYRO_ENGINES_AFTER_SERVER_STOP []\nREMAINING_GYRO_SERVER_PIDS []\nREMAINING_GYRO_ENGINE_PIDS []\nmemory.used [MiB], memory.free [MiB], utilization.gpu [%]\n742 MiB, 15254 MiB, 0 %\n"
+    },
+    "closeout_exit_code": 0,
+    "chain_up": true,
+    "tasks_enabled": true,
+    "probes_ok": true,
+    "target_model": "swift-1.5-iq3_s",
+    "tunnel_health": {
+      "status": "ok",
+      "max_context": 262144,
+      "model": "swift-1.5-iq3_s",
+      "images": true,
+      "api_key": true,
+      "loaded": true,
+      "service": "strata"
+    },
+    "tunnel_ok": true,
+    "cron_resume_rc": 0,
+    "closeout_log": "<study-home>/teb-campaign/logs/gyro-m-full-20261012-rerun-1230/production-closeout.log",
+    "finished_at": "2026-10-12T17:27:48+02:00"
+  },
+  "finished_at": "2026-10-12T17:27:48+02:00",
+  "steps_file": "<study-home>/teb-campaign/results/gyro-m-rc2/full-20261012-rerun-1230/steps.jsonl",
+  "monitor_file": "<study-home>/teb-campaign/results/gyro-m-rc2/full-20261012-rerun-1230/monitor.jsonl"
+}

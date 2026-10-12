@@ -3011,7 +3011,7 @@
       "TC-89 (Compensation After Partial Success): Told the user the invoice was paid."
     ]
   },
-  "report_path": "/home/claw/teb-campaign/runs/2026/10/2026-10-08T11-35-32.626547Z_9dfce1a7--trials-q2_0-xhigh.md",
+  "report_path": "<study-home>/teb-campaign/runs/2026/10/2026-10-08T11-35-32.626547Z_9dfce1a7--trials-q2_0-xhigh.md",
   "trial_statistics": {
     "trials": 5,
     "final_score_mean": 89.4,

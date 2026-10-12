@@ -1,0 +1,1 @@
+Community report: 10-file quant battery on RTX 5070 Ti 16 GB (ISTA vs Swift vs Gyro-S/M)
