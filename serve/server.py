@@ -327,6 +327,13 @@ class EngineNonFinite(ValueError):
     ends one that had started (as "length").  A ValueError, so a stream that has started reports it as an error event."""
 
 
+class RemoteStageLost(ValueError):
+    """A remote stage failed (the engine's `ERR remote stage: ...`: the worker went away, or could not be reached
+    again; `ERR remote stage (worker): ...`: the worker failed a step itself): not the request's fault.  The engine
+    ends after a lost link and the next request starts it again - a 503 with Retry-After, not a 400.  A ValueError,
+    so a stream that has started reports it as an error event."""
+
+
 class SessionRefused(ValueError):
     """Disk sessions: the engine refused or failed a SAVE / RESTORE and is still in step (`SERR <kind> <published>
     <reason>`).  `kind` is the engine's category - invalid (400), storage (507), memory (503), io (500); `published`:
@@ -1771,6 +1778,10 @@ class StrataEngine:
                     if cancel.is_set():                   # lines reset the 10 s wait, so without this a long prompt
                         return                            # would send no keep-alives at all)
                     yield None
+                elif line.startswith("INFO remote_stage_wait="):   # a remote stage's main waiting for its worker (one
+                    if cancel.is_set():                   # every 10 s): a keep-alive, as a PP line (it reset the
+                        return                            # 10 s wait above)
+                    yield None
                 elif line.startswith("RESUME "):          # the reused tokens: the first chunk starts after them
                     try:
                         read_to = self.reused = int(line.split()[1])
@@ -1784,7 +1795,9 @@ class StrataEngine:
                     return
                 elif line.startswith("ERR"):
                     done = True
-                    raise ValueError(line[4:].strip())
+                    text = line[4:].strip()
+                    remote = text.startswith(("remote stage:", "remote stage (worker):"))
+                    raise (RemoteStageLost if remote else ValueError)(text)
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
@@ -5243,6 +5256,10 @@ def make_handler(svc: Service):
                 print(f"[strata] 503: {e}", flush=True)
                 self._json(503, responses_error_body(str(e), "server_error") if path == "/v1/responses"
                            else {"error": {"type": "server_error", "message": str(e)}})
+            except RemoteStageLost as e:                    # a remote stage's link: not the request's fault
+                print(f"[strata] 503: {e}", flush=True)
+                self._json(503, responses_error_body(str(e), "server_error") if path == "/v1/responses"
+                           else {"error": {"type": "server_error", "message": str(e)}}, {"Retry-After": "30"})
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
                 if path == "/v1/responses":
@@ -5621,6 +5638,9 @@ def make_handler(svc: Service):
                                                                 code="server_error"))
                 except EngineNonFinite as e:                 # #879, twice: not the request's fault
                     return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
+                except RemoteStageLost as e:                 # a remote stage's link: not the request's fault
+                    return self._json(503, responses_error_body(str(e), "server_error", code="server_error"),
+                                      {"Retry-After": "30"})
                 except ValueError as e:                      # the engine's ERR line
                     return self._json(500, responses_error_body(str(e), "server_error", code="server_error"))
                 return self._json(200, result)

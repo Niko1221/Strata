@@ -23,7 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
-                          PP_DONE_TAIL, Service,
+                          PP_DONE_TAIL, RemoteStageLost, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
                           request_timings, serve, start_failure_hint)
@@ -1879,6 +1879,79 @@ class EngineDeath(unittest.TestCase):
                 self.assertIn("illegal memory access", text, path)
                 self.assertNotIn("HTTP/1", text, path)
                 self.assertEqual(svc.metrics()["requests"][0]["finish"], "error")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class RemoteStageLink(unittest.TestCase):
+    """The engine's ERR about a remote stage ("remote stage: ...": the worker went away and could not be reached
+    again; "remote stage (worker): ...": the worker failed a step itself) is a 503 server_error with Retry-After, not
+    a 400 about the request."""
+
+    LOST = "remote stage: the peer closed the connection; connecting again: cannot connect to 192.0.2.11:7841: refused"
+    WORKER = "remote stage (worker): verify: a test error"
+
+    @staticmethod
+    def err_line(text):
+        """What StrataEngine.generate raises for the engine's `ERR <text>`."""
+        import queue as queue_
+        eng = object.__new__(StrataEngine)
+        eng.lines = queue_.Queue()
+        eng.lines.put("ERR " + text)
+        eng.proc = SimpleNamespace(stdin=io.StringIO())
+        eng.alive = lambda: True
+        eng.silence_s, eng.can_stop, eng.last = 0, True, None
+        try:
+            list(eng.generate([1, 2, 3], 10, {}, threading.Event()))
+        except ValueError as e:
+            return e
+        raise AssertionError("no ValueError for " + text)
+
+    def test_err_line(self):
+        for text, kind in ((self.LOST, RemoteStageLost), (self.WORKER, RemoteStageLost),
+                           ("a token id is outside the vocabulary", ValueError)):
+            e = self.err_line(text)
+            self.assertIs(type(e), kind, text)
+            self.assertEqual(str(e), text)
+
+    def test_http_503(self):
+        for message in (self.LOST, self.WORKER):
+            with self.subTest(message=message):
+                self._http_503(message)
+
+    def _http_503(self, message):
+        class LostEngine(MockEngine):
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                yield None                                  # a prompt-progress heartbeat (a stream has started)
+                raise RemoteStageLink.err_line(message)     # (the class StrataEngine gives the line)
+
+        tok = ByteTokenizer()
+        svc = Service(LostEngine(tok, ANSWER, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        msgs = [{"role": "user", "content": "hi"}]
+        bodies = [("/v1/chat/completions", {"model": "m", "max_tokens": 20, "messages": msgs}),
+                  ("/v1/messages", {"model": "m", "max_tokens": 20, "messages": msgs}),
+                  ("/v1/responses", {"model": "m", "max_output_tokens": 20, "input": "hi"})]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                for path, body in bodies:
+                    req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    with self.assertRaises(urllib.error.HTTPError, msg=path) as cm:
+                        urllib.request.urlopen(req, timeout=30)
+                    err = json.loads(cm.exception.read())["error"]
+                    self.assertEqual((cm.exception.code, cm.exception.headers.get_all("Retry-After"), err["type"]),
+                                     (503, ["30"], "server_error"), path)   # (one Retry-After field: RFC 9110)
+                    self.assertEqual(err["message"], message, path)
+                for path, body in bodies:                   # streamed: the headers are out, so an error event (as
+                    req = urllib.request.Request(base + path, data=json.dumps({**body, "stream": True}).encode(),
+                                                 headers={"Content-Type": "application/json"})   # a ValueError)
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        text = r.read().decode()
+                    self.assertIn(message.split(";")[0], text, path)
+                    self.assertNotIn("invalid_request_error", text, path)
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -4451,6 +4524,16 @@ class SilentEngine(unittest.TestCase):
         engine.lines.put("RESUME 0")
         engine.lines.put("PP 100 300 1000 100.0")
         self.later(engine, 1.0, "PP 200 300 2000 100.0", "T 7", "DONE 1 300 2000 1 length")
+        self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [None, None, 7])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_remote_stage_wait_is_a_keep_alive(self):
+        # a remote stage's main process waiting for its worker prints INFO remote_stage_wait=S every 10 s: each line
+        # resets the silence (no "frozen" end) and is a keep-alive for the client, as a PP line is
+        engine = self.bare(0.3)
+        self.later(engine, 0.2, "INFO remote_stage_wait=10")
+        self.later(engine, 0.4, "INFO remote_stage_wait=20")
+        self.later(engine, 0.6, "T 7", "DONE 1 1 10 1 length")
         self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [None, None, 7])
         engine.proc.kill.assert_not_called()
 

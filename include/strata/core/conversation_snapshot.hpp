@@ -60,6 +60,13 @@ bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const Sess
                                   const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
+/// The same at an explicit length `tokens` instead of the checkpoint's ids (a remote stage worker's part carries
+/// none): the bounds and the pooled-index row at `tokens` / idx_block follow it, and the restore leaves ple_prev alone
+/// (it needs the ids; the worker has no PLE).  The two above are these with ids.size(), plus ple_prev on a restore.
+bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
+                                  const ModelGeometry& g, size_t tokens, std::string& error);
+bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
+                                     const ModelGeometry& g, size_t tokens, std::string& error);
 
 struct ConversationView {
     const std::vector<int32_t>& ids;
