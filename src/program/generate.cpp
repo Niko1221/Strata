@@ -8379,7 +8379,9 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
-            if (!conversations.make_room(estimate, held)) {
+            // Over the budget (the incoming image still counts while it is restored): the disk tier takes it instead
+            const bool to_disk = !conversations.make_room(estimate, held);
+            if (to_disk && !conv_disk.enabled()) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -8434,9 +8436,9 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
-                const bool stored = conversations.put(std::move(image), held);
+                const bool stored = to_disk ? conv_disk.put(std::move(image)) : conversations.put(std::move(image), held);
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
-                             stored ? "parked" : "skipped", live.size(),
+                             !stored ? "skipped" : to_disk ? "sent to the disk" : "parked", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
             } catch (const std::bad_alloc&) {
