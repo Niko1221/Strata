@@ -149,7 +149,7 @@ private:
     /// the other thread never reads or writes a number the process may have reused
     void break_();
     std::intptr_t fd_ = -1;   ///< the socket (a Winsock SOCKET fits; -1: none)
-    bool broken_ = false;
+    std::atomic<bool> broken_{false};   ///< (the sending side sets it, the receiving side reads it)
     std::string peer_;
     std::mutex send_mu_, recv_mu_, q_mu_;
     std::deque<std::chrono::steady_clock::time_point> sent_at_;   ///< outstanding chunks' send start (timing)

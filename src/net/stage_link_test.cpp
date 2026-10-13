@@ -26,7 +26,16 @@
 //      links; a stop flag ends the wait at once (also before a try that would fail at once), not as a lost link; a
 //      worker that answers is served as without one;
 //   9. StageHandlers::idle (a relay's look at its next worker): not while the served main process sends, about once
-//      a second while it is idle; false ends that connection, and the main process's next message finds it lost.
+//      a second while it is idle; false ends that connection, and the main process's next message finds it lost;
+//  10. a worker reads nothing but a hello first (another first message is answered and the connection closed, its
+//      body neither waited for nor drained; a hello sent a byte a second is given up at 10 s in all), and nothing
+//      after a hello - the first, or a second on a served connection - before its token is taken (a refused one's next
+//      headers, one with a body that never comes, neither end the worker nor hold it); a window's or a chunk's T is
+//      bounded before any product with it: T = 2^62, whose sizes wrap to 0, ends no worker - before the hello or
+//      after one;
+//  11. a hello's reply is read whole within connect()'s deadline (a worker that sends part of it is given up at it,
+//      or at a stop flag), and an error reply of 2^62 bytes is not read: at the hello an unexpected reply, later a
+//      link out of step.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
 #include "strata/net/stage_link.hpp"
 
@@ -247,20 +256,23 @@ struct Chatty {
         where = "127.0.0.1:" + std::to_string(ntohs(a.sin_port));
         return l;
     }
-    bool start(const std::string& extra) {
+    // answer = false: `extra` is the whole reply to the hello (a crafted one)
+    bool start(const std::string& extra, bool answer = true) {
         if ((l = listen_any(where)) == Silent::kNone) return false;
-        t = std::thread([this, extra] {
+        t = std::thread([this, extra, answer] {
             s = ::accept(l, nullptr, nullptr);
             if (s == Silent::kNone) return;
             StageHeader h;
             StageHello theirs;
             if (!recv_n(s, &h, sizeof h) || !recv_n(s, &theirs, sizeof theirs)) return;
-            StageHeader r;
-            r.type = (uint32_t) StageMsg::HelloOk;
-            r.bytes = sizeof(StageHello);
-            const StageHello mine = hello_of();
-            send_n(s, &r, sizeof r);
-            send_n(s, &mine, sizeof mine);
+            if (answer) {
+                StageHeader r;
+                r.type = (uint32_t) StageMsg::HelloOk;
+                r.bytes = sizeof(StageHello);
+                const StageHello mine = hello_of();
+                send_n(s, &r, sizeof r);
+                send_n(s, &mine, sizeof mine);
+            }
             if (!extra.empty()) send_n(s, extra.data(), extra.size());
         });
         return true;
@@ -276,6 +288,59 @@ struct Chatty {
         s = Silent::kNone;
     }
     ~Chatty() { stop(); }
+};
+
+// a main process's end spoken by hand, to a worker on loopback: headers a StageClient never sends.  Its reads wait
+// 5 s at most.
+struct Raw {
+    Silent::sock s = Silent::kNone;
+    bool open(const std::string& where) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons((unsigned short) std::atoi(where.substr(where.rfind(':') + 1).c_str()));
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        s = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (s == Silent::kNone || ::connect(s, (const sockaddr*) &a, sizeof a) != 0) return false;
+#if defined(_WIN32)
+        const DWORD ms = 5000;
+        (void) setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*) &ms, sizeof ms);
+#else
+        timeval tv{};
+        tv.tv_sec = 5;
+        (void) setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+#endif
+        return true;
+    }
+    void send(const void* p, size_t n) { Chatty::send_n(s, p, n); }
+    void header(StageMsg type, int64_t a, uint64_t bytes) {
+        StageHeader h;
+        h.type = (uint32_t) type;
+        h.a = a;
+        h.bytes = bytes;
+        send(&h, sizeof h);
+    }
+    // the next message, its payload as bytes (up to 1 MiB); false: none within 5 s, or the worker closed it
+    bool reply(StageHeader& r, std::string& payload) {
+        if (!Chatty::recv_n(s, &r, sizeof r)) return false;
+        payload.assign((size_t) std::min<uint64_t>(r.bytes, (uint64_t) 1 << 20), '\0');
+        return Chatty::recv_n(s, payload.data(), payload.size());
+    }
+    // the worker closed it within 4.5 s, what it still sent read and dropped (not a time-out, nor bytes that keep
+    // coming).  A reset counts: a worker that closes with bytes it did not read (headers sent behind a refused hello)
+    // resets the connection.
+    bool closed_by_worker() {
+        const auto t0 = std::chrono::steady_clock::now();
+        char c[256];
+        for (;;) {
+            const long long r = ::recv(s, c, (int) sizeof c, 0);
+            const bool in_time = std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(4500);
+            if (r > 0 && in_time) continue;
+            return r <= 0 && in_time;
+        }
+    }
+    ~Raw() {
+        if (s != Silent::kNone) Silent::close_(s);
+    }
 };
 
 // a port that takes connections (the system completes them in its backlog) and never answers one: a worker that
@@ -811,6 +876,151 @@ int main() {
     check(greet(a, wk9.where, with_token(hello_of(), "tok")) && a.reset(err), "... and connected again, A is served");
     a.close();
     wk9.stop();
+
+    // 10. a worker reads nothing but a hello before the hello, and bounds a message's T before any product with it
+    Worker wk10;
+    if (!wk10.start(h, buf, "tok")) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    const int64_t wrap = (int64_t) 1 << 62;   // x a row's 4 floats x 4 bytes, and x 4 or 8 bytes a token: 0 in 64 bits
+    auto refused_first = [&](StageMsg type, int64_t T, uint64_t bytes, const char* answer) {
+        Raw p;
+        if (!p.open(wk10.where)) return false;
+        const auto t0 = SteadyClock::now();
+        p.header(type, T, bytes);
+        StageHeader r;
+        std::string m;
+        const bool answered = p.reply(r, m) && r.type == (uint32_t) StageMsg::Error && contains(m, answer);
+        ms = ms_between(t0, SteadyClock::now());
+        return answered && p.closed_by_worker();
+    };
+    auto serves_on = [&] {   // (a hello's reply waited for 5 s: a worker held fails here, not at the test's time-out)
+        err.clear();
+        a.close();
+        const bool ok = a.connect(wk10.where, with_token(hello_of(), "tok"), peer, err, 5) &&
+                        a.run(1, &tok, 0, rows, kHbf, back, kHbf, err) && std::memcmp(rows, back, sizeof rows) == 0;
+        a.close();
+        return ok;
+    };
+    check(refused_first(StageMsg::Run, wrap, 0, "hello first") && serves_on(),
+          "a window of T = 2^62 before the hello: answered, closed, and the worker serves on");
+    check(refused_first(StageMsg::Prefill, wrap, 0, "hello first") && serves_on(), "... a prompt chunk the same");
+    check(refused_first(StageMsg::Run, 1, 4 + kHbf * 4, "hello first") && ms < 2000,
+          "... a window of a good size: answered at once (its body, never sent, not waited for)");
+    check(refused_first(StageMsg::Hello, 0, (uint64_t) 1 << 30, "bad hello") && ms < 2000 && serves_on(),
+          "... a hello of a wrong size: answered at once (nothing drained)");
+    // a hello sent a byte a second: closed at the hello's 10 s in all, not held while bytes keep coming
+    {
+        Silent drip;
+        const auto t0 = SteadyClock::now();
+        bool ok = drip.open(wk10.where);
+        for (size_t i = 0; ok && i < hello_bytes.size() && !drip.closed.load(); ++i) {
+            if (ms_between(t0, SteadyClock::now()) >= 13000) break;
+            drip.send_part(hello_bytes, i, i + 1);
+            for (int k = 0; k < 10 && !drip.closed.load(); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        ok = ok && drip.closed.load();
+        const double at = ok ? ms_between(t0, drip.at) : 0;
+        drip.close();
+        check(ok && at >= 9000 && at < 12000 && serves_on(),
+              "a hello sent a byte a second: closed at 10 s in all, and the worker serves on");
+    }
+    // a hello with a wrong token, and headers right behind it: a window of T = 2^62, and one of a good size whose body
+    // never comes.  Nothing after a hello is read before its token is taken, so neither ends the worker nor holds it
+    // (a recv on that body is not woken by shutting the socket down on Windows).  The peer stays open meanwhile: its
+    // close would end such a recv.  The refusal's text is not checked: closing with those headers unread resets the
+    // connection, and the reset may drop it.
+    std::vector<char> wrong(hello_bytes);
+    {
+        const StageHello nope = with_token(hello_of(), "nope");
+        std::memcpy(wrong.data() + sizeof(StageHeader), &nope, sizeof nope);
+    }
+    {
+        Raw p;
+        const bool ok = p.open(wk10.where);
+        p.send(wrong.data(), wrong.size());
+        p.header(StageMsg::Run, wrap, 0);
+        p.header(StageMsg::Run, 1, 4 + kHbf * 4);
+        check(ok && p.closed_by_worker() && serves_on(),
+              "a wrong token's hello, then a window of T = 2^62 and one whose body never comes: closed, the worker "
+              "serves on");
+    }
+    // the same behind a second hello on a served connection: its token is taken before anything after it is read
+    {
+        Raw p;
+        bool ok = p.open(wk10.where);
+        p.send(hello_bytes.data(), hello_bytes.size());
+        StageHeader r;
+        std::string m;
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::HelloOk;
+        p.send(wrong.data(), wrong.size());
+        p.header(StageMsg::Run, wrap, 0);
+        p.header(StageMsg::Run, 1, 4 + kHbf * 4);
+        check(ok && p.closed_by_worker() && serves_on(),
+              "... behind a second hello, a wrong token's, on a served connection: closed, the worker serves on");
+    }
+    // after the hello: the same window and chunk are malformed messages, and the link stays in step
+    {
+        Raw p;
+        bool ok = p.open(wk10.where);
+        p.send(hello_bytes.data(), hello_bytes.size());
+        StageHeader r;
+        std::string m;
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::HelloOk;
+        p.header(StageMsg::Run, wrap, 0);
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::Error && contains(m, "bad window size");
+        p.header(StageMsg::Prefill, wrap, 0);
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::Error && contains(m, "bad prompt chunk size");
+        p.header(StageMsg::Run, 1, 4 + kHbf * 4);
+        p.send(&tok, 4);
+        p.send(rows, sizeof rows);
+        ok = ok && p.reply(r, m) && r.type == (uint32_t) StageMsg::RunOk && m.size() == sizeof rows &&
+             std::memcmp(m.data(), rows, sizeof rows) == 0;
+        check(ok, "after the hello, a window and a chunk of T = 2^62: malformed, and the next window runs");
+    }
+    wk10.stop();
+
+    // 11. a hello's reply is read whole within the deadline, and an error reply's size is not taken on trust
+    {
+        StageHeader ok_head;
+        ok_head.type = (uint32_t) StageMsg::HelloOk;
+        ok_head.bytes = sizeof(StageHello);
+        Chatty part;
+        check(part.start(std::string((const char*) &ok_head, 8), false) &&
+                  !timed_connect(a, part.where, hello_of(), 1, nullptr, ms) && ms >= 900 && ms < 3000 &&
+                  contains(err, "timed out") && stage_link_lost(err),
+              "a worker that sends 8 bytes of its hello's reply: given up at the 1 s, as a lost link");
+        part.stop();
+        Chatty part2;
+        std::atomic<bool> stop_later{false};
+        std::thread stopper2([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            stop_later = true;
+        });
+        const bool part2_ok = part2.start(std::string((const char*) &ok_head, 8), false) &&
+                              timed_connect(a, part2.where, hello_of(), 30, &stop_later, ms);
+        stopper2.join();
+        check(!part2_ok && ms < 1500 && stage_wait_cancelled(err), "... a stop flag ends that wait too");
+        part2.stop();
+        StageHeader huge;
+        huge.type = (uint32_t) StageMsg::Error;
+        huge.bytes = (uint64_t) 1 << 62;
+        Chatty liar;
+        check(liar.start(std::string((const char*) &huge, sizeof huge), false) &&
+                  !timed_connect(a, liar.where, hello_of(), 2, nullptr, ms) && ms < 1500 &&
+                  contains(err, "unexpected reply to hello") && !stage_link_lost(err),
+              "an error of 2^62 bytes as the hello's reply: not read, an unexpected reply (not a lost link)");
+        liar.stop();
+        Chatty liar2;
+        err.clear();
+        check(liar2.start(std::string((const char*) &huge, sizeof huge)) && greet(a, liar2.where, hello_of()) &&
+                  !a.reset(err) && contains(err, "out of step") && stage_link_lost(err) && !a.connected(),
+              "... as a later reply: not read, the link out of step (lost)");
+        a.close();
+        liar2.stop();
+    }
 
     if (g_fail == 0) std::printf("stage_link_test: all passed\n");
     else std::printf("stage_link_test: %d FAILED\n", g_fail);

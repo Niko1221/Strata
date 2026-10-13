@@ -669,6 +669,37 @@ Not run on GPUs: a worker's own chunk (with the agent's explicit `--prefill` on 
 chunk, so the case did not arise on this pair) and a relay's look (it needs three PCs; `stage_link_test` covers it
 over loopback, with a stand-in for the relay's hook).
 
+### A reader's report: what a peer can make a process do (2026-10-13)
+
+A reader of the link's code (building a SYCL worker on this branch) found that a worker's receiving thread parsed any
+message before the hello and multiplied a window's T by its row width before bounding T. A `Run` header with
+T = 2^62 makes `T * handoff_floats` and `T * 4` wrap to 0 (both are multiples of 4), so a header claiming 0 bytes
+passed the size check, and the token vector's resize threw on the receiving thread, which ends the process. Any host
+that can reach the port could send it: no hello, no token. A `Prefill` header the same. Fixed:
+
+- **A worker reads nothing but a hello first.** The first message is read as a waiting connection's hello is: whole
+  within 10 s in all, and nothing else (before, each recv had its own 10 s, so a peer that sent a byte every few
+  seconds held the worker for over half an hour). Another first message, or a hello of a wrong size, is answered
+  (`hello first`, `bad hello`) and its connection closed, its body neither waited for nor drained.
+- **After a hello, nothing is read until its token is taken** (the first hello, or another a served main process
+  sends). A refused peer's next header, with a body that never comes, held the receiving thread in a recv; shutting
+  the socket down does not wake that on Windows, and the worker waited for the thread for good. (A review of this
+  fix found it; on Linux the shutdown wakes the recv.)
+- **A window's and a chunk's T are bounded before any product with them** (T at most the buffer's floats over a
+  row's), so a served main process that sends such a header gets the malformed-message answer, and the worker serves
+  on.
+- **The main process takes no size on trust either:** an error reply over 64 KiB is not read (at the hello an
+  unexpected reply; later a link out of step, which connecting again mends), and a hello's reply is read whole
+  within the connect's deadline and stop flag (before, only its first byte was: a peer that sent part of it held the
+  main process for `STRATA_REMOTE_TIMEOUT_S`).
+- Smaller ones from the same report: `--stage-begin` at or past the layer count stops at start (the report saw it
+  reach the session's setup with a layer out of range); a worker started with `--mtp` stops at start saying the
+  draft layer runs in the main process (it stopped later, at the draft layer's setup); `StageClient`'s failed-link
+  flag is an atomic (written by the sending side, read by the receiving one under another lock).
+
+`stage_link_test` sends these headers by hand over loopback (and a hello a byte a second), and each fix undone fails
+it; the wait for the token only on Windows, where the recv it prevents is not woken.
+
 ## Lessons
 
 - **The prompt chunk decides the split's prompt speed.** At 2048 no split beat one card; at 5888-8192 every split did

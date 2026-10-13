@@ -311,6 +311,32 @@ bool wait_readable(sock_t s, Clock::time_point deadline, const std::atomic<bool>
     }
 }
 
+// recv_all within the same deadline and stop flag: each part is waited for, then read as far as it is there (a recv
+// on a readable socket does not block), so a peer that sends part of its reply and then nothing is given up at the
+// deadline as one that sends nothing is
+bool recv_within(sock_t s, void* p, size_t n, Clock::time_point deadline, const std::atomic<bool>* stop,
+                 std::string& err) {
+    char* c = (char*) p;
+    while (n > 0) {
+        if (!wait_readable(s, deadline, stop, err)) return false;
+        const long long r = ::recv(s, c, (int) std::min<size_t>(n, (size_t) 1 << 30), 0);
+        if (r == 0) { err = "remote stage: the peer closed the connection"; return false; }
+        if (r < 0) {
+            const int e = sock_errno();
+            if (sock_eintr(e)) continue;
+            err = std::string("remote stage: receive failed: ") + (sock_timedout(e) ? std::string("timed out") : sock_errstr(e));
+            return false;
+        }
+        c += r;
+        n -= (size_t) r;
+    }
+    return true;
+}
+
+// the longest error text a peer's Error message is read for: a worker's errors are sentences; a longer one is not
+// read (its size is not allocated) - the link is out of step, or the peer is not a Strata stage worker
+constexpr uint64_t kMaxErrorBytes = 65536;
+
 // the link failures a StageClient reports (stage_link_lost: what connecting again can mend; a name the name service
 // cannot answer yet, after a reboot, is one)
 constexpr const char* kLost[] = {"remote stage: cannot resolve ", "remote stage: cannot connect to ",
@@ -419,23 +445,36 @@ bool StageClient::connect(const std::string& host_port, const StageHello& mine, 
     StageHeader r;
     // (the reply waits while the worker serves another main process: a take-over waits for its idle time.)  With a
     // stop flag but no deadline the reply is polled too, within STRATA_REMOTE_TIMEOUT_S as the blocking read would be.
+    // The whole reply is read within it, not only its first byte.
+    const bool polled = timed || stop != nullptr;
     const Clock::time_point reply_by = timed ? deadline : Clock::now() + std::chrono::seconds(io_timeout_s());
-    if (!send_msg(S(fd_), h, &mine, sizeof mine, nullptr, 0, err) ||
-        ((timed || stop != nullptr) && !wait_readable(S(fd_), reply_by, stop, err)) ||
-        !recv_header(S(fd_), r, err)) {
+    auto take = [&](void* p, size_t n, std::string& e) {
+        return polled ? recv_within(S(fd_), p, n, reply_by, stop, e) : recv_all(S(fd_), p, n, e);
+    };
+    if (!send_msg(S(fd_), h, &mine, sizeof mine, nullptr, 0, err) || !take(&r, sizeof r, err)) {
         close();
         return false;
     }
-    if (r.type == (uint32_t) StageMsg::Error) {
+    if (r.magic != kStageMagic) {
+        err = "remote stage: bad message magic (not a Strata stage peer?)";
+        close();
+        return false;
+    }
+    if (r.type == (uint32_t) StageMsg::Error && r.bytes <= kMaxErrorBytes) {
         std::string m((size_t) r.bytes, '\0');
         std::string e2;
-        (void) recv_all(S(fd_), m.data(), m.size(), e2);
+        (void) take(m.data(), m.size(), e2);
         err = "remote stage: the worker refused: " + m;
         close();
         return false;
     }
-    if (r.type != (uint32_t) StageMsg::HelloOk || r.bytes != sizeof peer || !recv_all(S(fd_), &peer, sizeof peer, err)) {
-        if (err.empty()) err = "remote stage: unexpected reply to hello";
+    if (r.type != (uint32_t) StageMsg::HelloOk || r.bytes != sizeof peer) {
+        err = "remote stage: unexpected reply to hello (type " + std::to_string(r.type) + ", " +
+              std::to_string(r.bytes) + " bytes)";
+        close();
+        return false;
+    }
+    if (!take(&peer, sizeof peer, err)) {
         close();
         return false;
     }
@@ -489,6 +528,12 @@ bool StageClient::read_reply_(StageMsg want, void* reply, size_t reply_bytes, in
     StageHeader r;
     if (broken_) { err = "remote stage: the link failed earlier"; return false; }
     if (!recv_header(S(fd_), r, err)) { break_(); return false; }
+    if (r.type == (uint32_t) StageMsg::Error && r.bytes > kMaxErrorBytes) {
+        err = "remote stage: receive failed: an error reply of " + std::to_string(r.bytes) +
+              " bytes (the link is out of step)";
+        break_();
+        return false;
+    }
     if (r.type == (uint32_t) StageMsg::Error) {
         std::string m((size_t) r.bytes, '\0');
         std::string e2;
@@ -660,10 +705,11 @@ sock_t accept_main(sock_t lfd, std::string& host) {
     return fd;
 }
 
-// The first message of a connection that arrived while another one is served: a hello read whole (its read timeout
-// lifted), else `bad` or `closed`.  Nothing else is read: such a connection is refused and closed.  Every read is
-// polled, within the hello's 10 s in all, so `drop` ends it at once (shutting a socket down does not wake a recv
-// blocked on it on Windows) - also when the peer sent part of a hello, or sends it a byte at a time.
+// The first message of a connection (one that arrived while another one is served, or the one served now): a hello
+// read whole (its read timeout lifted), else `bad` or `closed`.  Nothing else is read: such a connection is refused
+// and closed.  Every read is polled, within the hello's 10 s in all, so `drop` ends it at once (shutting a socket
+// down does not wake a recv blocked on it on Windows) - also when the peer sent part of a hello, or sends it a byte
+// at a time.
 Inbox read_hello(sock_t fd, const std::atomic<bool>& drop) {
     Inbox in;
     const Clock::time_point t0 = Clock::now();
@@ -827,26 +873,45 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
         bool slot_busy[2] = {false, false};
         std::atomic<bool> quit{false};
         std::atomic<bool> reading{false};   // a message's header is in, the rest not yet queued
+        bool admitted = false;              // (under mu) the serving thread took this connection's hello: read on
         std::thread reader([&] {
-            // after the hello, the wait for the next message is polled, so this connection's end (quit) ends it:
-            // shutting a socket down does not wake a recv blocked on it on Windows (a connection taken over is
-            // still open).  Before it, the hello's 10 s read timeout ends the wait.
+            // The first message is read as a waiting connection's is (read_hello): a hello, whole within 10 s, and
+            // nothing else.  A peer that sends it a byte at a time holds the worker no longer, and another message's
+            // body is neither received nor drained (its sizes come from a peer no token has admitted): the serving
+            // thread answers it and ends the connection.  After a hello (the first, or another a served main process
+            // sends) nothing is read until the serving thread has admitted it (its token): a refused peer's next
+            // header, with a body that never comes, would hold this thread in a recv that shutting the socket down
+            // does not wake on Windows.  Then the wait for each message is polled, so this connection's end (quit)
+            // ends it, for the same reason.
             bool hello_in = have_first;
             for (;;) {
                 Inbox in;
-                bool ready = !hello_in;
-                while (!ready && !quit.load()) {
-                    poll_fd pfd{};
-                    pfd.fd = fd;
-                    pfd.events = POLLIN;
-                    ready = sock_poll(&pfd, 1, 250) != 0;   // (data, the peer's end or an error: the recv says)
+                bool last = false;   // a first message that is not a whole hello: nothing after it is read
+                const bool first_read = !hello_in;
+                if (first_read) {
+                    in = read_hello(fd, quit);
+                    hello_in = !in.closed && in.bad.empty();
+                    last = !hello_in;
+                } else {
+                    {
+                        std::unique_lock<std::mutex> lk(mu);
+                        cv.wait(lk, [&] { return admitted || quit.load(); });
+                    }
+                    bool ready = false;
+                    while (!ready && !quit.load()) {
+                        poll_fd pfd{};
+                        pfd.fd = fd;
+                        pfd.events = POLLIN;
+                        ready = sock_poll(&pfd, 1, 250) != 0;   // (data, the peer's end or an error: the recv says)
+                    }
+                    if (!ready) break;
+                    reading.store(true);   // (from here until it is queued: not idle)
                 }
-                if (!ready) break;
-                if (hello_in) reading.store(true);   // (from here until it is queued: not idle)
-                if (!recv_header(fd, in.h, in.err)) {
+                if (first_read) {
+                    // (read whole above)
+                } else if (!recv_header(fd, in.h, in.err)) {
                     in.closed = true;
                 } else {
-                    reading.store(true);
                     const StageMsg type = (StageMsg) in.h.type;
                     if (type == StageMsg::Hello) {
                         if (in.h.bytes != sizeof in.hello) {
@@ -856,12 +921,15 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                             in.closed = true;
                         } else {
                             set_timeout(fd, SO_RCVTIMEO, 0);
-                            hello_in = true;
                         }
                     } else if (type == StageMsg::Run) {
+                        // T is bounded before any product with it: a T near 2^62 times a row's floats wraps around to
+                        // a size that passes, and its resize would end the process
                         const int64_t T = in.h.a;
-                        const size_t rows = (size_t) std::max<int64_t>(T, 0) * (size_t) buf.handoff_floats;
-                        if (T < 1 || rows > buf.run_floats || in.h.bytes != (uint64_t) T * 4 + rows * 4) {
+                        const int64_t max_t =
+                            (int64_t) (buf.run_floats / (size_t) std::max<int64_t>(buf.handoff_floats, 1));
+                        const size_t rows = T >= 1 && T <= max_t ? (size_t) T * (size_t) buf.handoff_floats : 0;
+                        if (T < 1 || T > max_t || in.h.bytes != (uint64_t) T * 4 + rows * 4) {
                             in.bad = "bad window size";
                             if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
                         } else {
@@ -872,9 +940,11 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                                 in.closed = true;
                         }
                     } else if (type == StageMsg::Prefill) {
-                        const int64_t T = in.h.a;
-                        const size_t rows = (size_t) std::max<int64_t>(T, 0) * (size_t) buf.pf_row_floats;
-                        if (T < 1 || rows > buf.pf_floats || in.h.bytes != (uint64_t) T * 8 + rows * 4) {
+                        const int64_t T = in.h.a;   // (bounded first, as a window's)
+                        const int64_t max_t =
+                            (int64_t) (buf.pf_floats / (size_t) std::max<int64_t>(buf.pf_row_floats, 1));
+                        const size_t rows = T >= 1 && T <= max_t ? (size_t) T * (size_t) buf.pf_row_floats : 0;
+                        if (T < 1 || T > max_t || in.h.bytes != (uint64_t) T * 8 + rows * 4) {
                             in.bad = "bad prompt chunk size";
                             if (!drain(fd, in.h.bytes, in.err)) in.closed = true;
                         } else {
@@ -908,13 +978,17 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                     }
                 }
                 const bool closed = in.closed;
+                // a whole hello (a served main process may send another): nothing after it is read until the serving
+                // thread has taken it, as after the first
+                const bool hello = !closed && in.bad.empty() && (StageMsg) in.h.type == StageMsg::Hello;
                 {
                     std::lock_guard<std::mutex> lk(mu);
+                    if (hello) admitted = false;
                     q.push_back(std::move(in));
                     reading.store(false);
                 }
                 cv.notify_all();
-                if (closed || quit.load()) break;
+                if (closed || last || quit.load()) break;
             }
         });
 
@@ -1077,8 +1151,15 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 cv.notify_all();
             };
             const StageMsg type = (StageMsg) in.h.type;
+            // a first message that is not a whole hello ends the connection after its answer (its reader read nothing
+            // after it, nor its body: the size it claims is not counted)
+            if (!greeted && (type != StageMsg::Hello || !in.bad.empty())) {
+                err = type != StageMsg::Hello ? "hello first" : in.bad;
+                (void) reply_error(err);
+                release();
+                break;
+            }
             stats.bytes_in += sizeof in.h + in.h.bytes;
-            if (!greeted && type != StageMsg::Hello) { (void) reply_error("hello first"); release(); break; }
             if (!in.bad.empty()) {
                 release();
                 // a one-way message gets no reply of its own: a malformed table is the next reply's error, as its
@@ -1114,6 +1195,13 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
                 if (!replies_out() || !send_msg(fd, r, &mine, sizeof mine, nullptr, 0, err)) keep = false;
                 greeted = true;
                 greeted_mine = mine;
+                if (keep) {   // its reader reads on (a HelloOk that did not go out ends the connection)
+                    {
+                        std::lock_guard<std::mutex> lk(mu);
+                        admitted = true;
+                    }
+                    cv.notify_all();
+                }
                 std::fprintf(stderr, "strata stage worker: main process %s: layers %d.. here, context %lld, chunk %lld\n",
                              host.c_str(), in.hello.layer_begin, (long long) in.hello.max_context, (long long) in.hello.chunk);
                 std::fflush(stderr);
@@ -1232,8 +1320,15 @@ int serve_stage(const std::string& bind_addr, int port, const std::string& token
             if (!keep) break;
         }
         (void) replies_out();   // a reply still going out ends first (or fails on the closed socket)
-        // end the receiving thread: shutting the socket down wakes a blocked recv
-        quit.store(true);
+        // end the receiving thread: quit ends its polls and its waits on cv (it is set under mu, so a wait that checked
+        // it just before cannot miss the notify), and shutting the socket down wakes a blocked recv on Linux.  On
+        // Windows it does not: there only the rest of a message from an admitted peer (a header's rest, a body, or
+        // the bytes a malformed one claims, drained) can still hold a recv, until that peer sends it or closes (or
+        // its keepalive fails).
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            quit.store(true);
+        }
         (void) sock_shutdown(fd);
         cv.notify_all();
         reader.join();

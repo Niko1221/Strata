@@ -3080,8 +3080,12 @@ int main(int argc, char** argv) {
         else if (!o.serve) why = "it needs --serve";
         else if (remote_main && (!split_same || split_at.size() != 1))
             why = "--remote-stage needs --layer-split K --split-device 0 (layers K.. run in the worker)";
-        else if (stage_worker && (!o.layer_split.empty() || o.stage_begin < 2))
-            why = "--stage-worker needs --stage-begin K (K >= 2, the main process's --layer-split K) and no --layer-split";
+        else if (stage_worker && (!o.layer_split.empty() || o.stage_begin < 2 ||
+                                  o.stage_begin >= strata::core::ModelGeometry{}.n_layers))
+            why = "--stage-worker needs --stage-begin K (2 <= K < the layer count: the main process's --layer-split K) "
+                  "and no --layer-split";
+        else if (stage_worker && !o.mtp.empty())
+            why = "a --stage-worker does not take --mtp (the draft layer runs in the main process, with the head)";
         else if (!stage_worker && (o.stage_end >= 0 || !o.stage_next.empty()))
             why = "--stage-end and --stage-next are for a relay --stage-worker";
         else if (stage_worker && ((o.stage_end >= 0) != !o.stage_next.empty() ||

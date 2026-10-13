@@ -208,7 +208,8 @@ strata serve: remote stage 192.0.2.11:7841: layers 26-47 there (prompt chunk 588
 **What must agree** (each side checks the other's hello and says which number differs): the model pack, `--kv`, and
 K (`--layer-split K` on the main PC, `--stage-begin K` on the worker). The worker's `--prefill`, `--max-context` and
 `--spec` must be at least the main process's. Everything else is each PC's own choice: `--expert-cache`,
-`--kv-resident`, `--vram-reserve-mib`, the CPU threads.
+`--kv-resident`, `--vram-reserve-mib`, the CPU threads. A worker takes no `--mtp`: the draft layer runs in the main
+process, with the head (a worker started with it stops and says so).
 
 `STRATA_ROUTE_TAIL_SKIP` changes answers and its default differs by build and by card: 7 on CUDA serve since 0.1.42,
 and since 0.1.43 also on RDNA 4 (HIP), but off when 90% or more of the experts are in the GPU cache (60% on a HIP
@@ -258,7 +259,7 @@ main process without it.
 | `--remote-stage HOST:PORT` | main | the (first) worker's address. Needs `--serve` and `--layer-split K --split-device 0` |
 | `--layer-split K --split-device 0` | main | K is the first layer the worker runs (2 or more): this PC runs 0 to K-1 and the head |
 | `--stage-worker PORT` | worker | serve a main process on this TCP port instead of stdin. Needs `--serve`, not with `--layer-split` |
-| `--stage-begin K` | worker | the first layer this worker runs: the main process's K (or the previous relay's `--stage-end`) |
+| `--stage-begin K` | worker | the first layer this worker runs: the main process's K (or the previous relay's `--stage-end`); 2 or more, below the layer count |
 | `--stage-end K2`, `--stage-next HOST:PORT` | relay worker | run layers K to K2-1 and hand the rest to the worker at HOST:PORT. Both or neither |
 | `--stage-bind ADDR` | worker | the address to listen on (default: every interface, IPv4 and IPv6) |
 | `STRATA_STAGE_TOKEN` | every PC | the shared secret in the hello (up to 63 characters). A worker without one warns and accepts anyone |
