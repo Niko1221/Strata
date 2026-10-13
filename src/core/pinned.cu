@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
@@ -238,15 +239,32 @@ void* open_shared(uint64_t bytes, const std::string& file, uint64_t pack_hash, s
             std::memcpy(map, &h, sizeof h);                  // through the mapping: hugetlbfs has no write()
         }
         uint8_t* arena = (uint8_t*) map + kSharedArenaHeaderBytes;
-        (void) madvise(arena, (size_t) arena_bytes, MADV_HUGEPAGE);   // a tmpfs mounted huge=advise
+        // #2126 as for the private arena: the engine that fills the file asks for 2 MiB pages (MADV_HUGEPAGE, then
+        // MADV_COLLAPSE) only when free 2 MiB blocks could back half of it - otherwise every fault reclaims and
+        // compacts.  A tmpfs huge=always still takes the free blocks it finds; hugetlbfs has its pages already.
+        bool ask_huge = std::getenv("STRATA_NO_LARGEPAGES") == nullptr && std::getenv("STRATA_NO_ARENA_THP") == nullptr;
+        std::string thp_note;
+        struct statfs fs{};
+        const bool hugetlbfs = fstatfs(fd, &fs) == 0 && (unsigned long) fs.f_type == 0x958458f6ul;   // HUGETLBFS_MAGIC
+        const uint64_t free_huge = ask_huge && !loaded && !hugetlbfs && std::getenv("STRATA_ARENA_THP") == nullptr
+                                       ? free_huge_bytes() : UINT64_MAX;
+        if (free_huge < arena_bytes / 2) {
+            ask_huge = false;
+            thp_note = "; 2 MiB pages NOT requested: only " + std::to_string(free_huge >> 30) +
+                       " GiB of free 2 MiB blocks for it, compaction would stall the load (STRATA_ARENA_THP=1 "
+                       "requests them anyway) (#2126)";
+            std::fprintf(stderr, "strata generate: shared arena %s%s\n", file.c_str(), thp_note.c_str());
+        }
+        if (ask_huge) (void) madvise(arena, (size_t) arena_bytes, MADV_HUGEPAGE);   // a tmpfs mounted huge=advise
         // Map every page now, before the GPU registration (Linux 5.14; older kernels fault them in as they go).  The
-        // engine that loads the file makes its huge pages whole first (Linux 6.1): on AMD the 4 KB pages of a
+        // engine that loads the file makes its huge pages whole first (Linux 6.1; not when #2126 held them back): on
+        // AMD the 4 KB pages of a
         // registered arena are the ones compaction moves, and every move stops the engine's GPU queues while the
         // driver maps the range again.  The pages are still empty and unregistered here, so that costs nothing.
         (void) madvise(arena, (size_t) arena_bytes, loaded ? MADV_POPULATE_READ : MADV_POPULATE_WRITE);
         int64_t huge = huge_mapped_bytes(arena);   // the header's page is not mapped yet (or not on a huge page)
         std::string collapsed;
-        if (!loaded && huge >= 0 && (uint64_t) huge < arena_bytes) {
+        if (!loaded && ask_huge && huge >= 0 && (uint64_t) huge < arena_bytes) {
             const bool ok = madvise(arena, (size_t) arena_bytes, MADV_COLLAPSE) == 0;
             collapsed = ok ? " (after MADV_COLLAPSE)" : std::string(" (MADV_COLLAPSE: ") + std::strerror(errno) + ")";
             huge = huge_mapped_bytes(arena);
@@ -262,6 +280,7 @@ void* open_shared(uint64_t bytes, const std::string& file, uint64_t pack_hash, s
             std::snprintf(num, sizeof num, "; %.2f of %.2f %s on 2 MiB pages%s", (double) huge / unit,
                           (double) arena_bytes / unit, small ? "MiB" : "GiB", collapsed.c_str());
             note += num;
+            note += thp_note;
 #if defined(__HIP_PLATFORM_AMD__)
             if ((uint64_t) huge < arena_bytes)
                 note += " - on AMD the kernel's compaction moves the 4 KB pages and every move stops the GPU queues "

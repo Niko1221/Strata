@@ -234,7 +234,9 @@ strata ... --shared-expert-arena /mnt/strata-arena/ud-iq4_xs.arena
 
 `size=` is the arena plus 2 MiB (a start on a smaller tmpfs says so and names the size); `noswap` needs Linux 6.4 (the
 arena is registered or locked as before either way); `huge=always` puts the arena on 2 MiB pages, and the engine that
-loads the file makes the rest whole with `MADV_COLLAPSE` (Linux 6.1). The start says what it got: `loads the shared
+loads the file makes the rest whole with `MADV_COLLAPSE` (Linux 6.1) - unless free 2 MiB blocks could back less than
+half of it: then, as for the private arena (#2126), it asks for none and says so (`STRATA_ARENA_THP=1` asks anyway;
+a `huge=always` tmpfs still takes the free blocks it finds). The start says what it got: `loads the shared
 file ...` or `attached to the shared file ...`, then `N of M GiB on 2 MiB pages`. `/dev/shm` works too, on 4 KB pages
 (it is 64 MB in a default Docker container: `--shm-size`, or mount a tmpfs into the container).
 
