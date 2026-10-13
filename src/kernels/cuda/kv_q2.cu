@@ -164,7 +164,7 @@ __global__ void kv_append_q2_group_kernel(uint8_t* __restrict__ k_q2, uint8_t* _
     // scale behind the first half's codes. A group with no scale yet takes the RMS of the cells the call has -
     // or, for a single-cell append, the previous group's scale, which is a far better estimate of a channel than
     // one sample. Only for a single-cell append: in a batch the previous group may be written by this launch.
-    float s = sqrtf(ss * (1.0f / (float) Q2_0));
+    float s = sqrtf(ss * (1.0f / (float) n));
     bool fresh = false;                              // does this call write the group's scale?
     if (n < Q2_0) {
         const float stored = q2c_scale(sp, g, h, d, kv_heads, head_dim);
