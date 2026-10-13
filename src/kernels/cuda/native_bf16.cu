@@ -2,6 +2,7 @@
 #include "s26_tsum.cuh"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/pdl.hpp"
+#include "strata/kernels/grid_pad.hpp"
 
 #include <cuda_runtime.h>
 #include <cstdlib>
@@ -45,7 +46,8 @@ __device__ __forceinline__ float mmvf_warp_sum(float value) {
 
 template <int BLOCK_SIZE>
 __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t* __restrict__ w,
-                                    float* __restrict__ y, int n_in) {
+                                    float* __restrict__ y, int n_in, int n_out) {
+    if (int(blockIdx.x) >= n_out) return;   // grid_pad's empty blocks
     const int t = threadIdx.x;
     const uint16_t* row = w + (size_t) blockIdx.x * n_in;
     const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
@@ -349,7 +351,7 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         throw std::invalid_argument("bf16_gemv_fp32_mmvf: null or misaligned pointer");
     const cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_MMVF_CASE(N) case N: \
-    bf16_f32_mmvf_kernel<N><<<(unsigned) n_out, N, 0, st>>>(x, w, y, (int) n_in); break
+    bf16_f32_mmvf_kernel<N><<<grid_pad(unsigned(n_out), N), N, 0, st>>>(x, w, y, (int) n_in, (int) n_out); break
     switch (mmvf_block_size(n_in)) {
         STRATA_MMVF_CASE(32);
         STRATA_MMVF_CASE(64);
