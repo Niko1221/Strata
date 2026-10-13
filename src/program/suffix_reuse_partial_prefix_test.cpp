@@ -265,8 +265,9 @@ int main() {
               "T14.1: deeper partial (L=4) beats equal-depth strict (s=2, p=2) - splice engagement");
         check(m.tokens == 2,
               "T14.2: reads from the LCP (2) - same point as the strict match, never shallower");
-        check(m.checkpoint_length == 4,
-              "T14.3: the deeper checkpoint (4) is the anchor, not the strict (2)");
+        check(m.checkpoint_length == 6,
+              "T14.3: the deepest checkpoint (6) is the anchor - T17 lifted the size guard, so the "
+              "6-long entry (LCP 2, previously size-refused) wins the deeper-anchor tie-break over 4");
 
         // Now drop ck C and re-test: partial mode, longest LCP wins, deeper anchor wins ties.
         // Use a prompt long enough for both checkpoints to be partial (L <= n).
@@ -359,10 +360,15 @@ int main() {
             {1, 2, 3, 4}, {1, 2, 3, 4, 5}, /*L=*/4, /*P=*/4, {});
         check(!c.fired, "T15v.3: P >= L -> fired=false (not a partial shape)");
 
-        // L > cur.size() (would be strict if tokens matched)
+        // L > cur.size() - T17 (2026-10-13): this is now a VALID partial shape
+        // (the parked-live anchor is typically longer than the next prompt).
+        // The helper fires and narrows to P; the runtime restores the deepest
+        // checkpoint <= P, never state@L.  The old pin refused it (three guards);
+        // see T17.6 in this suite.
         const SuffixHookOutcome d = suffix_reuse_partial_apply(
             {1, 2, 3, 4, 5, 6}, {1, 2}, /*L=*/6, /*P=*/2, {});
-        check(!d.fired, "T15v.4: L > cur.size() -> fired=false (strict path handles)");
+        check(d.fired && d.plan_edit_pos == 2 && d.restore_anchor_length == 6,
+              "T15v.4: L(6) > cur(2) fires (T17 live-anchor shape; anchor 6, narrow 2)");
 
         // Inconsistent tokens (length mismatch)
         const SuffixHookOutcome e = suffix_reuse_partial_apply(
@@ -471,6 +477,90 @@ int main() {
         const auto m0 = cache.best_with_partial(0, prompt, {}, true);
         check(!m0.partial && m0.tokens == 2,
               "T16.6: flag=0 stays byte-identical strict (2)");
+    }
+
+    // ============================================================
+    // T17: LIVE-ANCHOR PARTIAL - a parked live LONGER than the prompt
+    // ============================================================
+    // The M1 probe finding (2026-10-13, chain /tmp/dt-steady4.log, C-turn):
+    //   parked-scan: e0.live:L=5786:skip   (prompt_len=5736)
+    // The parked LIVE (prompt+response of the previous turn) is almost always
+    // slightly LONGER than the next turn's prompt, and three L > prompt.size()
+    // guards refused it without computing the LCP: the cache's consider()
+    // size-guard, conversation_lcp's n > prompt.size() early-out, and
+    // suffix_reuse_partial_apply's L > n_new refusal.  The live anchor is the
+    // single most valuable partial candidate in every edit chain - lifting the
+    // guards for the PARTIAL PASS ONLY (strict stays byte-identical) lets the
+    // partial mount recover [P, L) K/V the strict anchor cannot reach.
+    //
+    // Safety: the LCP walk stops at min(L, prompt.size()) - tokens past the
+    // prompt are irrelevant (the partial mount discards them); the strict pass
+    // keeps its own guard (a longer-than-prompt checkpoint can NEVER be a
+    // strict prefix).  The runtime routes a live-anchor partial through the
+    // narrowed_resume_target restore (state@L is stale for the edited history;
+    // see the v3 fix note in generate.cpp) - restore the deepest checkpoint
+    // <= P, arena covers [ckpt, P) by the LCP, read [P, n).
+    {
+        // Parked live {A B C D E} (5) + shallow checkpoints {A B}(2), {A B C}(3).
+        // Request {A B C X} (4) - SHORTER than the live, edits index 3.
+        // Strict: {A B C} mounts 3 (live and {A B C D E} fail: longer/edited).
+        // Partial on the live: LCP = 3, L = 5 > strict 3 -> dominance fires.
+        auto s = image({1, 2, 3, 4, 5});
+        s.checkpoints = { ckpt({1, 2}), ckpt({1, 2, 3}) };
+        ConversationCache cache(1 << 20, 4);
+        cache.put(std::move(s));
+
+        const std::vector<int32_t> prompt = {1, 2, 3, 90};   // len 4 < live 5
+        const auto strict = cache.best(prompt, {}, true);
+        check(strict.tokens == 3 && !strict.partial,
+              "T17.1: strict best() mounts {A B C} (3); the longer live is refused");
+
+        const auto m = cache.best_with_partial(64, prompt, {}, true);
+        check(m.partial,
+              "T17.2: live anchor (L=5 > prompt=4) is now a partial candidate");
+        check(m.tokens == 3,
+              "T17.3: live-anchor partial LCP == 3 (divergence at index 3)");
+        check(m.checkpoint_length == 5,
+              "T17.4: the parked LIVE (5) is the splice anchor");
+        check(m.live,
+              "T17.5: Match.live == true (the anchor is the parked live)");
+
+        // The helper accepts L > n_new for the partial path (fail-closed kept
+        // for every OTHER shape).  Fire with L=5, P=3, cur len 4: plan narrows
+        // to P=3, anchor 5, no common tail ({D E} vs {X}).
+        const std::vector<int32_t> live_tokens = {1, 2, 3, 4, 5};
+        std::vector<CheckpointLength> chain = { {2, 0}, {3, 1} };
+        const SuffixHookOutcome outcome = suffix_reuse_partial_apply(
+            live_tokens, prompt, /*L=*/5, /*P=*/3, chain);
+        check(outcome.fired,
+              "T17.6: partial_apply fires with L(5) > n_new(4)");
+        check(outcome.fired && outcome.plan_edit_pos == 3,
+              "T17.7: plan_edit_pos == 3 (the LCP)");
+        check(outcome.fired && outcome.restore_anchor_length == 5,
+              "T17.8: restore_anchor_length == 5 (the live anchor)");
+        check(outcome.fired && outcome.old_suffix_len == 0,
+              "T17.9: old_suffix_len == 0 ({D E} vs {X} - no common tail)");
+
+        // conversation_lcp direct: live longer than prompt walks to the prompt's
+        // end and reports the prompt-bounded LCP (not 0).
+        ConversationCheckpoint lc;
+        lc.ids = {1, 2, 3, 4, 5};
+        check(strata::core::conversation_lcp(lc, prompt, {}) == 3,
+              "T17.10: conversation_lcp walks a longer-than-prompt checkpoint (3, not 0)");
+
+        // Off-flag: byte-identical strict - the live-anchor lift is flag-gated.
+        const auto m0 = cache.best_with_partial(0, prompt, {}, true);
+        check(!m0.partial && m0.tokens == 3,
+              "T17.11: flag=0 stays byte-identical strict (3)");
+
+        // A strict-longer guard REMAINS: a candidate longer than the prompt can
+        // never produce p >= L (strict); the partial pass alone evaluates it.
+        // Pin that conversation_lcp reports the FULL checkpoint length when the
+        // checkpoint is a strict prefix (shorter or equal) - unchanged.
+        ConversationCheckpoint sc;
+        sc.ids = {1, 2};
+        check(strata::core::conversation_lcp(sc, prompt, {}) == 2,
+              "T17.12: shorter strict-prefix checkpoint still reports its full length (2)");
     }
 
     std::printf("suffix_reuse_partial_prefix_test: %d passed, %d failed\n", g_pass, g_fail);
