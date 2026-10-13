@@ -66,6 +66,20 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(json.loads((current.state / 'selection.json').read_text()), selected)
             self.assertEqual(Controller(current).selected, selected)
 
+    def test_absent_idle_defaults_to_five_minutes_and_saved_thirty_wins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = fixture(root)
+            profile = settings.profile('Test')
+            profile.pop('idle_unload_s')
+            atomic_json(root / 'model.json', profile)
+            settings = Settings(root / 'tray.json')
+            self.assertEqual(settings.selection()['idle'], 300)
+            atomic_json(settings.state / 'selection.json', {**settings.selection(), 'idle': 1800})
+            restored = Settings(root / 'tray.json')
+            self.assertEqual(restored.selection()['idle'], 1800)
+            self.assertEqual(restored.generated(restored.selection())['idle_unload_s'], 1800)
+
     def test_reject_invalid_and_changed_auth(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -194,6 +208,43 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.controller.backend.stop()
         await self.client.close()
         self.temp.cleanup()
+
+    async def test_lazy_start_restart_and_update_do_not_preload(self):
+        c = self.controller
+        c.settings.engine = 'strata'
+        class Backend:
+            alive = True
+            pid = 42
+            def listener_owned(self, p): return self.alive
+            async def start(self, argv, *args):
+                self.alive = True
+                self.argv = argv
+            async def stop(self): self.alive = False
+        c.backend = Backend()
+        calls = []
+        loaded = False
+        async def control(path, method='GET'):
+            nonlocal loaded
+            calls.append((path, method))
+            if path == '/health':
+                return {'status': 'ok', 'service': 'strata', 'loaded': loaded,
+                        'model': 'test-model'}
+            if path == '/v1/load':
+                loaded = True
+                return {'status': 'loaded'}
+            return {'loaded': loaded, 'model': 'test-model', 'engine': '0.1.43.1',
+                    'cache_max_tokens': c.selected['context'], 'activity': {'in_flight': 0}}
+        c.control = control
+        c.settings.generated = lambda selection, runtime: {'model_name': 'test-model'}
+        for expected in (None, 'v0.1.43.1'):
+            await c.restart(expected_version=expected)
+            self.assertEqual(c.phase, 'ready')
+            self.assertEqual(c.model, 'unloaded')
+            self.assertTrue(c.accepting)
+            self.assertIn('--lazy', c.backend.argv)
+        self.assertNotIn(('/v1/load', 'POST'), calls)
+        await c.command({'action': 'load'})
+        self.assertEqual(calls.count(('/v1/load', 'POST')), 1)
 
     async def test_development_version_starts_but_update_requires_exact_version(self):
         c = self.controller

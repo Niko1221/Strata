@@ -109,7 +109,7 @@ class Controller:
         generated = self.settings.state / 'generated-profile.json'
         atomic_json(generated, config)
         self.current_config = config
-        self.phase, self.model, self.api = 'starting', 'loading', 'checking'
+        self.phase, self.model, self.api = 'starting', 'unknown', 'checking'
         self.publish()
         await self.backend.start([str(self.settings.python), '-B', str(root / 'serve/server.py'),
                                   '--engine', self.settings.engine, '--config', str(generated),
@@ -129,10 +129,10 @@ class Controller:
             if time.monotonic() >= deadline:
                 raise TimeoutError('Server startup timed out')
             await asyncio.sleep(.2)
-        await self.control('/v1/load', 'POST')
+        # Keep --lazy unloaded. Official inference or explicit Preload loads it.
         status = await self.control('/v1/status')
-        if not status.get('loaded') or status.get('model') != config['model_name']:
-            raise RuntimeError('Loaded model identity mismatch')
+        if type(status.get('loaded')) is not bool or status.get('model') != config['model_name']:
+            raise RuntimeError('API model identity mismatch')
         if self.settings.engine != 'mock':
             if status.get('cache_max_tokens') != self.selected['context']:
                 raise RuntimeError('Effective context mismatch')
@@ -149,7 +149,7 @@ class Controller:
             else:
                 self.version = actual_version.lstrip('v')
         self.effective = {**self.selected, 'context': status.get('cache_max_tokens')}
-        self.phase, self.model, self.api, self.error = 'ready', 'loaded', 'available', ''
+        self.phase, self.model, self.api, self.error = 'ready', 'loaded' if status['loaded'] else 'unloaded', 'available', ''
         self.accepting = True
         self.last_activity = time.monotonic()
 

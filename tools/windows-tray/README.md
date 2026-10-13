@@ -52,7 +52,11 @@ Only one read-only instance per port is allowed in a Windows session.
    ```
 
 Managed mode requires Python 3.10+ and the official server's Python dependencies.
-It starts and preloads the chosen model. A Windows Job contains only the owned
+It starts the API with `--lazy`, leaving the chosen model unloaded until the
+first inference request or an explicit **Preload model** action. Boot, restart,
+profile/context changes and upgrades do not automatically preload. Status polling
+does not load a model. Idle unload defaults to five minutes when absent; existing
+profile values and saved choices (including thirty minutes) remain authoritative. A Windows Job contains only the owned
 sidecar/server descendants; closing the owning Tray forcibly during inference
 can interrupt that inference. Use the menu's graceful Exit for normal shutdown.
 Do not launch a second Tray against the same config/state directory.
@@ -116,8 +120,10 @@ idle**. Automatic activation waits for at least 60 seconds of idle time, then
 uses the same admission/drain boundary. The updater stages a new runtime without
 changing your Git checkout or overwriting the previous runtime. It requires the
 published asset size and SHA-256, rejects unsafe ZIP entries, checks backend
-metadata and unchanged Python requirements, and verifies the loaded model,
-context and engine version before recording the new active runtime. Source
+metadata and unchanged Python requirements, and verifies API model identity,
+context metadata and engine version before recording the new active runtime.
+The API stays unloaded: context before first use is configured capacity, not
+proof of native GPU allocation. Runtime version is independent of Git source pins. Source
 comes from the fixed official GitHub tag URL over HTTPS; its hash is recorded.
 These checks trust the official release publisher; they are not code signing.
 
