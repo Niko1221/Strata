@@ -62,6 +62,13 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 
+- [2026-10-13: NVIDIA RTX PRO 6000 Blackwell Workstation Edition 96 GB (sm_120), Core Ultra 9 285K, 253.4 GiB RAM](../bench/results/2026-10-13-community-rtx-pro-6000-blackwell-workstation-iq3-s/README.md):
+  Strata 0.1.43.1 official Windows release, Flash-Next IQ3_S GSQ-RCO native weights with the iq3_s pack and the RT MTP model,
+  262,144-token context, every expert resident in VRAM (`--kv int8 --kv-resident 0 --spec 4 --mtp rt --lookup-chain 4
+  --batch-mtp`, the configuration of #2261); the whole `strata_bench --long` suite at three runs each: prompt tok/s
+  4,135.6 / 4,937.6 / 5,049.1 at 4,019 / 16,058 / 32,049 tokens, short-chat decode median 191.3 tok/s, agent follow-up
+  turns 180.8 tok/s median (conversation-cache hit 68.8 %). Speed only; no correctness check was run.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
