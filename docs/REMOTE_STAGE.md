@@ -320,10 +320,13 @@ stages, layers 0 to K-1 as the front stage and the worker followed by this PC's 
 worker and the head verify window N, layers 0 to K-1 already run window N+1 on the guess that N is accepted whole;
 a wrong guess is undone on this PC (its layers' recurrent state comes back from a snapshot). The worker only ever
 gets verified windows, in the serial loop's order, so it needs no new flag. `1` overlaps only the prompt's short
-reads. Both stages share this PC's GPU: the second verify window of each and two copies of layers 0 to K-1's
+reads. With `--adapt-async` it stays off (not measured with a remote stage; the log says so). Both stages share this
+PC's GPU: the second verify window of each and two copies of layers 0 to K-1's
 recurrent state are kept out of the expert cache (444 MiB at K=26; the log says so in one line). With the automatic
-cache that took an RTX 3080 main process from 2153 to 1951 slots. Measured on an earlier base: +12% decode on
-`spec_prompts.py`. TODO(v1-gpu): this branch's decode speed, `--pipeline-windows 0` against `2`.
+cache that took an RTX 3080 main process from 2153 to 1951 slots. Decode on `spec_prompts.py` (40 prompts of 200
+tokens), RTX 3080 main (layers 0-25) + RTX 2080 Ti worker over 10 GbE, RVN IQ3_S, `--spec 4`, this change on engine
+0.1.43 (the build before this branch's reconnect and hello changes), one binary in one session, off-on-on-off: 62.8,
+70.4, 70.7 and 62.7 tok/s (+12%). TODO(v1-gpu): this branch's decode speed, `--pipeline-windows 0` against `2`.
 
 **Comparing answers byte for byte with the serial loop.** The cache size is part of the result: a different number
 of slots places other experts on the CPU, and that moves near-tie tokens. `--pipeline-windows 2` with the automatic

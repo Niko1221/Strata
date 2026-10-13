@@ -4390,6 +4390,7 @@ int main(int argc, char** argv) {
                         : split_devs.empty() ? "it needs a layer split into two or more stages"
                         : split_devs.size() > 1 && o.pipeline_windows == 1 ? "--pipeline-windows 1 needs exactly two stages"
                         : split_devs.size() > 1 && o.adapt_async ? "not with --adapt-async on three or more stages"
+                        : remote_main && o.adapt_async ? "not with --adapt-async on a remote stage (not measured there)"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
                         : o.batch != 0 ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
