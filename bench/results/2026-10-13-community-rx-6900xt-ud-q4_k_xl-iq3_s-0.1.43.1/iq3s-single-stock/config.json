@@ -1,0 +1,43 @@
+{
+  "args": [
+    "--pack",
+    "/m/packs/iq3_s",
+    "--native",
+    "/m/flash-next/GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/m/flash-next/GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "/m/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "/m/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--ple-io",
+    "ram"
+  ],
+  "tokenizer": "/m/packs/iq3_s/tokenizer",
+  "model_name": "iq3s-single",
+  "lib_dirs": [
+    "/opt/rocm/lib"
+  ],
+  "port": 8080,
+  "backend": "hip",
+  "gpu": 1,
+  "gpus_asked": true,
+  "exe": "/work/stock/build-hip/strata",
+  "cwd": "/work/stock",
+  "log": "/bench/iq3s-single-stock/engine.log",
+  "env": {}
+}
