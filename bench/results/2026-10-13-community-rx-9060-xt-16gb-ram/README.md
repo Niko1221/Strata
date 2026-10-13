@@ -6,6 +6,14 @@ the Coder. The experts are read from a SATA SSD (`--mmap-experts`). It lists the
 engine patches that made it stable on this machine, a same-day comparison against stock 0.1.43.1 with setup's
 own configuration, and earlier tuning measurements.
 
+**Everyday speed vs the bench number.** In everyday agent use (coding prompts, long replies with thinking on,
+a warm cache), decode runs at **12-17 tok/s with peaks of 25 tok/s**. That comes from my own measurements on
+2026-10-09 to 2026-10-11 ([earlier tuning measurements](#earlier-tuning-measurements-not-repeated-today)). The
+8.9 tok/s in today's results table is `strata_bench.py`'s short chat: three trivia questions with 100-token
+replies, thinking off, minutes after a reboot. Short replies are dominated by the slow first tokens after each
+prompt, and those prompts match the agent-learned expert profile less well (GPU hit rate 38-58% today, against
+79% on agent prompts).
+
 Main limitations: one machine and one model. The bench suite runs with thinking off, but day-to-day use is an
 agent client with thinking on. The patches were built and tested only with HIP (gfx1200), not CUDA or SYCL.
 No correctness check was run.
@@ -122,7 +130,7 @@ stock run about 15 minutes into the agent session, after its first turn failed. 
 ([`stock-16k/console.txt`](stock-16k/console.txt)).
 
 The tuned run had no failures. Its agent-session decode (5.7 tok/s, 64-token replies, thinking off) is lower
-than what I see in real use with longer replies (10-15 tok/s, earlier measurements below). The first tokens
+than what I see in real use with longer replies (12-17 tok/s, earlier measurements below). The first tokens
 after a prompt wait for the post-prompt slot refill from the SSD, and short replies weigh that more.
 
 Memory: the lowest `MemAvailable` was 11.1 GiB (tuned) and 11.9 GiB (stock); the mapped experts count as page
