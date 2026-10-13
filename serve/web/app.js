@@ -111,11 +111,11 @@ async function loadHealth() {
 // ------------------------------------------------------------------ Monitor
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
-  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
-  {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
-  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
+  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100, perGpu: "util"},
+  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used", perGpu: "mem_used"},
+  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn", perGpu: "temp"},
+  {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power", perGpu: "power"},
+  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info", perGpu: "pcie_rx_mb"},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
@@ -132,7 +132,8 @@ $("metrics").innerHTML = METRICS.map((m) => `
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
       ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
         <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
-        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
+        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}${m.perGpu ? `<g id="sp2-${m.key}" class="spark-gpu2"><path class="line" fill="none" stroke="currentColor"
+        stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
 
 function spark(id, values, max) {
@@ -145,9 +146,23 @@ function spark(id, values, max) {
   svg.querySelector(".line").setAttribute("d", line);
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
+// local: one line per card on a layer split - GPU 0 solid with its area, GPU 1 dashed, both on one scale
+function sparkPair(key, h, m, max) {
+  const svg = $(`sp-${key}`), g2 = $(`sp2-${key}`);
+  const s0 = h[`gpu0_${m.perGpu}`], s1 = h[`gpu1_${m.perGpu}`];
+  if (!g2 || !s0 || !s1 || s1.length < 2) { if (g2) g2.querySelector(".line").setAttribute("d", ""); spark(`sp-${key}`, h[m.series], max); return; }
+  const top = Math.max(max || 0, ...s0.map((x) => x ?? 0), ...s1.map((x) => x ?? 0), 1);
+  spark(`sp-${key}`, s0, top);
+  const v = s1.map((x) => (x == null ? 0 : x));
+  const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
+  g2.querySelector(".line").setAttribute("d", pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(""));
+  const n = window.__gpuNames || []; svg.setAttribute("title", `solid: ${n[0] || "GPU 0"} · dashed: ${n[1] || "GPU 1"}`);
+}
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+  const el = $(`ms-${key}`);
+  if (sub && typeof sub === "object" && "html" in sub) { el.innerHTML = sub.html; el.classList.add("cards"); }   // per-card rows (local)
+  else { el.textContent = sub || ""; el.classList.remove("cards"); }
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -276,25 +291,32 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
+  // local: the cards by their short names ("RTX 5070 Ti"), from hardware_static.gpu_name ("A + B", in index order)
+  const names = (st.gpu_name || "").split(" + ").map((n) => n.replace(/^(NVIDIA GeForce|NVIDIA|AMD Radeon|AMD|Intel Arc|Intel)\s+/, "").trim());
+  const cardName = (g, i) => names[i] && (hw.gpus || []).length === names.length ? names[i] : `GPU ${g.index}`;
+  // one card per side of the tile (flex, space-between), the value in bold: {html: ...} for setMetric
+  const per = (f) => ({html: (hw.gpus || []).map((g, i) => `<span class="card"><span class="muted">${esc(cardName(g, i))}</span> <b>${esc(f(g))}</b></span>`).join("")});
+  window.__gpuNames = (hw.gpus || []).map((g, i) => cardName(g, i));
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
-  spark("sp-gpu", h.gpu_util, 100);
+  sparkPair("gpu", h, METRICS[1], 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
-  spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
+  sparkPair("vram", h, METRICS[2], multi ? Math.max(...(hw.gpus || []).map((g) => g.mem_total || 0)) : hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
-  spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
-  spark("sp-power", h.gpu_power, hw.gpu_power_limit);
+  sparkPair("temp", h, METRICS[3], 90);
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+            multi ? per((g) => (g.power == null ? "–" : `${fmt(g.power)} W`)) : hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  sparkPair("power", h, METRICS[4], multi ? null : hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
+            multi ? per((g) => (g.pcie_rx_mb == null ? "–" : `${fmt(g.pcie_rx_mb, g.pcie_rx_mb < 10 ? 1 : 0)} MB/s`))
+            : hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
             (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
-  spark("sp-pcie", h.gpu_pcie_rx_mb);
+  sparkPair("pcie", h, METRICS[5]);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
