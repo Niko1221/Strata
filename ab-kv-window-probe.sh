@@ -4,10 +4,15 @@
 # The serving scheduled task is stopped for the run and restarted at the end.
 set -u
 PORT=8085
-ROOT=C:/Users/blsor/Strata   # native paths: git-bash does not translate them for python.exe here
-PY="$ROOT/.venv/Scripts/python.exe"
+# Paths: the repo is this script's folder; model data is $STRATA_DATA, else the Strata-data folder next to it.
+ROOT=$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))   # pwd -W: a native path python.exe reads under git-bash
+DATA=${STRATA_DATA:-$ROOT/../Strata-data}
+PY=${PYTHON:-$ROOT/.venv/Scripts/python.exe}
 CFG="$ROOT/strata-ab-kv-window.json"
-KEY=$(cat "C:/Users/blsor/Strata-data/strata_api_key.txt")
+KEY=${STRATA_API_KEY:-$(cat "$DATA/strata_api_key.txt" 2>/dev/null)}
+# STRATA_SERVICE_TASK: a scheduled task serving on this GPU - stopped for the run, restarted after (unset: none).
+svc_stop() { if [ -n "${STRATA_SERVICE_TASK:-}" ]; then schtasks /End /TN "$STRATA_SERVICE_TASK" >/dev/null 2>&1; fi; }
+svc_start() { if [ -n "${STRATA_SERVICE_TASK:-}" ]; then schtasks /Run /TN "$STRATA_SERVICE_TASK" >/dev/null 2>&1; fi; }
 PROMPT='{"model":"swift-1.5-iq3_xxs","messages":[{"role":"user","content":"Answer these three, each on its own line: (1) 17*23 (2) the capital of Australia (3) the number of days in a leap year."}],"temperature":0,"max_tokens":700,"reasoning_budget_tokens":300,"seed":7}'
 LOG=/tmp/abp-engine-server.log
 
@@ -46,10 +51,10 @@ run_arm() {
 }
 
 echo "stopping the serving task"
-schtasks /End /TN StrataServe >/dev/null 2>&1
+svc_stop
 run_arm off
 run_arm on STRATA_KV_WINDOW=128 STRATA_KV_SINK=8
 
 echo "restarting the serving task"
-schtasks /Run /TN StrataServe >/dev/null 2>&1
+svc_start
 echo "=== done ==="

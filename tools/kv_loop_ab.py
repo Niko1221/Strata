@@ -22,13 +22,12 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("C:/Users/blsor/Strata")
-DATA = Path("C:/Users/blsor/Strata-data")
-PY = ROOT / ".venv/Scripts/python.exe"
-KEY = (DATA / "strata_api_key.txt").read_text(encoding="utf-8").strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kv_bench_env import KEY, PY, ROOT, base_config, engine  # noqa: E402  (paths: tools/kv_bench_env.py)
+
 PORT = 8088
-RELEASE = "C:\\Users\\blsor\\Strata\\engine\\strata.exe"
-BASE = json.loads((ROOT / "strata-swift-iq3_xxs.json").read_text(encoding="utf-8"))
+RELEASE = engine("KV_REF_ENGINE", "engine")
+BASE = base_config()
 
 BATTERY = [
     ("What is 17 * 23? Reply with just the number.", ["391"]),
@@ -49,7 +48,7 @@ ARMS = [
 def cfg_for(name: str) -> Path:
     cfg = json.loads(json.dumps(BASE))
     cfg["exe"] = RELEASE
-    cfg["log"] = f"C:\\Users\\blsor\\Strata\\loop-ab-{re.sub(r'[^a-z0-9]+', '-', name)}.log"
+    cfg["log"] = str(ROOT / f"loop-ab-{re.sub(r'[^a-z0-9]+', '-', name)}.log")
     args, i, src = [], 0, cfg["args"]
     while i < len(src):
         if src[i] == "--max-context":

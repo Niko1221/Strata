@@ -4,10 +4,15 @@
 # The serving scheduled task is stopped for the run and restarted at the end.
 set -u
 PORT=8084
-ROOT=C:/Users/blsor/Strata   # native paths: git-bash does not translate them for python.exe here
-PY="$ROOT/.venv/Scripts/python.exe"
+# Paths: the repo is this script's folder; model data is $STRATA_DATA, else the Strata-data folder next to it.
+ROOT=$(cd "$(dirname "$0")" && (pwd -W 2>/dev/null || pwd))   # pwd -W: a native path python.exe reads under git-bash
+DATA=${STRATA_DATA:-$ROOT/../Strata-data}
+PY=${PYTHON:-$ROOT/.venv/Scripts/python.exe}
 CFG="$ROOT/strata-ab-kv-window-stream.json"
-KEY=$(cat "C:/Users/blsor/Strata-data/strata_api_key.txt")
+KEY=${STRATA_API_KEY:-$(cat "$DATA/strata_api_key.txt" 2>/dev/null)}
+# STRATA_SERVICE_TASK: a scheduled task serving on this GPU - stopped for the run, restarted after (unset: none).
+svc_stop() { if [ -n "${STRATA_SERVICE_TASK:-}" ]; then schtasks /End /TN "$STRATA_SERVICE_TASK" >/dev/null 2>&1; fi; }
+svc_start() { if [ -n "${STRATA_SERVICE_TASK:-}" ]; then schtasks /Run /TN "$STRATA_SERVICE_TASK" >/dev/null 2>&1; fi; }
 PROMPT='{"model":"swift-1.5-iq3_xxs","messages":[{"role":"user","content":"Explain in one paragraph what a KV cache is in a transformer and why its size matters for long-context inference."}],"temperature":0,"max_tokens":160,"seed":4242}'
 LOG=/tmp/abs-engine-server.log
 
@@ -46,10 +51,10 @@ run_arm() {
 }
 
 echo "stopping the serving task"
-schtasks /End /TN StrataServe >/dev/null 2>&1
+svc_stop
 run_arm off-stream
 run_arm on-stream STRATA_KV_WINDOW=128 STRATA_KV_SINK=8
 
 echo "restarting the serving task"
-schtasks /Run /TN StrataServe >/dev/null 2>&1
+svc_start
 echo "=== done ==="

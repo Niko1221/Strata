@@ -25,14 +25,13 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("C:/Users/blsor/Strata")
-DATA = Path("C:/Users/blsor/Strata-data")
-PY = ROOT / ".venv/Scripts/python.exe"
-KEY = (DATA / "strata_api_key.txt").read_text(encoding="utf-8").strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kv_bench_env import KEY, PY, ROOT, base_config, engine  # noqa: E402  (paths: tools/kv_bench_env.py)
+
 PORT = 8089
-RELEASE = os.environ.get("KV_REF_ENGINE", "C:\\Users\\blsor\\Strata\\engine\\strata.exe")
-DEV = os.environ.get("KV_DEV_ENGINE", "C:\\Users\\blsor\\Strata\\build\\strata.exe")
-BASE = json.loads((ROOT / "strata-swift-iq3_xxs.json").read_text(encoding="utf-8"))
+RELEASE = engine("KV_REF_ENGINE", "engine")
+DEV = engine("KV_DEV_ENGINE", "build")
+BASE = base_config()
 
 SHORT = [
     ("What is 17 * 23? Reply with just the number.", ["391"]),
@@ -88,7 +87,7 @@ def cfg_for(name: str, engine: str, kv: str, no_mtp: bool) -> Path:
     cfg = json.loads(json.dumps(BASE))
     cfg["exe"] = engine
     tag = re.sub(r"[^a-z0-9]+", "-", name) + ("-nomtp" if no_mtp else "")
-    cfg["log"] = f"C:\\Users\\blsor\\Strata\\recall-{tag}.log"
+    cfg["log"] = str(ROOT / f"recall-{tag}.log")
     args, i, src = [], 0, cfg["args"]
     while i < len(src):
         if src[i] == "--max-context":

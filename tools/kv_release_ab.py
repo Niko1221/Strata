@@ -24,14 +24,13 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("C:/Users/blsor/Strata")
-DATA = Path("C:/Users/blsor/Strata-data")
-PY = ROOT / ".venv/Scripts/python.exe"
-KEY = (DATA / "strata_api_key.txt").read_text(encoding="utf-8").strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kv_bench_env import KEY, PY, ROOT, base_config, engine  # noqa: E402  (paths: tools/kv_bench_env.py)
+
 PORT = 8090
-PREV = "C:\\Users\\blsor\\Strata\\engine\\.previous\\strata.exe"   # 0.1.41
-CUR = "C:\\Users\\blsor\\Strata\\engine\\strata.exe"               # 0.1.42
-BASE = json.loads((ROOT / "strata-swift-iq3_xxs.json").read_text(encoding="utf-8"))
+PREV = engine("KV_PREV_ENGINE", "engine/.previous")   # the release before the current one
+CUR = engine("KV_CUR_ENGINE", "engine")               # the current release
+BASE = base_config()
 SEEDS = [21, 22, 23]
 
 FILLER = ("The datacentre report lists racks, power draw and cooling figures for each hall. "
@@ -62,7 +61,7 @@ def cfg_for(name: str, engine: str) -> Path:
     cfg = json.loads(json.dumps(BASE))
     cfg["exe"] = engine
     tag = re.sub(r"[^a-z0-9]+", "-", name)
-    cfg["log"] = f"C:\\Users\\blsor\\Strata\\rel-ab-{tag}.log"
+    cfg["log"] = str(ROOT / f"rel-ab-{tag}.log")
     args, i, src = [], 0, cfg["args"]
     while i < len(src):
         if src[i] == "--max-context":

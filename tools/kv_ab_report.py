@@ -24,14 +24,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path("C:/Users/blsor/Strata")
-DATA = Path("C:/Users/blsor/Strata-data")
-PY = ROOT / ".venv/Scripts/python.exe"
-KEY = (DATA / "strata_api_key.txt").read_text(encoding="utf-8").strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kv_bench_env import KEY, PY, ROOT, base_config, engine  # noqa: E402  (paths: tools/kv_bench_env.py)
+
 PORT = 8087
-BASE_CFG = json.loads((ROOT / "strata-swift-iq3_xxs.json").read_text(encoding="utf-8"))
-RELEASE = "C:\\Users\\blsor\\Strata\\engine\\strata.exe"
-DEV = "C:\\Users\\blsor\\Strata\\build\\strata.exe"
+BASE_CFG = base_config()
+RELEASE = engine("KV_REF_ENGINE", "engine")
+DEV = engine("KV_DEV_ENGINE", "build")
 
 # (question, [accepted answer spellings]) - every answer is checkable without a judge
 BATTERY = [
@@ -55,7 +54,7 @@ ARMS = [
 def arm_config(name: str, engine: str, kv: str) -> Path:
     cfg = json.loads(json.dumps(BASE_CFG))
     cfg["exe"] = engine
-    cfg["log"] = f"C:\\Users\\blsor\\Strata\\kv-ab-{kv}-{abs(hash(name)) % 10000}.log"
+    cfg["log"] = str(ROOT / f"kv-ab-{kv}-{abs(hash(name)) % 10000}.log")
     args, i, src = [], 0, cfg["args"]
     while i < len(src):
         if src[i] == "--max-context":

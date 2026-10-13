@@ -28,13 +28,12 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("C:/Users/blsor/Strata")
-DATA = Path("C:/Users/blsor/Strata-data")
-PY = ROOT / ".venv/Scripts/python.exe"
-KEY = (DATA / "strata_api_key.txt").read_text(encoding="utf-8").strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kv_bench_env import KEY, PY, ROOT, base_config, engine  # noqa: E402  (paths: tools/kv_bench_env.py)
+
 PORT = 8091
-ENGINE = os.environ.get("KV_ENGINE", "C:\\Users\\blsor\\Strata\\build\\strata.exe")
-BASE = json.loads((ROOT / "strata-swift-iq3_xxs.json").read_text(encoding="utf-8"))
+ENGINE = engine("KV_ENGINE", "build")
+BASE = base_config()
 
 # (arm name, --kv value, env)
 ARMS = [
@@ -107,7 +106,7 @@ def cfg_for(arm: str, kv: str, no_overlay: bool) -> Path:
     cfg = json.loads(json.dumps(BASE))
     cfg["exe"] = ENGINE
     tag = re.sub(r"[^a-z0-9]+", "-", arm)
-    cfg["log"] = f"C:\\Users\\blsor\\Strata\\pr-{tag}.log"
+    cfg["log"] = str(ROOT / f"pr-{tag}.log")
     args, i, src = [], 0, cfg["args"]
     while i < len(src):
         if src[i] == "--max-context":

@@ -365,14 +365,16 @@ def engine_args(cfg: dict, kv: str) -> list[str]:
 # bench/results/2026-10-11-kv-window/README.md), and the serve configuration's lib_dirs point at 13.2
 # because the installed release is built against it. A precision table run on the wrong runtime is a
 # measurement of a different engine, so the pair is chosen from the exe path and can be overridden.
-CUDA130_LIBS = [r"C:\Users\blsor\cuda130\nvidia\cu13\bin", r"C:\Users\blsor\cuda130\nvidia\cu13\bin\x64"]
+# KV_CUDA130 names the root of a CUDA 13.0 toolkit (e.g. pip's cuda-toolkit components, .../nvidia/cu13).
+_CU130 = os.environ.get("KV_CUDA130")
+CUDA130_LIBS = [os.path.join(_CU130, "bin"), os.path.join(_CU130, "bin", "x64")] if _CU130 else []
 
 
 def lib_dirs(cfg: dict, exe: str) -> list[str]:
     override = os.environ.get("KV_LIB_DIRS")
     if override:
         return [p for p in override.split(os.pathsep) if p]
-    if "build-cu130" in str(exe).replace("\\", "/"):
+    if "build-cu130" in str(exe).replace("\\", "/") and CUDA130_LIBS:
         return CUDA130_LIBS
     return list(cfg.get("lib_dirs") or [])
 
