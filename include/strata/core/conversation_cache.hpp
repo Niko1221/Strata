@@ -328,9 +328,22 @@ public:
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         }
-        if (m.tokens > 0) return m;                          // strict match wins; partial ignored
-        // No strict match: partial.  Longest LCP > 0 and < c.ids.size(); tie-break by deeper anchor
+        // FW-1 splice engagement (2026-10-13): do NOT return at the first strict
+        // match.  One conversation's checkpoints are nested prefixes of ONE history,
+        // so that history diverges from this request at a single point D and every
+        // strict anchor s <= D equals the partial LCP p of the SAME conversation's
+        // deeper checkpoints.  A partial mount therefore never reads from a
+        // shallower point than the strict match would (p >= s), and its splice may
+        // recover K/V up to the anchor length L.  Keep the partial candidate when
+        // its checkpoint covers strictly more than the strict anchor (L > s);
+        // otherwise the strict match stands (no splice cost when it cannot recover
+        // more).  Without this, a mid-file edit always strict-mounts the anchor
+        // just below the edit and the splice never engages (partial-branch
+        // enter=0 in every steady-state trace - measured 2026-10-13).
+        const int64_t strict_tokens = m.tokens;
+        // partial pass: longest LCP > 0 and < c.ids.size(); tie-break by deeper anchor
         // (longer checkpoint) then by most recently parked (the loop iterates newest-first).
+        Match pm;   // the best partial candidate (tokens = LCP, checkpoint_length = L)
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
             if (e.cvec != cvec) continue;
@@ -339,13 +352,14 @@ public:
                 if (L < 1 || L > (int64_t) prompt.size()) return;   // must be <= prompt.size() (L == n is valid partial: same length, mid-file edit)
                 const int64_t p = conversation_lcp(c, prompt, images);
                 if (p <= 0 || p >= L) return;                         // 0 LCP or strict (already tried)
-                if (p > m.tokens || (p == m.tokens && L > m.checkpoint_length))
-                    m = {i, p, live, true, L};
+                if (p > pm.tokens || (p == pm.tokens && L > pm.checkpoint_length))
+                    pm = {i, p, live, true, L};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         }
-        return m;                                            // may be {0, 0, false, false, 0} (no match)
+        if (pm.tokens > 0 && pm.checkpoint_length > strict_tokens) return pm;
+        return m;                                            // strict match wins; partial ignored
     }
 
     SavedConversation take(size_t index) {
