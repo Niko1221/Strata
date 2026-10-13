@@ -18,10 +18,20 @@
 #include <set>
 #include <cmath>
 #include <cstring>
+#include <atomic>
 #include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX   // std::numeric_limits<T>::max() below
+#endif
+#include <windows.h>
+#endif
 
 namespace strata::core {
 namespace {
@@ -159,6 +169,125 @@ struct Pending {
     DevicePtr data;
     DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
 };
+
+// One matrix's upload, queued until the shard's matrices are all allocated (upload_parallel).
+struct Upload {
+    std::string name;
+    void* dst;
+    const uint8_t* src;   // into the shard's mapping
+    uint64_t file_off;    // the same bytes' offset in the shard file
+    uint64_t bytes;
+};
+
+/// STRATA_DENSE_UPLOAD_THREADS: the threads that copy the matrices to the GPU (default 8; 1 = one synchronous
+/// cudaMemcpy per matrix straight from the mapping, the order before).  On Windows the mapping is not read ahead
+/// (advise_willneed is a no-op there), so one thread took its page faults one at a time: 2019 MiB in 2.2 s on an
+/// RTX 3090 + PCIe 5 NVMe.
+int dense_upload_threads() {
+    const char* v = std::getenv("STRATA_DENSE_UPLOAD_THREADS");
+    const int n = v != nullptr && *v ? std::atoi(v) : 8;
+    return std::clamp(n, 1, 32);
+}
+
+/// Copies every upload (all from the shard file `path`) to the GPU: `threads` workers take 8 MiB pieces, put
+/// each into one of their two pinned staging buffers and send it with cudaMemcpyAsync on their own stream, so a
+/// piece's transfer overlaps the next one's read.  On Windows a piece is one ReadFile from the shard into the
+/// staging buffer (no page faults: copying from the mapping took them 4 KiB at a time - 2.0 s with 4 threads,
+/// 1.2 s with 8, 0.8 s with 16 for the iq3_s matrices); elsewhere, or if the file cannot be opened, it is copied
+/// from the mapping.  The same bytes land in the same buffers as the serial path.  False with `err` naming the
+/// matrix on the first failure.
+bool upload_parallel(const std::vector<Upload>& ups, const std::string& path, int threads, std::string& err) {
+    constexpr uint64_t kPiece = 8ull << 20;
+    struct Piece { size_t u; uint64_t off, n; };
+    std::vector<Piece> pieces;
+    for (size_t i = 0; i < ups.size(); ++i)
+        for (uint64_t off = 0; off < ups[i].bytes; off += kPiece)
+            pieces.push_back({i, off, (std::min)(kPiece, ups[i].bytes - off)});
+    if (pieces.empty()) return true;
+    threads = (int) (std::min)((size_t) threads, pieces.size());
+    int dev = 0;
+    cudaGetDevice(&dev);
+    std::atomic<size_t> next{0};
+    std::mutex err_mu;
+    std::string first;
+    auto fail = [&](const std::string& what) {
+        std::lock_guard<std::mutex> g(err_mu);
+        if (first.empty()) first = what;
+        next.store(pieces.size());
+    };
+    auto worker = [&]() {
+        cudaSetDevice(dev);
+        cudaStream_t stream = nullptr;
+        void* stage[2] = {nullptr, nullptr};
+        cudaEvent_t done[2] = {nullptr, nullptr};
+        bool used[2] = {false, false};
+        bool ok = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess;
+        for (int b = 0; ok && b < 2; ++b)
+            ok = cudaHostAlloc(&stage[b], (size_t) kPiece, cudaHostAllocDefault) == cudaSuccess &&
+                 cudaEventCreateWithFlags(&done[b], cudaEventDisableTiming) == cudaSuccess;
+        if (!ok) fail(std::string("native dense upload: staging buffers: ") + cudaGetErrorString(cudaGetLastError()));
+#if defined(_WIN32)
+        HANDLE file = INVALID_HANDLE_VALUE;
+        if (ok) {
+            const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+            std::vector<wchar_t> w((size_t) (std::max)(wide, 1), L'\0');
+            if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+            file = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        }
+#endif
+        for (int b = 0; ok;) {
+            const size_t i = next.fetch_add(1);
+            if (i >= pieces.size()) break;
+            const Piece& p = pieces[i];
+            const Upload& u = ups[p.u];
+            cudaError_t st = used[b] ? cudaEventSynchronize(done[b]) : cudaSuccess;   // the buffer's last send
+            if (st == cudaSuccess) {
+                bool read = false;
+#if defined(_WIN32)
+                if (file != INVALID_HANDLE_VALUE) {
+                    const uint64_t at = u.file_off + p.off;
+                    OVERLAPPED ov{};
+                    ov.Offset = (DWORD) at;
+                    ov.OffsetHigh = (DWORD) (at >> 32);
+                    DWORD got = 0;
+                    read = ReadFile(file, stage[b], (DWORD) p.n, &got, &ov) && got == p.n;
+                }
+#endif
+                if (!read) std::memcpy(stage[b], u.src + p.off, (size_t) p.n);
+                st = cudaMemcpyAsync((uint8_t*) u.dst + p.off, stage[b], (size_t) p.n, cudaMemcpyHostToDevice, stream);
+            }
+            if (st == cudaSuccess) st = cudaEventRecord(done[b], stream);
+            if (st != cudaSuccess) {
+                fail("native dense upload " + u.name + ": " + cudaGetErrorString(st));
+                break;
+            }
+            used[b] = true;
+            b ^= 1;
+        }
+        if (stream != nullptr) {
+            const cudaError_t st = cudaStreamSynchronize(stream);
+            if (st != cudaSuccess) fail(std::string("native dense upload: ") + cudaGetErrorString(st));
+            cudaStreamDestroy(stream);
+        }
+#if defined(_WIN32)
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+#endif
+        for (int b = 0; b < 2; ++b) {
+            if (done[b] != nullptr) cudaEventDestroy(done[b]);
+            if (stage[b] != nullptr) cudaFreeHost(stage[b]);
+        }
+    };
+    std::vector<std::thread> pool;
+    for (int t = 1; t < threads; ++t) pool.emplace_back(worker);
+    worker();
+    for (auto& t : pool) t.join();
+    if (!first.empty()) {
+        err = first;
+        return false;
+    }
+    return true;
+}
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -259,6 +388,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
     if (shards.empty()) { err = "native dense: at least one GGUF shard is required"; return false; }
     try {
         std::vector<Pending> pending;
+        std::vector<Upload> uploads;
+        const int upload_threads = dense_upload_threads();
         std::set<std::string> seen;
         int max_in = 0;
         uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
@@ -352,7 +483,10 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 void* allocation = nullptr;
                 auto status = cudaMalloc(&allocation, bytes);
                 DevicePtr data(allocation);
-                if (status == cudaSuccess)
+                if (status == cudaSuccess && upload_threads > 1)
+                    uploads.push_back(Upload{tensor.name, data.get(), (const uint8_t*) gguf.tensor_data(tensor),
+                                             gguf.data_start() + tensor.offset, bytes});
+                else if (status == cudaSuccess)
                     status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
                 if (status != cudaSuccess) {
                     err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
@@ -381,6 +515,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
             }
+            // while `gguf` (the mapping the uploads read) is still open
+            if (!upload_parallel(uploads, path, upload_threads, err)) return false;
+            uploads.clear();
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
                     // S25: the F32 inject rows hold BF16-exact values: the read takes the pack's BF16 rows unless
@@ -469,6 +606,21 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
         DevicePtr scratch(allocation);
         if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }
+        // STRATA_DENSE_CHECKSUM=1 (tests): FNV-1a over every uploaded matrix as the GPU holds it, in load order - the
+        // check that the parallel upload puts the same bytes in place as STRATA_DENSE_UPLOAD_THREADS=1
+        if (const char* cs = std::getenv("STRATA_DENSE_CHECKSUM"); cs != nullptr && cs[0] == '1') {
+            uint64_t h = 1469598103934665603ull;
+            std::vector<uint8_t> host;
+            for (const auto& item : pending) {
+                host.resize((size_t) item.bytes);
+                if (cudaMemcpy(host.data(), item.data.get(), (size_t) item.bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                    err = "native dense checksum: read-back failed"; return false;
+                }
+                for (uint8_t byte : host) h = (h ^ byte) * 1099511628211ull;
+            }
+            std::fprintf(stderr, "strata generate: native dense checksum %016llx over %zu matrices\n",
+                         (unsigned long long) h, pending.size());
+        }
         // All checks and allocations finish before publishing any reference.
         weights_.reserve(pending.size());
         uint64_t packed_bytes = 0;
