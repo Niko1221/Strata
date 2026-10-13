@@ -12857,9 +12857,10 @@ int main(int argc, char **argv) try {
     if (dump != nullptr) {
         // **THE HEADER MUST NEVER PROMISE ROWS THE FILE DOES NOT CONTAIN.**  On the native path the count is
         // computed up front from the positions the speculative loop is expected to emit; if a window ever
-        // refused a slot the file is shorter, so the count is repaired to what was actually written.  The
-        // non-native header is deliberately left exactly as it is today (see the note at `hdr`).
-        if (native_pack && hdr_written && rows_written != (int64_t) hdr[1]) {
+        // refused a slot the file is shorter.  An early EOS shortens a NON-native run just the same, and
+        // rows_written is counted on both paths, so the header is repaired to what was actually written on
+        // EVERY path whenever rows_written differs from it.
+        if (hdr_written && rows_written != (int64_t) hdr[1]) {
             std::fprintf(stderr, "strata generate: --dump-logits: the header promised %lld rows, %lld were "
                                  "written; rewriting it to %lld\n", (long long) hdr[1], (long long) rows_written,
                          (long long) rows_written);
