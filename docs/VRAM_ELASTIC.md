@@ -14,9 +14,18 @@ them again when more is free. Nothing resizes on its own. Only the expert cache 
 MTP head, the CUDA context and the prompt buffers stay, so Strata never gives back "everything".
 
 The engine switches the feature off at start, with one line in its log (`--vram-elastic is off: ...`), when it is not
-a `--serve` engine, with a layer split, with helper caches on other GPUs, with a segment below 64 MiB, and with HIP
-on Windows (AMD's virtual memory was measured on Linux only). If the driver offers no virtual memory management the
-start fails with an error naming it **(code)**.
+a `--serve` engine, with a layer split, with helper caches on other GPUs, with a segment below 64 MiB, with HIP
+on Windows (AMD's virtual memory was measured on Linux only), and when the GPU has no working virtual memory: the
+driver offers none, or on HIP the check at its first use fails. The engine then runs on with the cache in one
+allocation, and the line says what was seen **(code)**.
+
+**HIP's check** (`src/core/vmm.cpp`, once per GPU, only when `--vram-elastic` or `--kv-grow` asks): the recommended
+allocation granularity must be 2 MiB or more, and 32 MiB mapped in chunks of it must show in the free VRAM and come
+back once released. On Linux ROCm also keeps an open file per physical chunk, so the engine raises its soft open-file
+limit to cover every 2 MiB chunk of the card (~17,000 on a 32 GB card) as far as the hard limit allows, and says so;
+a lower hard limit (`ulimit -Hn`, systemd's `LimitNOFILE=`) is a reason too. Measured on an R9700: the system ROCm
+7.14.1 passes; setup's ROCm 7.10.0a20251120 wheels report a 4 KiB granularity, so the line reads `--vram-elastic is
+off: the recommended allocation granularity is 4 KiB, not 2 MiB or more (HIP runtime 7.2.53210)`.
 Without the flag nothing changes: the same answers as without it.
 
 ## The request

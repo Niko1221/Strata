@@ -210,8 +210,7 @@ ExpertCache::~ExpertCache() { close(); }
 
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
     if (!vmm_device_supported()) {
-        err = "ExpertCache: --vram-elastic needs the driver's virtual memory management, which this GPU or driver "
-              "does not offer";
+        err = "ExpertCache: --vram-elastic needs the driver's virtual memory management: " + vmm_off_reason();
         return false;
     }
     const uint64_t g = vmm_segment_granularity();

@@ -11,7 +11,17 @@
 #include <cuda_runtime.h>
 #endif
 
+#if defined(STRATA_USE_HIP) && defined(__linux__)
+#include <sys/resource.h>
+#endif
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace strata::core {
 
@@ -22,6 +32,7 @@ uint64_t vmm_granularity() { return 0; }
 VmmChunk vmm_chunk_new() { return 0; }
 void vmm_chunk_free(VmmChunk) {}
 bool vmm_device_supported() { return false; }
+std::string vmm_off_reason() { return "this build has no GPU virtual memory"; }
 uint64_t vmm_segment_granularity() { return 0; }
 uintptr_t vmm_reserve(uint64_t) { return 0; }
 void vmm_address_free(uintptr_t, uint64_t) {}
@@ -123,6 +134,106 @@ bool p_access(int dev, uintptr_t va, uint64_t bytes) {
     d.location.id = dev;
     d.flags = hipMemAccessFlagsProtReadWrite;
     return hipMemSetAccess((void*) va, (size_t) bytes, &d, 1) == hipSuccess || failed();
+}
+
+uint64_t free_bytes() {
+    size_t f = 0, t = 0;
+    if (hipMemGetInfo(&f, &t) != hipSuccess) failed();
+    return (uint64_t) f;
+}
+
+bool fill(uintptr_t va, uint64_t bytes) {
+    return (hipMemset((void*) va, 0x5a, (size_t) bytes) == hipSuccess && hipDeviceSynchronize() == hipSuccess) ||
+           failed();
+}
+
+// On Linux ROCm keeps an open file (a dmabuf) for every physical allocation, so each chunk is one: a 24 GiB cache
+// holds ~12,000, far past the usual soft limit of 1,024 open files, and the maps past it fail as "out of memory".  So
+// the soft limit goes up to what every chunk the card can hold needs, as far as the hard limit allows (the engine
+// itself uses no select(), the one thing a higher limit could break).  False when the hard limit is lower.
+bool open_files_for(uint64_t g, std::string& why) {
+#if defined(__linux__)
+    size_t f = 0, t = 0;
+    if (hipMemGetInfo(&f, &t) != hipSuccess) return failed() || true;   // unknown: the check's maps will tell
+    const rlim_t need = (rlim_t) (t / g) + 1024;   // every chunk of the card, and the files the engine opens itself
+    rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= need) return true;
+    rlimit up = rl;
+    up.rlim_cur = rl.rlim_max == RLIM_INFINITY ? need : std::min<rlim_t>(rl.rlim_max, need);
+    if (setrlimit(RLIMIT_NOFILE, &up) == 0) {
+        std::fprintf(stderr,
+                     "strata: open-file limit %llu -> %llu: ROCm keeps one open per chunk of GPU virtual memory\n",
+                     (unsigned long long) rl.rlim_cur, (unsigned long long) up.rlim_cur);
+        rl = up;
+    }
+    if (rl.rlim_cur >= need) return true;
+    why = "ROCm keeps an open file per " + std::to_string(g >> 20) + " MiB chunk: " +
+          std::to_string((unsigned long long) need) +
+          " needed, and the open-file limit is " + std::to_string((unsigned long long) rl.rlim_cur) +
+          " (hard " + std::to_string((unsigned long long) rl.rlim_max) + "; ulimit -n, systemd LimitNOFILE=)";
+    return false;
+#else
+    (void) g;
+    (void) why;
+    return true;
+#endif
+}
+
+// Not every ROCm runtime does what was measured above: setup's ROCm 7.10 wheels report a recommended granularity
+// below 2 MiB and give no VRAM back on release.  So before the first use on a device the runtime has to show it, with
+// chunks of the size the users take: a granularity of 2 MiB or more, the free-memory counter (the one VRAM's checks
+// and the cache's sizing read) falling by about what is mapped, and rising again once it is unmapped and released
+// while the addresses stay reserved.  Anything else: false, and `why` says what was seen.
+bool runtime_check(int dev, uint64_t g, std::string& why) {
+    auto mib = [](uint64_t b) { return std::to_string((b + (1u << 19)) >> 20) + " MiB"; };
+    if (g < (2u << 20)) {
+        why = "the recommended allocation granularity is " + std::to_string(g >> 10) + " KiB, not 2 MiB or more";
+        return false;
+    }
+    if (!open_files_for(g, why)) return false;
+    const int n = (int) std::max<uint64_t>(4, (32ull << 20) / g);
+    const uint64_t bytes = (uint64_t) n * g;
+    // another program on the card can move the counter at the same moment: one try more before giving up
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        uintptr_t va = 0;
+        if (!p_reserve(bytes, va)) {
+            why = "hipMemAddressReserve failed";
+            return false;
+        }
+        std::vector<VmmChunk> h;
+        const uint64_t f0 = free_bytes();
+        bool ok = true;
+        for (int i = 0; i < n && ok; ++i) {
+            VmmChunk c = 0;
+            ok = p_create(dev, g, c) && (h.push_back(c), p_map(va + (uint64_t) i * g, g, c));
+        }
+        ok = ok && p_access(dev, va, bytes) && fill(va, bytes);
+        const uint64_t f1 = free_bytes();
+        for (size_t i = 0; i < h.size(); ++i) p_unmap(va + (uint64_t) i * g, g);
+        for (const VmmChunk c : h) p_release(c);
+        uint64_t f2 = free_bytes();
+        for (int i = 0; ok && i < 20 && f2 < f1 + bytes / 2; ++i) {   // the counter may follow a moment later
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            f2 = free_bytes();
+        }
+        p_address_free(va, bytes);
+        if (!ok) {
+            why = "mapping " + mib(bytes) + " in " + std::to_string(n) + " chunks failed";
+            return false;
+        }
+        const uint64_t took = f0 > f1 ? f0 - f1 : 0, back = f2 > f1 ? f2 - f1 : 0;
+        if (took >= bytes / 2 && took <= 2 * bytes + (64ull << 20) && back >= bytes / 2) return true;
+        why = "the free VRAM fell by " + mib(took) + " for " + mib(bytes) + " mapped and rose by " + mib(back) +
+              " after its release";
+    }
+    return false;
+}
+
+std::string runtime_name() {
+    int v = 0;
+    if (hipRuntimeGetVersion(&v) != hipSuccess) failed();
+    return "HIP runtime " + std::to_string(v / 10000000) + "." + std::to_string(v / 100000 % 100) + "." +
+           std::to_string(v % 100000);
 }
 
 #else
@@ -237,9 +348,44 @@ bool p_access(int dev, uintptr_t va, uint64_t bytes) {
     d.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     return fns().access((CUdeviceptr) va, (size_t) bytes, &d, 1) == CUDA_SUCCESS;
 }
+
+// the driver's virtual memory is taken as it reports itself, as before HIP's port (no check at first use)
+bool runtime_check(int, uint64_t, std::string&) { return true; }
+
+std::string runtime_name() {
+    int v = 0;
+    if (cudaRuntimeGetVersion(&v) != cudaSuccess) (void) cudaGetLastError();
+    return "CUDA runtime " + std::to_string(v / 1000) + "." + std::to_string(v % 1000 / 10);
+}
 #endif
 
 // ---- both backends from here on
+
+// Per device, decided once: on (and its chunk), or why not.  Never destroyed, like api() below.
+struct Verdict {
+    bool done = false, ok = false;
+    uint64_t gran = 0;
+    std::string why;
+};
+
+const Verdict& verdict(int dev) {
+    static std::mutex& m = *new std::mutex;
+    static Verdict* const v = new Verdict[64];
+    static const Verdict none{true, false, 0, "no current GPU"};
+    if (dev < 0 || dev >= 64) return none;
+    std::lock_guard<std::mutex> lock(m);
+    Verdict& x = v[dev];
+    if (!x.done) {
+        x.done = true;
+        if (!fns_ok()) x.why = "the driver's virtual memory functions are missing";
+        else if (!dev_supported(dev)) x.why = "the GPU or its driver does not offer virtual memory management";
+        else if ((x.gran = dev_granularity(dev, kChunkRecommended)) == 0)
+            x.why = "the allocation granularity is unknown";
+        else x.ok = runtime_check(dev, x.gran, x.why);
+        if (!x.ok) x.why += " (" + runtime_name() + ")";
+    }
+    return x;
+}
 
 struct Api {
     bool ok = false;
@@ -253,11 +399,10 @@ const Api& api() {
     static std::once_flag once;
     std::call_once(once, [] {
         const int dev = current_device();
-        if (dev < 0 || !fns_ok() || !dev_supported(dev)) return;
-        const uint64_t g = dev_granularity(dev, kChunkRecommended);
-        if (g == 0) return;
+        const Verdict& v = verdict(dev);
+        if (!v.ok) return;
         a.dev = dev;
-        a.gran = g;
+        a.gran = v.gran;
         a.ok = true;
     });
     return a;
@@ -279,9 +424,11 @@ void vmm_chunk_free(VmmChunk h) {
     if (h != 0 && api().ok) p_release(h);
 }
 
-bool vmm_device_supported() {
-    const int dev = current_device();
-    return dev >= 0 && fns_ok() && dev_supported(dev);
+bool vmm_device_supported() { return verdict(current_device()).ok; }
+
+std::string vmm_off_reason() {
+    const Verdict& v = verdict(current_device());
+    return v.ok ? std::string() : v.why;
 }
 
 uint64_t vmm_segment_granularity() {

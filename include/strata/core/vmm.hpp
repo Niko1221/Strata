@@ -7,10 +7,13 @@
 //    the tail's segments given back to the driver and mapped again later (the vmm_segment_* functions).
 // CUDA: the driver calls are reached through the runtime's entry-point query, so nothing links the driver library.
 // HIP (the RDNA backend): the runtime's hipMem* functions; a chunk is the RECOMMENDED granularity, because the minimum
-// one is 4 KiB there (gfx1201, ROCm 7.14) and hipMemGetInfo counts a 4 KiB chunk as 2 MiB.  Not in the gfx906 compat
-// build (never measured there): vmm_available() is false and both users stay off.
+// one is 4 KiB there (gfx1201, ROCm 7.14) and hipMemGetInfo counts a 4 KiB chunk as 2 MiB.  On only where the runtime
+// shows at the first use on a device that it works (2 MiB chunks or more, and their VRAM back once released:
+// vmm.cpp's runtime_check); off otherwise, with vmm_off_reason() saying why.  Not in the gfx906 compat build (never
+// measured there) or on Metal: vmm_available() is false and both users stay off.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace strata::core {
@@ -19,8 +22,10 @@ namespace strata::core {
 /// hipMemGenericAllocationHandle_t); 0 = none.
 using VmmChunk = unsigned long long;
 
-/// The current device supports it and the entry points resolved.
+/// The device current at the first call has it and passed the check (on HIP); every later call answers for that device.
 bool vmm_available();
+/// Why the current device has no virtual memory here, for the log; empty when it has.
+std::string vmm_off_reason();
 /// The chunk size (0 when not available).
 uint64_t vmm_granularity();
 /// A new physical chunk on the current device (0: out of memory), and its release.
@@ -28,8 +33,9 @@ VmmChunk vmm_chunk_new();
 void vmm_chunk_free(VmmChunk h);
 
 /// #533's segments, on the device current at the call.  `vmm_device_supported`: the driver offers virtual memory for
-/// it; `vmm_segment_granularity`: the size a segment and the range round up to (the recommended granularity; 0 when
-/// it cannot be read).  `vmm_reserve` (0: failed) / `vmm_address_free`: an address range, nothing mapped.
+/// it (and on HIP it passed the check); `vmm_segment_granularity`: the size a segment and the range round up to (the
+/// recommended granularity; 0 when it cannot be read).  `vmm_reserve` (0: failed) / `vmm_address_free`: an address
+/// range, nothing mapped.
 /// `vmm_segment_map`: a physical allocation of `bytes` mapped at `va`, readable and writable by the device (false: out
 /// of memory or a driver refusal, nothing left behind).  `vmm_segment_unmap`: unmapped and released (false: the driver
 /// refused; the segment is then not released).

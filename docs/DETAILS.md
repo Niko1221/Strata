@@ -276,7 +276,9 @@ RTX 5070, against ~3 tokens/s before these changes.
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
-  and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off.
+  and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off. It also needs the GPU's
+  virtual memory, on HIP only where the check at start passes ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#what-it-is)); the
+  line then says why.
 - `--host-core last` (or `STRATA_HOST_CORE=last`, Windows): the host thread runs on the last physical core and the
   workers take the first. Windows sends a GPU's interrupts to the first core, where a host spinning on the GPU's flags
   waits for them (`--host-core first` is the default; the startup log names the cores).

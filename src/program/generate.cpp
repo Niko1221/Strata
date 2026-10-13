@@ -4400,9 +4400,12 @@ int main(int argc, char** argv) {
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
                             o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
-            if (asked && !on)
+            if (asked && !on) {
+                const std::string vr = strata::core::vmm_off_reason();
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device%s%s)\n",
+                             vr.empty() ? "" : "; no GPU virtual memory: ", vr.c_str());
+            }
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
@@ -5314,6 +5317,8 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
         if (why == nullptr) why = "HIP's virtual memory was measured on Linux only";
 #endif
+        const std::string vr = why == nullptr ? strata::core::vmm_off_reason() : std::string();
+        if (why == nullptr && !vr.empty()) why = vr.c_str();   // the cache keeps its one allocation
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
             o.vram_elastic = false;
