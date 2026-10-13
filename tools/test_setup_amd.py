@@ -520,5 +520,25 @@ class TdrPointer(unittest.TestCase):
             self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
 
 
+class Gfx1010OptIn(unittest.TestCase):
+    """RX 5700 XT (gfx1010): refused unless STRATA_EXPERIMENTAL_GFX1010=1, same shape as gfx1103."""
+
+    def test_refused_without_opt_in(self):
+        without = tuple(a for a in setup.AMD_ARCHS if a != "gfx1010")
+        with mock.patch.object(setup, "GFX1010_OPT_IN", False), mock.patch.object(setup, "AMD_ARCHS", without):
+            self.assertNotIn("gfx1010", setup.AMD_ARCHS)
+            self.assertIn("gfx1010", setup.amd_problem({"arch": "gfx1010"}))
+
+    def test_index_exists_anyway(self):
+        self.assertTrue(setup.ROCM_INDEXES["gfx1010"].endswith("/gfx101X-dgpu/"))
+        self.assertEqual(setup.AMD_NAMES["gfx1010"], "AMD Radeon RX 5700 XT / 5700 / 5600 (gfx1010)")
+
+    def test_opt_in_makes_the_card_usable(self):
+        archs = setup.AMD_ARCHS + (("gfx1010",) if "gfx1010" not in setup.AMD_ARCHS else ())
+        with mock.patch.object(setup, "GFX1010_OPT_IN", True), mock.patch.object(setup, "AMD_ARCHS", archs):
+            self.assertIsNone(setup.amd_problem({"arch": "gfx1010"}))
+            self.assertIn("gfx1010", setup.AMD_ARCHS)
+
+
 if __name__ == "__main__":
     unittest.main()
