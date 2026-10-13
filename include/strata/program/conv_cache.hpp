@@ -77,4 +77,54 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     return v;
 }
 
+/// --prompt-cache-spread: retention for a long conversation that grows by short turns (an agent session).  Every
+/// request saves a checkpoint at its new turn, so least recent use keeps the root and the last few turns - all at the
+/// conversation's end - and a request that departs further back (a client's summarization call over the older part,
+/// an old tool result rewritten) reads everything after the root again.  Here the first checkpoint in every `every`
+/// tokens of the conversation (`lengths[i] / every`, the root included) is a milestone and stays; the rest rotate by
+/// least recent use as before.  The two most recently used items always stay (the last turn and the one before it).
+/// When nothing else is left the milestones thin out: the one whose neighbours in length are closest leaves.  The
+/// root, the tail rule and the pins are as above; without lengths, with `every` <= 0 or a budget below four slots
+/// this is the plain policy.
+inline size_t eviction_victim_spread(const uint64_t* stamps, const int64_t* lengths, size_t n, int64_t cap,
+                                     int64_t every, const bool* tail, const bool* pinned) {
+    if (lengths == nullptr || every <= 0 || cap < 4 || n < 4) return eviction_victim(stamps, n, cap, tail, pinned);
+    size_t newest = 0;
+    for (size_t i = 1; i < n; ++i)
+        if (stamps[i] > stamps[newest]) newest = i;
+    size_t second = n;
+    for (size_t i = 0; i < n; ++i)
+        if (i != newest && (second == n || stamps[i] > stamps[second])) second = i;
+    auto pin = [&](size_t i) { return pinned != nullptr && pinned[i]; };
+    if (tail != nullptr)
+        for (size_t i = 1; i < n; ++i)
+            if (tail[i] && !pin(i) && i != newest) return i;
+    auto milestone = [&](size_t i) {
+        for (size_t j = 0; j < n; ++j)
+            if (j != i && lengths[j] / every == lengths[i] / every &&
+                (lengths[j] < lengths[i] || (lengths[j] == lengths[i] && j < i)))
+                return false;
+        return true;
+    };
+    size_t v = n;                    // least recent use among what is neither kept nor a milestone
+    for (size_t i = 1; i < n; ++i)
+        if (!pin(i) && i != newest && i != second && !milestone(i) && (v == n || stamps[i] < stamps[v])) v = i;
+    if (v != n) return v;
+    int64_t best = 0;                // only milestones are left: the one that leaves the smallest hole
+    for (size_t i = 1; i < n; ++i) {
+        if (pin(i) || i == newest || i == second) continue;
+        int64_t below = 0, above = -1;
+        for (size_t j = 0; j < n; ++j) {
+            if (j == i) continue;
+            if (lengths[j] <= lengths[i] && lengths[j] > below) below = lengths[j];
+            if (lengths[j] > lengths[i] && (above < 0 || lengths[j] < above)) above = lengths[j];
+        }
+        if (above < 0) continue;     // the deepest point: nothing above it would cover what it holds
+        const int64_t hole = above - below;
+        if (v == n || hole < best || (hole == best && stamps[i] < stamps[v])) { v = i; best = hole; }
+    }
+    if (v != n) return v;
+    return eviction_victim(stamps, n, cap, tail, pinned);
+}
+
 }  // namespace strata::program::conv_cache

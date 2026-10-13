@@ -974,6 +974,17 @@ system prompts and tool lists. Claude Code stamps its system prompt with a billi
 request (`cch=...`) and every session (the 4th part of `cc_version=`); the server pins both stamps (to `f`s, as
 llama.cpp does), so the system prompt and the tool list in front of it are the same prompt on every turn. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
 `--prompt-cache-root N` (0 = no system-prompt checkpoint), `--turn-token ID`.
+`--prompt-cache-spread` (opt-in) changes which checkpoints stay in a long conversation that grows by short turns (an
+agent session): every request saves one at its new turn, so least recent use keeps the root and the last few turns, all
+at the conversation's end, and a request that departs further back (a client's summarization call over the older part,
+an old tool result rewritten) reads everything after the root again. With the option the first checkpoint in every
+`--prompt-cache-every` tokens of the conversation stays, the rest rotate as before, so such a request reads at most that
+much again; give it room with `--prompt-cache` (14 for a 131K conversation). Measured on an RTX 5060 Ti + RTX 3060
+(`--peer-device`, IQ3_XXS), 80 turns to 121K, then the first 55 turns and a new instruction (86,182 tokens): without it
+5,023 tokens reused and 81,159 read in 60.3 s, with it 83,387 reused and 2,795 read in 4.1 s. In a day of agent use
+(31 automatic compactions of the client) the summarization call read a median 8,062 tokens in 7.2 s instead of ~72K in
+~55 s. The answers can differ in wording: a resumed checkpoint and a fresh read round differently. Not measured: the
+RAM of 14 checkpoints at its peak.
 A one-shot request that no later request continues (a classification call, a probe) can send
 `"strata_checkpoint": false` in its body: it saves no checkpoint at its last turn nor every 16K tokens, so what
 follows the reused prefix (or the root) is read in one run, and its session is not kept or parked for a next request.
