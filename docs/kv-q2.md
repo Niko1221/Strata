@@ -475,22 +475,27 @@ The device arm above appends all cells in one call - whole groups - which never 
 The engine does: decode appends into the group a prompt ended in, speculative verify appends 2-5-cell windows
 through the batch path (each new group first written from 1-3 cells), and after a reused conversation prefix the
 2048-cell prefill chunk boundaries fall mid-group. `kv_q2_parity` now runs those patterns on the real dump
-(attention output vs FP16; "old" = the pre-fix kernel, which divided a fresh partial group's sum by 32):
+(attention output vs FP16). Three scale rules for a group first written by a partial batch: **old** = the pre-fix
+kernel (the n cells' sum divided by 32), **/n** = the RMS of the n cells, **shrink** = the shipping rule, the
+full-group RMS with the previous group's mean square standing in for the 32 - n cells not yet written:
 
-| layer | q4_0 | q2k one-shot | chunked (100-cell chunks) old -> new | spec verify (3-cell windows) old -> new | prompt + decode |
+| layer | q4_0 | q2k one-shot | chunked (100-cell chunks) old / /n / shrink | spec verify (3-cell windows) old / /n / shrink | prompt + decode |
 |---|---:|---:|---:|---:|---:|
-| L3 | 0.888% | 1.910% | 3.631% -> 2.076% | 1.978% -> 1.912% | 1.910% |
-| L11 | 0.740% | 2.002% | 3.617% -> 2.727% | 2.030% -> 2.011% | 2.002% |
-| L23 | 0.941% | 2.211% | 3.767% -> 2.509% | 2.895% -> 2.667% | 2.211% |
-| L47 | 1.040% | 1.648% | 1.438% -> 1.346% | 1.457% -> 1.799% | 1.648% |
-| synthetic | 2.052% | 5.710% | 6.164% -> 5.859% | 5.710% -> 5.710% | 5.710% |
+| L3 | 0.888% | 1.910% | 3.631% / 2.076% / 2.186% | 1.978% / 1.912% / **1.892%** | 1.910% |
+| L11 | 0.740% | 2.002% | 3.617% / 2.727% / **2.626%** | 2.030% / 2.011% / 2.012% | 2.002% |
+| L23 | 0.941% | 2.211% | 3.767% / 2.509% / **2.161%** | 2.895% / 2.667% / **2.245%** | 2.211% |
+| L47 | 1.040% | 1.648% | 1.438% / 1.346% / 1.803% | 1.457% / 1.799% / **1.720%** | 1.648% |
+| synthetic | 2.052% | 5.710% | 6.164% / 5.859% / 5.823% | 5.710% / 5.710% / 5.710% | 5.710% |
+
+Summed over the four real layers, the verify pattern's excess over one-shot is +8.0% with /n and **+1.3% with
+shrink**; the chunked stress pattern is 1.4% worse with shrink than /n (mixed by layer) and 30% better than old.
 
 - Prompt + decode lands exactly on the one-shot row (pinned).
 - The fix removes most of the chunk-boundary damage (L3 3.63% -> 2.08%, about 4.1x -> 2.3x q4_0's error) and cuts
   the verify-window cost on L23 (+31% -> +21% over one-shot).
-- Not closed: a group first written from a few cells keeps that small-sample RMS for life - unbiased now, but
-  noisy (chunked +9..36%, verify up to +21% on L23). On the extreme-outlier layer 47 an undersized scale acts as
-  clipping and measures better, which is why the old kernel looks better there.
+- The /n rule alone left a group first written from a few cells with a noisy small-sample RMS (verify up to +21%
+  on L23); the shrinkage rule closes most of that (L23 verify 2.245% vs 2.211% one-shot). On the extreme-outlier
+  layer 47 an undersized scale acts as clipping and measures better, which is why the old kernel looks better there.
 - Real prefill chunks are 2048 cells, aligned from position 0, so the 100-cell chunked row is a stress case; the
   verify row is what every speculative decode does at each group boundary.
 

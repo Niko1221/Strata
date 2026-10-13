@@ -32,8 +32,9 @@
 //
 // THE SCALE. The group's fp16 scale is the RMS of the 32 values of that dimension, and only a call that has all
 // 32 cells can compute it. The rule in one sentence: a complete group's scale is recomputed from its 32 source
-// values; a partial group keeps the scale the group already carries, and a group with no scale yet takes the RMS
-// of the cells the call has - or, for a single-cell append, the previous group's scale when it has one.
+// values; a partial group keeps the scale the group already carries; and a group with no scale yet takes the
+// full-group RMS with the previous group's mean square standing in for the cells not yet written, falling back
+// to the RMS of the cells the call has when no previous scale is reachable race-free.
 //
 // The "partial keeps the stored scale" half is what makes a group straddling a prompt-chunk boundary come out
 // right: prompt chunks are not multiples of 32 cells, so the chunk that starts mid-group would otherwise give
@@ -161,9 +162,23 @@ __global__ void kv_append_q2_group_kernel(uint8_t* __restrict__ k_q2, uint8_t* _
 
     // The scale. A complete group is the RMS of its 32 values. A partial group keeps the scale the group already
     // carries (see the header comment): the prompt chunk that starts mid-group must not hand the group a second
-    // scale behind the first half's codes. A group with no scale yet takes the RMS of the cells the call has -
-    // or, for a single-cell append, the previous group's scale, which is a far better estimate of a channel than
-    // one sample. Only for a single-cell append: in a batch the previous group may be written by this launch.
+    // scale behind the first half's codes. A group with no scale yet takes the FULL-GROUP RMS with the previous
+    // group's mean square standing in for the cells not yet written:
+    //     s = sqrtf((ss + (32 - n) * prev * prev) / 32)
+    // - a 12-cell RMS is a noisy estimate of a channel, and this keeps the scale on the full-group definition
+    // the reader divides by. With no usable previous scale it falls back to the RMS of the cells the call has.
+    // `prev` is taken race-free in every case:
+    //   * single-cell append (use_prev): appends are ordered on one stream, so the stored scale of group g-1
+    //     is stable - borrow it exactly.
+    //   * batch, group g-1 complete in THIS launch: its block writes f16(sqrt(ss_prev/32)) in this launch, so
+    //     the pool must not be read - compute exactly that value from this call's cells instead.
+    //   * batch, group g-1 not in this launch: its stored scale is stable (no block of this launch touches it).
+    //   * batch, group g-1 partial in this launch: a partial group with a stored scale keeps it and never
+    //     rewrites it, so a stored scale > 0 is stable (the speculative-verify case: a window spanning the
+    //     boundary). A partial g-1 with NO stored scale would be writing a fresh one in this launch - not
+    //     reachable for in-order appends (its earlier cells would already carry a scale); if it were, the
+    //     read sees 0 (the fallback) or that fresh scale, either a valid estimate, never a torn value.
+    //   Single-cell appends use the same formula with n = 1 (s is then ~97% prev): one rule for both paths.
     float s = sqrtf(ss * (1.0f / (float) n));
     bool fresh = false;                              // does this call write the group's scale?
     if (n < Q2_0) {
@@ -171,10 +186,29 @@ __global__ void kv_append_q2_group_kernel(uint8_t* __restrict__ k_q2, uint8_t* _
         if (stored > 0.0f) s = stored;
         else {
             fresh = true;
-            if (use_prev && g > 0) {
-                const float prev = q2c_scale(sp, g - 1, h, d, kv_heads, head_dim);
-                if (prev > 0.0f) s = prev;
+            float prev = 0.0f;
+            if (g > 0) {
+                if (use_prev) prev = q2c_scale(sp, g - 1, h, d, kv_heads, head_dim);
+                else {
+                    int n_prev = 0;
+                    float ss_prev = 0.0f;
+                    for (int i = 0; i < n_steps; ++i) {
+                        const long long p = pos0 >= 0
+                                                ? pos0 + i
+                                                : (long long) __ldg(step + (long long) i * step_stride + kStepPos);
+                        if (p / Q2_0 != g - 1) continue;
+                        const float v = src[(long long) i * row_stride + h * head_dim + d];
+                        ss_prev = __fadd_rn(ss_prev, __fmul_rn(v, v));
+                        ++n_prev;
+                    }
+                    prev = n_prev == Q2_0
+                               ? f32_from_f16(f16_from_f32(sqrtf(ss_prev * (1.0f / (float) Q2_0))))
+                               : q2c_scale(sp, g - 1, h, d, kv_heads, head_dim);
+                }
             }
+            if (prev > 0.0f)
+                s = sqrtf(__fmul_rn(__fadd_rn(ss, __fmul_rn((float) (Q2_0 - n), __fmul_rn(prev, prev))),
+                                    1.0f / (float) Q2_0));
         }
     }
     const uint16_t sbits = f16_from_f32(s);

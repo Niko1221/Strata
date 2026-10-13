@@ -820,11 +820,12 @@ int main() {
         check(std::fabs(e_decode - e_k2v4_dev) <= e_k2v4_dev * 0.01,
               "q2k prompt + decode (the prompt ends mid-group, decode appends keep its scale) lands on the one-shot row");
         // Measured, not pinned: a group FIRST written from a few cells (a 100-cell chunk boundary leaves 4-28;
-        // a 3-cell verify window 1-3) carries the RMS of those few cells for life. Unbiased since the /n fix, but
-        // a small-sample estimate - it costs +9..36% over one-shot on layers 3/11/23 (chunked) and up to +21%
-        // (verify, layer 23); on the extreme-outlier layer 47 an undersized scale acts as clipping and helps.
-        // Real prefill chunks are 2048 cells (aligned) - the chunked row is a stress case; the verify row is what
-        // every speculative decode does at each group boundary.
+        // a 3-cell verify window 1-3) fixes its scale from them for life. With the shrinkage rule (the full-group
+        // RMS, the previous group's mean square standing in for the missing cells) the verify row sits within
+        // ~1-4% of one-shot on the real layers (it was up to +21% on layer 23 with the plain RMS of the n cells);
+        // the chunked row is mixed by layer (layers 11/23 better, 3/47 worse than the plain RMS). Real prefill
+        // chunks are 2048 cells (aligned) - the chunked row is a stress case; the verify row is what every
+        // speculative decode does at each group boundary.
         std::printf("  (measured, not pinned) chunked %+.1f%%, spec verify %+.1f%% vs one-shot: the first write of a "
                     "group fixes its scale from %s cells\n", 100 * (e_chunk / e_k2v4_dev - 1),
                     100 * (e_verify / e_k2v4_dev - 1), "the few");
@@ -1003,6 +1004,64 @@ int main() {
     } else {
         std::printf("  fresh partial group scale: NOT RUN - the probe cache has %d cells, fewer than the 12 the\n"
                     "  check appends\n", N);
+    }
+
+    // 5b. A FRESH PARTIAL GROUP AFTER A COMPLETE ONE. A batch append that starts a group fresh has no stored
+    //     scale to keep, and in a batch the previous group may be written by THIS launch, so the kernel builds
+    //     the previous group's scale race-free and shrinks the new one toward it: the full-group RMS with the
+    //     previous group's mean square standing in for the cells not yet written,
+    //     s = sqrtf((ss1 + (32 - 12) * prev * prev) / 32).
+    //     (a) appends 32 cells and then 12: group 1 is fresh in the SECOND call, and group 0's scale is the
+    //     stored one from the first call. (b) appends all 44 in ONE call: group 0 is complete in the SAME
+    //     launch, so the kernel computes its f16 scale from the call's cells instead of reading the pool. The
+    //     two arms must store the same bits, and those bits must be the host value built in the kernel's op
+    //     order (separate multiply and add, as the check above).
+    if (N >= 44) {
+        const int n44 = 44;
+        const int pages48 = (48 + P - 1) / P;                          // 48 cells, identity
+        std::vector<int32_t> tab48(pages48);
+        for (int i = 0; i < pages48; ++i) tab48[i] = i;
+        int32_t* d_tab48 = dalloc<int32_t>(pages48);
+        ck(cudaMemcpy(d_tab48, tab48.data(), pages48 * 4, cudaMemcpyHostToDevice), "44-cell table");
+        const size_t pool48 = (size_t) 2 * H * D * sizeof(k::block_q2c_0);   // groups 0 and 1, every head and dim
+        uint8_t* kq2_a = dalloc<uint8_t>(pool48);                     // zeroed: a scale of 0 bits = no scale
+        uint8_t* kq2_b = dalloc<uint8_t>(pool48);
+        k::kv_append_q2(kq2_a, kq2_a, d_tab48, 0, 32, dK, dK, s, nullptr, nullptr, nullptr, /*v3level*/ false);
+        k::kv_append_q2(kq2_a, kq2_a, d_tab48, 32, 12, dK + (size_t) 32 * H * D, dK + (size_t) 32 * H * D, s,
+                        nullptr, nullptr, nullptr, /*v3level*/ false);
+        k::kv_append_q2(kq2_b, kq2_b, d_tab48, 0, n44, dK, dK, s, nullptr, nullptr, nullptr, /*v3level*/ false);
+        ck(cudaDeviceSynchronize(), "44-cell appends");
+        std::vector<uint8_t> ha(pool48), hb(pool48);
+        ck(cudaMemcpy(ha.data(), kq2_a, pool48, cudaMemcpyDeviceToHost), "44-cell pool a");
+        ck(cudaMemcpy(hb.data(), kq2_b, pool48, cudaMemcpyDeviceToHost), "44-cell pool b");
+        bool shrink_ok = true;
+        for (int h = 0; h < H && shrink_ok; ++h)
+            for (int d = 0; d < D && shrink_ok; ++d) {
+                float ss0 = 0.0f, ss1 = 0.0f;
+                for (int i = 0; i < 32; ++i) {
+                    const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                    ss0 += v * v;
+                }
+                for (int i = 32; i < n44; ++i) {
+                    const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                    ss1 += v * v;
+                }
+                const float prev = k::f32_from_f16(k::f16_from_f32(sqrtf(ss0 * (1.0f / 32.0f))));
+                const float pp = prev * prev;
+                const float t = 20.0f * pp;
+                const float u = ss1 + t;
+                const float w = u * (1.0f / 32.0f);
+                const uint16_t want = k::f16_from_f32(sqrtf(w));
+                const uint16_t bits_a = k::q2c_slot(ha.data(), 1, h, d, H, D)->d;
+                if (bits_a != want || k::q2c_slot(hb.data(), 1, h, d, H, D)->d != bits_a) shrink_ok = false;
+            }
+        check(shrink_ok, "fresh partial group after a complete one shrinks toward the previous scale: a 12-cell "
+                         "batch append into a fresh group stores the full-group RMS with the previous group's "
+                         "mean square for the 20 cells not yet written, bit for bit, and the same bits whether "
+                         "the previous group was in this launch or the last");
+    } else {
+        std::printf("  fresh partial group after a complete one: NOT RUN - the probe cache has %d cells, fewer\n"
+                    "  than the 44 the check appends\n", N);
     }
 
     // 6. STAGING MOVES WHOLE GROUPS. A q2 group's bytes are group-major (one slot per (group, head, dim)), so a
