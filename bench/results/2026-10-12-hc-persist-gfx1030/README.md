@@ -6,9 +6,10 @@ ROCm 10.0. Qwen3.8-Flash-Next IQ3_S (and Unsloth UD-Q4_K_XL), two-card layer spl
 ## Result
 
 - The read itself: **1.35-2.10x faster** at 1-8 tokens on 40 WGPs (38.9 us against 55.1 us at 2 tokens).
-- End to end, ms per verify window (`STRATA_DECODE_TIMING`, the configuration below, this branch, one binary with
-  the variable unset / set, 6 alternating rounds): **-4.2 % at 4K and -2.8 % at 32K, every round the same way**.
-  Tokens per window and prompt speed unchanged.
+- End to end, ms per verify window (`STRATA_DECODE_TIMING`, IQ3_S layer split, this branch, one binary with the
+  variable unset / set): **ten interleaved pairs on 0.1.43.1 with no other switch: -6.6 % at 4K and -4.4 % at 32K,
+  10 of 10 pairs the same way**; with this machine's other gfx103x switches on, 6 rounds: -4.2 % / -2.8 %. Tokens
+  per window and prompt speed unchanged.
 - Not bitwise (another summation order). Against a double-accumulation reference it is as close as the default read.
 - Off by default; with the variable unset the engine's output is bitwise the same as without the change (checked below).
 
@@ -88,6 +89,22 @@ per arm (256 tokens out), ms per verify window from `STRATA_DECODE_TIMING`:
 Run-to-run noise in ms per window is about +-3 % per round here, which is why the rounds alternate. An earlier version
 of the kernel (the up weights prefetched into registers, since removed) measured -2.8 % / -2.0 % against the default read (two builds, 6 rounds) on
 Unsloth UD-Q4_K_XL (`STRATA_MMQ_KQUANTS=ON`, 0.1.42); this version was not re-measured on it.
+
+### Ten interleaved pairs, no other switch
+
+0.1.43.1 (`a0116b27`) with this change, one binary, the engine's defaults (no environment variable at all) plus
+`STRATA_DECODE_TIMING=1`, the variable unset / set. IQ3_S layer split, `--spec 3 --spec-min-p 0.7
+--pipeline-windows 2`, no vision. Ten pairs of cold servers, the order inside a pair alternating (off-on, on-off,
+...), one 4K and one 32K request per server, 256 tokens out. Each server's log carries the `STRATA_HC_PERSIST=1`
+line on both cards when set and not when unset (checked per arm).
+
+| ms per verify window | unset (median) | set (median) | per-pair median | pairs faster | the ten pairs |
+|---|---|---|---|---|---|
+| 4K | 27.08 | 25.26 | **-6.6 %** | **10 / 10** | -3.5 -8.5 -6.1 -7.1 -1.3 -8.0 -5.7 -4.2 -8.2 -10.3 |
+| 32K | 26.37 | 25.15 | **-4.4 %** | **10 / 10** | -6.2 -5.8 -1.9 -2.9 -4.7 -2.1 -5.3 -9.2 -3.4 -4.1 |
+
+Without the other switches the default read is a larger share of the window, so the gain is larger than in the
+6-round table above.
 
 ## Quality
 
