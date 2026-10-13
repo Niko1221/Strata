@@ -3086,6 +3086,8 @@ class Service:
             except ValueError as e:
                 print(f"[strata] images: the expert cache did not make room for the image encoder ({e}); starting "
                       "it anyway", flush=True)
+        if self.vision_held:
+            time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
         free0, t0 = self.free_vram_mib(), time.time()
         v.restart()
         free1 = self.free_vram_mib()
