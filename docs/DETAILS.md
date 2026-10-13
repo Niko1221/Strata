@@ -1040,6 +1040,37 @@ Unknown telemetry or insufficient RAM skips parking, and the same figure and flo
 decide whether a session file may be saved or restored (below). An 8 GiB budget
 is a cap, not a recommendation for every machine.
 
+**Parked conversations on the disk (opt-in, `--conversation-disk-dir DIR`).** A conversation the RAM cache above
+evicts (its slots or its byte budget full) is dropped, and a client that comes back to it reads the whole prompt
+again: an agent that alternates between its main conversation and sub-agents, two of them too large for the budget
+together, reads ~150K tokens again on every switch. With `--conversation-disk-dir DIR` the evicted conversation goes to
+`DIR` instead and comes back when a request continues it, through the same validation and restore as a parked one,
+when the disk holds a longer prefix than the session, a `--batch` slot or the RAM cache:
+
+- every image of it (one per stage with `--layer-split`) is one session file (above: the same writer and reader, so
+  the same size, header and hash checks and the free-space preflight `--session-min-free-mib`), with the live state
+  and the deepest checkpoint only (the session files' rule); the files' identity is a random number of this run, so
+  only this engine reads them back, and its files (`strata-conv-*`) are removed at start and when it ends;
+- a background thread (CPU nice 10 on Linux) writes them, so a switch never waits for the disk; a conversation asked
+  for again before its write started comes back from RAM, one being written is waited for, then read. A queued image
+  holds its RAM until it is written: parking, and a read back, wait for the queue before they evict more;
+- `--conversation-disk-ttl-min N` (default 30): a conversation stays on the disk N minutes after it was written;
+  `--conversation-disk-mib N` (default 32768): the files' total, oldest out first;
+- a read back removes it from the disk (the session holds it again, and it is parked again on the next switch);
+- the engine's log has a line for every queue, write, hit (from RAM or from the disk) and wait, with MiB, ms and MB/s,
+  and a totals line after every hit (`strata serve: conversation disk: ...`).
+
+Measured on 2x CMP 50HX (layer split), 2x Xeon E5-2670 v2, 64 GB RAM, NVMe ext4, Flash-Next IQ3_XXS, one RAM slot so
+that a third conversation pushes one to the disk, greedy (plain chat requests, 48 tokens): the follow-up answer
+of a conversation restored from the disk was the same text as the answer the live conversation gave (two
+conversations of 42K tokens, and the same through the RAM cache). A 165,557-token conversation: cold read 77.8 s; back
+from the disk 6.4 s for the whole request - the read 3.6 s (2,639 MiB in two files, 761 MB/s; 3,364 MB in RAM before
+the deepest-checkpoint trim) and the GPU restore 0.87 s. The background writes ran at 80-370 MB/s while the next
+prompt was being read (they share the CPU with it at a lower priority); a request waited for one once (0.9 s), when it
+asked for a conversation still being written. After the engine ended no file was left. Unit test:
+`conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; also clean under ThreadSanitizer). Not run
+on Windows or HIP.
+
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three
 numbers, sampled each time it is asked and not a reservation (other writers can take the
 room afterwards):
