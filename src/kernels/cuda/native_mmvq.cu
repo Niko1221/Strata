@@ -1590,6 +1590,33 @@ __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, in
     if (p == 0) dl[std::size_t(b) * cp + c] = __low2float(blk.ds);
 }
 
+// native_quantize_q8_1_kernel and native_q8_1_interleave_kernel in one launch: the same q8_1 blocks, and the
+// interleaved copy's ints and scales (an int is four codes, gathered from lanes 4p..4p+3 with two shuffles).
+__global__ void native_quantize_q8_1_il_kernel(const float* __restrict__ x, Q81Block* __restrict__ y,
+                                               int* __restrict__ bm, int* __restrict__ pm, float* __restrict__ dl,
+                                               int n_in, int n_total, int cp) {
+    const int i = int(blockIdx.x) * QUANT_THREADS + int(threadIdx.x);
+    if (i >= n_total) return;   // n_total is a multiple of 32: only whole warps return
+    const float xi = x[i];
+    const float amax = warp_max(fabsf(xi));
+    const float sum = warp_sum(xi);
+    const float d = q8_1_finite(amax / 127.0f);
+    const int8_t q = q8_1_quant(xi, d, amax);
+    y[i / Q8K].qs[i % Q8K] = q;
+    const auto ds = q8_1_ds(d, sum);
+    if (i % Q8K == 0) y[i / Q8K].ds = ds;
+    const int lane = int(threadIdx.x) & 31;
+    unsigned v = unsigned(uint8_t(q)) << (8 * (lane & 3));
+    v |= __shfl_xor_sync(0xffffffffu, v, 1);
+    v |= __shfl_xor_sync(0xffffffffu, v, 2);
+    const int nb = n_in / Q8K, c = i / n_in, b = (i - c * n_in) / Q8K, pp = lane >> 2;
+    if ((lane & 3) == 0) {
+        bm[(std::size_t(b) * 8 + pp) * cp + c] = int(v);
+        pm[(std::size_t(pp) * nb + b) * cp + c] = int(v);
+    }
+    if (lane == 0) dl[std::size_t(b) * cp + c] = __low2float(ds);
+}
+
 #endif  // !__HIPCC__
 
 void validate_shape(int n_in, int ncols, int block_elems = Q8K) {
@@ -2566,6 +2593,23 @@ std::size_t native_q8_1_il_bytes(int n_in, int ncols) {
     return std::size_t(n_in / Q8K) * std::size_t(native_q8_1_il_cp(ncols)) * (16 * sizeof(int) + sizeof(float));
 }
 
+void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in, int ncols, void* stream) {
+    validate_shape(n_in, ncols);
+    if (ncols < 2 || ncols > 4) throw std::invalid_argument("native_quantize_q8_1_il requires 2 <= ncols <= 4");
+    validate_pointer(x);
+    validate_pointer(x_q8_1);
+    validate_pointer(x_il);
+    validate_stream(stream);
+    const int cp = native_q8_1_il_cp(ncols);
+    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
+    const int n_total = n_in * ncols;
+    native_quantize_q8_1_il_kernel<<<unsigned((n_total + QUANT_THREADS - 1) / QUANT_THREADS), QUANT_THREADS, 0,
+                                     static_cast<cudaStream_t>(stream)>>>(
+        x, static_cast<Q81Block*>(x_q8_1), const_cast<int*>(parts.bm), const_cast<int*>(parts.pm),
+        const_cast<float*>(parts.d), n_in, n_total, cp);
+    launch_check();
+}
+
 void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols, void* stream) {
     validate_shape(n_in, ncols);
     if (ncols < 2 || ncols > 4) throw std::invalid_argument("native_q8_1_interleave requires 2 <= ncols <= 4");
@@ -2802,6 +2846,9 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
 
 #else  // HIP: no interleaved path
 std::size_t native_q8_1_il_bytes(int n_in, int ncols) { return native_q8_1_bytes(n_in, ncols) * 2; }
+void native_quantize_q8_1_il(const float*, void*, void*, int, int, void*) {
+    throw std::invalid_argument("native_quantize_q8_1_il is CUDA only");
+}
 void native_q8_1_interleave(const void*, void*, int, int, void*) {
     throw std::invalid_argument("native_q8_1_interleave is CUDA only");
 }
