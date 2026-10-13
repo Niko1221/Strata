@@ -11798,6 +11798,19 @@ int main(int argc, char** argv) {
                             *disk_park_blob, disk_park_stream->dir_for(restore_used_dir), ck_ids,
                             (std::size_t) std::max<int64_t>(o.prompt_cache, 1), checks,
                             restore_mount);
+                        // ★★★ P24（2026-10-13）：blob 里的检查点只存【状态】，没有图片前缀
+                        //   （p13_restore_checkpoints 从不填 c.imgs），而下面按
+                        //   !starts_with(c.ids, c.imgs) 淘汰检查点时会拿【本请求的】图片前缀
+                        //   去校验它：这段历史里只要有一张图（imgs_below(req_imgs, L) != {}），
+                        //   刚取回的挂载点就被当成"不在本请求路径上"删掉 ⇒ checks=0
+                        //   ⇒ checkpoint restore failed: found=0 resume=… ⇒ 从 0 全量冷读（~50 s）。
+                        //   实测：带图会话 529d7eb6（3,250 个 image-pad token）连失 21 次，
+                        //   8227b696（780 个）再失一次；同一晚纯文本 4072733400 复用正常。
+                        //   ids[0,cut) 的摘要已与本请求核对过（prefix_digest 命中才取到），
+                        //   所以图片前缀就是 imgs_below(req_imgs, cut) —— 与 checkpoint_at()
+                        //   建检查点时填的是同一个表达式。
+                        for (auto& c : checks)
+                            c.imgs = imgs_below(req_imgs, (int64_t) c.ids.size());
                         std::string ck_len;
                         for (const auto& c : checks) {
                             ck_len += " ";
@@ -12099,6 +12112,11 @@ int main(int argc, char** argv) {
                              conversations.size(), conversations.bytes());
             }
             if (want_cvec != cvec_cached) {
+                if (!from_live && resume > 0 && !checks.empty())
+                    std::fprintf(stderr, "strata serve: 控制向量切换 (%d → %d) 丢掉 %zu 份检查点"
+                                         "（含挂载点 %lld）⇒ 这次只能从 0 读\n",
+                                 (int) cvec_cached, (int) want_cvec,
+                                 checks.size(), (long long) resume);
                 live_ok = false;
                 checks.clear();
                 cvec_cached = want_cvec;
@@ -12106,6 +12124,18 @@ int main(int argc, char** argv) {
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
+            if (!from_live && resume > 0) {   // ★ P24 诊断：挂载点被淘汰时说清是谁淘汰的
+                std::size_t drop_len = 0, drop_img = 0;
+                for (const ConvCheckpoint& c : checks) {
+                    if ((int64_t) c.ids.size() > resume) ++drop_len;
+                    else if (!starts_with(c.ids, c.imgs)) ++drop_img;
+                }
+                if (drop_img > 0)
+                    std::fprintf(stderr, "strata serve: 检查点链按【图片前缀】淘汰 %zu 份"
+                                         "（按长度淘汰 %zu 份），挂载点 %lld，剩下 %zu 份\n",
+                                 drop_img, drop_len, (long long) resume,
+                                 checks.size() - drop_len - drop_img);
+            }
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
                              return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
                          }), checks.end());

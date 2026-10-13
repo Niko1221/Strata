@@ -28,10 +28,10 @@ echo "[$(date '+%F %T')] P13 清扫开始：root=$ROOT 保留 $DAYS 天 dry-run=
 [ -d "$ROOT" ] || { echo "  $ROOT 不存在，结束"; exit 0; }
 
 # 1) 超期会话目录
-before=$(du -sb "$ROOT" 2>/dev/null | cut -f1)
+before=$(du -s --block-size=1 "$ROOT" 2>/dev/null | cut -f1)   # ★ P24: st_blocks 口径，不用 -b 的表观大小
 n=0
 while IFS= read -r -d '' d; do
-  sz=$(du -sb "$d" 2>/dev/null | cut -f1)
+  sz=$(du -s --block-size=1 "$d" 2>/dev/null | cut -f1)   # ★ P24: 同上
   if [ "$DRY" = "1" ]; then
     echo "  [dry-run] 会删 $d ($((sz/1048576)) MiB)"
   else
@@ -41,17 +41,12 @@ while IFS= read -r -d '' d; do
   n=$((n+1))
 done < <(find "$ROOT" -mindepth 2 -maxdepth 2 -type d -mtime +"$DAYS" -print0 2>/dev/null)
 echo "  超期会话目录 $n 个"
-after=$(du -sb "$ROOT" 2>/dev/null | cut -f1)
+after=$(du -s --block-size=1 "$ROOT" 2>/dev/null | cut -f1)   # ★ P24: 同上
 echo "  目录占用 $((before/1048576)) MiB → $((after/1048576)) MiB"
 
-# 2) 压缩检查点 blob（目录删完再压，孤儿才最少）
-if [ -x "$TOOL" ]; then
-  if [ "$DRY" = "1" ]; then
-    "$TOOL" --root "$ROOT" --days "$DAYS" --dry-run || echo "  （压缩 dry-run 放弃：见上面的原因）"
-  else
-    "$TOOL" --root "$ROOT" --days "$DAYS" || echo "  （压缩放弃：见上面的原因；blob 原样保留）"
-  fi
-else
-  echo "  找不到压缩工具 $TOOL ⇒ 只清了目录（blob 里的孤儿要等工具装好再压）"
-fi
+# 2) 检查点 blob 压缩：★ P24（2026-10-13）已退役
+#    旧工具 p13-blob-compact 认不出当前 blob 格式（实测只打印一行
+#    "disk park blob: magic 不符，忽略"）⇒ 这一步一直是空转。
+#    blob 现在由 park-gc（cron 0 */4 --apply，按 profile 标签）压缩，见 park-gc.log。
+echo "  检查点 blob 压缩：交由 park-gc（cron 0 */4）负责，本脚本跳过（原 p13-blob-compact 已失效）"
 echo "[$(date '+%F %T')] P13 清扫结束"
