@@ -743,7 +743,48 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     }
 }
 
+// A phase that is too small to divide pays MORE for the two barriers than for the rows.  `run_phase` costs
+// `wait_parked` twice - each one spins until every worker has put its token back on the SAME `parked_`
+// counter, so it is a cross-core serialisation of ~n_ cores - plus `wait_done`.  The callers cut a phase into
+// `3 * threads` equal row ranges, so a phase with fewer rows than that has ranges that do no work at all
+// while every one of them still pays the barrier.
+//
+// This is the MI50 case exactly.  With a second expert tier the CPU's share of a layer collapses (measured
+// 9.88 -> 1.44 distinct experts per layer), and the pool then spent 39.4 ms/round to do 7.1 ms of work: 81%
+// barrier, and the whole reason the dual-card arm came out SLOWER than the single-card one despite doing a
+// fifth of the arithmetic.  Measured over 12/8/4 workers on a 48-layer Qwen3.8 round.
+//
+// Below the threshold the HOST does the whole phase on its own (`drain(-1, ...)`, the same call `run_phase`
+// already makes for the host's share) and the workers never leave the park: no publish, no barrier, no
+// wake-ups.  One expert's rows are ~640 + 2560 = 3200 rows of independent AVX-2 work, which is a few hundred
+// microseconds serial - cheaper than waking 12 cores, and it leaves all of them to the GPU driver's OpenCL
+// submission threads, which is the resource the peer tier is actually short of.
+//
+// The threshold is deliberately conservative and in ROWS, not experts: it must hold for the split phases
+// (`FF`/`H` per expert) as well as the native ones, and it must not fire on a layer that really does have a
+// full expert's worth of parallelism.  `kSoloRows` is per worker, so the host takes over only when each
+// worker would get less than a row's worth - where a worker's own claim overhead exceeds its share.
+static constexpr int64_t kSoloRows = 1;
+
+// STRATA_POOL_SOLO=0 restores the barriers unconditionally, so the same binary can A/B the two paths on the
+// machine that is actually slow (issue #29's lesson: absolute numbers here move by 20% between runs).
+static const bool kSoloEnabled = [] {
+    const char* e = std::getenv("STRATA_POOL_SOLO");
+    return e == nullptr || std::atoi(e) != 0;
+}();
+
 void ExpertPool::run_phase(int mode, int n_tasks) {
+    // the host is the only participant left when `host_works_` is off, and then there is nothing to save
+    if (kSoloEnabled && host_works_ && mrows_ > 0 && mrows_ < kSoloRows * (int64_t) (n_ + 1)) {
+        mode_ = mode;
+        njobs_ = n_tasks;
+        const uint32_t e = begin_batch(n_tasks);
+        drain(-1, host_scratch_, e);   // claims all n_tasks itself: the workers stay parked
+        wait_done(n_tasks);
+        hstate_.store(kIdle, std::memory_order_relaxed);
+        hstate_ms_.store(now_ms(), std::memory_order_relaxed);
+        return;
+    }
     wait_parked("before a phase");
     mode_ = mode;
     njobs_ = n_tasks;

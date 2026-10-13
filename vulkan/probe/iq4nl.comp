@@ -1,0 +1,119 @@
+#version 450
+// IQ4_NL down-projection row against q8_1 activations - the Vulkan transcription of
+// Split<20>::load/apply (vec_dot_iq4_nl_q8_1 in src/kernels/cuda/iq_kernels.cu).
+//
+// block_iq4_nl is 18 bytes for 32 values and is split at upload into d[] (2 B) and qs[] (16 B = four
+// dwords), which is where the two aligned dword reads below come from.  Fmt<20> is qk = 32, ipb = 2,
+// step = 2, so a row of n_ff columns is nb*2 dot calls: call k has kbx = k/2, iqs = 2*(k%2), and each
+// call chains four dp4a - low nibbles of qs dword iqs+l against q8 word iqs+l, high nibbles against
+// word iqs+l+4.  Same integer chain, same fp32 rounding, same lane order as the CUDA original.
+//
+// The 16-entry codebook is non-linear (kvalues_iq4nl), so it is looked up and not computed.  It
+// arrives packed four-values-per-uint in the same buffer as the IQ3_XXS codebook, at index 256.
+//
+// WG and R mean what they do in iq3_fast.comp: lanes per row, and rows sharing one activation read.
+
+#ifndef WG
+#define WG 32
+#endif
+#ifndef R
+#define R 4
+#endif
+
+#ifdef VK_DP4A
+#extension GL_EXT_integer_dot_product : require
+#endif
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = WG) in;
+
+layout(set = 0, binding = 0) readonly buffer D { uint dblob[]; };
+layout(set = 0, binding = 1) readonly buffer Qs { uint qsblob[]; };
+layout(set = 0, binding = 2) readonly buffer Tab { uint tab[]; };   // 4 uints at index 256
+layout(set = 0, binding = 3) readonly buffer XD { uint xdblob[]; };
+layout(set = 0, binding = 4) readonly buffer XQ { uint xqblob[]; };
+layout(set = 0, binding = 5) writeonly buffer Out { float outv[]; };
+
+layout(push_constant) uniform PC {
+    uint n_calls;    // dot calls per row = nb * 2
+    uint n_rows;
+} pc;
+
+const uint kTabAt = 256u;
+
+float f16_to_f(uint h) {
+    const uint s = (h >> 15u) & 1u;
+    const uint e = (h >> 10u) & 0x1Fu;
+    const uint m = h & 0x3FFu;
+    if (e == 31u) return uintBitsToFloat((s << 31u) | 0x7F800000u | (m << 13u));
+    if (e == 0u) {
+        if (m == 0u) return uintBitsToFloat(s << 31u);
+        return float(m) * 5.9604644775390625e-08;
+    }
+    return uintBitsToFloat((s << 31u) | ((e + 112u) << 23u) | (m << 13u));
+}
+
+float f16_at(uint byteoff) {
+    return f16_to_f((dblob[byteoff >> 2] >> ((byteoff & 2u) * 8u)) & 0xFFFFu);
+}
+
+// one nibble -> its int8, sign-extended, in the low byte of a uint ready for the packed dot
+int tbl(uint nib) {
+    return int((tab[kTabAt + (nib >> 2u)] >> ((nib & 3u) * 8u)) & 0xFFu) << 24 >> 24;
+}
+
+int dp4x8(int a, int b, int c) {
+#ifdef VK_DP4A
+    return dotPacked4x8EXT(a, b, c);
+#else
+    int s = c;
+    for (int i = 0; i < 4; ++i)
+        s += ((a << (24 - 8 * i)) >> 24) * ((b << (24 - 8 * i)) >> 24);
+    return s;
+#endif
+}
+
+// four nibbles of one dword, low nibbles or high nibbles, packed back into one word
+int expand(uint q4, bool high) {
+    const uint sh = high ? 4u : 0u;
+    int r = 0;
+    for (uint i = 0u; i < 4u; ++i)
+        r |= (tbl((q4 >> (8u * i + sh)) & 0xFu) & 0xFF) << int(8u * i);
+    return r;
+}
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint row0 = gl_WorkGroupID.x * uint(R);
+
+    precise float acc[R];
+    for (int r = 0; r < R; ++r) acc[r] = 0.0;
+
+    for (uint k = lane; k < pc.n_calls; k += WG) {
+        const uint kbx = k >> 1, iqs = (k & 1u) * 2u;
+
+        uint xw[8];
+        for (int j = 0; j < 8; ++j) xw[j] = xqblob[kbx * 8u + uint(j)];
+        const float dx = f16_to_f((xdblob[kbx >> 1u] >> ((kbx & 1u) * 16u)) & 0xFFFFu);
+
+        for (int r = 0; r < R; ++r) {
+            const uint row = min(row0 + uint(r), pc.n_rows - 1u);
+            // qs[] holds four dwords per block, so dword j of block kbx is at qs4[kbx*4 + j]
+            const uint q0 = qsblob[(row * (pc.n_calls >> 1) + kbx) * 4u + iqs + 0u];
+            const uint q1 = qsblob[(row * (pc.n_calls >> 1) + kbx) * 4u + iqs + 1u];
+
+            int s = 0;
+            s = dp4x8(expand(q0, false), int(xw[iqs + 0u]), s);
+            s = dp4x8(expand(q0, true),  int(xw[iqs + 4u]), s);
+            s = dp4x8(expand(q1, false), int(xw[iqs + 1u]), s);
+            s = dp4x8(expand(q1, true),  int(xw[iqs + 5u]), s);
+
+            acc[r] += f16_at(row * (pc.n_calls >> 1) * 2u + kbx * 2u) * dx * float(s);
+        }
+    }
+
+    for (int r = 0; r < R; ++r) {
+        const float total = subgroupAdd(acc[r]);
+        if (subgroupElect() && row0 + uint(r) < pc.n_rows) outv[row0 + uint(r)] = total;
+    }
+}

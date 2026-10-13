@@ -39,6 +39,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/peer_tier.hpp"
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
@@ -595,7 +596,7 @@ struct Stager {
 // primary would (gathered from its own slots), and copies the result rows back into the primary's Dm rows - the rows
 // are laid out local-first, so the peer's are one contiguous block at the end.
 struct PeerPrefill {
-    core::PeerExperts* peer = nullptr;
+    core::PeerTier* peer = nullptr;
     int dev = -1;
     int64_t cap_rows = 0, T_max = 0;
     cudaStream_t s = nullptr;
@@ -1684,7 +1685,7 @@ bool Prefill::bind_stage_helper(int64_t T) {
     return true;
 }
 
-bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
+bool Prefill::set_peer(core::PeerTier* peer, int64_t cap_rows, std::string& err) {
     Impl& m = *impl_;
     if (peer == nullptr || !peer->valid()) { m.pp.reset(); return true; }
     // Without P2P the activations and the result rows take the mapped host route of the layer split's helper

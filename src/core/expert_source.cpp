@@ -4,7 +4,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
-#include "strata/core/peer_experts.hpp"
+#include "strata/core/peer_tier.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 

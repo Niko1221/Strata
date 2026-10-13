@@ -1,0 +1,132 @@
+#version 450
+// One expert row of IQ3_XXS against q8_1 activations, the Vulkan transcription of the engine's
+// Split<18>::load/apply (src/kernels/cuda/iq_kernels.cu) driven by row_dot<18>.
+//
+// Every step is integer arithmetic on the same values as the CUDA original, and the int32
+// multiplications and /2 divisions truncate the same way, so the result is expected to match
+// the CUDA kernel bit for bit - that is what lets this be verified against the engine rather
+// than merely resembling it.
+//
+// 32 lanes compute one row: k walks the row's 32-value chunks with a stride of 32, exactly as
+// row_dot does, and the tree reduction below is the __shfl_down_sync sequence in warp_sum, so
+// the floating-point summation order is the CUDA one as well.
+//
+// Deliberately free of specialised builtins: the packed-byte helpers the CUDA kernel calls
+// (__vcmpne4, __vsub4, __dp4a) are scalar here, and memory is reached a byte at a time.  Both
+// waves (32 on the NVIDIA card, 64 on gfx906) run this one module unchanged.
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0) readonly buffer Blob { uint blob[]; };
+layout(set = 0, binding = 1) readonly buffer Xq { uint xq[]; };
+layout(set = 0, binding = 2) readonly buffer Cb { uint cb[]; };
+layout(set = 0, binding = 3) writeonly buffer Out { float outv[]; };
+
+layout(push_constant) uniform PC {
+    uint n_blocks;   // 256-value blocks per row (n_embd / 256)
+} pc;
+
+shared float sh[32];
+
+const uint kHigh = 0x80808080u;
+
+// --- byte-addressed reads: a 98-byte block does not land on a uint boundary ---
+uint rd8(uint byteoff) {
+    return (blob[byteoff >> 2] >> ((byteoff & 3u) * 8u)) & 0xFFu;
+}
+uint rd32(uint byteoff) {
+    return rd8(byteoff) | (rd8(byteoff + 1u) << 8u) | (rd8(byteoff + 2u) << 16u)
+         | (rd8(byteoff + 3u) << 24u);
+}
+
+// Bit-exact fp16 -> fp32.  exp2() is only an approximation on some drivers and would put a
+// 1-ulp error in the block scale, so the exponent is spliced in directly instead.
+float f16_to_f(uint h) {
+    const uint s = (h >> 15u) & 1u;
+    const uint e = (h >> 10u) & 0x1Fu;
+    const uint m = h & 0x3FFu;
+    if (e == 31u) {
+        return uintBitsToFloat((s << 31u) | 0x7F800000u | (m << 13u));   // inf / NaN
+    }
+    if (e == 0u) {
+        if (m == 0u) return uintBitsToFloat(s << 31u);
+        return float(m) * 5.9604644775390625e-08;                        // 2^-24, exact
+    }
+    return uintBitsToFloat((s << 31u) | ((e + 112u) << 23u) | (m << 13u));
+}
+
+// --- the llama.cpp helpers, scalar ---
+int unpack_ksigns(uint v) {
+    uint p = uint(bitCount(v & 0xFFu)) & 1u;
+    return int((v & 0xFFu) ^ (p << 7u));
+}
+int vcmpne4(int a, int b) {
+    uint t = uint(a) ^ uint(b);
+    uint nz = (((t & ~kHigh) + ~kHigh) | t) & kHigh;
+    return int((nz >> 7u) * 0xFFu);
+}
+int vsub4(int a, int b) {
+    uint ua = uint(a);
+    uint ub = uint(b);
+    return int(((ua | kHigh) - (ub & ~kHigh)) ^ ((ua ^ ~ub) & kHigh));
+}
+// Named dp4x8_scalar, not dp4a: GLSL 4.50 already has a builtin called dp4a.
+// c + sum of the four signed byte products, the __dp4a contract.
+int dp4x8_scalar(int a, int b, int c) {
+    int s = c;
+    for (int i = 0; i < 4; ++i) {
+        int av = (a << (24 - 8 * i)) >> 24;                 // sign-extend byte i
+        int bv = (b << (24 - 8 * i)) >> 24;
+        s += av * bv;
+    }
+    return s;
+}
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint row = gl_WorkGroupID.x;
+    const uint rowbyte = row * pc.n_blocks * 98u;
+    // precise: forbid the compiler from contracting `acc += d * sumi` into an FMA.  The CUDA
+    // original rounds twice here (a multiply then an add), and matching that is the whole
+    // point of this kernel.
+    precise float acc = 0.0;
+
+    for (uint k = lane; k < pc.n_blocks * 8u; k += 32u) {
+        const uint kbx = k / 8u;
+        const uint c = k % 8u;
+        const uint bbase = rowbyte + kbx * 98u;
+        const uint qs = bbase + 2u;                          // past the fp16 block scale
+        const uint aux32 = rd32(qs + 64u + 4u * c);
+        const uint dw = rd32(bbase) & 0xFFFFu;
+
+        int g[8];
+        for (int li = 0; li < 4; ++li) {
+            const int l0 = li * 2;
+            const uint gx = cb[rd8(qs + 8u * c + uint(l0))];
+            const uint gy = cb[rd8(qs + 8u * c + uint(l0) + 1u)];
+            const uint signs = uint(unpack_ksigns(aux32 >> uint(7 * l0 / 2))) * 0x01010101u;
+            const int m0 = vcmpne4(int(signs & 0x08040201u), 0);
+            const int m1 = vcmpne4(int(signs & 0x80402010u), 0);
+            g[l0] = vsub4(int(gx) ^ m0, m0);
+            g[l0 + 1] = vsub4(int(gy) ^ m1, m1);
+        }
+
+        const uint lsu = aux32 >> 28u;
+        const uint xb = (kbx * 8u + c) * 9u;                 // its q8_1 block, 9 uints each
+
+        int s = 0;
+        for (int j = 0; j < 8; ++j) {
+            s = dp4x8_scalar(g[j], int(xq[xb + 1u + uint(j)]), s);
+        }
+        const int sumi = (int(lsu) * s + s / 2) / 2;
+        acc += f16_to_f(dw) * f16_to_f(xq[xb] & 0xFFFFu) * float(sumi);
+    }
+
+    sh[lane] = acc;
+    barrier();
+    for (uint off = 16u; off > 0u; off >>= 1u) {
+        if (lane < off) sh[lane] += sh[lane + off];
+        barrier();
+    }
+    if (lane == 0u) outv[row] = sh[0];
+}

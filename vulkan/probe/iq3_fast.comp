@@ -1,0 +1,172 @@
+#version 450
+// IQ3_XXS expert row against q8_1 activations - the fast path.
+//
+// Same algorithm as iq3_gu.comp (the bit-exact reference transcription of Split<18>::load/apply in
+// src/kernels/cuda/iq_kernels.cu), same summation order, so it still checks against the Python
+// reference.  Three things changed, all of them about how the bytes arrive rather than what is
+// computed:
+//
+//   1. the 98-byte block is split into d[] (2 B), aux[] (32 B) and qs[] (64 B) arrays at upload.
+//      In the GGUF layout the 8-byte chunk a lane wants starts at an odd byte offset (byte 2 of a
+//      98-byte block), so every load straddles a 4-byte boundary; split, every load is aligned.
+//      The byte count is identical: 2 + 32 + 64 = 98.
+//   2. ten packed-byte integer products per chunk become one dotPacked4x8EXT.  On gfx906 that is
+//      V_DOT4 (the instruction the card was built for) and on sm_120 it is IDP.4A - the scalar
+//      expansion it replaces is 4 shifts, 4 multiplies and 3 adds per word.
+//   3. WG lanes per row: 32 for an NVIDIA wave, 64 for the gfx906 wavefront (a 32-lane workgroup
+//      would leave half of every wave64 idle).  Only WG=32 reproduces the reference summation
+//      order; WG=64 is checked numerically instead.
+//
+// The row's own reduction is a subgroup add, not a shared-memory tree: the tree needs one barrier
+// per level, and a workgroup that only covers 980 bytes of weights per row cannot afford six
+// barriers per row.  subgroupAdd on a 32-lane subgroup lowers to the same butterfly as the tree
+// (x[i] + x[i^16], then + x[i^16^8], ...), so the summation order - and the bit-exactness - holds.
+//
+// R rows per lane.  A lane wants 8 words of the activation for its chunk, and the lane next to it
+// wants 8 words 32 bytes further on, so a plain load fetches an eighth of every line it touches.
+// With R rows in flight the same 8 registers feed R weight streams, so the activation traffic -
+// which is 2.9x the weight traffic at 3 bits per weight - is paid once per R rows instead of once
+// per row.  It is also what the integer pipes want: R independent dot-product chains.
+
+#ifndef WG
+#define WG 32
+#endif
+#ifndef R
+#define R 4
+#endif
+// The chunk count can be fixed at build time (2560/32 = 80 for a gate/up row, 640/32 = 20 for a
+// down row).  A compile-time bound lets the loop unroll; the push constant is the fallback.
+//#define NCHUNK 80
+
+#ifdef VK_DP4A
+#extension GL_EXT_integer_dot_product : require
+#endif
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = WG) in;
+
+layout(set = 0, binding = 0) readonly buffer D { uint dblob[]; };
+layout(set = 0, binding = 1) readonly buffer Aux { uint aux[]; };
+layout(set = 0, binding = 2) readonly buffer Qs { uint qsblob[]; };
+layout(set = 0, binding = 3) readonly buffer Cb { uint cb[]; };
+layout(set = 0, binding = 4) readonly buffer XD { uint xdblob[]; };
+layout(set = 0, binding = 5) readonly buffer XQ { uint xqblob[]; };
+layout(set = 0, binding = 6) writeonly buffer Out { float outv[]; };
+
+layout(push_constant) uniform PC {
+    uint n_chunks;   // 32-value chunks per row (n_embd / 32)
+    uint nb;         // 256-value blocks per row (n_embd / 256)
+    uint n_rows;     // rows in this dispatch (guarded when R > 1)
+} pc;
+
+const uint kHigh = 0x80808080u;
+
+// --- bit-exact fp16 -> fp32 (exp2() is an approximation on some drivers) ---
+float f16_to_f(uint h) {
+    const uint s = (h >> 15u) & 1u;
+    const uint e = (h >> 10u) & 0x1Fu;
+    const uint m = h & 0x3FFu;
+    if (e == 31u) return uintBitsToFloat((s << 31u) | 0x7F800000u | (m << 13u));
+    if (e == 0u) {
+        if (m == 0u) return uintBitsToFloat(s << 31u);
+        return float(m) * 5.9604644775390625e-08;
+    }
+    return uintBitsToFloat((s << 31u) | ((e + 112u) << 23u) | (m << 13u));
+}
+
+// an fp16 stored in a uint array at a 2-byte-aligned offset: one load, no byte loop
+float f16_at(uint byteoff) {
+    return f16_to_f((dblob[byteoff >> 2] >> ((byteoff & 2u) * 8u)) & 0xFFFFu);
+}
+
+// --- the llama.cpp helpers, scalar (kept: they are integer, so not the bottleneck) ---
+uint unpack_ksigns(uint v) {
+    uint p = uint(bitCount(v & 0xFFu)) & 1u;
+    return (v & 0xFFu) ^ (p << 7u);
+}
+int vcmpne4(int a, int b) {
+    uint t = uint(a) ^ uint(b);
+    uint nz = (((t & ~kHigh) + ~kHigh) | t) & kHigh;
+    return int((nz >> 7u) * 0xFFu);
+}
+int vsub4(int a, int b) {
+    uint ua = uint(a);
+    uint ub = uint(b);
+    return int(((ua | kHigh) - (ub & ~kHigh)) ^ ((ua ^ ~ub) & kHigh));
+}
+
+int dp4x8(int a, int b, int c) {
+#ifdef VK_DP4A
+    return dotPacked4x8EXT(a, b, c);
+#else
+    int s = c;
+    for (int i = 0; i < 4; ++i)
+        s += ((a << (24 - 8 * i)) >> 24) * ((b << (24 - 8 * i)) >> 24);
+    return s;
+#endif
+}
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint row0 = gl_WorkGroupID.x * uint(R);
+
+#ifdef NCHUNK
+    const uint n_chunks = uint(NCHUNK);
+#else
+    const uint n_chunks = pc.n_chunks;
+#endif
+
+    precise float acc[R];
+    for (int r = 0; r < R; ++r) acc[r] = 0.0;
+
+    for (uint k = lane; k < n_chunks; k += WG) {
+        const uint kbx = k >> 3;                       // 256-value block
+        const uint c = k & 7u;                         // 32-value chunk inside it, 8 bytes of qs
+        const uint xb = (kbx * 8u + c) * 8u;           // q8_1 block: 8 uints of int8
+
+        // Read once, feed R rows: this is the whole point of R.
+        uint xw[8];
+        for (int j = 0; j < 8; ++j) xw[j] = xqblob[xb + uint(j)];
+        const float dx = f16_to_f((xdblob[(kbx * 8u + c) >> 1u] >> (((kbx * 8u + c) & 1u) * 16u)) & 0xFFFFu);
+
+        for (int r = 0; r < R; ++r) {
+            // clamp instead of branch: out-of-range rows read row n_rows-1 and are not stored
+            const uint row = min(row0 + uint(r), pc.n_rows - 1u);
+            const uint d_row = row * pc.nb * 2u;
+            const uint aux_row = row * n_chunks;
+            const uint qs_row = row * n_chunks;        // in units of 8 bytes (2 uints)
+
+            const uint qlo = qsblob[(qs_row + k) * 2u];
+            const uint qhi = qsblob[(qs_row + k) * 2u + 1u];
+            const uint a32 = aux[aux_row + k];
+
+            // The 8 codebook indices of the chunk, two per step: byte l0 and l0+1 of
+            // qs[8c .. 8c+8).  Bytes 0..3 live in qlo, 4..7 in qhi.
+            int g[8];
+            for (int li = 0; li < 4; ++li) {
+                const int l0 = li * 2;
+                const uint w = (l0 < 4) ? qlo : qhi;
+                const uint sh0 = (l0 < 4) ? uint(8 * l0) : uint(8 * l0 - 32);
+                const uint gx = cb[(w >> sh0) & 0xFFu];
+                const uint gy = cb[(w >> (sh0 + 8u)) & 0xFFu];
+                const uint signs = unpack_ksigns(a32 >> uint(7 * l0 / 2)) * 0x01010101u;
+                const int m0 = vcmpne4(int(signs & 0x08040201u), 0);
+                const int m1 = vcmpne4(int(signs & 0x80402010u), 0);
+                g[l0] = vsub4(int(gx) ^ m0, m0);
+                g[l0 + 1] = vsub4(int(gy) ^ m1, m1);
+            }
+
+            int s = 0;
+            for (int j = 0; j < 8; ++j) s = dp4x8(g[j], int(xw[j]), s);
+
+            const int sumi = (int(a32 >> 28u) * s + s / 2) / 2;
+            acc[r] += f16_at(d_row + kbx * 2u) * dx * float(sumi);
+        }
+    }
+
+    // subgroupAdd is a collective: every lane has to reach it, so the elect comes after.
+    for (int r = 0; r < R; ++r) {
+        const float total = subgroupAdd(acc[r]);
+        if (subgroupElect() && row0 + uint(r) < pc.n_rows) outv[row0 + uint(r)] = total;
+    }
+}

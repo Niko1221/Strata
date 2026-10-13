@@ -33,6 +33,9 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
+#ifdef STRATA_HAS_OPENCL
+#include "strata/core/ocl_peer.hpp"   // the same tier on the MI50 (gfx906), through AMD's OpenCL runtime
+#endif
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -491,6 +494,10 @@ struct Options {
     /// the prompt path's rows per layer the peer computes: -1 = half of chunk x top-k, 0 = the prompt path stays on
     /// the primary
     int64_t peer_prefill_rows = -1;
+    /// The second tier on a card only OpenCL can drive - the MI50 (gfx906): the ordinal in the AMD platform,
+    /// -1 = off.  Same contract as `peer_device` (peer_tier.hpp), so the same `peer_reserve_mib`, `peer_slots`
+    /// and `peer_adapt_swaps` apply.  Mutually exclusive with `peer_device`: there is one second tier.
+    int peer_ocl = -1;
     /// The PLE gather's prefetch, as an A/B arm.  The gather measured 2.10-2.61 ms/token because its sixteen
     /// row reads are sixteen SEPARATE page faults into a 26.8 GB mapping; see `ple_prefetch_enable`.
     bool no_ple_prefetch = false;
@@ -893,6 +900,11 @@ void usage() {
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
                  "  --peer-prefill-rows N  prompt rows per layer the peer computes (default half of chunk x top-k;\n"
                  "                       0 = the prompt path stays on the primary)\n"
+                 "  --peer-ocl N         the same second tier on a card OpenCL can drive but CUDA cannot - the\n"
+                 "                       MI50 (gfx906), N = the ordinal in the AMD platform.  Rows come back\n"
+                 "                       through ordinary host memory, so there is no P2P and the prompt path\n"
+                 "                       stays on the primary; the decode tier is unaffected.  Mutually exclusive\n"
+                 "                       with --peer-device, which stays the CUDA spelling.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -2197,6 +2209,7 @@ int main(int argc, char** argv) {
         else if (a == "--peer-slots") o.peer_slots = std::atoll(next("--peer-slots"));
         else if (a == "--peer-adapt-swaps") o.peer_adapt_swaps = std::atoi(next("--peer-adapt-swaps"));
         else if (a == "--peer-prefill-rows") o.peer_prefill_rows = std::atoll(next("--peer-prefill-rows"));
+        else if (a == "--peer-ocl") o.peer_ocl = std::atoi(next("--peer-ocl"));
         else if (a == "--no-hit-poke") o.no_hit_poke = true;
         else if (a == "--expert-profile") o.expert_profile = next("--expert-profile");
         else if (a == "--expert-profile-save") o.expert_profile_save = next("--expert-profile-save");
@@ -2713,12 +2726,25 @@ int main(int argc, char** argv) {
     }
     // the peer tier is the second card's only user: a layer split or a remote expert cache would put a second engine
     // part (and a second copy of the same experts) on it
-    if (o.peer_device >= 1 && (!o.layer_split.empty() || o.expert_cache_remote[0] > 0)) {
-        std::fprintf(stderr, "strata generate: --peer-device cannot be combined with %s\n",
+    if (o.peer_device >= 1 && o.peer_ocl >= 0) {
+        std::fprintf(stderr, "strata generate: --peer-device and --peer-ocl are the same tier on two kinds of card; "
+                             "give one of them\n");
+        return 2;
+    }
+    if ((o.peer_device >= 1 || o.peer_ocl >= 0) && (!o.layer_split.empty() || o.expert_cache_remote[0] > 0)) {
+        std::fprintf(stderr, "strata generate: %s cannot be combined with %s\n",
+                     o.peer_device >= 1 ? "--peer-device" : "--peer-ocl",
                      !o.layer_split.empty() ? "--layer-split (use one or the other)"
                                             : "--expert-cache-device1..3 (the peer tier already caches experts there)");
         return 2;
     }
+#ifndef STRATA_HAS_OPENCL
+    if (o.peer_ocl >= 0) {
+        std::fprintf(stderr, "strata generate: --peer-ocl needs an engine built with an OpenCL SDK (CL/cl.h and "
+                             "OpenCL.lib); this one has no OpenCL peer tier\n");
+        return 2;
+    }
+#endif
 
     if (o.native_flash_attn_short && o.max_context > 256) {
         std::fprintf(stderr, "strata generate: --native-flash-attn-short requires --max-context <=256\n");
@@ -5759,24 +5785,88 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
-    strata::core::PeerExperts peer;
+    // ---- Multi-GPU: the second expert tier, filled with the ranked pairs the primary does not hold.  The
+    // contract is `PeerTier` (peer_tier.hpp) and there are two implementations: `PeerExperts` on a second CUDA
+    // card, `OclPeer` on a card only OpenCL will drive (the MI50 / gfx906).  Everything below drives the base.
+    strata::core::PeerExperts peer_cuda;
+#ifdef STRATA_HAS_OPENCL
+    std::unique_ptr<strata::core::OclPeer> peer_ocl;
+#endif
+    strata::core::PeerTier* peer = nullptr;
     if (o.peer_device >= 1) {
         if (profile.empty() || srcp == nullptr || o.expert_cache <= 0) {
             std::fprintf(stderr, "strata generate: --peer-device needs --expert-profile and the expert cache\n");
             return 1;
         }
         const auto tp0 = Clock::now();
-        if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
-                       err)) {
+        if (!peer_cuda.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
+                            err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        peer = &peer_cuda;
         std::fprintf(stderr, "strata generate: peer GPU %d: %lld experts, %.2f GiB (filled in %.1f s); with the primary's "
-                             "%lld that is %lld of %lld on the GPUs\n", o.peer_device, (long long) peer.resident(), peer.gib(),
-                     std::chrono::duration<double>(Clock::now() - tp0).count(), (long long) xcache.slots(),
-                     (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
+                             "%lld that is %lld of %lld on the GPUs\n", o.peer_device, (long long) peer_cuda.resident(),
+                     peer_cuda.gib(), std::chrono::duration<double>(Clock::now() - tp0).count(),
+                     (long long) xcache.slots(), (long long) (peer_cuda.resident() + xcache.slots()),
+                     (long long) (g.n_layers * g.n_expert));
     }
+#ifdef STRATA_HAS_OPENCL
+    else if (o.peer_ocl >= 0) {
+        if (profile.empty() || srcp == nullptr || o.expert_cache <= 0) {
+            std::fprintf(stderr, "strata generate: --peer-ocl needs --expert-profile and the expert cache\n");
+            return 1;
+        }
+        std::string odev;
+        double odev_gib = 0, odev_max = 0;
+        if (!strata::core::OclPeer::probe(o.peer_ocl, odev, odev_gib, odev_max)) {
+            std::fprintf(stderr, "strata generate: --peer-ocl %d: no such OpenCL device (%d on this platform)\n",
+                         o.peer_ocl, strata::core::OclPeer::count());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: peer OpenCL %d: %s, %.2f GiB (%.2f GiB in one allocation)\n", o.peer_ocl,
+                     odev.c_str(), odev_gib, odev_max);
+        // The tier's per-layer format table, from the same one the CPU pool, the VRAM tier and the prompt path
+        // ask - and the same `blob_bytes` the arena is laid out with, so `open`'s own byte arithmetic is
+        // checked against the pack rather than against a second opinion of it.
+        const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+        std::vector<strata::core::OclLayerInfo> ocl_layers((size_t) g.n_layers);
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            strata::core::OclLayerInfo& L = ocl_layers[(size_t) l];
+            L.n_embd = g.n_embd;
+            L.n_ff = g.n_ff;
+            L.blob_bytes = lay.blob_bytes(l);
+            if (lay.native && (size_t) l < lay.fmt.size()) {
+                L.gu_type = lay.fmt[(size_t) l].gu_type;
+                L.d_type = lay.fmt[(size_t) l].d_type;
+            } else {   // the canonical pack (tools/strata_pack.py): Q2_0 gate/up and down, one blob size
+                L.gu_type = 42;
+                L.d_type = 42;
+            }
+        }
+        std::vector<int8_t> held((size_t) (g.n_layers * g.n_expert), -1);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                if (xcache.slot_of(l, e) >= 0) held[(size_t) (l * g.n_expert + e)] = 0;
+        const strata::core::OclPeer::BlobFn ocl_blob = +[](void* c, int64_t l, int64_t e) -> const uint8_t* {
+            return static_cast<strata::core::ExpertSource*>(c)->blob(l, e);
+        };
+        const auto tp0 = Clock::now();
+        peer_ocl = std::make_unique<strata::core::OclPeer>();
+        if (!peer_ocl->open(o.peer_ocl, ocl_layers, g.n_expert, ocl_blob, srcp, held.data(), profile,
+                            o.peer_reserve_mib, o.peer_slots, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        peer = peer_ocl.get();
+        std::fprintf(stderr,
+                     "strata generate: peer OpenCL %d (%s): %lld experts, %.2f GiB (filled in %.1f s); with the "
+                     "primary's %lld that is %lld of %lld on the GPUs\n",
+                     o.peer_ocl, odev.c_str(), (long long) peer_ocl->resident(), peer_ocl->gib(),
+                     std::chrono::duration<double>(Clock::now() - tp0).count(), (long long) xcache.slots(),
+                     (long long) (peer_ocl->resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
+    }
+#endif
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
@@ -5792,7 +5882,7 @@ int main(int argc, char** argv) {
     };
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
-    drive.d.peer = peer.valid() ? &peer : nullptr;
+    drive.d.peer = peer;   // the tier itself, or nullptr when neither --peer-device nor --peer-ocl was given
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
     drive.d.pool = &pool;
@@ -7690,9 +7780,12 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
-        if (peer.valid() && o.peer_prefill_rows != 0) {
+        // The prompt path's peer share needs P2P (it hands the peer device addresses and reads its rows back over
+        // the interconnect).  The OpenCL tier has neither, so its `p2p()` is false and it declines here by design:
+        // it earns its keep in the decode window, where the rows come back through ordinary host memory.
+        if (peer != nullptr && peer->p2p() && o.peer_prefill_rows != 0) {
             const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
-            if (!sp.set_peer(&peer, rows, err)) {
+            if (!sp.set_peer(peer, rows, err)) {
                 std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
                 err.clear();
             }
@@ -8804,7 +8897,7 @@ int main(int argc, char** argv) {
             }
         };
         auto apply_pending = [&](bool wait) {
-            if (peer.valid()) peer.apply_pending(wait);
+            if (peer != nullptr) peer->apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
             else if (cudaEventQuery(adapt_ev) != cudaSuccess) return;
@@ -8842,7 +8935,7 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer != nullptr && peer->has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
@@ -8974,12 +9067,12 @@ int main(int argc, char** argv) {
             // decays: the sum is proportional to the routing itself) - only with --expert-profile-save, else `heat`
             // is empty
             for (size_t i = 0; i < heat.size(); ++i) heat[i] += (double) drive.d.usage[i];
-            if (peer.valid()) {                   // multi-GPU: the peer takes the next most-routed CPU misses
+            if (peer != nullptr) {                // multi-GPU: the peer takes the next most-routed CPU misses
                 std::vector<int32_t> r0 = host_res;
                 for (const auto& [i, slot] : pending) r0[(size_t) i] = slot;   // swapped into the primary already
                 std::string perr;
-                if (!peer.adapt(drive.d.usage.data(), r0.data(),
-                                o.peer_adapt_swaps >= 0 ? o.peer_adapt_swaps : o.adapt_swaps, perr)) {
+                if (!peer->adapt(drive.d.usage.data(), r0.data(),
+                                 o.peer_adapt_swaps >= 0 ? o.peer_adapt_swaps : o.adapt_swaps, perr)) {
                     std::fprintf(stderr, "strata serve: %s\n", perr.c_str());
                     return false;
                 }
@@ -9725,7 +9818,7 @@ int main(int argc, char** argv) {
                 e = "VRAM: not with the resident low-RAM mode (the cache holds experts RAM does not)";
                 return false;
             }
-            if (peer.valid()) { e = "VRAM: not with --peer-device"; return false; }
+            if (peer != nullptr) { e = "VRAM: not with a second expert tier (--peer-device / --peer-ocl)"; return false; }
             for (const PfPart& p : pf_parts)
                 if (!p.lent.empty()) { e = "VRAM: a prompt's loan is still out"; return false; }
             if (!ver.wait_commit(e)) return false;

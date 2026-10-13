@@ -1,0 +1,43 @@
+#version 450
+// Expert GEMV probe: out[row] = scale[row] * dot(w_q[row][:K], x_q[:K])
+// One workgroup per row, fixed 32 lanes; shared-memory tree reduction (no subgroup
+// builtins, no specialization constants) so the same SPIR-V runs on wave32 (NVIDIA)
+// and wave64 (gfx906) and on older drivers.
+// K is 1024 bytes = 256 packed words, a compile-time constant in this probe.
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer Weights { int w[]; }   wb;
+layout(set = 0, binding = 1) readonly buffer ActX   { int x[]; }   xb;
+layout(set = 0, binding = 2) readonly buffer Scales { float s[]; } sb;
+layout(set = 0, binding = 3) writeonly buffer Out   { float o[]; } ob;
+
+const uint WORDS = 256u;   // K / 4
+
+shared int red[32];
+
+int sign_byte(int word, int shift) {
+    int b = (word >> shift) & 0xFF;
+    return (b >= 128) ? (b - 256) : b;
+}
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationIndex;
+    int acc = 0;
+    for (uint i = lane; i < WORDS; i += 32u) {
+        int wv = wb.w[int(row * WORDS + i)];
+        int xv = xb.x[int(i)];
+        acc += sign_byte(wv, 0)  * sign_byte(xv, 0);
+        acc += sign_byte(wv, 8)  * sign_byte(xv, 8);
+        acc += sign_byte(wv, 16) * sign_byte(xv, 16);
+        acc += sign_byte(wv, 24) * sign_byte(xv, 24);
+    }
+    red[lane] = acc;
+    barrier();
+    for (uint off = 16u; off > 0u; off >>= 1) {
+        if (lane < off) red[lane] += red[lane + off];
+        barrier();
+    }
+    if (lane == 0u)
+        ob.o[int(row)] = sb.s[int(row)] * float(red[0]);
+}

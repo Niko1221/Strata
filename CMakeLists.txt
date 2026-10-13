@@ -478,6 +478,30 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endforeach()
   endif()
 
+  # ---- the OpenCL peer tier (the MI50 / gfx906) -----------------------------------
+  # A card no CUDA runtime will drive can still be a peer tier when its driver speaks OpenCL 2.0, which the
+  # MI50's does.  src/core/ocl_peer.cpp is that tier: the same job as peer_experts.cpp with the kernels
+  # transcribed into OpenCL C (verified bit-exact against the CUDA ones, opencl/probe/ocl_peer_parity).
+  # It needs the ICD loader's header and import library and nothing at all from CUDA - the CUDA toolkit just
+  # happens to ship both, which is where the probe found them (CL/cl.h, lib/x64/OpenCL.lib).  Without them
+  # the file is not compiled, STRATA_HAS_OPENCL stays undefined, and --peer-ocl says the build has no OpenCL.
+  set(_strata_ocl_src "")
+  find_path(STRATA_OPENCL_INCLUDE_DIR CL/cl.h
+    HINTS ${_strata_gpu_include_directories} "$ENV{OPENCL_SDK}/include"
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/include"
+          "C:/Program Files (x86)/Intel/OpenCL SDK/3.0/include")
+  find_library(STRATA_OPENCL_LIBRARY NAMES OpenCL
+    HINTS "$ENV{OPENCL_SDK}/lib/x64"
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+          "C:/Program Files (x86)/Intel/OpenCL SDK/3.0/lib/x64")
+  if(STRATA_OPENCL_INCLUDE_DIR AND STRATA_OPENCL_LIBRARY)
+    set(_strata_ocl_src src/core/ocl_peer.cpp)
+    message(STATUS "Strata: the OpenCL peer tier is built (${STRATA_OPENCL_INCLUDE_DIR}, ${STRATA_OPENCL_LIBRARY})")
+  else()
+    message(STATUS "Strata: no OpenCL SDK (CL/cl.h='${STRATA_OPENCL_INCLUDE_DIR}', lib='${STRATA_OPENCL_LIBRARY}'); "
+                   "the MI50 peer tier is left out and --peer-ocl will not be available")
+  endif()
+
   # ---- strata_engine (P2.S5) -----------------------------------------------------
   # The COMPOSED layer lives here and not in `strata_core`, because it calls kernels and `strata_kernels`
   # already links `strata_core` - putting `gdn_layer` in core would make the two mutually dependent.  A third
@@ -487,7 +511,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+    src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    ${_strata_ocl_src})
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -514,6 +539,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(memory_guard_test PROPERTIES TIMEOUT 60)
   endif()
 
+  if(_strata_ocl_src)
+    # ggml-common.h for the block layouts and the codebooks (the same header the CUDA kernels include); the
+    # tier keeps its own copy of the tables under GGML_COMMON_IMPL_C and touches no other ggml symbol.
+    target_include_directories(strata_engine PRIVATE ${STRATA_OPENCL_INCLUDE_DIR} third_party/ggml)
+    target_link_libraries(strata_engine PUBLIC ${STRATA_OPENCL_LIBRARY})
+    target_compile_definitions(strata_engine PUBLIC STRATA_HAS_OPENCL=1)
+  endif()
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
