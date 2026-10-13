@@ -149,7 +149,16 @@ Same binary, same seed 42, same dt configuration, only the flag differs:
 | dt + state-every 256 | **0.833** (80/96) | **25.2%** | 1252 s | 3.66 |
 | dt (control) | 0.750 (72/96) | 0.0% | 992 s | 4.02 |
 
-Needle recovers into the seed band (0.847 ± 0.171) and per-token prefill *drops* 9% despite a longer trajectory. The control's per-request table shows the mechanism: all 17 of its mid-file rewrites found no anchor (0% reuse, ~44 s full prefill each); with the state ladder, the compaction-phase tail-preserving rewrites mount at 38–66% (9 of 26 requests; the growing phase and head-rewrites legitimately have nothing to mount). Steady-state chain (dt-steady10/10b): answers 160/161/162, C-turn reuse 81.0% @ 10.8 s, cold and append turns identical to pre-FW-2b — the side pool taxes nothing (captures ~105 ms each, host-RAM pool capped at 2 GiB ≈ 10 anchors at needle scale).
+Needle recovers into the seed band (0.847 ± 0.171) and per-token prefill *drops* 9% despite a longer trajectory. The control's per-request table shows the mechanism: all 17 of its mid-file rewrites found no anchor (0% reuse, ~44 s full prefill each); with the state ladder, the compaction-phase tail-preserving rewrites mount at 38–66% (9 of 26 requests; the growing phase and head-rewrites legitimately have nothing to mount).
+
+Extended to seeds 43/44 (same protocol), the reward margin does **not** reproduce — what holds is the reuse and stability effect:
+
+| seeds 42/43/44 | reward (mean ± sd) | reuse (mean ± sd) |
+|---|---|---|
+| dt + state-every 256 | 0.792 ± 0.042 | **15.5% ± 10.6** |
+| dt (control) | 0.792 ± 0.072 | 7.2% ± 7.6 |
+
+Every run of both arms sits inside the multi-seed needle band; the feature is reward-neutral across seeds while roughly **doubling mean reuse** (2.1×) and halving reward variance. Read FW-2b as a reuse/latency optimization with a safety profile: the 0.500 failure mode of §5.8's single-seed dt run never appears (arm minimum 0.750), and the seed-42 draw where reuse visibly rescued reward (0.750 → 0.833) illustrates the upside when a trajectory's rewrites land where only the state ladder has anchors. Steady-state chain (dt-steady10/10b): answers 160/161/162, C-turn reuse 81.0% @ 10.8 s, cold and append turns identical to pre-FW-2b — the side pool taxes nothing (captures ~105 ms each, host-RAM pool capped at 2 GiB ≈ 10 anchors at needle scale).
 
 ## 6. Purpose in context management (CLM) terms
 
