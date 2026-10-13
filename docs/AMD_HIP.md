@@ -267,6 +267,21 @@ runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`: `MemoryHi
 `--mmap-experts` reads from, and a 16K prompt stalled in `pread` for 8 minutes under it. In a report, give the runtime and
 kernel versions, whether reclaim coincides with KFD queue eviction, and paired timings.
 
+## Linux: short stalls while the kernel compacts memory (speed measurements)
+
+On a Ryzen AI Max+ 395 (gfx1151, 128 GB, ROCm 7.14.1, Linux 7.0) with the experts read from the GGUF in place, a prompt during
+which the kernel migrated more than 50,000 pages (`pgmigrate_success` in `/proc/vmstat`) was usually 0.1-1.6 s slower, with the
+loss in a single `STRATA_PREFILL_TIMING=1` phase. It happened mostly on the first prompt after a start (10 of 50 starts),
+which follows reading about 60 GB of experts through the page cache, and seldom later (2 of 138 prompts). In those prompts the
+engine's KFD queues were evicted (20 starts checked), as in the section above; the rest of the mechanism was not traced. Neither
+the settings of the section above nor `vm.compaction_proactiveness=0` with `vm.watermark_boost_factor=0` removed it.
+
+When the difference being measured is small enough for these stalls to hide it:
+
+- discard each fresh engine's first prompt;
+- before each prompt, wait until `pgmigrate_success`, `compact_stall` and `allocstall_*` stand still;
+- measure again a pair in which either prompt still met page migration or direct reclaim.
+
 ## RDNA4 (gfx1201)
 
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per
