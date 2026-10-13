@@ -758,6 +758,77 @@ int main() {
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 4-bit\n", "K2c + V4", 100 * e_k2v4, B2 + B4);
     std::printf("  %-34s %7.3f%%  %4d B   the SAME arm off the device pools: --kv q2k (q2 append for K, q4 for V)\n",
                 "K2c + V4 (device)", 100 * e_k2v4_dev, B2 + B4);
+    // ---- q2k UNDER THE ENGINE'S APPEND PATTERNS. The device arm above appends all N cells in ONE call - whole
+    //    groups only - so it never runs the partial-group scale rule. The engine does, every request: a prompt is
+    //    prefilled in chunks whose boundaries need not be 32-aligned (a fresh group is first written with only
+    //    the cells before the boundary), and decode then appends one cell at a time into the group the prompt
+    //    ended in (keeping the scale the prompt tail wrote). Same K/V, same readers, two engine-shaped patterns:
+    //      chunked: K appended in 100-cell prefill chunks (every boundary splits a group)
+    //      decode:  K prompt of N - 14 cells (it ends mid-group), then 14 single-cell decode appends
+    //    V stays q4_0 written in one call - its blocks are per cell, so no pattern can change them.
+    {
+        const auto q2k_k_after = [&](const std::vector<std::pair<int, int>>& prefill, int decode_from) {
+            uint8_t* kp = dalloc<uint8_t>(q2_bytes);
+            for (const auto& c : prefill)   // (pos0, T): a prefill chunk, rows relative to the chunk
+                k::kv_append_q2(kp, kp, d_table, c.first, c.second, dK + (size_t) c.first * H * D,
+                                dK + (size_t) c.first * H * D, s, nullptr, nullptr, nullptr, /*v3level*/ false);
+            for (int c = decode_from; c < N; ++c) {   // the decode shape: one cell per launch, step-addressed
+                int32_t hs[k::kStepCount] = {c, c + 1, 0, 0};
+                int32_t* ds = dalloc<int32_t>(k::kStepCount);
+                ck(cudaMemcpy(ds, hs, sizeof hs, cudaMemcpyHostToDevice), "q2k decode step");
+                k::kv_append_q2_step(kp, kp, d_table, ds, dK + (size_t) c * H * D, dK + (size_t) c * H * D, s,
+                                     nullptr, nullptr, /*v3level*/ false);
+                ck(cudaDeviceSynchronize(), "q2k decode append");
+                cudaFree(ds);
+            }
+            ck(cudaDeviceSynchronize(), "q2k pattern append");
+            k::kv_gather_q2_step(kp, kp, d_table, d_ids, d_step, N, s, k_scr_2k, k_scr_2k, nullptr,
+                                 /*v3level*/ false);
+            ck(cudaDeviceSynchronize(), "q2k pattern gather");
+            std::vector<uint16_t> w(rows * D);
+            ck(cudaMemcpy(w.data(), k_scr_2k, w.size() * 2, cudaMemcpyDeviceToHost), "q2k pattern K");
+            cudaFree(kp);
+            std::vector<float> hk(rows * D);
+            for (size_t i = 0; i < w.size(); ++i) hk[i] = k::f32_from_f16(w[i]);
+            return hk;
+        };
+        std::vector<std::pair<int, int>> chunks;
+        for (int p0 = 0; p0 < N; p0 += 100) chunks.push_back({p0, std::min(100, N - p0)});
+        const int prompt = N - 14;
+        // speculative decode: an aligned prompt, then 3-cell accepted verify windows through the batch append
+        // (no previous-group borrow there), so each new group is first written from 1-3 cells
+        const int vbase = (N / 2) / k::Q2_0 * k::Q2_0;
+        std::vector<std::pair<int, int>> verify{{0, vbase}};
+        for (int p0 = vbase; p0 < N; p0 += 3) verify.push_back({p0, std::min(3, N - p0)});
+        const std::vector<float> k_chunk = q2k_k_after(chunks, N);
+        const std::vector<float> k_decode = q2k_k_after({{0, prompt}}, prompt);
+        const std::vector<float> k_verify = q2k_k_after(verify, N);
+        std::vector<float> out_chunk, out_decode, out_verify;
+        attention(q, k_chunk, h_v2k, D, cells, out_chunk);
+        attention(q, k_decode, h_v2k, D, cells, out_decode);
+        attention(q, k_verify, h_v2k, D, cells, out_verify);
+        const double e_chunk = out_err(out_chunk, out_ref, Vref), e_decode = out_err(out_decode, out_ref, Vref);
+        const double e_verify = out_err(out_verify, out_ref, Vref);
+        std::printf("  %-34s %7.3f%%  %4d B   --kv q2k, prompt prefilled in 100-cell chunks (boundaries split groups)\n",
+                    "K2c + V4 (device, chunked)", 100 * e_chunk, B2 + B4);
+        std::printf("  %-34s %7.3f%%  %4d B   --kv q2k, a %d-cell prompt (ends mid-group) + 14 decode appends\n",
+                    "K2c + V4 (device, prompt+decode)", 100 * e_decode, B2 + B4, prompt);
+        std::printf("  %-34s %7.3f%%  %4d B   --kv q2k, a %d-cell prompt + 3-cell speculative verify windows\n",
+                    "K2c + V4 (device, spec verify)", 100 * e_verify, B2 + B4, vbase);
+        std::printf("  q2k vs q4_0 (%.3f%%): one-shot %.2fx, chunked %.2fx, prompt+decode %.2fx, spec verify %.2fx the "
+                    "q4_0 error\n", 100 * e_q4, e_k2v4_dev / e_q4, e_chunk / e_q4, e_decode / e_q4, e_verify / e_q4);
+        check(std::fabs(e_decode - e_k2v4_dev) <= e_k2v4_dev * 0.01,
+              "q2k prompt + decode (the prompt ends mid-group, decode appends keep its scale) lands on the one-shot row");
+        // Measured, not pinned: a group FIRST written from a few cells (a 100-cell chunk boundary leaves 4-28;
+        // a 3-cell verify window 1-3) carries the RMS of those few cells for life. Unbiased since the /n fix, but
+        // a small-sample estimate - it costs +9..36% over one-shot on layers 3/11/23 (chunked) and up to +21%
+        // (verify, layer 23); on the extreme-outlier layer 47 an undersized scale acts as clipping and helps.
+        // Real prefill chunks are 2048 cells (aligned) - the chunked row is a stress case; the verify row is what
+        // every speculative decode does at each group boundary.
+        std::printf("  (measured, not pinned) chunked %+.1f%%, spec verify %+.1f%% vs one-shot: the first write of a "
+                    "group fixes its scale from %s cells\n", 100 * (e_chunk / e_k2v4_dev - 1),
+                    100 * (e_verify / e_k2v4_dev - 1), "the few");
+    }
     std::printf("  %-34s %7.3f%%  %4d B   K 4-bit, V 2b per-channel\n", "K4 + V2c", 100 * e_k4v2, B4 + B2);
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 1b per-channel\n", "K2c + V1c", 100 * e_k2v1c, B2 + B1c);
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 1b per-token (KIVI's split)\n", "K2c + V1t", 100 * e_k2v1t, B2 + B1t);
