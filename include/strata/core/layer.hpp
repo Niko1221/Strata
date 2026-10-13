@@ -219,6 +219,11 @@ struct QsaState {
     bool kv_q4 = false;
     uint8_t* k_q4 = nullptr;
     uint8_t* v_q4 = nullptr;
+    /// 2-bit KV with Walsh-Hadamard rotation (qsa_set_kv_q2, kv_q2.hpp): 80 B per cell and head, 320 per cell for
+    /// 2 KV heads, against 576 for Q4_0 and 2,048 for FP16. Same rotation as Q4_0, so the readers share it.
+    bool kv_q2 = false;
+    uint8_t* k_q2 = nullptr;
+    uint8_t* v_q2 = nullptr;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
@@ -325,6 +330,10 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// 2-bit K/V through the same Hadamard rotation (`--kv q2`, kv_q2.hpp): 320 B per cell for 2 KV heads, with a
+/// Lloyd-Max codebook scaled by block RMS. Not near-lossless yet - see docs/kv-q2.md for the measured gap.
+void qsa_set_kv_q2(bool enabled);
+bool qsa_kv_q2();
 /// FP16 sliding window + attention sinks (kv_window.hpp): the `window` most recent cells and the `sinks` leading
 /// ones are also kept in FP16 and read from there. Leave `window` 0 (the default, or STRATA_KV_WINDOW unset) to
 /// keep the overlay off. Only the quantized formats gain from it, so a fully resident FP16 state ignores it, and
@@ -338,6 +347,7 @@ bool qsa_kv_hybrid();
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    if (st.kv_q2) return strata::kernels::kKvQ2;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

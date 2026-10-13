@@ -380,6 +380,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/kv_q8.cu
                           src/kernels/cuda/kv_stream.cu
                           src/kernels/cuda/kv_q4.cu
+                          src/kernels/cuda/kv_q2.cu
                           src/kernels/cuda/kv_window.cu
                           src/kernels/cuda/fused_gr.cu
                           src/kernels/cuda/cvec.cu
@@ -1053,6 +1054,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(kv_window_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(kv_window_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_window_parity COMMAND kv_window_parity)
+
+  # The 2-bit KV format (include/strata/kernels/kv_q2.hpp) vs a full-precision reference: writer/reader parity,
+  # the per-format error table, and the attention-output error that follows (GPU, synthetic, no model).
+  add_executable(kv_q2_parity src/kernels/kv_q2_parity.cpp)
+  target_include_directories(kv_q2_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(kv_q2_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME kv_q2_parity COMMAND kv_q2_parity)
 
   # KV streaming (docs/kv-streaming-design.md): streamed vs resident attention, bitwise (GPU, synthetic, no model).
   add_executable(kv_stream_parity src/kernels/kv_stream_parity.cpp)

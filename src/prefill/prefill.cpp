@@ -27,10 +27,12 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_q2.hpp"
 #include "strata/kernels/kv_window.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -885,6 +887,17 @@ struct Prefill::Impl {
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
     std::unique_ptr<PeerPrefill> help_pp;
+    // **`--dump-prompt-logits`** (on_prompt_logits): the head's rows for a batch of positions, device and host,
+    // and the vocabulary width.  Allocated on the first chunk that asks for them, freed by `release`.  Null = the
+    // measurement path never ran, which is the state every normal run is in.
+    float* plogits_dev = nullptr;      ///< plogits_rows * plogits_vocab floats
+    std::vector<float> plogits_host;   ///< the same, pageable (a measurement path: no pinned memory to fail)
+    int64_t plogits_rows = 0, plogits_vocab = 0;
+    // The native head's activation scratch, ONE row at a time (set_native_head): `plogits_xq` is the Q8_1 image of
+    // one mixer row, `plogits_xil` its interleaved copy.  Sized as the verify window sizes its `xq_`/`xil_`
+    // (native_mmvq.hpp's byte counts), for the widest column count this path asks the native kernels for - one.
+    uint8_t* plogits_xq = nullptr;
+    uint8_t* plogits_xil = nullptr;
 };
 
 namespace {
@@ -893,6 +906,25 @@ namespace {
 // streamed run lends the prompt path exactly the slots a resident one does (a lent expert runs on the CPU, which
 // rounds differently: without this an A/B compares two expert placements as well as two KV placements)
 bool stage_own() { static const bool v = std::getenv("STRATA_KV_STAGE_OWN") != nullptr; return v; }
+/// `--dump-prompt-logits`: how many positions' logits rows are read back per D2H (STRATA_PROMPT_LOGIT_ROWS).
+/// 8 rows x 248,320 floats is 7.7 MiB of device and the same host-side, read back once per group of positions;
+/// one row per readback would make the readback the cost of the measurement, and 64 would make the buffer the
+/// cost of the layout.  Only ever allocated when the flag is set.
+int64_t prompt_logit_rows() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("STRATA_PROMPT_LOGIT_ROWS");
+        const int64_t n = e ? std::atoll(e) : 0;
+        return n > 0 ? std::min<int64_t>(n, 256) : 8;
+    }();
+    return v;
+}
+/// STRATA_MMVQ_IL, read exactly as verify.cpp's `g_mmvq_il` reads it (on unless "0"): the interleaved multi-column
+/// native head.  The dump asks for it only behind `native_mmvq_il_supported`, which is false for a single column,
+/// so this path always takes `native_mmvq`; the guard is kept so the dump's dispatch reads like the window's.
+bool g_mmvq_il() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_MMVQ_IL"); return v == nullptr || v[0] != '0'; }();
+    return on;
+}
 void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::kernels::QsaShapes& s,
                 strata::kernels::KvHostPools& st, bool& ok) {
     const core::QsaState& q0 = ss.qsa_states[ss.qsa_primary()];
@@ -909,6 +941,9 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
     } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_q2) {
+        st.k_q2 = o.take<uint8_t>(rows * strata::kernels::kv_q2_bytes_per_head((int) s.head_dim), ok);
+        st.v_q2 = o.take<uint8_t>(rows * strata::kernels::kv_q2_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_int8) {
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
@@ -923,6 +958,7 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
     strata::kernels::QsaAttnPools p;
     p.k_pool = h.k_pool; p.v_pool = h.v_pool; p.k_q = h.k_q; p.v_q = h.v_q; p.k_scale = h.k_scale; p.v_scale = h.v_scale;
     p.k_q4 = h.k_q4; p.v_q4 = h.v_q4;
+    p.k_q2 = h.k_q2; p.v_q2 = h.v_q2;   // q2 (kv_q2.hpp): take_stage() carves them, so the readers must see them
     p.page_table = table;
     return p;
 }
@@ -966,6 +1002,16 @@ void Prefill::release() {
     for (cudaEvent_t e : impl_->cpu_wall)
         if (e) cudaEventDestroy(e);
     for (void* p : impl_->owned) cudaFree(p);
+    // `--dump-prompt-logits` only: null on every run that did not ask for it
+    if (impl_->plogits_dev) cudaFree(impl_->plogits_dev);
+    impl_->plogits_dev = nullptr;
+    if (impl_->plogits_xq) cudaFree(impl_->plogits_xq);
+    impl_->plogits_xq = nullptr;
+    if (impl_->plogits_xil) cudaFree(impl_->plogits_xil);
+    impl_->plogits_xil = nullptr;
+    impl_->plogits_rows = impl_->plogits_vocab = 0;
+    impl_->plogits_host.clear();
+    impl_->plogits_host.shrink_to_fit();
 }
 
 namespace {
@@ -1538,6 +1584,11 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
         }
         if (st.kv_q4) {
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
+        } else if (st.kv_q2) {
+            strata::kernels::kv_append_q2(st.k_q2, st.v_q2, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host,
+                                          nullptr, /*v3level*/ false);
+        }
+        if (st.kv_q4 || st.kv_q2) {
             // the FP16 sliding window + attention sinks (kv_window.hpp); the drafter's ring state has none
             if (st.k_win != nullptr)
                 strata::kernels::kv_window_write_batch(
@@ -2148,6 +2199,71 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     PeTimer pe;
     if (m.pp) pe.dev = m.pp->dev; else pe.on = false;
     const cudaStream_t cs = (cudaStream_t) m.cs;
+    // ---- `--dump-prompt-logits`: lay out the head's row buffer once per run, ONLY when the measurement path was
+    // asked for.  Nothing here runs on a normal prompt, and nothing here is on the normal prompt's critical path.
+    if (on_prompt_logits && m.plogits_vocab == 0) {
+        const core::NativeHead* head = native_head_;
+        const bool nat = head != nullptr && head->loaded();
+        const core::WeightRef* wo = m.wt->find("output.weight");
+        if (wo == nullptr || wo->ne1 <= 0) {
+            err = "prefill: --dump-prompt-logits: output.weight is missing, so there is no head to run";
+            return false;
+        }
+        // WHICH HEAD, DECIDED ONCE, UP FRONT, AND SAID OUT LOUD.  `output.weight` has two forms and they are two
+        // objects on two paths: the canonical planes `core::lm_head` reads, and the native pack's GGUF blocks
+        // `core::NativeHead` owns.  On a native pack the loader SKIPPED the canonical bytes (`resident` false,
+        // `bytes` 0 - Plan v0.3 P1, ~2.7 GB back to the expert cache), so the canonical head has nothing to read
+        // there.  Running it anyway is not a slow route to the same row: it is the loader's "the planes add up to
+        // 0 B" refusal, thrown at the first position of the first chunk, naming the head nowhere.  The verify
+        // window picks the head the same way - `head_ != nullptr && head_->loaded()` - so the dump measures the
+        // head the decode path will use, and a native pack with no native head here is refused as what it is.
+        if (!nat && !wo->resident) {
+            err = "prefill: --dump-prompt-logits: output.weight has no canonical planes (this is a native pack: "
+                  "the loader skipped them and the head lives in its GGUF blocks) and no native head was given; "
+                  "call Prefill::set_native_head with the pointer the verify window gets, or run --keep-canonical";
+            return false;
+        }
+        const int64_t rows = prompt_logit_rows(), nv = wo->ne1;
+        const size_t floats = (size_t) rows * (size_t) nv;
+        void* dev = nullptr;
+        if (cudaMalloc(&dev, floats * sizeof(float)) != cudaSuccess) {
+            err = "prefill: --dump-prompt-logits: the logits row buffer failed (" + std::to_string(rows) +
+                  " x " + std::to_string(nv) + " floats)";
+            return false;
+        }
+        m.plogits_dev = (float*) dev;
+        m.plogits_rows = rows;
+        m.plogits_vocab = nv;
+        m.plogits_host.assign(floats, 0.0f);
+        // The native head's activation scratch, laid out in this same gated block and freed by `release` beside
+        // the row buffer: one row of N Q8_1 values, and its interleaved copy.  The byte counts are the ones
+        // native_mmvq.hpp publishes and the verify window sizes with (verify.cpp: `native_q8_1_bytes(max_in, T)`
+        // and `native_q8_1_il_bytes(max_in, 4)`, each for the widest column count that path asks for); this path
+        // asks for one column per call, so both counts are taken at 1.
+        if (nat) {
+            try {
+                const size_t qb = strata::kernels::native_q8_1_bytes((int) N, 1);
+                const size_t ib = strata::kernels::native_q8_1_il_bytes((int) N, 1);
+                void* xq = nullptr;
+                void* xil = nullptr;
+                if (cudaMalloc(&xq, qb) != cudaSuccess || cudaMalloc(&xil, ib) != cudaSuccess) {
+                    if (xq) cudaFree(xq);
+                    if (xil) cudaFree(xil);
+                    err = "prefill: --dump-prompt-logits: the native head's activation scratch failed (" +
+                          std::to_string(qb) + " + " + std::to_string(ib) + " B)";
+                    return false;
+                }
+                m.plogits_xq = (uint8_t*) xq;
+                m.plogits_xil = (uint8_t*) xil;
+            } catch (const std::exception& e) {
+                err = std::string("prefill: --dump-prompt-logits: the native head's activation scratch: ") + e.what();
+                return false;
+            }
+        }
+        std::fprintf(stderr, "strata prefill: --dump-prompt-logits: the head runs over every prompt position "
+                             "(%lld rows read back at a time, %lld vocab, %s)\n", (long long) rows, (long long) nv,
+                      nat ? "the native GGUF head" : "the canonical head");
+    }
     // the MMQ row table lives in the borrowed cache slots, which the refill after a prompt overwrites with experts:
     // write it again for every prompt (a layout is reused as long as the chunk and the slots are the same)
     if (m.ids_identity != nullptr) mmq::iota(m.ids_identity, m.T * K, m.cs);
@@ -2779,6 +2895,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr);
+                        else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
+                            strata::kernels::kv_append_q2(st.k_q2, st.v_q2, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
+                                                          host_w, staged ? &m.stage : nullptr, /*v3level*/ false);
                         else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
@@ -4239,6 +4358,109 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
+        }
+        // ---- **`--dump-prompt-logits`: the head over EVERY position of this chunk.**
+        //
+        // The chunk's residual rows are causal - row t read the cells up to its own position and the chunks before
+        // it, the GDN recurrence walked to step t, the PLE rows are per position - so row t IS the residual the
+        // model had at position `p0 + t` with the KV state as it stood there.  Running the head over each row is
+        // therefore the teacher-forced distribution a precision table needs, not the state after the whole prompt.
+        //
+        // THE HEAD IS THE ONE THE ENGINE ALREADY HAS, AND THE DISPATCH IS THE VERIFY WINDOW'S, PER POSITION.  A
+        // pack has two heads and they are two objects on two paths, so the window's head block
+        // (src/core/verify.cpp, ~1686) is copied here line for line:
+        //
+        //     if (head_ != nullptr && head_->loaded()) { lm_head_mix(wt, g, bb, cs, err); ... }        // mixer -> mixed
+        //     else if (lm_head(wt, g, bb, head_logits_ + t*n_vocab_, cs, err)) ...                     // mixer + Q8_K + GEMV
+        //
+        // and, for the native case, quantize the mixer's row and run the GGUF-form GEMV into the logits row
+        // (`native_quantize_q8_1`, then `native_mmvq_il` behind `g_mmvq_il() && native_mmvq_il_supported(...)`
+        // else `native_mmvq`).  `lm_head` is the CANONICAL head: it reads `output.weight`'s codes/scales/offset
+        // planes, which a native pack does not have (the loader skipped them), so calling it unconditionally is
+        // not a slower route to the same row - it is the loader's "the planes add up to 0 B" refusal.
+        // `lm_head_mix` is the half both heads share: the final mixer over `output_hc_*`, which touches
+        // `output.weight` not at all.  T = 1 per call: this is a measurement path, not a throughput path.
+        //
+        // The scratch is the session's (`ss.block`'s `gr`, `head_q8k`, `inject` - per-call scratch, and the token
+        // path is not running during a prompt) plus the chunk's dead `mixed` rows, and the native head's Q8_1 row
+        // laid out with the row buffer.  No new GEMM is written here.
+        //
+        // It runs AFTER `on_chunk` on purpose: the draft layer's pass uses the chunk's scratch, and the mixer's
+        // output lands in `m.mixed`.  With the callback null - every normal run - nothing here executes.
+        if (on_prompt_logits) {
+            const int64_t NV = m.plogits_vocab;
+            if (NV <= 0 || m.plogits_dev == nullptr || m.plogits_rows <= 0) {
+                err = "prefill: --dump-prompt-logits: the row buffer was never laid out";
+                return false;
+            }
+            const core::NativeHead* head = native_head_;
+            const bool nat = head != nullptr && head->loaded();
+            if (nat && (m.plogits_xq == nullptr || m.plogits_xil == nullptr)) {
+                err = "prefill: --dump-prompt-logits: the native head's activation scratch was never laid out";
+                return false;
+            }
+            if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                err = std::string("prefill: --dump-prompt-logits: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+            for (int64_t t0 = 0; t0 < T; t0 += m.plogits_rows) {
+                const int64_t nr = std::min(m.plogits_rows, T - t0);
+                for (int64_t t = 0; t < nr; ++t) {
+                    core::BlockBuffers bb = ss.block;
+                    bb.R = m.R + (t0 + t) * D;
+                    bb.mixed = m.mixed + (t0 + t) * N;
+                    float* row = m.plogits_dev + (size_t) t * (size_t) NV;
+                    if (!nat) {
+                        if (!core::lm_head(*m.wt, g, bb, row, m.cs, err)) {
+                            err = std::string("prefill: --dump-prompt-logits: ") + err;
+                            return false;
+                        }
+                        continue;
+                    }
+                    // the native pack's head, exactly the window's: the mixer into `bb.mixed`, then that row's
+                    // Q8_1 image through the native GEMV into this position's logits row
+                    if (!core::lm_head_mix(*m.wt, g, bb, m.cs, err)) {
+                        err = std::string("prefill: --dump-prompt-logits: ") + err;
+                        return false;
+                    }
+                    try {
+                        strata::kernels::native_quantize_q8_1(bb.mixed, m.plogits_xq, (int) N, 1, m.cs);
+                        if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head->type(), 1, (int) NV)) {
+                            strata::kernels::native_q8_1_interleave(m.plogits_xq, m.plogits_xil, (int) N, 1, m.cs);
+                            strata::kernels::native_mmvq_il(head->type(), head->weights(), m.plogits_xq,
+                                                            m.plogits_xil, row, (int) N, (int) NV, 1, m.cs);
+                        } else {
+                            strata::kernels::native_mmvq(head->type(), head->weights(), m.plogits_xq, row,
+                                                         (int) N, (int) NV, 1, m.cs);
+                        }
+                    } catch (const std::exception& e) {
+                        err = std::string("prefill: --dump-prompt-logits: the native head: ") + e.what();
+                        return false;
+                    }
+                }
+                if (cudaMemcpyAsync(m.plogits_host.data(), m.plogits_dev, (size_t) (nr * NV) * 4,
+                                    cudaMemcpyDeviceToHost, m.cs) != cudaSuccess ||
+                    cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                    err = std::string("prefill: --dump-prompt-logits: reading the rows back: ") +
+                          cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+                for (int64_t t = 0; t < nr; ++t) {
+                    const float* row = m.plogits_host.data() + (size_t) t * (size_t) NV;
+                    // A row of non-finite logits is a wrong answer that reads like an answer, so it is refused
+                    // here rather than discovered by whatever parses the file (`--dump-logits` does the same).
+                    for (int64_t v = 0; v < NV; ++v) {
+                        if (std::isfinite(row[v])) continue;
+                        err = "prefill: --dump-prompt-logits: a non-finite logit at position " +
+                              std::to_string(p0 + t0 + t);
+                        return false;
+                    }
+                    if (!on_prompt_logits(row, p0 + t0 + t, err)) {
+                        if (err.empty()) err = "prefill: --dump-prompt-logits: the sink refused the row";
+                        return false;
+                    }
+                }
+            }
         }
     }
     // Do not drain the successor here. This is the overlap: an intermediate

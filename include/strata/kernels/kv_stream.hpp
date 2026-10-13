@@ -38,14 +38,19 @@ struct KvHostPools {
     uint16_t* v_scale = nullptr;
     uint8_t* k_q4 = nullptr;      ///< q4_0 mode (kv_q4.hpp): block_q4_0 codes, 144 B per cell and head
     uint8_t* v_q4 = nullptr;
-    bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr; }
+    uint8_t* k_q2 = nullptr;      ///< q2 mode (kv_q2.hpp): block_q2c_0 per-channel slots, 80 B per cell and head
+    uint8_t* v_q2 = nullptr;
+    bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr || k_q2 != nullptr; }
 };
 
-/// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and
-/// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`).
+/// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0,
+/// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`), and
+/// q2 (`--kv q2`, kv_q2.hpp: rotated 2-bit codes with PER-CHANNEL scales, 80 B per cell and head - the same byte
+/// math as q4_0's per-block runs, but a q2 group spans 32/page_size = 8 blocks, so its copy is a byte scatter
+/// and its residency is granted a group at a time; see kv_stream.cu).
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)  kKvHybrid is 3, the number conversation snapshots
 /// already give K8V4.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ2 = 4 };
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
@@ -79,6 +84,13 @@ inline constexpr int kKvCtlInts = 16;   ///< [0] epoch [1] hand [2] misses [3] o
 /// Bytes of the map's arrays besides the page table (which the state already has): 5 per-slot ints + ctl.
 inline uint64_t kv_stream_map_bytes(int64_t n_slots) { return (uint64_t) n_slots * 4 * 5 + kKvCtlInts * 4; }
 
+/// Blocks per residency UNIT. 1 for every format whose block is self-contained (fp16, int8, q4_0, K8V4: a page's
+/// bytes are that page's and nothing else). q2 is not: its scale is per CHANNEL over a group of 32 cells =
+/// 32/page_size pages, and the 8 pages of a group share one scale, so they must be resident together in slots
+/// that are consecutive and group-aligned. For q2 the unit is the group - which is also what keeps the mover a
+/// memcpy: a group's slots are one contiguous run of (32/page_size) * kv_head * head_dim * 10 bytes.
+inline int kv_stream_unit_blocks(const QsaShapes& s, int fmt) { return fmt == kKvQ2 ? (int) (32 / s.page_size) : 1; }
+
 /// Every block evicted: page table all -1, slots free, counters zero.
 void kv_stream_reset(const KvStreamMap& m, void* stream);
 
@@ -89,8 +101,10 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
                        const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap, const QsaShapes& s,
                        void* stream);
 
-/// The static ring table `block -> block % n_slots`.
-void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream);
+/// The static ring table `block -> block % n_slots`. `unit` is kv_stream_unit_blocks(): a q2 ring is a ring of
+/// slot GROUPS, so a group's blocks land in one aligned run. The default keeps every other caller's table
+/// exactly as it was.
+void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream, int unit = 1);
 
 /// Copy blocks [b0, b1) of the host copy into the pool pages `page_table` names (host-side table `phys(b)`
 /// computed as `b % n_slots`: the ring restore). Not capturable.

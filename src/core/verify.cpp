@@ -31,6 +31,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_q2.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_window.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -1251,12 +1252,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // the per-token GEMVs / norms / RoPEs / copies of this layer as one launch over the
                 // window's rows each - row-wise identical arithmetic (STRATA_DEC_BATCH=0: token by token)
                 // STRATA_DF_QB_Q4 (opt-in: STRATA_DF_QB_Q4=1): a Q4_0 KV cache too - its one per-token extra, the query's rotation, is
-                // row-wise and the batched path rotates (270650e); 0: Q4_0 token by token, as before
+                // row-wise and the batched path rotates (270650e); 0: Q4_0 token by token, as before.  q2 is the same
+                // case for the same reason - it rotates K, V and the query (kv_q2.hpp reuses q4_0's Hadamard), so the
+                // gate treats it exactly as it treats Q4_0 and STRATA_DF_QB_Q4 opts both in.
                 static const bool qb_q4 = [] {
                     const char* e = std::getenv("STRATA_DF_QB_Q4");
                     return e != nullptr && std::atoi(e) != 0;
                 }();
-                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
+                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() &&
+                                ((!st.kv_q4 && !st.kv_q2) || qb_q4);
                 if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
@@ -1315,6 +1319,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     } else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
+                    else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
+                        strata::kernels::kv_append_q2_steps(st.k_q2, st.v_q2, st.page_table, step_b, kStepCount, n,
+                                                            kc_b, vc_b, s, cs, &st.host, /*v3level*/ false);
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
                                            kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host);
@@ -1344,6 +1351,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     } else if (st.kv_q4)
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, &st.host);
+                    else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
+                        strata::kernels::kv_append_q2_step(st.k_q2, st.v_q2, st.page_table, step_t,
+                                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host,
+                                                           /*v3level*/ false);
                     else if (st.kv_int8)
                         kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,
                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);

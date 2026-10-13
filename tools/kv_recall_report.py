@@ -46,13 +46,13 @@ VAULTS_MID = [(3, "71624"), (14, "90277"), (31, "55913"), (40, "18746")]
 VAULTS_TAIL = [(55, "64538"), (61, "18746"), (67, "38150"), (73, "90277")]
 VAULTS = VAULTS_MID + VAULTS_TAIL
 
-ARMS = [
+ARMS = [] if os.environ.get("KV_SPEED_ONLY") else [
     ("release q4_0", RELEASE, "q4_0", {}),
     ("dev q4_0", DEV, "q4_0", {}),
-    ("dev q4_0+window", DEV, "q4_0", {"STRATA_KV_WINDOW": "128", "STRATA_KV_SINK": "8"}),
-    ("dev fp16", DEV, "fp16", {}),
+    ("dev q2", DEV, "q2", {}),
+    ("dev q2+window", DEV, "q2", {"STRATA_KV_WINDOW": "128", "STRATA_KV_SINK": "8"}),
 ]
-SPEED_ONLY = [("dev q4_0", DEV, "q4_0", {}), ("dev q4_0+window", DEV, "q4_0", {"STRATA_KV_WINDOW": "128"})]
+SPEED_ONLY = [("dev q4_0", DEV, "q4_0", {}), ("dev q2", DEV, "q2", {})]
 
 
 def document() -> str:
@@ -88,7 +88,10 @@ def cfg_for(name: str, engine: str, kv: str, no_mtp: bool) -> Path:
             args += ["--kv", kv]; i += 2; continue
         if src[i] == "--conversation-cache-mib":
             args += ["--conversation-cache-mib", "256"]; i += 2; continue
-        if no_mtp and src[i] in ("--mtp", "--spec", "--spec-min-p"):
+        if no_mtp and src[i] == "--mtp":
+            # Drop the flag entirely: --mtp takes the draft layer's runtime DIRECTORY, so a value like
+            # "off" is read as a directory and the engine dies on off/dense.txt. --spec must stay - the
+            # native (IQ) pack refuses to start without --spec T (T >= 2).
             i += 2; continue
         args.append(src[i]); i += 1
     cfg["args"] = args

@@ -22,7 +22,7 @@
 #include <memory>
 #include <string>
 
-namespace strata::core { class PeerExperts; }
+namespace strata::core { class PeerExperts; class NativeHead; }
 namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
@@ -140,6 +140,45 @@ public:
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
 
+    /// **`--dump-prompt-logits`: the teacher-forced precision measurement path.**
+    ///
+    /// After every chunk the head is run over EVERY residual row of that chunk - not only the last one, which is
+    /// all the decode path needs - and each position's `n_vocab` float32 logits are handed to this callback in
+    /// position order.  `logits` is a HOST row that is valid only for the duration of the call; `pos` is the
+    /// absolute position the row belongs to.
+    ///
+    /// WHY THE CHUNK'S ROWS ARE THE RIGHT STATE.  The chunk's attention is causal (row t reads the cells up to its
+    /// own position, and the chunks before it), the GDN recurrence walks the chunk inside its kernel so row t sees
+    /// t steps of state, and the PLE rows are per position.  Row t of the chunk's final residual is therefore the
+    /// residual the model had at position `pos0 + t` with the KV state as it stood there - which is what a
+    /// teacher-forced KL / top-1 / perplexity table needs, and not the state after the whole prompt.
+    ///
+    /// THE LAST PROMPT POSITION IS NOT A PREFILL ROW: the prompt path covers `[0, n_prompt - 1)` and the last
+    /// prompt position is the decode path's first window.  The caller writes that row from there, so the file
+    /// holds positions 0..n_prompt-1.
+    ///
+    /// Null (default): nothing runs, nothing is allocated, and the prompt path is bit-for-bit what it was.
+    /// Set before `run`.  This costs one head GEMV per position (n_embd x n_vocab): a measurement path, not a
+    /// fast path.  Only the stage that owns the final residual (the last stage of a layer split) runs it.
+    std::function<bool(const float* logits, int64_t pos, std::string& err)> on_prompt_logits;
+
+    /// **`--dump-prompt-logits` on a native (IQ) pack: WHICH head the measurement runs.**
+    ///
+    /// `output.weight` has two forms and they are two different objects on two different paths.  The canonical
+    /// head (`core::lm_head`) reads the pack's three planes - codes, scales, offset - and on a native pack the
+    /// loader SKIPPED those bytes (`WeightRef::resident == false`, `bytes == 0`), so calling it there is not a
+    /// slow way to get the same answer: it is the "the planes add up to 0 B" refusal, and the prompt dies.
+    /// The native pack's head is `core::NativeHead`: the GGUF blocks, uploaded once, read by the native MMVQ
+    /// over a Q8_1 image of the mixer's row.  The verify window runs exactly this pair - the mixer alone
+    /// (`core::lm_head_mix`, which needs no `output.weight` at all) and then the native GEMV - see
+    /// src/core/verify.cpp's head block.  The dump mirrors that dispatch, per position.
+    ///
+    /// Null (default) is the state every run is in, and every run that did not ask for the dump: nothing is
+    /// allocated, nothing is dispatched, the canonical `core::lm_head` call is what runs.  Set it before `run`,
+    /// with the same pointer `Verifier::init` is given, so the dump measures the head the decode path uses.
+    /// `h` must outlive the prefill; the caller owns it.
+    void set_native_head(const core::NativeHead* h) { native_head_ = h; }
+
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
     /// earlier stage is a chunk or more ahead of the last one by the time `on_chunk` runs, so this is where a
@@ -191,6 +230,7 @@ private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
+    const core::NativeHead* native_head_ = nullptr;  ///< set_native_head; null on every canonical run
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
