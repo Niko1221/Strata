@@ -214,7 +214,10 @@ machine). Windows HIP: the doorbell kernels fence their store (#697), and the sh
 that default stays. The measurements disagree by platform. 2x RX 6900 XT on Linux (#1272): turning it off costs 5-13%
 of decode (one card 47.5 / 46.9 / 48.3 -> 50.5 / 48.5 / 51.3 tok/s with it on). RX 6800 on Windows (#816,
 `bench/results/2026-10-04-community-rx-6800-windows`): on was 12-22% slower. 4x R9700: fork off was 13-45% faster.
-Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way.
+Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way. Since the same card goes
+both ways on different PCs, `./setup.sh --calibrate` measures it on yours (off against on, a restart each) and writes
+`STRATA_SH_STREAM=1` into the config's `"env"` only when it wins by more than 3%; a later calibration that finds it no
+longer faster removes it again.
 
 **The draft's side stream (`STRATA_MTP_SIDE_STREAM`):** HIP does not use the MTP drafter's branch stream, and since
 0.1.40.2 it does not create it (#1240: an R9700 lost prompt speed with it). gfx103x is the exception and creates it: on

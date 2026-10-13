@@ -4203,13 +4203,17 @@ def calibrate_config(cfg_path: Path) -> bool:
             say(f"       the engine said: {why}")
         return False
     cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    if "env" in res:                                   # HIP: the engine variables it measured (STRATA_SH_STREAM)
+        cfg["env"] = CAL.apply_env(cfg.get("env"), res["env"])
     write_config(cfg_path, cfg)
     st = load_settings()
-    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
+    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
+                                                           "tok_s": res["report"].get("tok_s"),
                                                            "date": time.strftime("%Y-%m-%d")}
     save_settings(st)
-    if res["settings"]:
-        ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in res["settings"].items())
+    chosen = {**res["settings"], **(res.get("env") or {})}
+    if chosen:
+        ok("tuned for this PC: " + ", ".join(f"{k} {v}" if k.startswith("--") else f"{k}={v}" for k, v in chosen.items())
            + (f" ({res['report']['tok_s']} tok/s)" if res["report"].get("tok_s") else ""))
     else:
         ok("tuned for this PC: the default settings are already the fastest here"
@@ -5804,6 +5808,8 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        if "env" in cal:                               # a calibration from before the env step leaves "env" as it is
+            cfg["env"] = CAL.apply_env(cfg.get("env"), cal["env"])
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])
