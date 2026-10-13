@@ -1,0 +1,14 @@
+test,evidence_file,mode,reasoning_effort,thinking_budget_tokens,actual_input_tokens,output_tokens,output_cap,finish_reason,wall_seconds,prefill_tps,decode_tps,minimum_sampled_available_ram_mib,minimum_sampled_available_vram_mib,config_sha256,status
+05B,Test05B-BenchmarkMode-Stats.json,benchmark-style,none,,12,6144,6144,length,97.69,20.0,63.3,,,,RECORDED
+05C,Test05C-BenchmarkMode-Stats.json,benchmark-style,none,,21292,1142,6144,stop,67.49,860.4,26.7,,,,RECORDED
+05D,Test05D-Low-Stats.json,benchmark-style-thinking-low,low,,21320,2036,6144,stop,105.7,872.1,25.1,,,,RECORDED
+07C,Test07C-BenchmarkMode-Stats.json,benchmark-style,none,,11358,3735,6144,stop,154.07,836.2,26.6,,,,RECORDED
+64A,Test64A-Repository-Stats.json,real-repository-long-context,none,,53942,1737,4096,stop,120,920.9,28.3,,,,RECORDED
+64C,Test64C-Repository-Stats.json,budget12-long-context,none,,53942,1638,4096,stop,152.25,844.3,19.6,7558,219,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64D,Test64D-Repository-Stats.json,budget12-thinking-low,low,,53970,3147,4096,stop,243.26,858.2,18.3,8309,326,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64E,Test64E-Repository-Stats.json,budget12-thinking-medium,medium,,53940,3136,8192,stop,243.41,861.7,17.8,8621,317,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64F,Test64F-Repository-Stats.json,budget12-thinking-high,high,,53982,7098,8192,stop,496.54,847.9,16.4,8534,275,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64G,Test64G-Stats.json,fresh_synthetic_multifile_ledger_incident,high,,53891,7061,8192,stop,517.44,855.3,15.5,8486,245,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64H,Test64H-Stats.json,fresh_synthetic_cross_shard_reconciliation,high,,53983,8192,8192,length,531.44,863.4,17.5,7240,292,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,INCOMPLETE_NO_FINAL_ANSWER
+64I,Test64I-Stats.json,fresh_synthetic_cross_shard_reconciliation,high,6144,53990,6402,8192,stop,456.97,833.5,16.3,8159,276,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED
+64J,Test64J-Stats.json,fresh_synthetic_evidence_first_cross_shard_reconciliation,high,6144,53894,6874,8192,stop,622.42,349.2,14.7,7887,308,9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC,RECORDED

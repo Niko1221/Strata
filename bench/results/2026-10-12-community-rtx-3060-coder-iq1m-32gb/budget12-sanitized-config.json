@@ -1,0 +1,40 @@
+{
+  "exe": "<LOCAL_STRATA_ENGINE_EXE>",
+  "args": [
+    "--pack",
+    "<LOCAL_PACK_DIR>",
+    "--native",
+    "<LOCAL_MODEL_SHARD>",
+    "--ple-gguf",
+    "<LOCAL_PLE_GGUF_SHARD>",
+    "--expert-profile",
+    "<LOCAL_EXPERT_PROFILE_FILE>",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<LOCAL_MTP_DIR>",
+    "--max-context",
+    "65536",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "12"
+  ],
+  "cwd": "<LOCAL_STRATA_REPOSITORY_DIR>",
+  "tokenizer": "<LOCAL_TOKENIZER_DIR>",
+  "model_name": "qwen3.8-flash-next-coder-iq1_m",
+  "lib_dirs": [
+    "<LOCAL_LIBRARY_DIR_1>"
+  ],
+  "port": 8080,
+  "gpu": 0,
+  "gpus_asked": true,
+  "host": "127.0.0.1",
+  "log": "<LOCAL_ENGINE_LOG_FILE>"
+}

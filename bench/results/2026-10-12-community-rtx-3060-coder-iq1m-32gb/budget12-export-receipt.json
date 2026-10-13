@@ -1,0 +1,68 @@
+{
+  "status": "READ_ONLY_SOURCE_VERIFIED_AND_SANITIZED",
+  "source_sha256": "9F5DB7BC7065A18E8870DC503B7F8F60D695C24FF50883FDCF9AE2A3FF6C55EC",
+  "source_size_bytes": 1753,
+  "source_config_keys": [
+    "args",
+    "cwd",
+    "exe",
+    "gpu",
+    "gpus_asked",
+    "host",
+    "lib_dirs",
+    "log",
+    "model_name",
+    "port",
+    "tokenizer"
+  ],
+  "sanitized_sha256": "3716B75CF4B77D7ED5857595DE3B4A0293B5F3F536FC5411D8F3501CE75B9BDE",
+  "sanitized_size_bytes": 785,
+  "sanitization": "paths and secrets replaced by placeholders; JSON is NOT directly runnable",
+  "source_modified": false,
+  "strata_server_started": false,
+  "network_requests": 0,
+  "new_inference_requests": 0,
+  "fields_redacted": [
+    {
+      "flag": "--pack",
+      "value_replaced_with": "<LOCAL_PACK_DIR>"
+    },
+    {
+      "flag": "--native",
+      "value_replaced_with": "<LOCAL_MODEL_SHARD>"
+    },
+    {
+      "flag": "--ple-gguf",
+      "value_replaced_with": "<LOCAL_PLE_GGUF_SHARD>"
+    },
+    {
+      "flag": "--expert-profile",
+      "value_replaced_with": "<LOCAL_EXPERT_PROFILE_FILE>"
+    },
+    {
+      "flag": "--mtp",
+      "value_replaced_with": "<LOCAL_MTP_DIR>"
+    },
+    {
+      "field": "exe",
+      "value_replaced_with": "<LOCAL_STRATA_ENGINE_EXE>"
+    },
+    {
+      "field": "cwd",
+      "value_replaced_with": "<LOCAL_STRATA_REPOSITORY_DIR>"
+    },
+    {
+      "field": "tokenizer",
+      "value_replaced_with": "<LOCAL_TOKENIZER_DIR>"
+    },
+    {
+      "field": "lib_dirs",
+      "values_redacted": 1
+    },
+    {
+      "field": "log",
+      "value_replaced_with": "<LOCAL_ENGINE_LOG_FILE>"
+    }
+  ],
+  "exported_at_utc": "2026-10-13T05:06:24+00:00"
+}

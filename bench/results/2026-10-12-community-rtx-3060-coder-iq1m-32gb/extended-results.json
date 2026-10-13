@@ -1,0 +1,182 @@
+{
+  "schema": "aetherlab-extension-v1",
+  "date": "2026-10-12",
+  "model": "qwen3.8-flash-next-coder-iq1_m",
+  "engine_context": 32768,
+  "method": {
+    "speed": "Unmodified Strata Suite.run_prompt(32000, 'near32K')",
+    "repeat_count": 3,
+    "fresh_prompt": true,
+    "thinking": false,
+    "temperature": 0,
+    "generation": "Three uniquely tagged integer-sequence requests with 256-token output cap",
+    "caveat": "Near-32K, not stock --long and not an exact 32768-token prompt",
+    "loading_included": false
+  },
+  "near32k": {
+    "target_tokens": 32000,
+    "requests": [
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 34.218,
+        "total_s": 35.402,
+        "prompt_tokens": 31294,
+        "reused_tokens": 0,
+        "read_tokens": 31294,
+        "generated_tokens": 24,
+        "prompt_tps": 917.2,
+        "prompt_tps_source": "engine",
+        "decode_tps": 19.8,
+        "decode_tps_source": "engine",
+        "prompt_ms": 34117.2,
+        "decode_ms": 1210.7,
+        "drafts_offered": 22,
+        "drafts_accepted": 9,
+        "run": 0
+      },
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 34.624,
+        "total_s": 35.489,
+        "prompt_tokens": 31294,
+        "reused_tokens": 0,
+        "read_tokens": 31294,
+        "generated_tokens": 24,
+        "prompt_tps": 905.6,
+        "prompt_tps_source": "engine",
+        "decode_tps": 26.9,
+        "decode_tps_source": "engine",
+        "prompt_ms": 34556.6,
+        "decode_ms": 890.7,
+        "drafts_offered": 17,
+        "drafts_accepted": 11,
+        "run": 1
+      },
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 34.56,
+        "total_s": 35.336,
+        "prompt_tokens": 31294,
+        "reused_tokens": 0,
+        "read_tokens": 31294,
+        "generated_tokens": 24,
+        "prompt_tps": 908.4,
+        "prompt_tps_source": "engine",
+        "decode_tps": 30.0,
+        "decode_tps_source": "engine",
+        "prompt_ms": 34448.0,
+        "decode_ms": 801.2,
+        "drafts_offered": 18,
+        "drafts_accepted": 11,
+        "run": 2
+      }
+    ],
+    "prompt_tps": {
+      "median": 908.4,
+      "min": 905.6,
+      "max": 917.2,
+      "n": 3
+    },
+    "ttft_s": {
+      "median": 34.56,
+      "min": 34.218,
+      "max": 34.624,
+      "n": 3
+    },
+    "prompt_tokens": {
+      "median": 31294,
+      "min": 31294,
+      "max": 31294,
+      "n": 3
+    },
+    "reused_tokens": {
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 3
+    }
+  },
+  "decode256": {
+    "requests": [
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 1.782,
+        "total_s": 7.384,
+        "prompt_tokens": 59,
+        "reused_tokens": 0,
+        "read_tokens": 59,
+        "generated_tokens": 256,
+        "prompt_tps": 34.2,
+        "prompt_tps_source": "engine",
+        "decode_tps": 45.4,
+        "decode_tps_source": "engine",
+        "prompt_ms": 1726.9,
+        "decode_ms": 5633.3,
+        "drafts_offered": 192,
+        "drafts_accepted": 192,
+        "run": 0
+      },
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 1.551,
+        "total_s": 5.988,
+        "prompt_tokens": 59,
+        "reused_tokens": 0,
+        "read_tokens": 59,
+        "generated_tokens": 256,
+        "prompt_tps": 39.4,
+        "prompt_tps_source": "engine",
+        "decode_tps": 57.2,
+        "decode_tps_source": "engine",
+        "prompt_ms": 1496.3,
+        "decode_ms": 4475.0,
+        "drafts_offered": 192,
+        "drafts_accepted": 192,
+        "run": 1
+      },
+      {
+        "ok": true,
+        "err": null,
+        "ttft_s": 1.552,
+        "total_s": 5.684,
+        "prompt_tokens": 59,
+        "reused_tokens": 0,
+        "read_tokens": 59,
+        "generated_tokens": 256,
+        "prompt_tps": 39.8,
+        "prompt_tps_source": "engine",
+        "decode_tps": 61.3,
+        "decode_tps_source": "engine",
+        "prompt_ms": 1483.1,
+        "decode_ms": 4173.4,
+        "drafts_offered": 192,
+        "drafts_accepted": 192,
+        "run": 2
+      }
+    ],
+    "decode_tps": {
+      "median": 57.2,
+      "min": 45.4,
+      "max": 61.3,
+      "n": 3
+    },
+    "generated_tokens": {
+      "median": 256,
+      "min": 256,
+      "max": 256,
+      "n": 3
+    },
+    "ttft_s": {
+      "median": 1.552,
+      "min": 1.551,
+      "max": 1.782,
+      "n": 3
+    }
+  },
+  "failures": []
+}
