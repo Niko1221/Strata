@@ -980,6 +980,20 @@ follows the reused prefix (or the root) is read in one run, and its session is n
 It still starts from a checkpoint it matches, and still saves the system-prompt root when that reaches
 `--prompt-cache-root`. Without the field (or with `true`) nothing changes.
 
+**Checkpoints spread back from the end (opt-in, `--prompt-cache-spread`).** Least recent use keeps the newest points:
+every turn adds a checkpoint at its start, so after a few short turns the 6 sit within the last 1-2K tokens. An agent
+client that rewrites its history a few thousand tokens back (it trims an old tool output, drops a step) then matches
+none of them and resumes from the system prompt - the whole conversation is read again. With the flag the checkpoint
+that leaves is the one whose removal leaves the smallest gap for its distance from the newest, so the kept points thin
+out geometrically: after 200 turns of 1,000 tokens they sit 0, 1K, 3K, 8K, 43K and 200K tokens before the end, and an
+edit d tokens back reads about d again (6K back: 8K instead of 200K; 42K back: 43K). The same number of checkpoints, no
+more RAM; the system-prompt root, a pinned prefix and the newest point are never dropped, and the resume is the usual
+exact-prefix match. Measured on 2x CMP 50HX (layer split, IQ3_XXS) with the pi coding agent: before, a 210,528-token
+prompt that was the same as the session for 204,349 tokens resumed at 9,525 and read 201,003 again (100 s). With the
+flag, an 82,593-token conversation grown turn by turn with a turn ~6 steps back rewritten resumed at 73,610 tokens
+(10.2 s against 40.0 s read in full), and with the expert placement fixed (`--adapt-swaps 0`, fixed `--pcie-frac`) the
+greedy answer was the same text as the full read. Without the flag nothing changes.
+
 **One long document, many questions: a pinned shared prefix (opt-in, 0.1.40.2, [RESEARCH_RUNS.md](RESEARCH_RUNS.md)).**
 A request can say where the document ends: `"strata_prefix": {"messages": 1}` (the first message is the document),
 `{"message": 0, "chars": 210000}` (the first 210,000 characters of message 0, for a client that sends the document and
