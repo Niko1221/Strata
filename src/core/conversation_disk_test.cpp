@@ -2,6 +2,7 @@
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
 #include "strata/core/conversation_disk.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -294,6 +295,73 @@ int main() {
         check(cache.size() == 1 && cache.evictions() == 1 && tier.size() == 1, "a is on the disk");
         check(tier.best(prompt_of(450), {}, false).tokens == 400, "a matches on the disk");
         check(cache.best(prompt_of(450, 8000), {}, false).tokens == 400, "b stays in RAM");
+    }
+
+    {   // persist: the files outlive the tier, and the next tier with the same identity takes them in
+        auto persistent = [&](uint64_t model) {
+            auto o = opts(dir, GiB, 0);
+            o.persist = true;
+            o.identity = {model, 7};
+            return o;
+        };
+        const std::string prefix = ConversationDiskTier::file_prefix();
+        {
+            ConversationDiskTier tier(persistent(1));
+            check(tier.open(e) && tier.persistent(), "persist: open");
+            check(tier.put(split_image(500, 20)) && tier.put(image(400, 21, 6000)), "persist: two queued");
+        }   // the end waits for the queue and keeps the files
+        check(tier_files(dir) == 5 && logged("2 conversations kept on the disk"), "persist: 3 images + 2 indexes kept");
+        touch(dir / ("." + prefix + "x-1-0.bin.abcd.tmp"));
+        touch(dir / (prefix + "orphan-9-0.bin"));
+        {
+            ConversationDiskTier tier(persistent(1));
+            check(tier.open(e) && tier.size() == 2 && tier_files(dir) == 5, "persist: taken in, leftovers removed");
+            check(logged("2 conversations from earlier runs"), "persist: the start is logged");
+            const auto m = tier.best(prompt_of(600), {}, false);
+            check(m.tokens == 500 && m.live, "persist: matches after a restart");
+            SavedConversation back;
+            const bool read = tier.take(m.id, m.tokens, back, e);
+            if (!read) std::fprintf(stderr, "take: %s\n", e.c_str());
+            check(read, "persist: read back after a restart");
+            check(same(back, trimmed(split_image(500, 20))), "persist: the image is exactly the one written");
+            check(tier_files(dir) == 2, "persist: its images and index are gone");
+        }
+        {
+            ConversationDiskTier other(persistent(2));   // another model, engine version or settings
+            check(other.open(e) && other.size() == 0 && tier_files(dir) == 0 && logged("1 refused"),
+                  "persist: another identity's files are refused and removed");
+        }
+        {
+            ConversationDiskTier tier(persistent(3));
+            check(tier.open(e) && tier.put(image(300, 22)), "persist: put for a damaged index");
+        }
+        for (const auto& f : fs::directory_iterator(dir))
+            if (f.path().extension() == ".idx") fs::resize_file(f.path(), 20);
+        {
+            ConversationDiskTier tier(persistent(3));
+            check(tier.open(e) && tier.size() == 0 && tier_files(dir) == 0, "persist: a damaged index is refused");
+        }
+        {
+            ConversationDiskTier tier(persistent(4));
+            check(tier.open(e) && tier.put(image(400, 23)) && tier.put(image(400, 24, 6000)),
+                  "persist: put a and b, the same length");
+        }
+        std::vector<fs::path> bins;   // a's image first: the names differ only in the id
+        for (const auto& f : fs::directory_iterator(dir))
+            if (f.path().extension() == ".bin") bins.push_back(f.path());
+        std::sort(bins.begin(), bins.end());
+        check(bins.size() == 2, "persist: two images");
+        fs::copy_file(bins[0], bins[1], fs::copy_options::overwrite_existing);   // b's index now names a's image
+        {
+            ConversationDiskTier tier(persistent(4));
+            check(tier.open(e) && tier.size() == 2, "persist: both taken in");
+            const auto m = tier.best(prompt_of(450, 6000), {}, false);
+            check(m.tokens == 400, "persist: b matches by its index");
+            SavedConversation back;
+            check(!tier.take(m.id, m.tokens, back, e) && back.kv.empty() && logged("hold another conversation"),
+                  "persist: a's image under b's index is refused, never restored as b");
+            check(tier.best(prompt_of(450), {}, false).tokens == 400, "persist: a is still there");
+        }
     }
 
     fs::remove_all(dir);

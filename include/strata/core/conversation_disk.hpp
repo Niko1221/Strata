@@ -1,10 +1,13 @@
 // The disk tier of --serve's parked conversations (--conversation-disk-dir): the RAM cache's evictions
 // (ConversationCache::set_on_evict) are written to session files (conversation_file.hpp, one per layer-split stage)
 // by a background thread and read back when a request continues them, within a time limit and a byte budget.
-// Only this process reads its files back; the folder's files of this tier are removed at start and at the end.
+// By default only this process reads its files back, and the folder's files of this tier are removed at start and at
+// the end.  `persist`: the files are bound to the session files' identity (model and settings) instead, a small index
+// file beside each conversation lists its tokens, and the next start picks them up (no time limit, the budget only).
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_file.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +17,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -24,6 +28,8 @@ struct ConversationDiskOptions {
     uint64_t budget_bytes = 0;       ///< at most this many bytes of files; 0: off
     int64_t ttl_s = 30 * 60;         ///< a file older than this is removed (<= 0: kept until the budget evicts it)
     uint64_t min_free_bytes = 0;     ///< a write needs the file plus this much free on the disk (session preflight)
+    bool persist = false;            ///< keep the files for later runs, bound to `identity`
+    SessionFileIdentity identity;    ///< persist: the session files' identity (model and settings fingerprints)
     /// Called with every diagnostic line (no trailing newline), from the caller's or the writer's thread.
     std::function<void(const std::string&)> log;
     /// Tests: called on the writer thread before each write starts.
@@ -49,8 +55,10 @@ public:
     ConversationDiskTier& operator=(const ConversationDiskTier&) = delete;
 
     bool enabled() const { return open_; }
-    /// Creates the folder (0700 on POSIX), removes this tier's files a previous run left there and starts the
-    /// writer.  False (and the tier stays off) when the folder cannot be used.
+    bool persistent() const { return open_ && options_.persist; }
+    /// Creates the folder (0700 on POSIX) and starts the writer.  This tier's files a previous run left there are
+    /// removed, or with `persist` taken in when their identity matches (the others removed).  False (and the tier
+    /// stays off) when the folder cannot be used.
     bool open(std::string& error);
 
     /// Queues `image` for the writer; its RAM is freed when its write ends, stored or not.  Only the live state and
@@ -117,6 +125,8 @@ private:
         bool cvec = true;
         uint64_t bytes = 0;                      ///< the files' bytes (queued: the image's estimate)
         Clock::time_point at;
+        std::string index;                       ///< persist: the index file
+        int64_t written_s = 0;                   ///< persist: when it was written (seconds since the epoch)
     };
     struct Job {
         Entry entry;
@@ -127,6 +137,10 @@ private:
     void remove_locked(size_t index, bool delete_files);     // m_ held
     size_t expire_locked();                                  // m_ held
     void log(const std::string& line) const;
+    SessionFileIdentity file_identity() const;
+    bool write_index(Entry& e, std::string& error) const;
+    bool read_index(const std::string& path, Entry& e) const;
+    std::string scan_folder(size_t& stale, std::error_code& ec);   // open(): take in or remove; its log part
 
     ConversationDiskOptions options_;
     std::function<Clock::time_point()> now_;

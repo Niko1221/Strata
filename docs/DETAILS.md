@@ -1071,6 +1071,29 @@ asked for a conversation still being written. After the engine ended no file was
 `conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; also clean under ThreadSanitizer). Not run
 on Windows or HIP.
 
+**Conversations that outlive the engine (opt-in, `--conversation-disk-persist`, with `--conversation-disk-dir`).**
+Who it is for: whoever does not keep Strata running all day - start it, continue yesterday's long session, stop it -
+and whoever restarts the server (an update, a settings change, a reboot). Without it every restart reads every
+conversation from token 0 again (77.6 s for 165K tokens below); with it the next start continues from the disk in
+seconds, paid for with disk space within `--conversation-disk-mib`.
+
+- the files are bound to the session files' identity (the model files' fingerprint, the engine version and the
+  settings that change the saved bytes) instead of a random number of the run; a small index file beside each
+  conversation (its token ids and write time, published by rename after its images) lets the next start take them in
+  without reading the images; files of another model, engine version or settings, a damaged index and leftovers of an
+  interrupted write are removed at start;
+- no time limit: the budget alone decides, the least recently written conversation goes first;
+- on QUIT (the server's stop, Ctrl+C, SIGTERM) the engine parks the current conversation, moves every parked one to
+  the disk and waits for the writes before it ends; the server waits up to 300 s for that (20 s otherwise). Ctrl+C in
+  the server's terminal no longer ends the engine directly (it is in the server's process group): the server's QUIT
+  does, after the save; a second Ctrl+C still ends it at once. A crash or `kill -9` keeps what was already written.
+
+Measured on the same box (one RAM slot; the 165,557-token conversation L current at the stop, two 42K-token ones
+parked): the save at the stop took 6.8 s (L written in 2.9 s, 2,639 MiB at 956 MB/s); the next start took in 3
+conversations (4,311 MiB) and refused none; after the restart all three came back from the disk with the same greedy
+answers as before it - L in 6.7 s instead of 77.6 s. `conversation_disk_test` covers the restart (files kept, taken in,
+read back exactly, another identity's files and a damaged index refused).
+
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three
 numbers, sampled each time it is asked and not a reservation (other writers can take the
 room afterwards):

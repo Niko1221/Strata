@@ -126,6 +126,7 @@ namespace strata::metal_engine { void set_model_shard(const char* shard1); }   /
 #include <optional>
 #include <new>
 #include <charconv>
+#include <csignal>
 #include <cmath>
 #include <limits>
 #include <cstdio>
@@ -643,6 +644,7 @@ struct Options {
     std::string conversation_disk_dir;
     int64_t conversation_disk_mib = 32768;    ///< --conversation-disk-mib: at most this many MiB of files
     int64_t conversation_disk_ttl_min = 30;   ///< --conversation-disk-ttl-min: a file older than this is removed
+    bool conversation_disk_persist = false;   ///< --conversation-disk-persist: the files outlive the engine (budget only)
     /// --memory-limit-mib N / STRATA_MEMORY_LIMIT_MIB: the total RAM this engine's container or cgroup may use, for a
     /// container that cannot see its real limit (0 or unset = none; the flag wins over the variable)
     int64_t memory_limit_mib = -1;
@@ -801,6 +803,8 @@ void usage() {
                  "  --conversation-disk-mib N  --serve: at most N MiB of such files (default 32768)\n"
                  "  --conversation-disk-ttl-min N  --serve: a conversation stays on the disk N minutes (default 30; 0 =\n"
                  "                       until the budget evicts it)\n"
+                 "  --conversation-disk-persist  --serve: keep the disk's conversations for the next start (budget only,\n"
+                 "                       no time limit); QUIT writes the current and the parked ones there first\n"
                  "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
@@ -2138,6 +2142,7 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--conversation-disk-dir") o.conversation_disk_dir = next("--conversation-disk-dir");
+        else if (a == "--conversation-disk-persist") o.conversation_disk_persist = true;
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
@@ -8233,6 +8238,17 @@ int main(int argc, char** argv) {
         disk_opts.budget_bytes = (uint64_t) o.conversation_disk_mib << 20;
         disk_opts.ttl_s = o.conversation_disk_ttl_min * 60;
         disk_opts.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
+        if (o.conversation_disk_persist && !disk_opts.dir.empty()) {
+            // the session files' identity: a later start with the same model and settings takes the files in
+            std::string id_err;
+            disk_opts.persist = session_identity(disk_opts.identity, id_err, {});
+            if (disk_opts.persist) {
+                disk_opts.ttl_s = 0;   // the budget alone
+                std::signal(SIGINT, SIG_IGN);   // Ctrl+C reaches the engine too: the server's QUIT ends it, after the save
+            } else {
+                std::fprintf(stderr, "strata serve: conversation disk: not persistent (%s)\n", id_err.c_str());
+            }
+        }
         strata::core::ConversationDiskTier conv_disk(std::move(disk_opts));
         if (!o.conversation_disk_dir.empty() && !conversations.enabled())
             std::fprintf(stderr, "strata serve: --conversation-disk-dir needs the conversation cache "
@@ -13205,6 +13221,15 @@ int main(int argc, char** argv) {
                 helper_blobs_before = blobs;
                 helper_bytes_before = bytes;
             }
+        }
+        if (conv_disk.persistent()) {
+            // --conversation-disk-persist: the current conversation and every parked one to the disk for the next start
+            const auto t0 = Clock::now();
+            park_current(0);
+            while (conversations.evict_oldest()) {}
+            conv_disk.wait_idle();
+            std::fprintf(stderr, "strata serve: conversation disk: saved for the next start in %.1f s; %s\n",
+                         std::chrono::duration<double>(Clock::now() - t0).count(), conv_disk.summary().c_str());
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
 #if defined(STRATA_GPU_METAL)
