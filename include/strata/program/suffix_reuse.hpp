@@ -547,4 +547,26 @@ inline SuffixHookOutcome suffix_reuse_partial_apply(
     return out;
 }
 
+/// T18 (2026-10-13): the partial mount's read start, replay-gated.  The live
+/// measurement (chain dt-steady5, /tmp/dt-steady5.log) proved that reading
+/// [P, n) on state@checkpoint leaves the gap [ckpt, P) out of the GDN/PLE
+/// recurrence: attention sees the gap's rows through the (valid, LCP-shared)
+/// arena K/V, but the running state never ingested them - a count query over
+/// the gap comes back under-counted (C answered wrong, gap 826 tokens; the
+/// same signature as the v3 state@L probe).  Until FW-2 replay (ring splice /
+/// recurrence replay over the gap) exists, the partial mount fail-closes to
+/// reading from the deepest surviving checkpoint at or below P - byte-equal to
+/// the strict-path semantics - keeping the park/restore/chain bookkeeping
+/// intact and exercised.  `replay_available` is the engine-side gate (env
+/// STRATA_SFX_REPLAY, default off): with it on, the gap-read [P, n) returns.
+/// Pure: the T18 tests pin both arms plus the no-checkpoint degenerate.
+inline int64_t partial_gap_read_from(bool replay_available, int64_t P,
+                                     const std::vector<int64_t>& chain_lengths) {
+    if (replay_available) return P;                 // FW-2: the gap is replayed, read [P, n)
+    int64_t best = 0;                               // fail-closed: read from the checkpoint
+    for (const int64_t L : chain_lengths)
+        if (L <= P && L > best) best = L;
+    return best;
+}
+
 }  // namespace strata::program::suffix_reuse
