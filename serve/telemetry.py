@@ -251,6 +251,63 @@ def gpu_reader(index=0, amd=False):
     return _Amd(index) if amd else _Nvml(index)
 
 
+_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+
+
+def windows_display_adapters(vendor=None) -> list:
+    """#1587: the display adapters Windows has drivers for, from the registry's display class (no subprocess, no vendor
+    library): [{"name", "provider", "driver", "vram_bytes"}] in the class's order.  `vendor`: "amd", "nvidia" or
+    "intel" keeps that vendor's cards.  [] off Windows or when nothing can be read."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)
+    except OSError:
+        return []
+    out = []
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(root, i)
+        except OSError:
+            break
+        i += 1
+        if not sub.isdigit():
+            continue
+        try:
+            k = winreg.OpenKey(root, sub)
+        except OSError:
+            continue
+
+        def val(name, k=k):
+            try:
+                return winreg.QueryValueEx(k, name)[0]
+            except OSError:
+                return None
+        name = val("DriverDesc")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        mem = val("HardwareInformation.qwMemorySize")
+        if mem is None:
+            mem = val("HardwareInformation.MemorySize")
+        if isinstance(mem, (bytes, bytearray)):
+            mem = int.from_bytes(bytes(mem[:8]), "little") if mem else None
+        out.append({"name": name.strip(), "provider": str(val("ProviderName") or ""), "driver": val("DriverVersion"),
+                    "vram_bytes": mem if isinstance(mem, int) and mem > 0 else None})
+    if vendor:
+        keys = {"amd": ("advanced micro devices", "amd", "radeon"), "nvidia": ("nvidia",), "intel": ("intel",)}[vendor]
+        out = [a for a in out if any(s in (a["provider"] + " " + a["name"]).lower() for s in keys)]
+    return out
+
+
+def windows_amd_cards(adapters=None) -> list:
+    """The AMD cards HIP runs on, as windows_display_adapters lists them.  A Ryzen's integrated Radeon is listed too
+    (512 MiB on a Ryzen 5 7600): beside a card with 2 GiB or more it is left out (an APU alone keeps it)."""
+    cards = windows_display_adapters("amd") if adapters is None else adapters
+    return [c for c in cards if (c["vram_bytes"] or 0) >= 2 << 30] or cards
+
+
 def free_vram_mib(index=0, amd=False):
     """Free VRAM of a card in MiB, or None when it cannot be read."""
     g = gpu_reader(index, amd)
@@ -348,8 +405,18 @@ class Telemetry:
         except ImportError:
             self.ps = None
         self.fallback = _CpuRamFallback()
+        gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
+        win_amd = None
+        if gpu_name is None and amd and os.name == "nt":
+            # #1587: no readings for an AMD card on Windows yet, but its name (and VRAM size) are in the registry, so the
+            # dashboard and strata_bench do not call the run "CPU only".  The class order is taken as HIP's order.
+            cards = windows_amd_cards()
+            win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
+            gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
         self.static = {
-            "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
+            "gpu_name": gpu_name,
+            "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_amd) >> 20
+                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else None),
             "gpu_count": len(self.gpus),
             # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
             # dashboard said "not readable (NVML)" or showed empty tiles with no word why

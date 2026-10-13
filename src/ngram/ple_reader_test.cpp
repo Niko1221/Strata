@@ -189,6 +189,27 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
             f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
             CHECK(std::memcmp(tok + (size_t) h * k::PLE_HEAD_DIM, ref, sizeof ref) == 0, "%s: %s: gather head %d differs", f.name, name, h);
         }
+        // a prompt chunk: gather_batch over more rows than one prefetch window (4096), one of them past the table's end
+        {
+            const size_t nt = 700, nr = nt * 16;     // 11200 rows, three windows
+            std::vector<uint32_t> br(nr);
+            for (size_t i = 0; i < nr; ++i) br[i] = want[i % want.size()];
+            if (mode == k::PleIo::Mmap) br[5000] = rows + 7;   // out of range (mapped): zeros, as read_row gives
+            std::vector<float> bo(nr * k::PLE_HEAD_DIM);
+            std::string e2;
+            CHECK(t.gather_batch(br.data(), nt, bo.data(), e2), "%s: %s: gather_batch: %s", f.name, name, e2.c_str());
+            size_t bad = 0;
+            for (size_t i = 0; i < nr && !g_fail; ++i) {
+                if (br[i] >= rows) {
+                    for (int d = 0; d < k::PLE_HEAD_DIM; ++d) bad += bo[i * k::PLE_HEAD_DIM + d] != 0.0f;
+                    continue;
+                }
+                expected_row(br[i], f.row_bytes, raw.data());
+                f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+                bad += std::memcmp(bo.data() + i * k::PLE_HEAD_DIM, ref, sizeof ref) != 0;
+            }
+            CHECK(bad == 0, "%s: %s: gather_batch differs in %zu rows", f.name, name, bad);
+        }
     }
     std::filesystem::remove(path);
 }

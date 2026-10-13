@@ -289,6 +289,16 @@ public:
         return true;
     }
 
+    // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
+    // may carry the poison.  Returns how many were parked.
+    size_t clear() {
+        const size_t n = entries_.size();
+        entries_.clear();
+        bytes_ = 0;
+        reuse_ = {};
+        return n;
+    }
+
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
 

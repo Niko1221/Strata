@@ -121,6 +121,7 @@ def drop(args, name, value=False):
         del args[i:i + 1 + int(value)]
 
 
+SYCL_PROFILE = "expert-profile-sycl.bin"   # data/: the xe cards' expert ranking (to_sycl)
 SMALL_CARD_GB = 12.0       # under this the engine's own advice is --vram-reserve-mib 300 (a 1024 MiB reserve leaves an
                            # 8 GB card no room for even one expert slot) and the English draft vocabulary
 SMALL_RESERVE_MIB = 300
@@ -128,6 +129,20 @@ SMALL_RESERVE_MIB = 300
 
 def small_card(vram_gb: float, driver: str) -> bool:
     return 0 < vram_gb < SMALL_CARD_GB or driver == "i915"
+
+
+# #1980: on a layer split the host mirror covers the first stage only, so with STRATA_VERIFY_NO_HOST=1 (strata-sycl.sh's
+# default) a later stage that cannot hold all of its layers' experts is REFUSED at the start.  Measured on 2x Arc Pro B60
+# 24 GB with the trim and a 1024 MiB reserve: IQ3_XXS (42.9 GB of experts, 89% of the 48 GB) stage 1 2230-3731 experts
+# short and refused; NO_HOST=0 runs it at 39-50 tok/s with 0 faults.  IQ2_XS (35.5 GB, 74%) loads 100% resident.
+SPLIT_SHORT_FRACTION = 0.80
+
+
+def split_likely_short(arena_gb: float, vram_gbs: list) -> bool:
+    """True when the model's experts take so much of the split cards' VRAM that a later stage will not hold all of its
+    layers' experts (the dense weights, the KV, the prompt buffers, the drafter and the reserve take the rest)."""
+    total = sum(v for v in vram_gbs if v and v > 0)
+    return arena_gb > 0 and total > 0 and arena_gb > SPLIT_SHORT_FRACTION * total
 
 
 def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, driver: str = "xe",
@@ -149,6 +164,16 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     for f in ("--resident-experts", "--mmap-experts"):  # setup's low-RAM mode is the CUDA engine's
         drop(args, f)
     drop(args, "--kv-resident", True)                   # decided below on the real RAM
+    if driver != "i915" and "--expert-profile" in args and (ROOT / "data" / SYCL_PROFILE).is_file():
+        # 0.1.43: a card on xe runs every expert on the GPU (the ones the cache does not hold are read from the pinned mirror
+        # by the same kernels), so WHICH experts the cache holds changes speed and no token: data/expert-profile-sycl.bin
+        # ranks them from the routing of 45 varied prompts (chat, code, maths, six languages) and eight document summaries,
+        # where the shipped profile holds 60% of a chat prompt's experts and 85% of a summary's (B70: +9..25% decode on prompts left
+        # out of it, same tokens).  Another profile the user chose is kept; i915 keeps the shipped one (there the CPU
+        # computes the misses, so the residency moves roundings).
+        i = args.index("--expert-profile") + 1
+        if args[i].replace("\\", "/").rsplit("/", 1)[-1] == "expert-profile.bin":
+            args[i] = args[i][:-len("expert-profile.bin")] + SYCL_PROFILE
     for f in ("--pack", "--native", "--ple-gguf", "--expert-profile", "--mtp", "--control-vector-scaled"):
         if f in args:
             v = args[args.index(f) + 1]
@@ -280,6 +305,20 @@ def install(argv) -> None:
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
             selector = "level_zero:*" if split else f"level_zero:{idx}"
             cfg.setdefault("env", {}).setdefault("ONEAPI_DEVICE_SELECTOR", selector)
+        if split:
+            # #1980: without it every card keeps a full copy of the dense weights (1.4 GiB each on Flash-Next IQ2_XS) and the
+            # load stops at 96-97% resident; the later stage's missing experts have no host mirror (STRATA_VERIFY_NO_HOST)
+            cfg.setdefault("env", {}).setdefault("STRATA_STAGE_TRIM", "1")
+            # #1980: a later stage short of VRAM is refused under NO_HOST=1; with the host path on it runs (the host
+            # computes those experts).  Only when the experts will likely not fit; a value the user set is kept.
+            cards = [intel[i]["vram_gb"] for i in gsel if isinstance(i, int) and 0 <= i < len(intel)]
+            arena = S.MODELS.get(model, {}).get("arena_gb", 0)
+            if split_likely_short(arena, cards) and "STRATA_VERIFY_NO_HOST" not in cfg["env"]:
+                cfg["env"]["STRATA_VERIFY_NO_HOST"] = "0"
+                S.say(f"  {model}'s {arena:.0f} GB of experts will likely not all fit the {len(cards)} cards' "
+                      f"{sum(cards):.0f} GB of VRAM: the config sets STRATA_VERIFY_NO_HOST=0, so the CPU computes the "
+                      "experts the later card does not hold instead of the start being refused (#1980). Set it to 1 "
+                      "in the config's env if your cards hold everything; a smaller model fits fully (docs/INTEL_ARC.md)")
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:

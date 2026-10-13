@@ -23,6 +23,8 @@
   <nav class="st-tabs" role="tablist" aria-label="Views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
+    <button class="st-tab" role="tab" id="tab-btn-images" aria-controls="view-images" aria-selected="false" data-tab="images" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg>Images</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
@@ -68,6 +70,27 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
         </div>
       </form>
+    </div>
+  </section>
+
+  <!-- ============================ Images ============================ -->
+  <section class="view view--images" id="view-images" role="tabpanel" aria-labelledby="tab-btn-images" hidden>
+    <div class="about">
+      <form class="st-card img-form" id="img-form">
+        <span class="card-title" id="img-title">Make an image</span>
+        <textarea class="st-input img-prompt" id="img-prompt" rows="3" placeholder="Describe the image&hellip;" aria-label="Prompt"></textarea>
+        <div class="img-row">
+          <label class="st-field">Size
+            <select class="st-input" id="img-size">
+              <option>1024x1024</option><option>1536x1024</option><option>1024x1536</option>
+              <option>768x768</option><option>512x512</option></select></label>
+          <label class="st-field">Seed
+            <input class="st-input" id="img-seed" type="number" min="0" placeholder="random"></label>
+          <button type="submit" class="st-btn st-btn--primary" id="img-go">Generate</button>
+        </div>
+        <span class="composer-hint" id="img-hint">One image at a time; a chat request waits for it (and the other way round).</span>
+      </form>
+      <div class="img-results" id="img-results"></div>
     </div>
   </section>
 

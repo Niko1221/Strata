@@ -22,6 +22,7 @@
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/pinned.hpp"
 #include "strata/core/exchange_storage.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -98,6 +99,17 @@ bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve)
 bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve);
 /// Parses `key` ("MemFree") of a /proc/meminfo text; 0 when absent.
 uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
+
+/// 0.1.42 (NUMA report): the MemFree to judge the page-locked complement by.  `global_free` is the whole host's MemFree;
+/// `node_free` each NUMA node's own (/sys/devices/system/node/node*/meminfo, empty or one entry on a single-node host).
+/// A dual-socket host whose second node is full of another model's file cache has plenty free in total but none where
+/// the driver may allocate: with two or more nodes the figure is the smaller of the total and (node count x the
+/// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
+/// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
+uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
+/// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
+std::string page_cache_hint(const std::string& meminfo_text);
 
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
@@ -602,12 +614,22 @@ public:
     void prepare_overrides() { if (override_.empty()) override_.assign((size_t) blobs_, nullptr); }
     /// After the GPU copies of every staged swap have landed.  Returns how many exchanges were applied.
     int64_t commit_exchanges();
+    /// 0.1.43 (STRATA_ADAPT_OVERLAP): BEFORE the GPU copies of the staged swaps have landed, make each staged `out` look to the
+    /// planner as it will after `commit_exchanges` (pinned, with a device alias into its exchange buffer, so the PCIe share
+    /// treats it exactly as a committed one) without touching `in`'s place, which the copy still reads.  `commit_exchanges`
+    /// (after the copies have landed) ends it.  False: not possible here (rotation, exchange buffers not page-locked): the
+    /// caller waits for the copies instead.
+    bool soft_commit_exchanges();
     /// `commit_exchanges` in two halves, for the asynchronous adaptive tier (--adapt-async): `commit_copies` moves
     /// every staged evicted blob into its `in`'s place in the copy (on another thread: safe once nothing computes `in`
     /// from RAM - it is resident on the GPU - while `out` is still read from its exchange buffer), then `commit_flip`
     /// (the caller's thread, between windows) points `out` there and drops the staging.  Returns how many were applied.
     void commit_copies();
     int64_t commit_flip();
+    /// #2134: the Foresight swap space (STRATA_FS_SLOTS), null = none.  Each commit above holds the staged experts in it
+    /// (ForesightSwap::hold: their slots are dropped and not refilled) while their bytes move, so no slot is served
+    /// with bytes copied from a place an exchange rewrote.
+    void set_foresight_swap(ForesightSwap* fs) { fs_swap_.store(fs, std::memory_order_release); }
     /// The compact copy's blob of `(layer, expert)`, or null; not counted as a read (any thread).
     const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
@@ -639,6 +661,10 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// MODEL-UPDATE round 2 (Linux, opt-in STRATA_PROMPT_DIRECT=1): with the file tier read through the file cache (the
+    /// decode's choice: re-routed experts come back from it), the prompt path's batched stager reads (copy_blobs) go
+    /// unbuffered instead - the same bytes, read in merged O_DIRECT requests.  False when not opened (and why).
+    bool open_prompt_direct(std::string& why);
     /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
     /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
     /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
@@ -744,6 +770,7 @@ private:
     /// Windows: experts.bin mapped again as `open` maps it (begin/end_startup_unbuffered).
     bool map_view(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
+    std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds for copy_blobs only
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
@@ -754,6 +781,7 @@ private:
     struct Map {
         const uint8_t* base = nullptr;
         uint64_t bytes = 0;
+        bool closed = false;   ///< drop_mapping unmapped the view (base stays for offsets)
 #if defined(_WIN32)
         void* file = nullptr;
         void* mapping = nullptr;
@@ -853,6 +881,10 @@ private:
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };
     std::vector<Exchange> staged_;
+    std::atomic<ForesightSwap*> fs_swap_{nullptr};   ///< set_foresight_swap
+    void fs_hold_staged(bool hold);
+    std::vector<size_t> soft_in_;             ///< soft_commit_exchanges: per `out` index, the `in` whose place it will take (SIZE_MAX: none)
+    const uint8_t* xstage_dev_ = nullptr;     ///< the exchange buffers' device alias (soft_commit_exchanges)
     uint8_t* xstage_ = nullptr;               ///< exchange buffers, `xstage_cap_ x xstage_blob_`
     bool xstage_pinned_ = false;
     int64_t xstage_cap_ = 0;
@@ -906,11 +938,30 @@ public:
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
+    /// tier's job thread, which must not touch the non-atomic `reads_`)
+    const uint8_t* blob_at(int64_t layer, int64_t expert) const;
     int64_t reads() const { return reads_; }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
+    /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
+    bool pcie_layer(int64_t layer) const override;
     void prefetch(int64_t layer, int64_t expert) override;
     uint64_t release(int64_t layer, int64_t expert) override;
+
+    /// Pin by need (STRATA_PIN_BY_NEED=1): BEFORE open(), the (layer, expert) pairs worth pinning, by decreasing
+    /// priority - the profile's ranked pairs the GPU cache will NOT hold, then the unranked ones.  open() merges
+    /// neighbours into byte ranges and registers only those (PinnedArena::ByNeed); pinned()/device_alias()/pcie_layer()
+    /// then follow the registered ranges instead of a prefix.  Never called: the old prefix pinning, unchanged.
+    /// `n_first`: the first n_first pairs are the non-resident estimate; the rest (the pairs taken as GPU-resident, which
+    /// only get what the cap leaves over) never merge into a run with them, so their ranges come after all of the first.
+    void set_pin_priority(std::vector<std::pair<int32_t, int32_t>> ranked, size_t n_first = (size_t) -1) {
+        pin_pairs_ = std::move(ranked);
+        pin_first_ = n_first;
+        pin_by_need_ = true;
+    }
+    /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
+    size_t pin_ranges() const { return pin_start_.size(); }
 
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
@@ -942,6 +993,22 @@ private:
     double load_read_s_ = 0.0;
     double load_copy_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
+    // pin by need: set_pin_priority's pairs, and (after open) the registered ranges - sorted starts, ends and the
+    // device alias of each start - plus pcie_layer's answer per layer.  `ranges_` false = the prefix rule above.
+    bool pin_by_need_ = false;
+    bool ranges_ = false;
+    // pin by need: the arena's page-aligned blob stride (see PadMap); `padded_` false = the packed experts.bin layout
+    bool padded_ = false;
+    PadMap pad_;
+    /// where blob (layer, expert) starts in the arena: the ONE address function of this class
+    uint64_t arena_off(int64_t layer, int64_t expert) const;
+    std::vector<std::pair<int32_t, int32_t>> pin_pairs_;
+    size_t pin_first_ = (size_t) -1;   // pin_pairs_[0, pin_first_) are the first tier (see set_pin_priority)
+    std::vector<uint64_t> pin_start_, pin_end_;
+    std::vector<const uint8_t*> pin_dev_;
+    std::vector<uint8_t> layer_pcie_;
+    /// index of the registered range holding [off, off + len), or -1
+    int64_t pin_range_of(uint64_t off, uint64_t len) const;
     std::string gguf_;
 };
 
@@ -952,7 +1019,9 @@ bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::E
 /// Fills `dst` (lay.total bytes, the experts.bin layout) from the GGUF files, one role at a time.
 /// `unbuffered`: each chunk read past the file cache (Windows); `ready`: layer l is written only once
 /// *ready > l + 1 (an arena that is still being registered).
+/// `pad` (optional): the destination is the page-aligned padded layout (pin by need), see PadMap.
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr);
+                            int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr,
+                            const PadMap* pad = nullptr);
 
 }  // namespace strata::core

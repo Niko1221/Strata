@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/dp4a.hpp"
@@ -24,6 +25,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 
@@ -33,12 +35,12 @@ void check(const char* what) {
 }
 
 // `commit` (one token): the history then keeps it - [hist1, hist2, x_0], each thread its channel's, after reading them
-__global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const float* __restrict__ qkv,
+__device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, float* hist, const float* __restrict__ qkv,
                                                               const float* __restrict__ w, float* __restrict__ h,
                                                               int C, int qk_heads, float eps, int t_begin, bool commit) {
     __shared__ float part[S / 32];
-    const int t = t_begin + blockIdx.y;
-    const int c = blockIdx.x * S + threadIdx.x;
+    const int t = t_begin + by;
+    const int c = bx * S + threadIdx.x;
     // the window of token t: [hist0, hist1, hist2, x_0, ..., x_t], its last four entries
     float win[3];
 #pragma unroll
@@ -54,7 +56,7 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const
     }
     float sum = v0 * w[c * 4] + v1 * w[c * 4 + 1] + v2 * w[c * 4 + 2] + x * w[c * 4 + 3];
     float y = sum / (1.0f + __expf(-sum));
-    if ((int) blockIdx.x < qk_heads) {
+    if ((int) bx < qk_heads) {
         float sq = y * y;
         for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor_sync(0xffffffffu, sq, o);
         if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = sq;
@@ -63,6 +65,12 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const
         y *= rsqrtf(ss + eps);
     }
     h[(size_t) t * C + c] = y;
+}
+
+__global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const float* __restrict__ qkv,
+                                                              const float* __restrict__ w, float* __restrict__ h,
+                                                              int C, int qk_heads, float eps, int t_begin, bool commit) {
+    gdn_conv_l2_body(blockIdx.x, blockIdx.y, hist, qkv, w, h, C, qk_heads, eps, t_begin, commit);
 }
 
 __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __restrict__ qkv, int C,
@@ -83,12 +91,12 @@ __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __
 }
 
 template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
-__global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
+__device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
                                                           float* __restrict__ beta, int n, int h_v, int T) {
-    const int row = blockIdx.x * 2 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    const int row = bx * 2 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (row >= 2 * h_v) return;
     const bool is_beta = row >= h_v;
     const int r = is_beta ? row - h_v : row;
@@ -133,10 +141,41 @@ __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restric
     }
 }
 
+template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+__global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
+                                                          const uint16_t* __restrict__ wb,
+                                                          const float* __restrict__ dt,
+                                                          const float* __restrict__ ssm_a, float* __restrict__ gate,
+                                                          float* __restrict__ beta, int n, int h_v, int T) {
+    gdn_ab_body<MAX_T, EXACT_T>(blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T);
+}
+
+// 143-amdk (STRATA_FUSE_CONVAB): the conv + L2 norm and the a/b projections in ONE launch.  They read different inputs (the qkv
+// projection and the layer input) and write different outputs, so they only share a node: blocks [0, conv) run the conv body,
+// the following blocks (token row 0 only) the a/b body, each exactly as its own kernel.
+template <int MAX_T, bool EXACT_T>
+__global__ void __launch_bounds__(S) gdn_conv_ab_kernel(int conv_blocks, float* hist, const float* __restrict__ qkv,
+                                                        const float* __restrict__ w, float* __restrict__ h, int C, int qk_heads,
+                                                        float eps, int t_begin, bool commit, const float* __restrict__ x,
+                                                        const uint16_t* __restrict__ wa, const uint16_t* __restrict__ wb,
+                                                        const float* __restrict__ dt, const float* __restrict__ ssm_a,
+                                                        float* __restrict__ gate, float* __restrict__ beta, int n, int h_v, int T) {
+    const int ab_blocks = (2 * h_v + 1) / 2;   // the a/b blocks first: their dot chain is the longer one, so it starts with the first wave
+    if ((int) blockIdx.x >= ab_blocks) {
+        gdn_conv_l2_body((int) blockIdx.x - ab_blocks, (int) blockIdx.y, hist, qkv, w, h, C, qk_heads, eps, t_begin, commit);
+    } else if (blockIdx.y == 0 && threadIdx.x < 64) {
+        gdn_ab_body<MAX_T, EXACT_T>((int) blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T);
+    }
+}
+
 // State-only commit kernel: each head's 128 independent state columns are split across 4 blocks of 32 columns
 // (48 * 4 = 192 blocks of 128 threads across all SMs, vs 48 blocks of 512 threads), with no sq/o/norm/z/y work.
 // DBG (STRATA_DBG_GDN=1, #937): a window count the launch never allowed (n_keep is read from device memory; n_max is the
 // rows the window holds) is reported and the commit skipped, where the fault would be a memory-aperture violation
+__device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, const float* __restrict__ hbuf, int C,
+                                                     const float* __restrict__ gate, const float* __restrict__ beta,
+                                                     int h_k, int h_v, int n);
+
 template <bool DBG>
 __global__ void __launch_bounds__(32 * RG) gdn_step_commit_kernel(float* __restrict__ state,
                                                                   const float* __restrict__ hbuf, int C,
@@ -151,6 +190,46 @@ __global__ void __launch_bounds__(32 * RG) gdn_step_commit_kernel(float* __restr
             printf("strata DBG: gdn_step_commit: n_keep %d is past the window's %d rows: commit skipped (#937)\n", n, n_max);
         return;
     }
+    gdn_step_commit_body(state, hbuf, C, gate, beta, h_k, h_v, n);
+}
+
+// engine-latency: gdn_step_commit_kernel for every GDN layer of the commit in one launch (blockIdx.z = the layer); each
+// layer's blocks run gdn_step_commit_body on that layer's state and rows, exactly as its own launch did
+__global__ void __launch_bounds__(32 * RG) gdn_step_commit_layers_kernel(float* __restrict__ state, long long state_stride,
+                                                                         const float* __restrict__ hbuf, long long h_stride,
+                                                                         int C, const float* __restrict__ gate,
+                                                                         const float* __restrict__ beta, long long gb_stride,
+                                                                         int h_k, int h_v, const int32_t* __restrict__ n_keep) {
+    const int n = *n_keep;
+    if (n <= 0) return;
+    const long long z = blockIdx.z;
+    gdn_step_commit_body(state + z * state_stride, hbuf + z * h_stride, C, gate + z * gb_stride, beta + z * gb_stride, h_k,
+                         h_v, n);
+}
+
+// engine-latency: gdn_conv_commit_kernel for every GDN layer in one launch (blockIdx.y = the layer)
+__global__ void gdn_conv_commit_layers_kernel(float* __restrict__ hist0, long long hist_stride, const float* __restrict__ qkv0,
+                                              long long qkv_stride, int C, const int32_t* __restrict__ n_keep) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    const int n = *n_keep;
+    if (n <= 0) return;
+    float* hist = hist0 + (long long) blockIdx.y * hist_stride;
+    const float* qkv = qkv0 + (long long) blockIdx.y * qkv_stride;
+    float seq[3];
+#pragma unroll
+    for (int j = 0; j < 3; ++j) {
+        const int src = n + j;          // the last three of [hist(3) | x_0..x_{n-1}]
+        seq[j] = src < 3 ? hist[c * 3 + src] : qkv[(size_t) (src - 3) * C + c];
+    }
+    hist[c * 3] = seq[0];
+    hist[c * 3 + 1] = seq[1];
+    hist[c * 3 + 2] = seq[2];
+}
+
+__device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, const float* __restrict__ hbuf, int C,
+                                                     const float* __restrict__ gate, const float* __restrict__ beta,
+                                                     int h_k, int h_v, int n) {
     __shared__ float sk[S];
     __shared__ float red[RG][32];
     const int head = blockIdx.x;
@@ -820,6 +899,29 @@ void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int3
 }
 #endif
 
+namespace {
+// grid (kNonfiniteBlocks, rows): block b of row t scans [b * per_block, +per_block) and writes its own word.  The
+// test is on the bits (exponent all ones), so --use_fast_math cannot fold it away.
+__global__ void logits_nonfinite_kernel(const float* __restrict__ logits, int n, int per_block, uint32_t* flags) {
+    const int row = (int) blockIdx.y, b = (int) blockIdx.x;
+    const float* l = logits + (size_t) row * n;
+    const int lo = b * per_block, hi = min(n, lo + per_block);
+    int bad = 0;
+    for (int v = lo + (int) threadIdx.x; v < hi; v += (int) blockDim.x)
+        bad |= (__float_as_uint(l[v]) & 0x7f800000u) == 0x7f800000u;
+    bad = __syncthreads_or(bad);
+    if (threadIdx.x == 0) flags[row * kNonfiniteBlocks + b] = bad ? 1u : 0u;
+}
+}  // namespace
+
+void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* flags, void* stream) {
+    if (n_rows <= 0 || n <= 0) return;
+    const int per_block = (n + kNonfiniteBlocks - 1) / kNonfiniteBlocks;
+    logits_nonfinite_kernel<<<dim3((unsigned) kNonfiniteBlocks, (unsigned) n_rows), 256, 0, (cudaStream_t) stream>>>(
+        logits, n, per_block, flags);
+    check("logits_nonfinite_rows");
+}
+
 bool multi_block_head_ops() {
 #if defined(__HIPCC__)
     return false;
@@ -883,10 +985,58 @@ void gdn_conv_l2_multi(const float* history, const float* qkv, const float* conv
     check("gdn_conv_l2_multi");
 }
 
+void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv_w, float* h, int channels, int qk_heads,
+                       float eps, int n_tok, int t_begin, bool commit, const float* x, const uint16_t* w_alpha,
+                       const uint16_t* w_beta, const float* dt, const float* ssm_a, float* gate, float* beta, int n_embd,
+                       int h_v, void* stream) {
+    if (!history || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > kVerifyMaxT || n_embd % 8 != 0 ||
+        (commit && (n_tok != 1 || t_begin != 0))) {
+        std::fprintf(stderr, "gdn_conv_ab_multi: invalid arguments\n");
+        std::exit(1);
+    }
+    const int conv_blocks = channels / S, ab_blocks = (2 * h_v + 1) / 2;
+    const dim3 grid((unsigned) (conv_blocks + ab_blocks), (unsigned) n_tok);
+    cudaStream_t st = (cudaStream_t) stream;
+    float* hist = const_cast<float*>(history);
+    switch (n_tok) {
+        case 1: gdn_conv_ab_kernel<1, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 2: gdn_conv_ab_kernel<2, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 3: gdn_conv_ab_kernel<3, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 4: gdn_conv_ab_kernel<4, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 5: gdn_conv_ab_kernel<5, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 6: gdn_conv_ab_kernel<6, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        default: gdn_conv_ab_kernel<kVerifyMaxT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+    }
+    check("gdn_conv_ab_multi");
+}
+
 void gdn_conv_commit(float* history, const float* qkv, int channels, const int32_t* n_keep, void* stream) {
     gdn_conv_commit_kernel<<<(unsigned) ((channels + 255) / 256), 256, 0, (cudaStream_t) stream>>>(history, qkv,
                                                                                                  channels, n_keep);
     check("gdn_conv_commit");
+}
+
+bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
+                       const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
+                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream) {
+    // the per-layer commit's kernel choice (gdn_step_norm_multi below): only its state-only kernel is batched here
+    static const bool per_layer = [] {
+        const char* sp = std::getenv("STRATA_GDN_SPLIT");
+        const char* cs = std::getenv("STRATA_GDN_COMMIT_SPLIT");
+        const char* dbg = std::getenv("STRATA_DBG_GDN");
+        return (sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
+    }();
+    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyMaxT || n_keep == nullptr ||
+        h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
+        return false;
+    cudaStream_t st = (cudaStream_t) stream;
+    gdn_conv_commit_layers_kernel<<<dim3((unsigned) ((conv_channels + 255) / 256), (unsigned) n_layers), 256, 0, st>>>(
+        state + conv_off, (long long) state_stride, qkv, (long long) qkv_stride, conv_channels, n_keep);
+    gdn_step_commit_layers_kernel<<<dim3((unsigned) h_v, 4u, (unsigned) n_layers), dim3(32, RG), 0, st>>>(
+        state, (long long) state_stride, h, (long long) h_stride, conv_channels, gate, beta, (long long) gb_stride, h_k, h_v,
+        n_keep);
+    check("gdn_commit_layers");
+    return true;
 }
 
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
@@ -1193,6 +1343,23 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
     check("copy_or_zero_from_mapped");
 }
 
+namespace {
+__global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t value, int32_t* __restrict__ dst,
+                                     const volatile int32_t* src, int n) {
+    if (threadIdx.x == 0) {
+        while (*flag < value) strata_spin_pause();
+        __threadfence_system();
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+}
+}  // namespace
+void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, int64_t n,
+                               void* stream) {
+    wait_copy_i32_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(flag, value, dst, src, (int) n);
+    check("wait_copy_i32_from_mapped");
+}
+
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");
@@ -1239,6 +1406,10 @@ __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
     buf[i] = t;
 }
 }  // namespace
+namespace {
+__global__ void noop_kernel() {}
+}  // namespace
+void gpu_noop(void* stream) { noop_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(); }
 void gpu_stamp(unsigned long long* buf, int i, void* stream) {
     if (pdl_scope()) launch_pdl(gpu_stamp_kernel<true>, dim3(1), dim3(1), 0, (cudaStream_t) stream, buf, i);
     else gpu_stamp_kernel<false><<<1, 1, 0, (cudaStream_t) stream>>>(buf, i);
