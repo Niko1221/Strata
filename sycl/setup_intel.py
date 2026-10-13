@@ -188,8 +188,15 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
                                                         # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
                                                         # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
-    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
+    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
+    if isinstance(cfg.get("vision"), dict) and cfg["vision"].get("exe"):
+        # the image encoder runs on the host (tools/vision, built for the CPU): its exe/mmproj/model stay host paths,
+        # the engine reads the embeddings file through the /work mount, so its --vision goes with the engine's args
+        # and the server hands it the embeddings file in the container's view (server_intel.py's embeddings_path).
+        if "--vision" not in args:
+            args += ["--vision"]
+        out["vision"] = dict(cfg["vision"])
     env = {}
     if alchemist:
         if driver == "i915":
@@ -260,7 +267,14 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
+    def hip_vision(asked) -> str:
+        """The image encoder on Intel (--vision): the CPU one (tools/vision built without CUDA); the SYCL engine reads
+        the embeddings it writes (sycl/src/program/generate.cpp's GENI path). A GPU encoder build is a later step, so
+        `yes`/`gpu` leave images off, as on AMD, and say how to get them."""
+        if asked in ("yes", "gpu"):
+            S.warn("the SYCL port has no GPU image encoder yet: images off (--vision cpu reads them on the CPU)")
+        return "cpu" if asked == "cpu" else "none"
+    S.hip_vision = hip_vision
     S.build_engine_hip = lambda *a, **k: stub
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
@@ -286,6 +300,12 @@ def install(argv) -> None:
         sel = intel[idx]
         cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), sel["vram_gb"], sel["driver"],
                       sel.get("devid", ""))
+        if cfg.get("vision"):
+            # the CPU image encoder, built once into engine/ (the encoder runs on the host: paths stay host ones;
+            # setup.py's hip path builds the same way, sycl/setup_intel.py's build_engine_hip is a stub)
+            vexe = S.build_vision_cpu(ROOT / "engine", ROOT / "engine" / "VISION.json", {"vision": "cpu"},
+                                      S.get_llama_cpp(), S.source_hash(S.VISION_SOURCES))
+            cfg["vision"]["exe"] = str(vexe / S.VEXE)
         if len(intel) > 1:                                  # pin the SYCL device(s)
             # the Level Zero order followed the sysfs card order on the tested machines; a machine where it does not
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
@@ -327,8 +347,6 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv:
-        sys.argv += ["--vision", "none"]
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())
